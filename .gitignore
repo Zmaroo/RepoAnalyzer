@@ -1,0 +1,139 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Testing
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.tox/
+nosetests.xml
+coverage/
+test_parse/
+
+# Documentation
+docs/_build/
+docs/api/
+
+# Project specific
+*.log
+.DS_Store
+.env.local
+.env.*.local
+*.db
+*.sqlite3
+
+# Tree-sitter
+.tree-sitter-language-pack-repo/
+
+# Cache directories
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Temporary files
+tmp/
+temp/
+
+# Configuration files that might contain sensitive information
+config.local.yaml
+config.local.yml
+config.local.json
+
+# Graph database files (if using local Neo4j or similar)
+graph.db/
+
+# Python type checking
+.pytype/
+.pyre/
+.dmypy.json
+dmypy.json
+
+# Python package management
+pip-log.txt
+pip-delete-this-directory.txt
+requirements.local.txt
+requirements.dev.txt
+.requirements.txt.swp
+
+# Poetry/PyProject
+poetry.lock
+.poetry-cache/
+
+# Setuptools
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Build artifacts
+dist/
+build/
+_build/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dylib
+*.dll
+
+# Cursor specific
+.cursor/
+
+# Pre-commit
+.pre-commit-cache/
+.cache/pre-commit/
+
+# Project config files we want to ignore
+project_config/quality.yaml
+project_config/structure.yaml
+project_config/testing.yaml
+
+# Logging
+*.log
+logs/*
+!logs/.gitkeep
+
+# Development logs and AI conversation history
+dev_logs/
+.ai_conversation_history.md
+.dev_notes.md
+.cursor-chat/

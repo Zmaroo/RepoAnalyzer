@@ -1,0 +1,9 @@
+python-dotenv
+psycopg2-binary
+neo4j
+tree-sitter-language-pack
+watchdog
+transformers
+torch
+torchvision
+torchaudio
