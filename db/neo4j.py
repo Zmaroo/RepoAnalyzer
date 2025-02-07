@@ -7,9 +7,6 @@ driver = GraphDatabase.driver(
 )
 
 def run_query(cypher, params=None):
-    session = driver.session()
-    try:
+    with driver.session() as session:
         result = session.run(cypher, params or {})
         return [record.data() for record in result]
-    finally:
-        session.close()

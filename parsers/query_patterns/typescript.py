@@ -1,61 +1,57 @@
 """TypeScript-specific Tree-sitter patterns."""
 
-TS_PATTERNS = {
-    "interface": """
-        (interface_declaration
-          name: (type_identifier) @interface.name
-          extends_clause: (extends_type_clause
-            types: (type_list
-              (type_identifier) @interface.extends)*
-          )? @interface.extends
-          body: (object_type [
-            (property_signature
-              name: (property_identifier) @interface.property.name
-              type: (type_annotation
-                (type_identifier) @interface.property.type)?)
-            (method_signature
-              name: (property_identifier) @interface.method.name
-              parameters: (formal_parameters) @interface.method.params
-              type: (type_annotation)? @interface.method.return)?
-          ]*) @interface.body) @interface.def
-    """,
-    "type": """
+from .js_base import JS_BASE_PATTERNS
+
+TYPESCRIPT_PATTERNS = {
+    **JS_BASE_PATTERNS,
+
+    # Type definition patterns
+    "type_definition": """
         [
-          ; Type alias
           (type_alias_declaration
-            name: (type_identifier) @type.name
-            value: (_) @type.value) @type.def
-            
-          ; Union type
-          (union_type
-            types: (type_list) @type.union.types) @type.union
-            
-          ; Intersection type
-          (intersection_type
-            types: (type_list) @type.intersection.types) @type.intersection
-            
-          ; Generic type
-          (generic_type
-            name: (type_identifier) @type.generic.name
-            arguments: (type_arguments
-              (type_identifier) @type.generic.arg)*) @type.generic
+            name: (type_identifier) @type.alias.name
+            value: (_) @type.alias.value) @type.alias,
+          (interface_declaration
+            name: (type_identifier) @interface.name
+            body: (object_type) @interface.body) @interface,
+          (enum_declaration
+            name: (identifier) @enum.name
+            body: (enum_body) @enum.body) @enum
         ]
     """,
-    "enum": """
-        (enum_declaration
-          name: (identifier) @enum.name
-          body: (enum_body
-            (enum_member
-              name: (property_identifier) @enum.member.name
-              value: (_)? @enum.member.value)*) @enum.body) @enum.def
+
+    # Type annotation patterns
+    "type_annotation": """
+        [
+          (type_annotation
+            type: (_) @type.annotation.value) @type.annotation,
+          (index_signature
+            type: (_) @type.index.value) @type.index,
+          (property_signature
+            name: (_) @type.property.name
+            type: (_)? @type.property.value) @type.property
+        ]
     """,
+
+    # Generic patterns
+    "generic": """
+        [
+          (type_parameters
+            (type_parameter
+              name: (type_identifier) @generic.param.name
+              constraint: (_)? @generic.param.constraint
+              default: (_)? @generic.param.default)*) @generic.params,
+          (type_arguments
+            (_)* @generic.args) @generic
+        ]
+    """,
+
+    # Decorator patterns
     "decorator": """
-        (decorator
-          name: [
-            (identifier) @decorator.name
-            (call_expression
-              function: (identifier) @decorator.name
-              arguments: (arguments) @decorator.args)
-          ]) @decorator
+        [
+          (decorator
+            name: (_) @decorator.name
+            arguments: (_)? @decorator.args) @decorator
+        ]
     """
 } 

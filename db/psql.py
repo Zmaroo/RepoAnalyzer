@@ -1,17 +1,24 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2 import pool
 from config import config
 
+# Create a thread-safe connection pool
+DB_POOL = pool.ThreadedConnectionPool(
+    minconn=1,
+    maxconn=10,
+    host=config['postgres']['host'],
+    user=config['postgres']['user'],
+    password=config['postgres']['password'],
+    database=config['postgres']['database'],
+    port=config['postgres']['port']
+)
+
 def get_connection():
-    conf = config['postgres']
-    conn = psycopg2.connect(
-        host=conf['host'],
-        user=conf['user'],
-        password=conf['password'],
-        database=conf['database'],
-        port=conf['port']
-    )
-    return conn
+    return DB_POOL.getconn()
+
+def release_connection(conn):
+    DB_POOL.putconn(conn)
 
 def query(sql, params=None):
     conn = get_connection()
@@ -21,5 +28,8 @@ def query(sql, params=None):
             result = cur.fetchall() if cur.description else None
             conn.commit()
             return result
+    except Exception as e:
+        conn.rollback()
+        raise e
     finally:
-        conn.close()
+        release_connection(conn)

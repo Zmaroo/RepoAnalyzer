@@ -1,49 +1,62 @@
 import time
+import os
+import asyncio
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-import os
-from parsers.file_parser import process_file
+from parsers.file_parser import process_file as sync_process_file
 from semantic.semantic_search import upsert_code
-from docs.doc_index import upsert_doc
+from indexer.doc_index import upsert_doc
+from indexer.file_config import CODE_EXTENSIONS, DOC_EXTENSIONS
 from utils.logger import log
-
-# Define file extensions
-CODE_EXTENSIONS = {'.py', '.java', '.js', '.ts', '.c', '.cpp', '.rs', '.go', '.rb'}
-DOC_EXTENSIONS = {'.md', '.txt', '.rst'}
-
-ACTIVE_REPO_ID = "active"
+from indexer.clone_and_index import get_or_create_repo
+from indexer.async_utils import async_process_index_file, async_read_text_file
+from utils.async_runner import submit_async_task
 
 class ChangeHandler(FileSystemEventHandler):
-    def on_modified(self, event):
+    def __init__(self, active_repo_id: int, active_project_root: str):
+        self.active_repo_id = active_repo_id
+        self.active_project_root = active_project_root
+        super().__init__()
+
+    def on_modified(self, event) -> None:
         if event.is_directory:
             return
-        file_path = event.src_path
-        ext = os.path.splitext(file_path)[1]
-        # Use structural pattern matching
-        match ext:
-            case _ if ext in CODE_EXTENSIONS:
-                ast = process_file(file_path)
-                if ast:
-                    upsert_code(ACTIVE_REPO_ID, file_path, ast)
-                    log(f"Indexed code file: {file_path}")
-            case _ if ext in DOC_EXTENSIONS:
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    upsert_doc(ACTIVE_REPO_ID, file_path, content)
-                    log(f"Indexed doc file: {file_path}")
-                except Exception as e:
-                    log(f"Error processing doc file {file_path}: {e}")
-            case _:
-                log(f"Ignored file: {file_path}")
 
-def start_file_watcher():
-    path_to_watch = os.getcwd()
-    event_handler = ChangeHandler()
+        abs_file_path = event.src_path
+        rel_file_path = os.path.relpath(abs_file_path, self.active_project_root)
+        log(f"Detected change in file (abs: {abs_file_path}, rel: {rel_file_path})", level="debug")
+        ext = os.path.splitext(abs_file_path)[1].lower()
+
+        # Mapping file type settings to processor and index function
+        file_type_configs = [
+            (CODE_EXTENSIONS, lambda fp: asyncio.to_thread(sync_process_file, fp), upsert_code, "code"),
+            (DOC_EXTENSIONS, async_read_text_file, upsert_doc, "doc")
+        ]
+        
+        for ext_set, processor, index_func, file_type in file_type_configs:
+            if ext in ext_set:
+                submit_async_task(
+                    async_process_index_file(
+                        file_path=abs_file_path,
+                        base_path=self.active_project_root,
+                        repo_id=self.active_repo_id,
+                        file_processor=processor,
+                        index_function=index_func,
+                        file_type=file_type
+                    )
+                )
+                return
+
+        log(f"Ignored file {abs_file_path} (relative: {rel_file_path})", level="debug")
+
+def start_file_watcher(path: str = ".") -> None:
+    # Delay active repo initialization until this function is called (after tables are created)
+    active_repo_id = get_or_create_repo("active")
+    active_project_root = os.getcwd()
+    event_handler = ChangeHandler(active_repo_id, active_project_root)
     observer = Observer()
-    observer.schedule(event_handler, path=path_to_watch, recursive=True)
+    observer.schedule(event_handler, path, recursive=True)
     observer.start()
-    log(f"Watching directory: {path_to_watch}")
     try:
         while True:
             time.sleep(1)

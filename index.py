@@ -1,31 +1,43 @@
+import faulthandler
+faulthandler.enable()
+
+import os
+# Removed logging disablement so that logging is now enabled.
+# os.environ["DISABLE_LOGGING"] = "True"  # This line has been removed
+
 import threading
-from semantic.semantic_search import create_code_table, search_code
-from docs.doc_index import create_docs_table, search_docs
+from db.schema import create_all_tables
+from semantic.semantic_search import search_code
+from indexer.doc_index import search_docs
 from watcher.file_watcher import start_file_watcher
-from indexer.clone_and_index import clone_and_index_repo
+from indexer.clone_and_index import get_or_create_repo, index_active_project
+# from indexer.clone_and_index import clone_and_index_repo  # Removed for active project indexing only
 from utils.logger import log
 import time
 
 def main():
     # Create tables if they do not exist
-    create_code_table()
-    create_docs_table()
+    create_all_tables()
     log("Database tables are set up.")
 
-    # Start file watcher in a separate thread for the active project
+    # Index the active project files (initial indexing)
+    index_active_project()  # This function scans and indexes the current project directory
+    log("Active project initial indexing started.")
+
+    # Start the file watcher in a separate thread (this will pick up file changes)
     watcher_thread = threading.Thread(target=start_file_watcher, daemon=True)
     watcher_thread.start()
     log("File watcher started for active project.")
 
-    # Optionally, clone and index a reference repository (example: pydantic)
-    clone_and_index_repo("https://github.com/samuelcolvin/pydantic.git", "pydantic")
+    # Allow some time for the initial indexing
+    time.sleep(2)
 
-    # Example queries:
-    time.sleep(2)  # Wait a moment for indexing to finish
-    code_results = search_code("def", repo_id="active", limit=3)
+    # Run example queries
+    active_repo_id = get_or_create_repo("active")
+    code_results = search_code("def", repo_id=active_repo_id, limit=3)
     log(f"Code search results (active): {code_results}")
 
-    doc_results = search_docs("installation", repo_id="active", limit=3)
+    doc_results = search_docs("installation", repo_id=active_repo_id, limit=3)
     log(f"Doc search results (active): {doc_results}")
 
     # Keep the main thread alive

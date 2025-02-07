@@ -1,0 +1,4 @@
+# Project specific
+test_parse/
+node-types/
+.cursorignore

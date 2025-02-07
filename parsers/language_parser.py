@@ -1,49 +1,83 @@
-"""Language parser module using tree-sitter."""
+"""Language parser module using tree-sitter with custom logger callback."""
 
 from tree_sitter_language_pack import get_binding, get_language, get_parser
-from tree_sitter import Language, Node
-from typing import Optional, Dict
-from utils.logger import logger
+from tree_sitter import Language, Node, LogType
+from typing import Optional, Dict, Tuple
+from utils.logger import log  # Use the common logger
+import os
+import threading
 
-# Cache for parsers to avoid recreating them
-_parser_cache: Dict[str, tuple[int, Language, Node]] = {}
+# Set this to False to disable the custom logger callback (helpful when debugging seg faults).
+ATTACH_LOGGER_CALLBACK = True
 
-def get_parser_for_language(language_name: str) -> Optional[tuple[int, Language, Node]]:
-    """Get or create parser components for the given language.
+# Cache for parsers to avoid recreating them.
+_parser_cache: Dict[str, Tuple[int, Language, object]] = {}
+# Locks to serialize access to each cached parser (since Tree‑sitter parser instances are not thread‑safe).
+_parser_locks: Dict[str, threading.Lock] = {}
+
+def tree_sitter_logger(log_type: int, message: str) -> None:
+    """
+    Custom logger callback for the Tree-sitter parser.
     
     Args:
-        language_name: Name of the language to get parser for
+        log_type (int): The log type passed by Tree-sitter (e.g. LogType.LEX or LogType.PARSE).
+        message (str): The detailed log message.
+    """
+    if log_type == LogType.LEX:
+        log(f"Tree-sitter [LEX]: {message}", level="debug")
+    elif log_type == LogType.PARSE:
+        log(f"Tree-sitter [PARSE]: {message}", level="debug")
+    else:
+        log(f"Tree-sitter [UNKNOWN-{log_type}]: {message}", level="debug")
+
+def get_parser_for_language(language_name: str) -> Optional[Tuple[int, Language, object]]:
+    """
+    Get or create parser components for the given language.
+    
+    Args:
+        language_name: Name of the language to get parser for.
         
     Returns:
-        Tuple of (binding, language, parser) or None if language not supported
+        Tuple of (binding, language, parser) or None if the language is not supported.
     """
     try:
-        # Check cache first
+        # Ensure a lock exists for this language.
+        if language_name not in _parser_locks:
+            _parser_locks[language_name] = threading.Lock()
+
         if language_name in _parser_cache:
             return _parser_cache[language_name]
-            
-        # Create new parser components
-        binding = get_binding(language_name)  # int pointing to C binding
-        language = get_language(language_name)  # tree_sitter.Language instance
-        parser = get_parser(language_name)  # tree_sitter.Parser instance
         
+        # Create new parser components.
+        binding = get_binding(language_name)  # int pointer to the C binding.
+        language = get_language(language_name)  # Tree-sitter Language instance.
+        parser = get_parser(language_name)      # Tree-sitter Parser instance.
+
+        # Attach our custom logger callback if enabled.
+        if ATTACH_LOGGER_CALLBACK:
+            try:
+                parser.logger = tree_sitter_logger
+            except Exception as e:
+                log(f"Failed to attach logger to parser for {language_name}: {e}", level="warning")
+
         parser_tuple = (binding, language, parser)
         _parser_cache[language_name] = parser_tuple
         return parser_tuple
         
     except Exception as e:
-        logger.warning(f"Could not get parser for language {language_name}: {e}")
+        log(f"Could not get parser for language {language_name}: {e}", level="warning")
         return None
 
 def parse_code(source_code: str, language_name: str) -> Optional[Node]:
-    """Parse source code using tree-sitter.
+    """
+    Parse source code using tree-sitter.
     
     Args:
-        source_code: Source code to parse
-        language_name: Programming language of the source code
+        source_code: Source code to parse.
+        language_name: Programming language of the source.
         
     Returns:
-        Root node of the AST or None if parsing failed
+        Root node of the AST or None if parsing failed.
     """
     try:
         parser_components = get_parser_for_language(language_name)
@@ -51,33 +85,43 @@ def parse_code(source_code: str, language_name: str) -> Optional[Node]:
             return None
             
         _, _, parser = parser_components
-        # Parse the code
-        tree = parser.parse(bytes(source_code, "utf8"))
+
+        # Protect the call to parser.parse with a language-specific lock to prevent concurrent access.
+        lock = _parser_locks.get(language_name)
+        if lock is None:
+            # This should not occur but is a safe fallback.
+            lock = threading.Lock()
+            _parser_locks[language_name] = lock
+
+        with lock:
+            tree = parser.parse(bytes(source_code, "utf8"))
         return tree.root_node
         
     except Exception as e:
-        logger.error(f"Error parsing {language_name} code: {e}")
+        log(f"Error parsing {language_name} code: {e}", level="error")
         return None
 
 def get_ast_sexp(node: Node) -> str:
-    """Get the s-expression representation of an AST node.
+    """
+    Get the s-expression representation of an AST node.
     
     Args:
-        node: AST node to convert
+        node: AST node to convert.
         
     Returns:
-        S-expression string representation of the AST
+        S-expression string representation of the AST.
     """
     return node.sexp()
 
 def get_ast_json(node: Node) -> dict:
-    """Get a JSON-compatible dictionary representation of an AST node.
+    """
+    Get a JSON-compatible dictionary representation of an AST node.
     
     Args:
-        node: AST node to convert
+        node: AST node to convert.
         
     Returns:
-        Dictionary representation of the AST
+        Dictionary representation of the AST.
     """
     result = {
         "type": node.type,
@@ -93,13 +137,14 @@ def get_ast_json(node: Node) -> dict:
     return result
 
 def is_language_supported(language_name: str) -> bool:
-    """Check if a language is supported by tree-sitter.
+    """
+    Check if a language is supported by Tree-sitter.
     
     Args:
-        language_name: Name of language to check
+        language_name: Name of language to check.
         
     Returns:
-        True if language is supported, False otherwise
+        True if the language is supported, False otherwise.
     """
     try:
         get_binding(language_name)

@@ -59,6 +59,8 @@ docs/api/
 .env.*.local
 *.db
 *.sqlite3
+node-types/
+test_parse/
 
 # Tree-sitter
 .tree-sitter-language-pack-repo/
