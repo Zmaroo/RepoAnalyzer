@@ -122,4 +122,7 @@ query_patterns = {
     'xml': XML_PATTERNS,
 }
 
-__all__ = ['query_patterns'] 
+# For backward compatibility
+QUERY_PATTERNS = query_patterns
+
+__all__ = ['query_patterns', 'QUERY_PATTERNS'] 

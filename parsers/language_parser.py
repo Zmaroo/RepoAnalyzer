@@ -101,17 +101,32 @@ def parse_code(source_code: str, language_name: str) -> Optional[Node]:
         log(f"Error parsing {language_name} code: {e}", level="error")
         return None
 
-def get_ast_sexp(node: Node) -> str:
+def get_ast_sexp(node) -> str:
     """
-    Get the s-expression representation of an AST node.
+    Convert a Tree-sitter AST node to an S-expression string representation.
+    This is a custom implementation since tree-sitter 0.24.0+ removed the sexp method.
+    """
+    if not node:
+        return "()"
     
-    Args:
-        node: AST node to convert.
+    result = f"({node.type}"
+    
+    # Add named children recursively
+    if len(node.children) > 0:
+        for child in node.children:
+            # Add field name if it exists
+            field_name = child.field_name
+            if field_name:
+                result += f" {field_name}: "
+            result += " " + get_ast_sexp(child)
+    
+    # Add text for leaf nodes
+    elif node.is_named:
+        text = node.text.decode('utf-8', errors='replace')
+        result += f" {text!r}"
         
-    Returns:
-        S-expression string representation of the AST.
-    """
-    return node.sexp()
+    result += ")"
+    return result
 
 def get_ast_json(node: Node) -> dict:
     """
