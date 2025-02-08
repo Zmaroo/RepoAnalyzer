@@ -1,0 +1,214 @@
+{
+    "content": "console.log('Hello, World!');",
+    "language": "javascript",
+    "ast_data": {
+        "type": "program",
+        "start_point": [
+            0,
+            0
+        ],
+        "end_point": [
+            0,
+            29
+        ],
+        "start_byte": 0,
+        "end_byte": 29,
+        "children": [
+            {
+                "type": "expression_statement",
+                "start_point": [
+                    0,
+                    0
+                ],
+                "end_point": [
+                    0,
+                    29
+                ],
+                "start_byte": 0,
+                "end_byte": 29,
+                "children": [
+                    {
+                        "type": "call_expression",
+                        "start_point": [
+                            0,
+                            0
+                        ],
+                        "end_point": [
+                            0,
+                            28
+                        ],
+                        "start_byte": 0,
+                        "end_byte": 28,
+                        "children": [
+                            {
+                                "type": "member_expression",
+                                "start_point": [
+                                    0,
+                                    0
+                                ],
+                                "end_point": [
+                                    0,
+                                    11
+                                ],
+                                "start_byte": 0,
+                                "end_byte": 11,
+                                "children": [
+                                    {
+                                        "type": "identifier",
+                                        "start_point": [
+                                            0,
+                                            0
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            7
+                                        ],
+                                        "start_byte": 0,
+                                        "end_byte": 7
+                                    },
+                                    {
+                                        "type": ".",
+                                        "start_point": [
+                                            0,
+                                            7
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            8
+                                        ],
+                                        "start_byte": 7,
+                                        "end_byte": 8
+                                    },
+                                    {
+                                        "type": "property_identifier",
+                                        "start_point": [
+                                            0,
+                                            8
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            11
+                                        ],
+                                        "start_byte": 8,
+                                        "end_byte": 11
+                                    }
+                                ]
+                            },
+                            {
+                                "type": "arguments",
+                                "start_point": [
+                                    0,
+                                    11
+                                ],
+                                "end_point": [
+                                    0,
+                                    28
+                                ],
+                                "start_byte": 11,
+                                "end_byte": 28,
+                                "children": [
+                                    {
+                                        "type": "(",
+                                        "start_point": [
+                                            0,
+                                            11
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            12
+                                        ],
+                                        "start_byte": 11,
+                                        "end_byte": 12
+                                    },
+                                    {
+                                        "type": "string",
+                                        "start_point": [
+                                            0,
+                                            12
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            27
+                                        ],
+                                        "start_byte": 12,
+                                        "end_byte": 27,
+                                        "children": [
+                                            {
+                                                "type": "'",
+                                                "start_point": [
+                                                    0,
+                                                    12
+                                                ],
+                                                "end_point": [
+                                                    0,
+                                                    13
+                                                ],
+                                                "start_byte": 12,
+                                                "end_byte": 13
+                                            },
+                                            {
+                                                "type": "string_fragment",
+                                                "start_point": [
+                                                    0,
+                                                    13
+                                                ],
+                                                "end_point": [
+                                                    0,
+                                                    26
+                                                ],
+                                                "start_byte": 13,
+                                                "end_byte": 26
+                                            },
+                                            {
+                                                "type": "'",
+                                                "start_point": [
+                                                    0,
+                                                    26
+                                                ],
+                                                "end_point": [
+                                                    0,
+                                                    27
+                                                ],
+                                                "start_byte": 26,
+                                                "end_byte": 27
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "type": ")",
+                                        "start_point": [
+                                            0,
+                                            27
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            28
+                                        ],
+                                        "start_byte": 27,
+                                        "end_byte": 28
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "type": ";",
+                        "start_point": [
+                            0,
+                            28
+                        ],
+                        "end_point": [
+                            0,
+                            29
+                        ],
+                        "start_byte": 28,
+                        "end_byte": 29
+                    }
+                ]
+            }
+        ]
+    },
+    "lines_of_code": 1,
+    "documentation": "",
+    "complexity": 1
+}

@@ -1,10 +1,13 @@
+from __future__ import annotations  # Added to enable postponed evaluation of type annotations
 import os
 import json
-from .language_parser import parse_code, get_ast_sexp
+from .language_parser import parse_code, get_ast_sexp, get_ast_json
 from parsers.query_patterns import query_patterns  # our mapping of language -> query patterns
 from tree_sitter_language_pack import get_language
 from utils.logger import log
-from typing import Optional
+from typing import Optional, Dict, Any
+from tree_sitter import Node, Parser
+from parsers.ast_extractor import extract_ast_features
 
 # Mapping file extensions to Tree-sitter language names
 EXTENSION_TO_LANGUAGE = {
@@ -171,68 +174,137 @@ EXTENSION_TO_LANGUAGE = {
     'elixir': 'elixir'
 }
 
+# Initialize the Tree-sitter parser. Make sure you have built your language library.
+parser = Parser()
+# Example: Uncomment and adjust the following lines if a language library is available.
+# from tree_sitter_languages import get_language
+# parser.set_language(get_language('python'))
+
+def get_root_node(tree):
+    """
+    Returns the root node from the tree-sitter parse result.
+    In some cases, 'tree' may already be a Node (without a 'root_node' attribute).
+    """
+    return tree.root_node if hasattr(tree, "root_node") else tree
+
 def detect_language(file_path: str) -> Optional[str]:
     """Detects the language of a file based on its extension."""
     ext = os.path.splitext(file_path)[1].lower().lstrip(".")
     return EXTENSION_TO_LANGUAGE.get(ext)
 
-def process_file(file_path: str) -> Optional[str]:
+def process_file(file_path: str) -> Optional[Dict[str, Any]]:
+    """Enhanced file processing with metadata extraction."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+        language = EXTENSION_TO_LANGUAGE.get(ext)
+        
+        if not language:
+            return None
+            
+        tree = parse_code(content, language)
+        if not tree:
+            return None
+            
+        # Use the unified root node retrieval to ensure consistency
+        root_node = get_root_node(tree)
+        ast_data = get_ast_json(root_node)
+        
+        # Calculate basic metrics
+        lines_of_code = len(content.splitlines())
+        
+        # Extract documentation (basic implementation)
+        documentation = extract_documentation(root_node, content.encode('utf-8'))
+        
+        return {
+            'content': content,
+            'language': language,
+            'ast_data': ast_data,
+            'lines_of_code': lines_of_code,
+            'documentation': documentation,
+            'complexity': calculate_complexity(root_node)
+        }
+        
+    except Exception as e:
+        log(f"Error processing file {file_path}: {e}", level="error")
+        return None
+
+def calculate_complexity(node: Node) -> int:
+    """Calculate cyclomatic complexity (basic implementation)."""
+    complexity = 1  # Base complexity
+    
+    # Count control flow statements
+    control_patterns = [
+        'if_statement',
+        'while_statement',
+        'for_statement',
+        'case_statement',
+        'catch_clause',
+        '&&',
+        '||'
+    ]
+    
+    def traverse(node):
+        nonlocal complexity
+        if node.type in control_patterns:
+            complexity += 1
+        for child in node.children:
+            traverse(child)
+            
+    traverse(node)
+    return complexity
+
+def extract_documentation(node: Node, source_bytes: bytes) -> str:
     """
-    Processes a source file as follows:
-      - Reads the file (both as bytes and as a UTF-8 string).
-      - Detects the language using the file extension.
-      - Parses the code into an AST.
-      - If a query pattern (e.g. "function_details") exists for that language,
-        extracts only the desired AST features using the query.
-      - Otherwise, falls back to storing the full s-expression.
-      - Returns the result (JSON when using query extraction).
-      
-    If Tree-sitter's language pack does not support the language (even if we have
-    a query pattern for it), we catch the error/log a warning and fallback.
+    Extract documentation from an AST node.
+    
+    Args:
+        node: The AST node to extract documentation from
+        source_bytes: Original source code as bytes
+        
+    Returns:
+        Extracted documentation string
     """
     try:
-        # Read file content as bytes (needed for accurate byte offsets)
-        with open(file_path, "rb") as f:
-            source_bytes = f.read()
-        # Also decode to UTF-8 for parsing
-        source_code = source_bytes.decode("utf-8", errors="replace")
-        
-        language_name = detect_language(file_path)
-        if not language_name:
-            log(f"Unsupported file extension for: {file_path}", level="debug")
-            return None
-
-        root_node = parse_code(source_code, language_name)
-        if not root_node:
-            log(f"Parsing failed for file: {file_path}", level="error")
-            return None
-
-        # Look up the query patterns for the detected language.
-        normalized_lang = language_name.lower()
-        patterns = query_patterns.get(normalized_lang)
-        result = None
-
-        if patterns and "function_details" in patterns:
-            try:
-                language_object = get_language(language_name)
-            except Exception as e:
-                log(f"Tree-sitter does not support language '{language_name}' even though a pattern exists. Error: {e}", level="warning")
-                language_object = None
-
-            if language_object:
-                from parsers.ast_extractor import extract_ast_features
-                features = extract_ast_features(root_node, language_object, patterns["function_details"], source_bytes)
-                result = json.dumps(features)
-            else:
-                # Fallback to storing the full tree representation.
-                result = get_ast_sexp(root_node)
-        else:
-            # Fallback: store the full s-expression.
-            result = get_ast_sexp(root_node)
-        
-        log(f"Processed file {file_path} as {language_name}", level="info")
-        return result
-
+        # Get comments and docstrings
+        doc_string = ""
+        if hasattr(node, 'children'):
+            for child in node.children:
+                if child.type in ('comment', 'block_comment', 'line_comment', 'string', 'string_literal'):
+                    start_byte = child.start_byte
+                    end_byte = child.end_byte
+                    text = source_bytes[start_byte:end_byte].decode('utf-8', errors='replace')
+                    doc_string += text.strip() + "\n"
+        return doc_string.strip()
     except Exception as e:
-        log(f"Error processing {file_path}: {e}", level="error")
+        log(f"Error extracting documentation: {e}", level="error")
+        return ""
+
+def parse_file(file_path: str):
+    """
+    Parses the source code from the given file using Tree-sitter and returns the root syntax node.
+    
+    Args:
+        file_path (str): The full path to the source file.
+    
+    Returns:
+        A tree-sitter Node representing the root of the syntax tree, or None if parsing fails.
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        log(f"Error reading file {file_path}: {e}", level="error")
         return None
+
+    try:
+        tree = parser.parse(content.encode('utf-8'))
+        root = get_root_node(tree)
+        return root
+    except Exception as e:
+        log(f"Error parsing file {file_path}: {e}", level="error")
+        return None
+
+# Additional functions using the syntax tree can be added here.

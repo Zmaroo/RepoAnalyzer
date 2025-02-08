@@ -60,7 +60,7 @@ docs/api/
 *.db
 *.sqlite3
 node-types/
-test_parse/
+#test_parse/
 
 # Tree-sitter
 .tree-sitter-language-pack-repo/

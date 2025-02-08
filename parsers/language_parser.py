@@ -8,7 +8,7 @@ import os
 import threading
 
 # Set this to False to disable the custom logger callback (helpful when debugging seg faults).
-ATTACH_LOGGER_CALLBACK = True
+ATTACH_LOGGER_CALLBACK = False
 
 # Cache for parsers to avoid recreating them.
 _parser_cache: Dict[str, Tuple[int, Language, object]] = {}
@@ -104,27 +104,44 @@ def parse_code(source_code: str, language_name: str) -> Optional[Node]:
 def get_ast_sexp(node) -> str:
     """
     Convert a Tree-sitter AST node to an S-expression string representation.
-    This is a custom implementation since tree-sitter 0.24.0+ removed the sexp method.
+    Tries to use the native tree-sitter method if available, otherwise falls back
+    to a custom implementation.
+    
+    This is in line with Tree-sitter's suggestions to use its native methods when possible
+    ([1](https://tree-sitter.github.io/tree-sitter/print.html)) while providing our own fallback
+    for languages where a dedicated query pattern isn't provided.
     """
     if not node:
         return "()"
-    
+    # Attempt to use the native method if available.
+    if hasattr(node, "sexp") and callable(node.sexp):
+        try:
+            return node.sexp()
+        except Exception as native_ex:
+            log(f"Native sexp method failed: {native_ex}", level="debug")
+    return _custom_get_ast_sexp(node)
+
+def _custom_get_ast_sexp(node) -> str:
+    """
+    Recursively create an s-expression for the given AST node.
+    This custom implementation is our fallback when a native method is not available.
+    """
     result = f"({node.type}"
-    
-    # Add named children recursively
-    if len(node.children) > 0:
+    if node.children:
         for child in node.children:
-            # Add field name if it exists
-            field_name = child.field_name
+            # Safely attempt to retrieve the field name.
+            field_name = getattr(child, "field_name", None)
             if field_name:
                 result += f" {field_name}: "
-            result += " " + get_ast_sexp(child)
-    
-    # Add text for leaf nodes
+            result += " " + _custom_get_ast_sexp(child)
     elif node.is_named:
-        text = node.text.decode('utf-8', errors='replace')
+        try:
+            # Decode text safely from bytes.
+            text = node.text.decode('utf-8', errors='replace')
+        except Exception as decode_ex:
+            text = "<decode-error>"
+            log(f"Error decoding node text: {decode_ex}", level="error")
         result += f" {text!r}"
-        
     result += ")"
     return result
 
@@ -146,7 +163,7 @@ def get_ast_json(node: Node) -> dict:
         "end_byte": node.end_byte
     }
     
-    if len(node.children) > 0:
+    if node.children:
         result["children"] = [get_ast_json(child) for child in node.children]
         
     return result

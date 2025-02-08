@@ -1,5 +1,7 @@
 from neo4j import GraphDatabase
 from utils.logger import log
+from typing import Dict, List, Optional, Any
+import json
 
 class Neo4jTools:
     def __init__(self, uri="bolt://localhost:7687", user="neo4j", password="neo4j"):
@@ -114,6 +116,140 @@ class Neo4jTools:
         log("Finding cross-repository relationships...", level="debug")
         return self.run_query(query)
 
+    def create_code_node(self, properties: Dict[str, Any]) -> Optional[Dict]:
+        """
+        Creates a Code node with the given properties.
+        
+        Args:
+            properties: Dictionary containing node properties including:
+                - file_path: str
+                - repo_id: int
+                - language: str
+                - type: str (function, class, method, etc.)
+                - name: str
+                - ast_data: dict
+                - complexity: int
+                - lines_of_code: int
+                - documentation: str
+        """
+        query = """
+        MERGE (n:Code {file_path: $file_path, repo_id: $repo_id})
+        SET n += $properties
+        RETURN n
+        """
+        try:
+            # Convert ast_data to JSON string if present
+            if 'ast_data' in properties:
+                properties['ast_data'] = json.dumps(properties['ast_data'])
+            
+            result = self.run_query(query, {
+                'file_path': properties['file_path'],
+                'repo_id': properties['repo_id'],
+                'properties': properties
+            })
+            return result[0] if result else None
+        except Exception as e:
+            log(f"Error creating code node: {e}", level="error")
+            return None
+
+    def create_code_relationship(
+        self,
+        from_path: str,
+        to_path: str,
+        repo_id: int,
+        rel_type: str,
+        properties: Optional[Dict] = None
+    ) -> bool:
+        """
+        Creates a relationship between two Code nodes.
+        
+        Args:
+            from_path: File path of the source node
+            to_path: File path of the target node
+            repo_id: Repository ID
+            rel_type: Type of relationship (CALLS, IMPORTS, etc.)
+            properties: Optional relationship properties
+        """
+        query = """
+        MATCH (a:Code {file_path: $from_path, repo_id: $repo_id})
+        MATCH (b:Code {file_path: $to_path, repo_id: $repo_id})
+        MERGE (a)-[r:%s]->(b)
+        SET r += $properties
+        RETURN r
+        """ % rel_type
+
+        try:
+            result = self.run_query(query, {
+                'from_path': from_path,
+                'to_path': to_path,
+                'repo_id': repo_id,
+                'properties': properties or {}
+            })
+            return bool(result)
+        except Exception as e:
+            log(f"Error creating relationship: {e}", level="error")
+            return False
+
+    def run_node2vec(self) -> List[Dict]:
+        """
+        Runs node2vec to generate embeddings for code components.
+        Requires the Graph Data Science library.
+        """
+        query = """
+        CALL gds.node2vec.write('code-dependency-graph', {
+            writeProperty: 'embedding',
+            embeddingDimension: 128,
+            walkLength: 80,
+            walksPerNode: 10
+        })
+        YIELD nodePropertiesWritten
+        RETURN nodePropertiesWritten
+        """
+        return self.run_query(query)
+
+    def find_similar_components(self, file_path: str, repo_id: int, limit: int = 5) -> List[Dict]:
+        """
+        Finds similar code components based on node2vec embeddings.
+        """
+        query = """
+        MATCH (n:Code {file_path: $file_path, repo_id: $repo_id})
+        MATCH (other:Code)
+        WHERE other <> n AND other.repo_id = $repo_id
+        WITH n, other, gds.similarity.cosine(n.embedding, other.embedding) AS similarity
+        WHERE similarity > 0.7
+        RETURN other.file_path AS similar_file, 
+               other.type AS component_type,
+               similarity
+        ORDER BY similarity DESC
+        LIMIT $limit
+        """
+        return self.run_query(query, {
+            'file_path': file_path,
+            'repo_id': repo_id,
+            'limit': limit
+        })
+
+    def analyze_code_paths(self, start_path: str, repo_id: int) -> List[Dict]:
+        """
+        Analyzes code paths using APOC path finding.
+        """
+        query = """
+        MATCH (start:Code {file_path: $start_path, repo_id: $repo_id})
+        CALL apoc.path.expandConfig(start, {
+            relationshipFilter: 'CALLS|DEPENDS_ON|IMPORTS',
+            uniqueness: 'NODE_PATH',
+            maxLevel: 10
+        })
+        YIELD path
+        RETURN [node in nodes(path) | node.file_path] as code_path,
+               length(path) as depth,
+               [rel in relationships(path) | type(rel)] as relationships
+        ORDER BY depth
+        """
+        return self.run_query(query, {
+            'start_path': start_path,
+            'repo_id': repo_id
+        })
 
 if __name__ == "__main__":
     # For demonstration purposes. In your production setup, your assistant could call these methods directly.

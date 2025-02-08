@@ -1,4 +1,32 @@
-# Project specific
-test_parse/
-node-types/
 .cursorignore
+
+# Test outputs and cache
+tests/test_outputs/
+tests/test_parse/
+**/__pycache__/
+.pytest_cache/
+
+# Environment and IDE files
+.env
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+
+# Build and distribution
+dist/
+build/
+*.egg-info/
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# Node modules (if you have any JavaScript/TypeScript)
+node_modules/

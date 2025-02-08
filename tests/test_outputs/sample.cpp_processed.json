@@ -1,0 +1,214 @@
+{
+    "content": "int main() { return 0; }",
+    "language": "cpp",
+    "ast_data": {
+        "type": "translation_unit",
+        "start_point": [
+            0,
+            0
+        ],
+        "end_point": [
+            0,
+            24
+        ],
+        "start_byte": 0,
+        "end_byte": 24,
+        "children": [
+            {
+                "type": "function_definition",
+                "start_point": [
+                    0,
+                    0
+                ],
+                "end_point": [
+                    0,
+                    24
+                ],
+                "start_byte": 0,
+                "end_byte": 24,
+                "children": [
+                    {
+                        "type": "primitive_type",
+                        "start_point": [
+                            0,
+                            0
+                        ],
+                        "end_point": [
+                            0,
+                            3
+                        ],
+                        "start_byte": 0,
+                        "end_byte": 3
+                    },
+                    {
+                        "type": "function_declarator",
+                        "start_point": [
+                            0,
+                            4
+                        ],
+                        "end_point": [
+                            0,
+                            10
+                        ],
+                        "start_byte": 4,
+                        "end_byte": 10,
+                        "children": [
+                            {
+                                "type": "identifier",
+                                "start_point": [
+                                    0,
+                                    4
+                                ],
+                                "end_point": [
+                                    0,
+                                    8
+                                ],
+                                "start_byte": 4,
+                                "end_byte": 8
+                            },
+                            {
+                                "type": "parameter_list",
+                                "start_point": [
+                                    0,
+                                    8
+                                ],
+                                "end_point": [
+                                    0,
+                                    10
+                                ],
+                                "start_byte": 8,
+                                "end_byte": 10,
+                                "children": [
+                                    {
+                                        "type": "(",
+                                        "start_point": [
+                                            0,
+                                            8
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            9
+                                        ],
+                                        "start_byte": 8,
+                                        "end_byte": 9
+                                    },
+                                    {
+                                        "type": ")",
+                                        "start_point": [
+                                            0,
+                                            9
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            10
+                                        ],
+                                        "start_byte": 9,
+                                        "end_byte": 10
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "type": "compound_statement",
+                        "start_point": [
+                            0,
+                            11
+                        ],
+                        "end_point": [
+                            0,
+                            24
+                        ],
+                        "start_byte": 11,
+                        "end_byte": 24,
+                        "children": [
+                            {
+                                "type": "{",
+                                "start_point": [
+                                    0,
+                                    11
+                                ],
+                                "end_point": [
+                                    0,
+                                    12
+                                ],
+                                "start_byte": 11,
+                                "end_byte": 12
+                            },
+                            {
+                                "type": "return_statement",
+                                "start_point": [
+                                    0,
+                                    13
+                                ],
+                                "end_point": [
+                                    0,
+                                    22
+                                ],
+                                "start_byte": 13,
+                                "end_byte": 22,
+                                "children": [
+                                    {
+                                        "type": "return",
+                                        "start_point": [
+                                            0,
+                                            13
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            19
+                                        ],
+                                        "start_byte": 13,
+                                        "end_byte": 19
+                                    },
+                                    {
+                                        "type": "number_literal",
+                                        "start_point": [
+                                            0,
+                                            20
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            21
+                                        ],
+                                        "start_byte": 20,
+                                        "end_byte": 21
+                                    },
+                                    {
+                                        "type": ";",
+                                        "start_point": [
+                                            0,
+                                            21
+                                        ],
+                                        "end_point": [
+                                            0,
+                                            22
+                                        ],
+                                        "start_byte": 21,
+                                        "end_byte": 22
+                                    }
+                                ]
+                            },
+                            {
+                                "type": "}",
+                                "start_point": [
+                                    0,
+                                    23
+                                ],
+                                "end_point": [
+                                    0,
+                                    24
+                                ],
+                                "start_byte": 23,
+                                "end_byte": 24
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    },
+    "lines_of_code": 1,
+    "documentation": "",
+    "complexity": 1
+}
