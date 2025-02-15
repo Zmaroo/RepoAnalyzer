@@ -46,7 +46,6 @@ htmlcov/
 .tox/
 nosetests.xml
 coverage/
-test_parse/
 
 # Documentation
 docs/_build/
@@ -60,7 +59,7 @@ docs/api/
 *.db
 *.sqlite3
 node-types/
-#test_parse/
+tests/
 
 # Tree-sitter
 .tree-sitter-language-pack-repo/

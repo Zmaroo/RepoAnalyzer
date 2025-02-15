@@ -251,6 +251,29 @@ class Neo4jTools:
             'repo_id': repo_id
         })
 
+    def upsert_code_node(self, repo_id: int, file_path: str, ast: dict, embedding: list = None) -> bool:
+        """
+        Upserts a Code node in Neo4j with the full AST and embedding.
+        The AST is stored as a JSON string.
+        """
+        query = """
+        MERGE (n:Code {repo_id: $repo_id, file_path: $file_path})
+        SET n.ast = $ast, n.embedding = $embedding
+        RETURN n
+        """
+        params = {
+            'repo_id': repo_id,
+            'file_path': file_path,
+            'ast': json.dumps(ast),  # storing the full AST as a JSON string
+            'embedding': embedding
+        }
+        try:
+            result = self.run_query(query, params)
+            return bool(result)
+        except Exception as e:
+            log(f"Error upserting code node into Neo4j: {e}", level="error")
+            return False
+
 if __name__ == "__main__":
     # For demonstration purposes. In your production setup, your assistant could call these methods directly.
     tools = Neo4jTools()

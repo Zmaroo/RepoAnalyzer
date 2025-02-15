@@ -12,14 +12,25 @@ def is_logging_disabled() -> bool:
 if is_logging_disabled():
     logging.disable(logging.CRITICAL)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    stream=sys.stdout
+# Configure logging with more detailed format for tests
+test_formatter = logging.Formatter(
+    '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 
+# Create a stream handler that writes to stdout
+stream_handler = logging.StreamHandler(sys.stdout)
+stream_handler.setFormatter(test_formatter)
+stream_handler.setLevel(logging.DEBUG)  # Set to DEBUG to catch all messages
+
+# Configure root logger
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+logger.addHandler(stream_handler)
+
+# Create a specific logger for tree-sitter
+tree_sitter_logger = logging.getLogger('tree-sitter')
+tree_sitter_logger.setLevel(logging.DEBUG)
+tree_sitter_logger.addHandler(stream_handler)
 
 def log(message: str, level: str = "info") -> None:
     if is_logging_disabled():

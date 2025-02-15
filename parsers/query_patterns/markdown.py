@@ -1,34 +1,58 @@
-MARKDOWN_PATTERNS = {
-    "heading": """
-        (atx_heading
-          marker: (_) @heading.marker
-          content: (_) @heading.content) @heading
-    """,
-    "list": """
-        (list
-          item: (list_item
-            content: (_) @list.item.content)*) @list
-    """,
-    "link": """
-        [
-          (link
-            text: (_) @link.text
-            url: (_) @link.url) @link
-          (image
-            text: (_) @image.text
-            url: (_) @image.url) @image
-        ]
-    """,
-    "code_block": """
-        [
-          (fenced_code_block
-            language: (_)? @code.language
-            content: (_) @code.content) @code.block
-          (indented_code_block) @code.indented
-        ]
-    """,
-    "blockquote": """
-        (block_quote
-          content: (_) @quote.content) @quote
+"""
+Custom query patterns for Markdown files processed with our custom Markdown parser.
+
+These functions traverse the custom Markdown AST (which is a plain dict)
+and extract semantic elements such as headings, code blocks, and paragraphs.
+"""
+
+def extract_markdown_headings(ast: dict) -> list:
     """
+    Extract all headings from the custom Markdown AST.
+    
+    Returns:
+        A list of dictionaries with keys 'level' and 'text'.
+    """
+    headings = []
+    for node in ast.get("children", []):
+        if node.get("type") == "heading":
+            headings.append({
+                "level": node.get("level"),
+                "text": node.get("text"),
+            })
+    return headings
+
+def extract_markdown_code_blocks(ast: dict) -> list:
+    """
+    Extract all code blocks from the custom Markdown AST.
+    
+    Returns:
+        A list of dictionaries with keys 'language' and 'text'.
+    """
+    code_blocks = []
+    for node in ast.get("children", []):
+        if node.get("type") == "code_block":
+            code_blocks.append({
+                "language": node.get("language"),
+                "text": node.get("text"),
+            })
+    return code_blocks
+
+def extract_markdown_paragraphs(ast: dict) -> list:
+    """
+    Extract all paragraphs from the custom Markdown AST.
+    
+    Returns:
+        A list of paragraph texts.
+    """
+    paragraphs = []
+    for node in ast.get("children", []):
+        if node.get("type") == "paragraph":
+            paragraphs.append(node.get("text"))
+    return paragraphs
+
+# Map semantic keys to extraction functions.
+CUSTOM_MARKDOWN_PATTERNS = {
+    "heading": extract_markdown_headings,
+    "code_block": extract_markdown_code_blocks,
+    "paragraph": extract_markdown_paragraphs,
 }

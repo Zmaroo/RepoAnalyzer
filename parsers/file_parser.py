@@ -2,177 +2,14 @@ from __future__ import annotations  # Added to enable postponed evaluation of ty
 import os
 import json
 from .language_parser import parse_code, get_ast_sexp, get_ast_json
-from parsers.query_patterns import query_patterns  # our mapping of language -> query patterns
+from parsers.query_patterns import QUERY_PATTERNS, get_query_patterns
 from tree_sitter_language_pack import get_language
 from utils.logger import log
 from typing import Optional, Dict, Any
 from tree_sitter import Node, Parser
 from parsers.ast_extractor import extract_ast_features
-
-# Mapping file extensions to Tree-sitter language names
-EXTENSION_TO_LANGUAGE = {
-    # Web Technologies
-    'js': 'javascript',
-    'jsx': 'javascript',
-    'mjs': 'javascript',
-    'cjs': 'javascript',
-    'es': 'javascript',
-    'es6': 'javascript',
-    'iife.js': 'javascript',
-    'bundle.js': 'javascript',
-    'ts': 'typescript',
-    'tsx': 'typescript',
-    'mts': 'typescript',
-    'cts': 'typescript',
-    'html': 'html',
-    'htm': 'html',
-    'css': 'css',
-    'scss': 'scss',
-    'sass': 'scss',
-    'less': 'css',
-    'vue': 'vue',
-    'svelte': 'svelte',
-    
-    # Systems Programming
-    'c': 'c',
-    'h': 'c',
-    'cpp': 'cpp',
-    'hpp': 'cpp',
-    'cc': 'cpp',
-    'cxx': 'cpp',
-    'hxx': 'cpp',
-    'h++': 'cpp',
-    'cu': 'cuda',
-    'cuh': 'cuda',
-    'rs': 'rust',
-    'go': 'go',
-    'mod': 'gomod',
-    'sum': 'gosum',
-    'v': 'verilog',
-    'sv': 'verilog',
-    'vh': 'verilog',
-    'vhd': 'vhdl',
-    'vhdl': 'vhdl',
-    
-    # JVM Languages
-    'java': 'java',
-    'kt': 'kotlin',
-    'kts': 'kotlin',
-    'scala': 'scala',
-    'sc': 'scala',
-    'groovy': 'groovy',
-    'gradle': 'groovy',
-    
-    # Scripting Languages
-    'py': 'python',
-    'pyi': 'python',
-    'pyc': 'python',
-    'pyd': 'python',
-    'pyw': 'python',
-    'rb': 'ruby',
-    'rbw': 'ruby',
-    'rake': 'ruby',
-    'gemspec': 'ruby',
-    'php': 'php',
-    'php4': 'php',
-    'php5': 'php',
-    'php7': 'php',
-    'php8': 'php',
-    'phps': 'php',
-    'lua': 'lua',
-    'pl': 'perl',
-    'pm': 'perl',
-    't': 'perl',
-    
-    # Shell Scripting
-    'sh': 'bash',
-    'bash': 'bash',
-    'zsh': 'bash',
-    'fish': 'fish',
-    'ksh': 'bash',
-    'csh': 'bash',
-    'tcsh': 'bash',
-    
-    # Functional Languages
-    'hs': 'haskell',
-    'lhs': 'haskell',
-    'ml': 'ocaml',
-    'mli': 'ocaml',
-    'ex': 'elixir',
-    'exs': 'elixir',
-    'heex': 'heex',
-    'clj': 'clojure',
-    'cljs': 'clojure',
-    'cljc': 'clojure',
-    'edn': 'clojure',
-    
-    # Configuration & Data
-    'yaml': 'yaml',
-    'yml': 'yaml',
-    'json': 'json',
-    'jsonc': 'json',
-    'toml': 'toml',
-    'xml': 'xml',
-    'xsl': 'xml',
-    'xslt': 'xml',
-    'svg': 'xml',
-    'xaml': 'xml',
-    'ini': 'ini',
-    'cfg': 'ini',
-    'conf': 'ini',
-    
-    # Build Systems
-    'cmake': 'cmake',
-    'make': 'make',
-    'mk': 'make',
-    'ninja': 'ninja',
-    'bazel': 'starlark',
-    'bzl': 'starlark',
-    'BUILD': 'starlark',
-    'WORKSPACE': 'starlark',
-    
-    # Documentation
-    'md': 'markdown',
-    'markdown': 'markdown',
-    'rst': 'rst',
-    'tex': 'latex',
-    'latex': 'latex',
-    'adoc': 'asciidoc',
-    'asciidoc': 'asciidoc',
-    
-    # Other Languages
-    'swift': 'swift',
-    'dart': 'dart',
-    'r': 'r',
-    'rmd': 'r',
-    'jl': 'julia',
-    'zig': 'zig',
-    
-    # Query Languages
-    'sql': 'sql',
-    'mysql': 'sql',
-    'pgsql': 'sql',
-    'graphql': 'graphql',
-    'gql': 'graphql',
-    
-    # Additional Languages
-    'proto': 'protobuf',
-    'thrift': 'thrift',
-    'wasm': 'wasm',
-    'wat': 'wat',
-    'glsl': 'glsl',
-    'hlsl': 'hlsl',
-    'wgsl': 'wgsl',
-    'dockerfile': 'dockerfile',
-    'Dockerfile': 'dockerfile',
-    'nginx.conf': 'nginx',
-    'rules': 'udev',
-    'hypr': 'hyprlang',
-    'kdl': 'kdl',
-    'ron': 'ron',
-    'commonlisp': 'commonlisp',
-    'elixir': 'elixir'
-}
+from .language_mapping import get_language_for_file
+from parsers.language_mapping import normalize_language_name  # For language normalization
 
 # Initialize the Tree-sitter parser. Make sure you have built your language library.
 parser = Parser()
@@ -188,48 +25,39 @@ def get_root_node(tree):
     return tree.root_node if hasattr(tree, "root_node") else tree
 
 def detect_language(file_path: str) -> Optional[str]:
-    """Detects the language of a file based on its extension."""
-    ext = os.path.splitext(file_path)[1].lower().lstrip(".")
-    return EXTENSION_TO_LANGUAGE.get(ext)
+    """Detects the language of a file based on its filename or extension."""
+    return get_language_for_file(file_path)
 
-def process_file(file_path: str) -> Optional[Dict[str, Any]]:
-    """Enhanced file processing with metadata extraction."""
+def process_file(file_path: str):
+    """
+    Process a file by detecting its language and parsing it.
+    Returns a standardized dictionary with code/documentation details.
+    """
+    from parsers.language_parser import parse_code
+    from utils.logger import log
+
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            
-        ext = os.path.splitext(file_path)[1].lower().lstrip('.')
-        language = EXTENSION_TO_LANGUAGE.get(ext)
-        
-        if not language:
-            return None
-            
-        tree = parse_code(content, language)
-        if not tree:
-            return None
-            
-        # Use the unified root node retrieval to ensure consistency
-        root_node = get_root_node(tree)
-        ast_data = get_ast_json(root_node)
-        
-        # Calculate basic metrics
-        lines_of_code = len(content.splitlines())
-        
-        # Extract documentation (basic implementation)
-        documentation = extract_documentation(root_node, content.encode('utf-8'))
-        
-        return {
-            'content': content,
-            'language': language,
-            'ast_data': ast_data,
-            'lines_of_code': lines_of_code,
-            'documentation': documentation,
-            'complexity': calculate_complexity(root_node)
-        }
-        
+        with open(file_path, "r", encoding="utf-8") as f:
+            source_code = f.read()
     except Exception as e:
-        log(f"Error processing file {file_path}: {e}", level="error")
+        log(f"Failed to read file {file_path}: {e}", level="error")
         return None
+
+    language = detect_language(file_path)
+    if language is None:
+        log(f"Language could not be detected for file {file_path}", level="error")
+        return None
+
+    parsed_output = parse_code(source_code, language)
+    if parsed_output is None:
+        return None
+
+    # Directly import and use get_query_patterns from the centralized module.
+    from parsers.query_patterns import get_query_patterns
+    patterns = get_query_patterns(language)
+    parsed_output["query_patterns"] = patterns
+
+    return parsed_output
 
 def calculate_complexity(node: Node) -> int:
     """Calculate cyclomatic complexity (basic implementation)."""

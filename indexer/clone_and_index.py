@@ -4,6 +4,8 @@ import shutil
 import subprocess
 from utils.logger import log
 from db.psql import query
+from indexer.async_indexer import async_index_code, async_index_docs
+import asyncio
 
 def get_or_create_repo(repo_name: str, source_url: str = None, repo_type: str = "active", active_repo_id: int | None = None) -> int:
     """
@@ -51,16 +53,20 @@ def clone_and_index_repo(repo_url: str, repo_name: str | None = None, active_rep
 
 def index_active_project():
     """
-    Processes the repository the user is working on asynchronously.
-    Uses the directory where this script is running as the active repo.
+    Initiates asynchronous indexing for the active project.
+    Uses the new async_index_code and async_index_docs functions
+    to index source code and documentation respectively.
     """
-    active_repo_path = os.getcwd()
-    repo_name = os.path.basename(active_repo_path) or "active"
-    repo_id = get_or_create_repo(repo_name)
-    log(f"📂 Indexing active project: {repo_name} (repo_id: {repo_id}) at {active_repo_path}")
-    from indexer.async_indexer import async_index_repository
-    from utils.async_runner import submit_async_task
-    submit_async_task(async_index_repository(active_repo_path, repo_id))
+    repository_id = get_or_create_repo("active")
+    base_path = "./active_project"  # Update this path as needed
+
+    loop = asyncio.get_event_loop()
+    tasks = [
+        async_index_code(repository_id, base_path),
+        async_index_docs(repository_id, base_path)
+    ]
+    loop.run_until_complete(asyncio.gather(*tasks))
+    log("Active project indexing completed.")
 
 if __name__ == "__main__":
     # Index the current active project

@@ -1,22 +1,23 @@
 """TypeScript-specific Tree-sitter patterns."""
 
 from .js_base import JS_BASE_PATTERNS
+from .js_ts_shared import JS_TS_SHARED_PATTERNS
 
 TYPESCRIPT_PATTERNS = {
     **JS_BASE_PATTERNS,
 
-    # Type definition patterns
-    "type_definition": """
+    # TypeScript-specific patterns
+    "type": """
         [
           (type_alias_declaration
-            name: (type_identifier) @type.alias.name
-            value: (_) @type.alias.value) @type.alias,
+            name: (type_identifier) @type.name
+            value: (_) @type.value) @type.def,
           (interface_declaration
             name: (type_identifier) @interface.name
-            body: (object_type) @interface.body) @interface,
+            body: (object_type) @interface.body) @interface.def,
           (enum_declaration
             name: (identifier) @enum.name
-            body: (enum_body) @enum.body) @enum
+            body: (enum_body) @enum.body) @enum.def
         ]
     """,
 
@@ -40,9 +41,7 @@ TYPESCRIPT_PATTERNS = {
             (type_parameter
               name: (type_identifier) @generic.param.name
               constraint: (_)? @generic.param.constraint
-              default: (_)? @generic.param.default)*) @generic.params,
-          (type_arguments
-            (_)* @generic.args) @generic
+              default: (_)? @generic.param.default)*) @generic.params
         ]
     """,
 
@@ -51,7 +50,10 @@ TYPESCRIPT_PATTERNS = {
         [
           (decorator
             name: (_) @decorator.name
-            arguments: (_)? @decorator.args) @decorator
+            arguments: (arguments)? @decorator.args) @decorator.def
         ]
-    """
+    """,
+
+    # Include shared JSX patterns
+    "jsx": JS_TS_SHARED_PATTERNS["jsx_element"]
 } 

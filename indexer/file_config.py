@@ -1,5 +1,8 @@
-from parsers.file_parser import EXTENSION_TO_LANGUAGE
-from parsers.query_patterns import QUERY_PATTERNS
+from parsers.language_mapping import (
+    EXTENSION_TO_LANGUAGE, 
+    LanguageSupport,
+    normalize_language_name
+)
 from functools import lru_cache
 
 # Define a static set for documentation extensions
@@ -32,9 +35,11 @@ def get_supported_extensions():
     doc_ext = set()
 
     for ext, lang in EXTENSION_TO_LANGUAGE.items():
-        normalized_lang = lang.replace('-', '').lower()
+        normalized_lang = normalize_language_name(lang)
         ext_with_dot = f".{ext.lower()}" if not ext.startswith('.') else ext.lower()
-        if normalized_lang in QUERY_PATTERNS or normalized_lang == 'markup':
+        
+        is_supported, has_patterns = LanguageSupport.get_language_info(normalized_lang)
+        if is_supported:  # Language is supported by tree-sitter
             if normalized_lang == 'markup':
                 if ext_with_dot in MARKUP_CLASSIFICATION:
                     if MARKUP_CLASSIFICATION[ext_with_dot] == 'code':
@@ -47,11 +52,13 @@ def get_supported_extensions():
                         doc_ext.add(ext_with_dot)
                     else:
                         code_ext.add(ext_with_dot)
+            elif has_patterns:  # Has query patterns
+                code_ext.add(ext_with_dot)
+            elif ext_with_dot in DOC_EXTENSIONS_STATIC:
+                doc_ext.add(ext_with_dot)
             else:
-                if ext_with_dot in DOC_EXTENSIONS_STATIC:
-                    doc_ext.add(ext_with_dot)
-                else:
-                    code_ext.add(ext_with_dot)
+                code_ext.add(ext_with_dot)
+                
     return (code_ext, doc_ext)
 
 CODE_EXTENSIONS, DOC_EXTENSIONS = get_supported_extensions() 

@@ -1,11 +1,12 @@
 import os
 from typing import List, Set, Callable, Optional
 from utils.logger import log
+from parsers.language_mapping import get_language_for_extension
 
 def get_files(dir_path: str, extensions: Set[str], ignore_dirs: Optional[Set[str]] = None) -> List[str]:
     """
-    Recursively collects files from dir_path that have a provided extension using os.scandir
-    for performance. Optionally ignores directories whose names are in the ignore_dirs set.
+    Recursively collects files from dir_path that have one of the specified extensions.
+    Uses os.scandir for performance and optionally ignores directories in ignore_dirs.
     """
     if ignore_dirs is None:
         ignore_dirs = {'.git', '__pycache__'}
@@ -45,7 +46,7 @@ def is_binary_file(file_path: str, blocksize: int = 1024) -> bool:
 def read_text_file(file_path: str, encoding: str = "utf-8") -> str:
     """
     Reads and returns the content of a text file using the specified encoding.
-    Logs and returns an empty string if any error is encountered.
+    Returns an empty string (and logs the error) if any error is encountered.
     """
     try:
         with open(file_path, "r", encoding=encoding) as f:
@@ -63,15 +64,10 @@ def process_index_file(
     file_type: str
 ) -> None:
     """
+    [Deprecated]
+    
     Processes a file for indexing in a standardized way.
-
-    Parameters:
-      file_path: Absolute path of the file to process.
-      base_path: Base directory to compute the relative path.
-      repo_id: Identifier of the repository.
-      file_processor: Function to process the file (e.g., process_file or read_text_file).
-      index_function: Function to upsert the processed file (e.g., upsert_code or upsert_doc).
-      file_type: A string indicating the type of file ("code" or "doc") for logging.
+    Prefer using the asynchronous index_file_async() from indexer/common_indexer.
     """
     try:
         if is_binary_file(file_path):

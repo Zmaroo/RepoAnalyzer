@@ -1,33 +1,14 @@
 """Base patterns shared between JavaScript variants."""
 
+from .js_ts_shared import JS_TS_SHARED_PATTERNS
+
 JS_BASE_PATTERNS = {
-    # Function patterns
-    "function": """
-        [
-          (function_declaration
-            name: (identifier) @function.name
-            parameters: (formal_parameters) @function.params
-            body: (statement_block) @function.body) @function.def,
-          (arrow_function
-            parameters: (formal_parameters) @function.arrow.params
-            body: (_) @function.arrow.body) @function.arrow
-        ]
-    """,
+    # Use the more detailed shared patterns
+    "function": JS_TS_SHARED_PATTERNS["function"],
+    "class": JS_TS_SHARED_PATTERNS["class"],
+    "import": JS_TS_SHARED_PATTERNS["import"],
 
-    # Class patterns
-    "class": """
-        [
-          (class_declaration
-            name: (identifier) @class.name
-            body: (class_body) @class.body) @class.def,
-          (method_definition
-            name: (property_identifier) @class.method.name
-            parameters: (formal_parameters) @class.method.params
-            body: (statement_block) @class.method.body) @class.method
-        ]
-    """,
-
-    # Variable patterns
+    # Additional JavaScript-specific patterns
     "variable": """
         [
           (variable_declaration
@@ -43,7 +24,6 @@ JS_BASE_PATTERNS = {
         ]
     """,
 
-    # Control flow patterns
     "control_flow": """
         [
           (if_statement
@@ -57,11 +37,16 @@ JS_BASE_PATTERNS = {
             initializer: (_)? @for.init
             condition: (_)? @for.condition
             increment: (_)? @for.increment
-            body: (_) @for.body) @for
+            body: (_) @for.body) @for,
+          (try_statement
+            body: (_) @try.body
+            handler: (catch_clause
+              parameter: (_)? @try.catch.param
+              body: (_) @try.catch.body)? @try.catch
+            finalizer: (_)? @try.finally) @try
         ]
     """,
 
-    # Import/Export patterns
     "module": """
         [
           (import_statement
@@ -73,10 +58,10 @@ JS_BASE_PATTERNS = {
         ]
     """,
 
-    # Documentation patterns
     "documentation": """
         [
-          (comment) @doc.comment
+          (comment) @doc.comment,
+          (hash_bang_line) @doc.hashbang
         ]
     """
 } 

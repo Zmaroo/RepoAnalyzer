@@ -1,10 +1,15 @@
 """
 Unified AI Assistant Interface
 
-This module exposes a simple facade combining core capabilities:
-– Graph analysis for code structure, metrics, tracing,
-– Semantic code search.
-Future enhancements (caching, additional AI models, etc.) can be easily plugged in here.
+This module exposes a simplified API that combines:
+  • Graph analysis capabilities (for code structure and metrics).
+  • Semantic search functionalities.
+
+Important:
+  - Repository indexing is handled separately in index.py (leveraging async_indexer).
+  - This module does NOT serve as an entry point for indexing operations.
+  - Future AI functionalities can be added here without duplicating or interfering with
+    the repository indexing code.
 """
 
 from ai_tools.graph_capabilities import GraphAnalysisCapabilities
@@ -25,24 +30,12 @@ class AIAssistantInterface:
 
     def analyze_repository(self, repo_id: int) -> dict:
         """
-        Performs comprehensive analysis of a repository.
-        Combines code structure analysis with code metrics.
-
-        Args:
-            repo_id: Repository identifier.
-
-        Returns:
-            A combined dictionary with structure and metrics.
+        Performs comprehensive analysis, including code flow tracing.
         """
         try:
-            structure = self.graph_analysis.analyze_code_structure(repo_id)
-            metrics = self.graph_analysis.get_code_metrics(repo_id)
-            return {
-                "structure": structure,
-                "metrics": metrics
-            }
+            return self.graph_analysis.trace_code_flow("entry_point", repo_id)
         except Exception as e:
-            log(f"Error analyzing repository {repo_id}: {e}", level="error")
+            log(f"Error tracing code flow: {e}", level="error")
             return {}
 
     def find_similar_code(self, file_path: str, repo_id: int, limit: int = 5) -> list:
@@ -82,15 +75,7 @@ class AIAssistantInterface:
 
     def search_code_snippets(self, query: str, repo_id: int, limit: int = 3) -> list:
         """
-        Searches for code snippets matching the provided query using semantic search.
-        
-        Args:
-            query: The search term.
-            repo_id: Repository identifier.
-            limit: Maximum number of results.
-
-        Returns:
-            List of code snippet search results.
+        Searches for code snippets matching the query using semantic search.
         """
         try:
             return search_code(query, repo_id=repo_id, limit=limit)

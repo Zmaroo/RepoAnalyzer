@@ -1,8 +1,6 @@
 .cursorignore
 
 # Test outputs and cache
-tests/test_outputs/
-tests/test_parse/
 **/__pycache__/
 .pytest_cache/
 

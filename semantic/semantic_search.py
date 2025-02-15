@@ -6,12 +6,16 @@ from utils.logger import log
 import redis
 import json
 import hashlib
+from embedding.embedding_models import CodeEmbedder
 
 _model = None
 _tokenizer = None
 
 # Connect to Redis (adjust host, port, and db if needed)
 redis_client = redis.Redis(host='localhost', port=6379, db=0)
+
+# Initialize the code embedder once (could also be done lazily)
+code_embedder = CodeEmbedder()
 
 def init_model():
     global _model, _tokenizer
@@ -70,45 +74,104 @@ def to_pgvector_literal(vector_list: list) -> str:
     """
     return "[" + ", ".join(map(str, vector_list)) + "]"
 
-def upsert_code(repo_id: int, file_path: str, ast: str):
-    embedding = compute_embedding(ast)
+def upsert_code(repo_id: int, file_path: str, ast, embedding=None):
+    """
+    Upsert code snippet information into the Postgres database.
+    The AST is serialized as JSON so that we have full access to the structural data.
+    """
+    # Convert AST to JSON string if it isn't already a string
+    ast_json = ast if isinstance(ast, str) else json.dumps(ast)
+    
+    # Optionally compute the embedding using the JSON representation of AST.
+    # (Our compute_embedding function expects a string input.)
+    if embedding is None:
+        embedding = compute_embedding(ast_json)
+    
     query("""
         INSERT INTO code_snippets (repo_id, file_path, ast, embedding)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (repo_id, file_path) DO UPDATE 
         SET ast = EXCLUDED.ast, embedding = EXCLUDED.embedding;
-    """, (repo_id, file_path, ast, embedding))
+    """, (repo_id, file_path, ast_json, embedding))
     log(f"Indexed code for repo_id {repo_id} at {file_path}")
 
-def search_code(query_text: str, repo_id: int | None = None, limit: int = 5) -> list[dict]:
+def search_code(query_text: str, active_repo_id: int | None = None, limit: int = 5) -> list[dict]:
     """
     Searches for code snippets by computing the embedding of the query text,
-    then comparing it with the stored embedding. The computed embedding is
-    converted into a PGVector literal and cast explicitly in the SQL query.
+    then comparing it with the stored embeddings.
+
+    If active_repo_id is provided, filters results to include only those code snippets
+    that are either part of the active project itself or belong to a reference repo linked
+    to that active project.
+
+    Args:
+        query_text: The text query for code.
+        active_repo_id: Optional active repository ID for filtering.
+        limit: Maximum number of results.
+        
+    Returns:
+        A list of code snippet records.
     """
     query_embedding = compute_embedding(query_text)
     vector_literal = to_pgvector_literal(query_embedding)
-    # Explicitly cast the submitted parameter to type 'vector'
-    sql = ("SELECT id, repo_id, file_path, ast, "
-           "embedding <=> %s::vector AS similarity FROM code_snippets")
-    params = (vector_literal,)
-    if repo_id is not None:
-        sql += " WHERE repo_id = %s"
-        params += (repo_id,)
-    sql += " ORDER BY similarity ASC LIMIT %s;"
-    params += (limit,)
-    return query(sql, params)
-
-def search_docs(query_text: str, repo_id: int | None = None, limit: int = 5) -> list[dict]:
-    sql = """
-    SELECT id, repo_id, file_path, content
-    FROM repo_docs
-    WHERE content ILIKE %s
+    
+    base_sql = """
+    SELECT cs.id, cs.repo_id, cs.file_path, cs.ast,
+           cs.embedding <=> %s::vector AS similarity
+    FROM code_snippets cs
     """
-    params: tuple = (f"%{query_text}%",)
-    if repo_id is not None:
-        sql += " AND repo_id = %s"
-        params += (repo_id,)
-    sql += " LIMIT %s;"
-    params += (limit,)
-    return query(sql, params)
+    params = [vector_literal]
+    if active_repo_id is not None:
+        base_sql += """
+        JOIN repositories r ON cs.repo_id = r.id
+        WHERE (r.id = %s OR r.active_repo_id = %s)
+        """
+        params.extend([active_repo_id, active_repo_id])
+    else:
+        base_sql += " WHERE 1=1 "
+    base_sql += " ORDER BY similarity ASC LIMIT %s;"
+    params.append(limit)
+    
+    return query(base_sql, tuple(params))
+
+def search_docs(query_text: str, active_repo_id: int | None = None, limit: int = 5) -> list[dict]:
+    """
+    Searches for documentation snippets by matching the query text within the content.
+    
+    If active_repo_id is provided, filters documentation to include only those docs
+    linked to the active project (either directly or via reference repos).
+    
+    Args:
+        query_text: The text query for documentation.
+        active_repo_id: Optional active repository ID to filter documentation.
+        limit: Maximum number of results.
+    
+    Returns:
+        A list of documentation records.
+    """
+    base_sql = """
+    SELECT d.id, d.repo_id, d.file_path, d.content
+    FROM repo_docs d
+    """
+    params = []
+    if active_repo_id is not None:
+        base_sql += """
+        JOIN repositories r ON d.repo_id = r.id
+        WHERE (r.id = %s OR r.active_repo_id = %s) AND d.content ILIKE %s
+        """
+        params.extend([active_repo_id, active_repo_id, f"%{query_text}%"])
+    else:
+        base_sql += " WHERE d.content ILIKE %s"
+        params.append(f"%{query_text}%")
+    base_sql += " LIMIT %s;"
+    params.append(limit)
+    
+    return query(base_sql, tuple(params))
+
+def compute_code_embedding(code_text: str):
+    try:
+        embedding = code_embedder.embed(code_text)
+        return embedding
+    except Exception as e:
+        log(f"Error computing code embedding: {e}", level="error")
+        return None

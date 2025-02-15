@@ -1,128 +1,110 @@
-"""Query patterns package."""
-
+import os
+import importlib
+import pkgutil
+from parsers.language_mapping import normalize_language_name
+from utils.logger import log
 from .ada import ADA_PATTERNS
+from .asm import ASM_PATTERNS
 from .bash import BASH_PATTERNS
-from .c import C_PATTERNS
-from .clojure import CLOJURE_PATTERNS
-from .dart import DART_PATTERNS
-from .elixir import ELIXIR_PATTERNS
-from .erlang import ERLANG_PATTERNS
-from .gdscript import GDSCRIPT_PATTERNS
-from .json import JSON_PATTERNS
-from .js_base import JS_BASE_PATTERNS
-from .javascript import JAVASCRIPT_PATTERNS
-from .typescript import TYPESCRIPT_PATTERNS
-from .tsx import TSX_PATTERNS
-from .julia import JULIA_PATTERNS
-from .r import R_PATTERNS
-from .cpp import CPP_PATTERNS
-from .csharp import CSHARP_PATTERNS
-from .go import GO_PATTERNS
-from .groovy import GROOVY_PATTERNS
-from .haskell import HASKELL_PATTERNS
-from .java import JAVA_PATTERNS
-from .kotlin import KOTLIN_PATTERNS
-from .lua import LUA_PATTERNS
-from .markup import (
-    HTML_PATTERNS,
-    YAML_PATTERNS,
-    TOML_PATTERNS,
-    DOCKERFILE_PATTERNS,
-    MARKDOWN_PATTERNS,
-    REQUIREMENTS_PATTERNS,
-    GITIGNORE_PATTERNS,
-    MAKEFILE_PATTERNS,
-)
-from .objectivec import OBJECTIVEC_PATTERNS
-from .perl import PERL_PATTERNS
-from .php import PHP_PATTERNS
-from .powershell import POWERSHELL_PATTERNS
-from .python import PYTHON_PATTERNS
-from .commonlisp import COMMONLISP_PATTERNS
-from .racket import RACKET_PATTERNS
-from .ruby import RUBY_PATTERNS
-from .rust import RUST_PATTERNS
-from .scala import SCALA_PATTERNS
-from .sql import SQL_PATTERNS
-from .squirrel import SQUIRREL_PATTERNS
-from .swift import SWIFT_PATTERNS
-from .vue import VUE_PATTERNS
-from .svelte import SVELTE_PATTERNS
-from .zig import ZIG_PATTERNS
-from .matlab import MATLAB_PATTERNS
-from .nim import NIM_PATTERNS
-from .cuda import CUDA_PATTERNS
-from .hcl import HCL_PATTERNS
-from .proto import PROTO_PATTERNS
-from .graphql import GRAPHQL_PATTERNS
-from .dockerfil import DOCKERFILE_PATTERNS
-from .cmake import CMAKE_PATTERNS
-from .toml import TOML_PATTERNS
-from .xml import XML_PATTERNS
 
-# Export all patterns in a dictionary
-query_patterns = {
-    'ada': ADA_PATTERNS,
-    'bash': BASH_PATTERNS,
-    'c': C_PATTERNS,
-    'clojure': CLOJURE_PATTERNS,
-    'dart': DART_PATTERNS,
-    'elixir': ELIXIR_PATTERNS,
-    'erlang': ERLANG_PATTERNS,
-    'gdscript': GDSCRIPT_PATTERNS,
-    'json': JSON_PATTERNS,
-    'javascript': JAVASCRIPT_PATTERNS,
-    'typescript': TYPESCRIPT_PATTERNS,
-    'tsx': TSX_PATTERNS,
-    'julia': JULIA_PATTERNS,
-    'r': R_PATTERNS,
-    'cpp': CPP_PATTERNS,
-    'csharp': CSHARP_PATTERNS,
-    'go': GO_PATTERNS,
-    'groovy': GROOVY_PATTERNS,
-    'haskell': HASKELL_PATTERNS,
-    'java': JAVA_PATTERNS,
-    'kotlin': KOTLIN_PATTERNS,
-    'lua': LUA_PATTERNS,
-    'markup': {
-        'html': HTML_PATTERNS,
-        'yaml': YAML_PATTERNS,
-        'toml': TOML_PATTERNS,
-        'dockerfile': DOCKERFILE_PATTERNS,
-        'markdown': MARKDOWN_PATTERNS,
-        'requirements': REQUIREMENTS_PATTERNS,
-        'gitignore': GITIGNORE_PATTERNS,
-        'makefile': MAKEFILE_PATTERNS
-    },
-    'objectivec': OBJECTIVEC_PATTERNS,
-    'perl': PERL_PATTERNS,
-    'php': PHP_PATTERNS,
-    'powershell': POWERSHELL_PATTERNS,
-    'python': PYTHON_PATTERNS,
-    'commonlisp': COMMONLISP_PATTERNS,
-    'racket': RACKET_PATTERNS,
-    'ruby': RUBY_PATTERNS,
-    'rust': RUST_PATTERNS,
-    'scala': SCALA_PATTERNS,
-    'sql': SQL_PATTERNS,
-    'squirrel': SQUIRREL_PATTERNS,
-    'swift': SWIFT_PATTERNS,
-    'vue': VUE_PATTERNS,
-    'svelte': SVELTE_PATTERNS,
-    'zig': ZIG_PATTERNS,
-    'matlab': MATLAB_PATTERNS,
-    'nim': NIM_PATTERNS,
-    'cuda': CUDA_PATTERNS,
-    'hcl': HCL_PATTERNS,
-    'proto': PROTO_PATTERNS,
-    'graphql': GRAPHQL_PATTERNS,
-    'dockerfile': DOCKERFILE_PATTERNS,
-    'cmake': CMAKE_PATTERNS,
-    'toml': TOML_PATTERNS,
-    'xml': XML_PATTERNS,
+# Mapping from module names (i.e. file names) to our normalized language keys.
+MODULE_LANGUAGE_MAP = {
+    'ada': 'ada',
+    'asm': 'asm',
+    'bash': 'bash',
+    'bibtex': 'bibtex',
+    'c': 'c',
+    'cmake': 'cmake',
+    'clojure': 'clojure',
+    'cpp': 'cpp',
+    'csharp': 'csharp',
+    'cuda': 'cuda',
+    'dart': 'dart',
+    'dockerfil': 'dockerfile',  # adjust for dockerfil.py naming
+    'editorconfig': 'editorconfig',
+    'elisp': 'elisp',
+    'elixir': 'elixir',
+    'env': 'env',
+    'erlang': 'erlang',
+    'fish': 'fish',
+    'fortran': 'fortran',
+    'gdscript': 'gdscript',
+    'gitignore': 'gitignore',
+    'gleam': 'gleam',
+    'json': 'json',
+    'julia': 'julia',
+    'kotlin': 'kotlin',
+    'lua': 'lua',
+    'makefile': 'makefile',
+    'markdown': 'markdown',
+    'matlab': 'matlab',
+    'nim': 'nim',
+    'ocaml': 'ocaml',
+    'ocaml_interface': 'ocaml_interface',
+    'perl': 'perl',
+    'php': 'php',
+    'plaintext': 'plaintext',
+    'powershell': 'powershell',
+    'proto': 'proto',
+    'python': 'python',
+    'r': 'r',
+    'ruby': 'ruby',
+    'rust': 'rust',
+    'scala': 'scala',
+    'swift': 'swift',
+    'tcl': 'tcl',
+    'typescript': 'typescript',
+    'vue': 'vue',
+    'xml': 'xml',
+    'yaml': 'yaml',
+    'zig': 'zig',
 }
 
-# For backward compatibility
-QUERY_PATTERNS = query_patterns
+QUERY_PATTERNS = {}
 
-__all__ = ['query_patterns', 'QUERY_PATTERNS'] 
+# Automatically load all query pattern modules in this directory.
+package_dir = os.path.dirname(__file__)
+for module_info in pkgutil.iter_modules([package_dir]):
+    module_name = module_info.name
+    if module_name == '__init__':
+        continue
+    try:
+        module = importlib.import_module(f"parsers.query_patterns.{module_name}")
+        log(f"Successfully imported query patterns module: {module_name}", level="debug")
+    except Exception as e:
+        log(f"Failed to import query patterns module '{module_name}': {e}", level="error")
+        continue
+
+    # Look for attributes ending in _PATTERNS.
+    for attr in dir(module):
+        if attr.endswith('_PATTERNS'):
+            patterns = getattr(module, attr)
+            if isinstance(patterns, (dict, list)):
+                # Determine the normalized language key for this module.
+                key = MODULE_LANGUAGE_MAP.get(module_name.lower(), module_name.lower())
+                # If patterns is a list (for example, defined as a list of strings),
+                # wrap it in a dict under a default key.
+                if isinstance(patterns, list):
+                    # Convert a list of queries into a dictionary under a default key.
+                    patterns = {"default": "\n".join(patterns)}
+                if key in QUERY_PATTERNS:
+                    # Merge dictionaries if the key already exists.
+                    if isinstance(QUERY_PATTERNS[key], dict) and isinstance(patterns, dict):
+                        QUERY_PATTERNS[key].update(patterns)
+                    else:
+                        QUERY_PATTERNS[key] = patterns
+                else:
+                    QUERY_PATTERNS[key] = patterns
+                log(f"Loaded query patterns for '{key}' from attribute '{attr}'", level="debug")
+
+# Import new query pattern modules for cobalt and pascal.
+from .cobalt import COBALT_PATTERNS
+from .pascal import PASCAL_PATTERNS
+
+def get_query_patterns(language: str):
+    normalized_lang = normalize_language_name(language)
+    patterns = QUERY_PATTERNS.get(normalized_lang)
+    if patterns is None:
+        log(f"No query patterns found for language '{normalized_lang}', returning empty dict", level="warning")
+        patterns = {}
+    return patterns

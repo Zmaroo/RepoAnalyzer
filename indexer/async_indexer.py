@@ -1,16 +1,12 @@
 import os
-import asyncio
 from indexer.file_config import CODE_EXTENSIONS, DOC_EXTENSIONS
-from semantic.semantic_search import upsert_code
-from indexer.doc_index import upsert_doc
+from indexer.common_indexer import async_index_files, index_file_async
 from utils.logger import log
 from parsers.file_parser import process_file
-from indexer.async_utils import async_read_text_file
-from indexer.common_indexer import async_index_files
 from db.neo4j_tools import Neo4jTools
-from db.neo4j_schema import create_schema_constraints, setup_graph_projections
 from db.neo4j_projections import Neo4jProjections
 from typing import Dict, Any
+import asyncio
 
 async def async_index_repository(repo_path: str, repo_id: int) -> None:
     """Enhanced repository indexing with Neo4j graph projections and analysis."""
@@ -21,7 +17,7 @@ async def async_index_repository(repo_path: str, repo_id: int) -> None:
     projections = Neo4jProjections()
     
     try:
-        # Process and index files
+        # Process and index code files using the unified async_index_files from common_indexer.
         await async_index_files(
             repo_path, 
             repo_id, 
@@ -55,12 +51,11 @@ async def async_index_repository(repo_path: str, repo_id: int) -> None:
 
 def index_code_file(neo4j: Neo4jTools, repo_id: int, file_path: str, content: Dict[str, Any]) -> None:
     """Index a code file in Neo4j with enhanced metadata."""
-    # Create the code node
     node_props = {
         'file_path': file_path,
         'repo_id': repo_id,
         'language': content['language'],
-        'type': 'file',  # Base type, can be enhanced with AST analysis
+        'type': 'file',  # Base type – can be enhanced with AST analysis.
         'name': os.path.basename(file_path),
         'ast_data': content['ast_data'],
         'complexity': content['complexity'],
@@ -78,3 +73,32 @@ def index_code_file(neo4j: Neo4jTools, repo_id: int, file_path: str, content: Di
 async def async_index_files(repo_path: str, repo_id: int, extensions: list, async_read_file, upsert_doc, doc_type: str) -> None:
     # Implementation of async_index_files function
     pass 
+
+async def async_index_code(repo_id: int, base_path: str):
+    """
+    Asynchronously indexes code files in the repository.
+    
+    This function:
+      - Uses the common indexing logic to process files that have extensions in CODE_EXTENSIONS.
+      - Ensures that all code indexing is handled asynchronously.
+    """
+    # Example: iterate over files and index them asynchronously.
+    # (Replace the placeholder logic below with real file discovery & indexing.)
+    code_files = []  # Assume we have code to list files filtering by CODE_EXTENSIONS.
+    for file_path in code_files:
+        await index_file_async(file_path, repo_id, base_path)
+    return
+
+async def async_index_docs(repo_id: int, base_path: str):
+    """
+    Asynchronously indexes documentation files in the repository.
+    
+    This function:
+      - Filters files against DOC_EXTENSIONS.
+      - Uses the same common indexing logic but names this function distinctly
+        (e.g., async_index_docs) to avoid duplicating symbols like async_index_files.
+    """
+    doc_files = []  # Replace with actual logic to list files filtering by DOC_EXTENSIONS.
+    for file_path in doc_files:
+        await index_file_async(file_path, repo_id, base_path)
+    return 

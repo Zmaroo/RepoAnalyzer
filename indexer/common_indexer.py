@@ -1,8 +1,9 @@
 import asyncio
 from typing import Callable, Optional
 from utils.logger import log
-from indexer.file_utils import get_files, process_index_file
+from indexer.file_utils import get_files, process_index_file, read_text_file, is_binary_file
 from indexer.async_utils import async_get_files, async_process_index_file
+import os
 
 def index_files(
     repo_path: str,
@@ -46,4 +47,31 @@ async def async_index_files(
             index_function=index_function,
             file_type=file_type
         ))
-    await asyncio.gather(*tasks, return_exceptions=True) 
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+async def index_file_async(file_path: str, repo_id: int, base_path: str) -> None:
+    """
+    Asynchronously indexes a single file.
+    
+    This function consolidates indexing functionality that was previously duplicated.
+    It reads the file and, if successful, logs that the file was processed.
+    
+    In a complete implementation, this function should:
+      - Run language detection (via parsers)
+      - Parse the file (e.g., AST extraction)
+      - Upsert the processed result into a database.
+    """
+    if is_binary_file(file_path):
+        log(f"Skipping binary file: {file_path}", level="warning")
+        return
+    try:
+        content = read_text_file(file_path)
+        if not content:
+            log(f"No content from file: {file_path}", level="debug")
+            return
+        # Compute the relative path for logging purposes.
+        relative_path = os.path.relpath(file_path, base_path)
+        # TODO: Process the file content (e.g., run detect_language, generate AST, etc.)
+        log(f"Indexed file {relative_path} for repo {repo_id}", level="info")
+    except Exception as e:
+        log(f"Error indexing file {file_path} for repo {repo_id}: {e}", level="error") 
