@@ -1,138 +1,143 @@
-from __future__ import annotations  # Added to enable postponed evaluation of type annotations
-import os
-import json
-from .language_parser import parse_code, get_ast_sexp, get_ast_json
-from parsers.query_patterns import QUERY_PATTERNS, get_query_patterns
-from tree_sitter_language_pack import get_language
+"""High-level file processing module."""
+
+from typing import Optional, Dict, List
+from parsers.language_parser import CodeParser
+from indexer.doc_index import upsert_doc
+from indexer.file_utils import is_binary_file, read_text_file
 from utils.logger import log
-from typing import Optional, Dict, Any
-from tree_sitter import Node, Parser
-from parsers.ast_extractor import extract_ast_features
-from .language_mapping import get_language_for_file
-from parsers.language_mapping import normalize_language_name  # For language normalization
+from parsers.ast_extractor import extract_doc_features
+from parsers.language_mapping import (
+    get_file_classification, 
+    FileType,
+    DocExtractionConfig, 
+    CodeBlockConfig
+)
 
-# Initialize the Tree-sitter parser. Make sure you have built your language library.
-parser = Parser()
-# Example: Uncomment and adjust the following lines if a language library is available.
-# from tree_sitter_languages import get_language
-# parser.set_language(get_language('python'))
-
-def get_root_node(tree):
-    """
-    Returns the root node from the tree-sitter parse result.
-    In some cases, 'tree' may already be a Node (without a 'root_node' attribute).
-    """
-    return tree.root_node if hasattr(tree, "root_node") else tree
-
-def detect_language(file_path: str) -> Optional[str]:
-    """Detects the language of a file based on its filename or extension."""
-    return get_language_for_file(file_path)
-
-def process_file(file_path: str):
-    """
-    Process a file by detecting its language and parsing it.
-    Returns a standardized dictionary with code/documentation details.
-    """
-    from parsers.language_parser import parse_code
-    from utils.logger import log
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            source_code = f.read()
-    except Exception as e:
-        log(f"Failed to read file {file_path}: {e}", level="error")
-        return None
-
-    language = detect_language(file_path)
-    if language is None:
-        log(f"Language could not be detected for file {file_path}", level="error")
-        return None
-
-    parsed_output = parse_code(source_code, language)
-    if parsed_output is None:
-        return None
-
-    # Directly import and use get_query_patterns from the centralized module.
-    from parsers.query_patterns import get_query_patterns
-    patterns = get_query_patterns(language)
-    parsed_output["query_patterns"] = patterns
-
-    return parsed_output
-
-def calculate_complexity(node: Node) -> int:
-    """Calculate cyclomatic complexity (basic implementation)."""
-    complexity = 1  # Base complexity
-    
-    # Count control flow statements
-    control_patterns = [
-        'if_statement',
-        'while_statement',
-        'for_statement',
-        'case_statement',
-        'catch_clause',
-        '&&',
-        '||'
-    ]
-    
-    def traverse(node):
-        nonlocal complexity
-        if node.type in control_patterns:
-            complexity += 1
-        for child in node.children:
-            traverse(child)
-            
-    traverse(node)
-    return complexity
-
-def extract_documentation(node: Node, source_bytes: bytes) -> str:
-    """
-    Extract documentation from an AST node.
-    
-    Args:
-        node: The AST node to extract documentation from
-        source_bytes: Original source code as bytes
+class FileProcessor:
+    def __init__(self):
+        self.code_parser = CodeParser()
         
-    Returns:
-        Extracted documentation string
-    """
-    try:
-        # Get comments and docstrings
-        doc_string = ""
-        if hasattr(node, 'children'):
-            for child in node.children:
-                if child.type in ('comment', 'block_comment', 'line_comment', 'string', 'string_literal'):
-                    start_byte = child.start_byte
-                    end_byte = child.end_byte
-                    text = source_bytes[start_byte:end_byte].decode('utf-8', errors='replace')
-                    doc_string += text.strip() + "\n"
-        return doc_string.strip()
-    except Exception as e:
-        log(f"Error extracting documentation: {e}", level="error")
-        return ""
+    def process_file(self, file_path: str, repo_id: int) -> Optional[Dict]:
+        """Process a file based on its classification."""
+        classification = get_file_classification(file_path)
+        if not classification:
+            return None
+            
+        source_code = read_text_file(file_path)
+        if not source_code:
+            return None
+            
+        # Use appropriate custom parser
+        parsed_content = self.code_parser.parse_code(
+            source_code, 
+            classification.parser
+        )
+        
+        # Extract and validate code blocks if configured
+        if classification.code_block_config:
+            code_blocks = self._process_code_blocks(
+                parsed_content['ast_data'],
+                classification.code_block_config
+            )
+            parsed_content['code_blocks'] = code_blocks
+            
+            # Update documentation content with validated code blocks
+            if classification.index_as_doc:
+                doc_id = upsert_doc(
+                    repo_id=repo_id,
+                    file_path=file_path,
+                    content=source_code,
+                    doc_type=classification.parser,
+                    metadata={
+                        'code_blocks': code_blocks,
+                        'has_validated_code': True
+                    }
+                )
+                parsed_content['doc_id'] = doc_id
+                
+        return parsed_content
 
-def parse_file(file_path: str):
-    """
-    Parses the source code from the given file using Tree-sitter and returns the root syntax node.
-    
-    Args:
-        file_path (str): The full path to the source file.
-    
-    Returns:
-        A tree-sitter Node representing the root of the syntax tree, or None if parsing fails.
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except Exception as e:
-        log(f"Error reading file {file_path}: {e}", level="error")
-        return None
+    def _process_code_blocks(self, ast_data: dict, config: CodeBlockConfig) -> List[Dict]:
+        """Process code blocks with validation and feature extraction."""
+        code_blocks = []
+        
+        for block in ast_data.get('features', {}).get('syntax', {}).get('code_blocks', []):
+            if not block.get('language') or block['language'] not in config.supported_languages:
+                continue
+                
+            processed_block = {
+                'language': block['language'],
+                'content': block['content'],
+                'location': {
+                    'start_line': block['start_line'],
+                    'end_line': block['end_line']
+                }
+            }
+            
+            if config.validate_syntax:
+                try:
+                    # Validate syntax using appropriate parser
+                    validation = self.code_parser.parse_code(
+                        block['content'],
+                        block['language']
+                    )
+                    processed_block['is_valid'] = bool(validation.get('ast_data'))
+                    processed_block['validation_error'] = validation.get('error')
+                except Exception as e:
+                    processed_block['is_valid'] = False
+                    processed_block['validation_error'] = str(e)
+            
+            if config.extract_imports and processed_block.get('is_valid'):
+                processed_block['imports'] = self._extract_imports(
+                    validation['ast_data'],
+                    block['language']
+                )
+                
+            code_blocks.append(processed_block)
+            
+        return code_blocks
 
-    try:
-        tree = parser.parse(content.encode('utf-8'))
-        root = get_root_node(tree)
-        return root
-    except Exception as e:
-        log(f"Error parsing file {file_path}: {e}", level="error")
-        return None
+    def _extract_documentation(self, source_code: str, ast_data: dict, doc_config: DocExtractionConfig) -> str:
+        """Extract documentation based on configuration."""
+        doc_parts = []
+        
+        if doc_config.extract_docstrings:
+            docstrings = self._extract_docstrings(ast_data)
+            doc_parts.extend(docstrings)
+            
+        if doc_config.extract_comments:
+            comments = self._extract_comments(ast_data)
+            doc_parts.extend(comments)
+            
+        if doc_config.extract_type_hints:
+            type_hints = self._extract_type_hints(ast_data)
+            doc_parts.extend(type_hints)
+            
+        if doc_config.doc_sections:
+            sections = self._extract_sections(source_code, doc_config.doc_sections)
+            doc_parts.extend(sections)
+            
+        return '\n\n'.join(doc_parts)
 
-# Additional functions using the syntax tree can be added here.
+    def _process_doc_file(self, content: str, ext: str, repo_id: int, file_path: str) -> Dict:
+        """Handle documentation files with dual processing."""
+        # Process as documentation for indexing
+        doc_id = upsert_doc(repo_id, file_path, content)
+        
+        # Process as structured content
+        parsed_content = self.code_parser.parse_code(content, f"markup_{ext[1:]}")  # e.g., "markup_md"
+        features = extract_doc_features(parsed_content['ast_data'], content.encode('utf-8'))
+        
+        return {
+            "type": "documentation",
+            "content": content,
+            "format": ext,
+            "doc_id": doc_id,
+            "ast_data": parsed_content['ast_data'],
+            "ast_features": features,
+            "structure": parsed_content.get('ast_features', {})
+        }
+
+    def _process_code_file(self, content: str, file_path: str) -> Dict:
+        """Process as code file with proper language detection."""
+        return self.code_parser.parse_code(content, file_path)

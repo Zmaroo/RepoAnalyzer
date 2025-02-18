@@ -42,4 +42,35 @@ def setup_graph_projections():
             run_query(projection)
             log(f"Successfully created graph projection", level="debug")
         except Exception as e:
-            log(f"Error creating graph projection: {e}", level="error") 
+            log(f"Error creating graph projection: {e}", level="error")
+
+def create_indexes():
+    """Creates necessary indexes for the Neo4j database."""
+    indexes = [
+        """CREATE INDEX code_file_path_idx IF NOT EXISTS
+           FOR (n:Code) ON (n.file_path)""",
+           
+        """CREATE INDEX code_repo_id_idx IF NOT EXISTS
+           FOR (n:Code) ON (n.repo_id)"""
+    ]
+    
+    for index in indexes:
+        try:
+            run_query(index)
+            log(f"Successfully created index: {index}", level="debug")
+        except Exception as e:
+            log(f"Error creating index: {e}", level="error")
+
+def initialize_neo4j_schema():
+    """
+    Complete initialization of Neo4j database schema and constraints.
+    Should be called after cleaning.
+    """
+    # Create constraints
+    create_schema_constraints()
+    
+    # Set up graph projections
+    setup_graph_projections()
+    
+    # Initialize any required indexes
+    create_indexes() 

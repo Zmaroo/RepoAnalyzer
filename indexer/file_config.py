@@ -1,64 +1,36 @@
+from dataclasses import dataclass, field
+from typing import Set
 from parsers.language_mapping import (
-    EXTENSION_TO_LANGUAGE, 
-    LanguageSupport,
-    normalize_language_name
+    FileClassification,
+    get_file_classification,
+    FileType
 )
-from functools import lru_cache
 
-# Define a static set for documentation extensions
-DOC_EXTENSIONS_STATIC = {'.md', '.txt', '.rst'}
-
-# Custom classification for markup file extensions
-MARKUP_CLASSIFICATION = {
-    '.html': 'code',
-    '.xml': 'code',
-    '.md': 'doc',         # Markdown files as docs
-    '.yml': 'doc',
-    '.yaml': 'doc',
-    '.toml': 'doc',
-    '.dockerfile': 'code',
-    '.gitignore': 'doc',
-    '.makefile': 'code'
-}
-
-@lru_cache(maxsize=1)
-def get_supported_extensions():
-    """
-    Computes which file extensions should be processed as code files
-    or documentation files based on the language mappings.
-    Caches the result on first computation.
+@dataclass(frozen=True)
+class FileConfig:
+    """Central configuration for file handling."""
+    binary_extensions: Set[str] = field(default_factory=lambda: {
+        '.pdf', '.jpg', '.png', '.gif', '.ico', '.svg',
+        '.woff', '.woff2', '.ttf', '.eot',
+        '.zip', '.tar', '.gz', '.rar',
+        '.exe', '.dll', '.so', '.dylib',
+        '.pyc', '.pyo', '.pyd'
+    })
     
-    Returns:
-        A tuple (code_extensions, doc_extensions) where each is a set of extensions.
-    """
-    code_ext = set()
-    doc_ext = set()
-
-    for ext, lang in EXTENSION_TO_LANGUAGE.items():
-        normalized_lang = normalize_language_name(lang)
-        ext_with_dot = f".{ext.lower()}" if not ext.startswith('.') else ext.lower()
+    @classmethod
+    def create(cls) -> 'FileConfig':
+        """Create a new FileConfig instance."""
+        return cls()
+    
+    def is_processable(self, file_path: str) -> bool:
+        """Check if a file should be processed."""
+        from indexer.file_utils import is_binary_file
+        from indexer.file_ignore_config import IGNORED_FILES
         
-        is_supported, has_patterns = LanguageSupport.get_language_info(normalized_lang)
-        if is_supported:  # Language is supported by tree-sitter
-            if normalized_lang == 'markup':
-                if ext_with_dot in MARKUP_CLASSIFICATION:
-                    if MARKUP_CLASSIFICATION[ext_with_dot] == 'code':
-                        code_ext.add(ext_with_dot)
-                    else:
-                        doc_ext.add(ext_with_dot)
-                else:
-                    # Fallback: check against static doc extensions
-                    if ext_with_dot in DOC_EXTENSIONS_STATIC:
-                        doc_ext.add(ext_with_dot)
-                    else:
-                        code_ext.add(ext_with_dot)
-            elif has_patterns:  # Has query patterns
-                code_ext.add(ext_with_dot)
-            elif ext_with_dot in DOC_EXTENSIONS_STATIC:
-                doc_ext.add(ext_with_dot)
-            else:
-                code_ext.add(ext_with_dot)
-                
-    return (code_ext, doc_ext)
-
-CODE_EXTENSIONS, DOC_EXTENSIONS = get_supported_extensions() 
+        classification = get_file_classification(file_path)
+        return (
+            classification is not None and
+            classification.file_type in (FileType.CODE, FileType.DOC) and
+            not any(file_path.endswith(pat) for pat in IGNORED_FILES) and
+            not is_binary_file(file_path)
+        ) 

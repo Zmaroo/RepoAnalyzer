@@ -251,28 +251,96 @@ class Neo4jTools:
             'repo_id': repo_id
         })
 
-    def upsert_code_node(self, repo_id: int, file_path: str, ast: dict, embedding: list = None) -> bool:
+    def upsert_code_node(self, repo_id: int, file_path: str, ast: dict, embedding: list = None):
         """
-        Upserts a Code node in Neo4j with the full AST and embedding.
-        The AST is stored as a JSON string.
+        Creates/updates a Code node with essential properties for graph analysis.
         """
         query = """
         MERGE (n:Code {repo_id: $repo_id, file_path: $file_path})
-        SET n.ast = $ast, n.embedding = $embedding
+        SET n += {
+            language: $language,
+            type: $type,
+            complexity: $complexity,
+            lines_of_code: $loc,
+            last_updated: datetime()
+        }
         RETURN n
         """
-        params = {
+        # Extract key properties from AST
+        properties = {
             'repo_id': repo_id,
             'file_path': file_path,
-            'ast': json.dumps(ast),  # storing the full AST as a JSON string
-            'embedding': embedding
+            'language': ast.get('language'),
+            'type': ast.get('type'),
+            'complexity': self.calculate_complexity(ast),
+            'loc': ast.get('lines_of_code', 0)
         }
-        try:
-            result = self.run_query(query, params)
-            return bool(result)
-        except Exception as e:
-            log(f"Error upserting code node into Neo4j: {e}", level="error")
-            return False
+        return self.run_query(query, properties)
+
+    def calculate_complexity(self, ast: dict) -> int:
+        """Calculate cyclomatic complexity from AST dictionary."""
+        complexity = 1  # Base complexity
+        
+        # Control flow patterns that increase complexity
+        control_patterns = [
+            'if_statement', 'while_statement', 'for_statement',
+            'case_statement', 'catch_clause', '&&', '||'
+        ]
+        
+        def traverse(node: dict):
+            nonlocal complexity
+            if isinstance(node, dict):
+                if node.get('type') in control_patterns:
+                    complexity += 1
+                for child in node.get('children', []):
+                    traverse(child)
+        
+        traverse(ast)
+        return complexity
+
+    def extract_structural_properties(self, ast_features: Dict) -> Dict:
+        """Extract structural properties from categorized AST features."""
+        properties = {}
+        
+        # Extract syntax features
+        if "syntax" in ast_features:
+            properties.update({
+                "functions": len(ast_features["syntax"].get("function", [])),
+                "classes": len(ast_features["syntax"].get("class", [])),
+                "modules": len(ast_features["syntax"].get("module", []))
+            })
+        
+        # Extract semantic features
+        if "semantics" in ast_features:
+            properties.update({
+                "variables": len(ast_features["semantics"].get("variable", [])),
+                "types": len(ast_features["semantics"].get("type", []))
+            })
+        
+        # Extract documentation features
+        if "documentation" in ast_features:
+            properties.update({
+                "has_documentation": bool(ast_features["documentation"]),
+                "doc_count": len(ast_features["documentation"])
+            })
+        
+        # Extract structural features
+        if "structure" in ast_features:
+            properties.update({
+                "imports": len(ast_features["structure"].get("import", [])),
+                "exports": len(ast_features["structure"].get("export", []))
+            })
+        
+        return properties
+
+    def upsert_doc(self, repo_id: int, file_path: str, content: str) -> None:
+        """Upsert documentation node to Neo4j."""
+        self.create_doc_node({
+            'repo_id': repo_id,
+            'file_path': file_path,
+            'content': content,
+            'type': 'documentation'
+        })
 
 if __name__ == "__main__":
     # For demonstration purposes. In your production setup, your assistant could call these methods directly.

@@ -1,22 +1,21 @@
 import asyncio
-from typing import Callable, Optional
+from typing import Callable, Optional, Set
 from utils.logger import log
 from indexer.file_utils import get_files, process_index_file, read_text_file, is_binary_file
 from indexer.async_utils import async_get_files, async_process_index_file
 import os
+from parsers.language_mapping import FileType
 
 def index_files(
     repo_path: str,
     repo_id: int,
-    extensions: set,
-    file_processor: Callable[[str], Optional[str]],
-    index_function: Callable[[int, str, str], None],
+    file_types: Set[FileType],
+    file_processor: Callable,
+    index_function: Callable,
     file_type: str
 ) -> None:
-    """
-    Synchronously indexes files in repo_path.
-    """
-    files = get_files(repo_path, extensions)
+    """Synchronously indexes files in repo_path based on FileType."""
+    files = get_files(repo_path, file_types)
     log(f"Found {len(files)} {file_type} files in [{repo_id}].")
     for file_path in files:
         process_index_file(file_path, repo_path, repo_id, file_processor, index_function, file_type)
@@ -24,17 +23,14 @@ def index_files(
 async def async_index_files(
     repo_path: str,
     repo_id: int,
-    extensions: set,
-    file_processor: Callable[[str], Optional[str]],
-    index_function: Callable[[int, str, str], None],
+    file_types: Set[FileType],
+    file_processor: Callable,
+    index_function: Callable,
     file_type: str,
     wrap_sync: bool = False
 ) -> None:
-    """
-    Asynchronously indexes files in repo_path.
-    If wrap_sync is True, the file_processor will be wrapped with asyncio.to_thread.
-    """
-    files = await async_get_files(repo_path, extensions)
+    """Asynchronously indexes files based on FileType."""
+    files = await async_get_files(repo_path, file_types)
     log(f"Found {len(files)} {file_type} files for repository [{repo_id}].")
     tasks = []
     for file_path in files:

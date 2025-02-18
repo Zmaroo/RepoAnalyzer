@@ -1,22 +1,89 @@
-"""Tree-sitter patterns for Racket programming language."""
+"""
+Query patterns for Racket files.
+"""
 
 RACKET_PATTERNS = {
-    # Basic pattern for function detection
-    "function": """
-        [
-          (definition)
-          (lambda_expression)
-        ] @function
-    """,
-    # Extended pattern for detailed function information
-    "function_details": """
-        [
-          (definition
-             name: (identifier) @function.name
-            body: (expression) @function.body) @function.def,
-          (lambda_expression
-             parameters: (list) @function.params
-            body: (expression) @function.body) @function.def
+    "syntax": {
+        "function": [
+            """
+            (list_lit
+                .
+                (sym_lit) @def_type
+                (#match? @def_type "^(define|lambda)$")
+                .
+                (sym_lit) @name
+                .
+                (list_lit)? @params
+                .
+                (_)* @body) @function
+            """
+        ],
+        "class": [
+            """
+            (list_lit
+                .
+                (sym_lit) @def_type
+                (#match? @def_type "^(struct|class)$")
+                .
+                (sym_lit) @name
+                .
+                (_)* @fields) @class
+            """
         ]
-    """
+    },
+    "structure": {
+        "namespace": [
+            """
+            (list_lit
+                .
+                (sym_lit) @def_type
+                (#match? @def_type "^(module|module\\*)$")
+                .
+                (sym_lit) @name
+                .
+                (_)* @body) @namespace
+            """
+        ],
+        "import": [
+            """
+            (list_lit
+                .
+                (sym_lit) @def_type
+                (#match? @def_type "^(require)$")
+                .
+                (_)* @imports) @import
+            """
+        ]
+    },
+    "semantics": {
+        "variable": [
+            """
+            (list_lit
+                .
+                (sym_lit) @def_type
+                (#match? @def_type "^(define-values|define-syntax)$")
+                .
+                (list_lit) @names
+                .
+                (_)* @value) @variable
+            """
+        ]
+    },
+    "documentation": {
+        "docstring": [
+            """
+            (list_lit
+                .
+                (sym_lit) @doc_type
+                (#match? @doc_type "^(doc|document)$")
+                .
+                (_)* @content) @docstring
+            """
+        ],
+        "comment": [
+            """
+            (comment) @comment
+            """
+        ]
+    }
 } 

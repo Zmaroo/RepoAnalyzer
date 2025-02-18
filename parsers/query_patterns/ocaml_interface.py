@@ -7,13 +7,30 @@ The custom parser returns an AST with a root node ("ocaml_stream") whose childre
 (e.g. @val_declaration) to ensure that all pertinent information is extracted.
 """
 
-OCAML_INTERFACE_PATTERNS = [
-    # Match value declarations
-    "(ocaml_stream (val_declaration) @val_declaration)",
-    
-    # Match type definitions
-    "(ocaml_stream (type_definition) @type_definition)",
-    
-    # Match module declarations
-    "(ocaml_stream (module_declaration) @module_declaration)"
-] 
+OCAML_INTERFACE_PATTERNS = {
+    "syntax": {
+        "function": [
+            """
+            (val_declaration
+                name: (identifier) @name
+                type: (_) @type) @function
+            """
+        ],
+        "class": [
+            """
+            (type_definition
+                name: (identifier) @name
+                type: (_) @type) @class
+            """
+        ]
+    },
+    "structure": {
+        "namespace": [
+            """
+            (module_declaration
+                name: (identifier) @name
+                signature: (_) @signature) @namespace
+            """
+        ]
+    }
+} 

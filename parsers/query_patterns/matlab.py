@@ -1,132 +1,230 @@
-"""MATLAB-specific Tree-sitter patterns."""
+"""
+Query patterns for MATLAB files.
+"""
+
+from .common import COMMON_PATTERNS
 
 MATLAB_PATTERNS = {
-    # Function patterns
+    "syntax": {
+        "function": [
+            """
+            (function_definition
+                name: (identifier) @name
+                parameters: (parameter_list)? @params
+                outputs: (output_list)? @returns
+                body: (_)* @body) @function
+            """
+        ],
+        "class": [
+            """
+            (classdef
+                name: (identifier) @name
+                properties: (properties_block)? @properties
+                methods: (methods_block)? @methods) @class
+            """
+        ]
+    },
+    "structure": {
+        "namespace": [
+            """
+            (script_file) @namespace
+            """
+        ],
+        "import": [
+            """
+            (import_statement) @import
+            """
+        ]
+    },
+    "semantics": {
+        "variable": [
+            """
+            (assignment
+                left: (identifier) @name
+                right: (_) @value) @variable
+            """
+        ],
+        "expression": [
+            """
+            (function_call
+                name: (identifier) @name
+                arguments: (argument_list) @args) @expression
+            """
+        ]
+    },
+    "documentation": {
+        "docstring": [
+            """
+            (comment
+                (comment_content) @content
+                (#match? @content "^%{")) @docstring
+            """
+        ],
+        "comment": [
+            """
+            (comment) @comment
+            """
+        ]
+    },
+    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
+    
+    # Syntax category with rich patterns
     "function": """
         [
+          ; Basic function (from common)
+          (function_definition) @syntax.function,
+          
+          ; Rich function patterns
           (function_definition
-            name: (identifier) @function.name
-            parameters: (arguments)? @function.params
-            return_values: (multioutput_variable)? @function.returns
-            body: (_)* @function.body) @function.def,
-          (function_call
-            name: (_) @function.call.name
-            arguments: (arguments)? @function.call.args) @function.call
+            outputs: (output_parameters
+              parameters: [(identifier) @syntax.function.output.name]*) @syntax.function.outputs
+            name: (identifier) @syntax.function.name
+            inputs: (input_parameters
+              parameters: [(identifier) @syntax.function.param.name
+                         (validation_parameters
+                           class: (identifier) @syntax.function.param.class
+                           attributes: (attribute_list)? @syntax.function.param.attrs)]*) @syntax.function.params
+            body: (block) @syntax.function.body) @syntax.function.def,
+            
+          ; Nested function patterns
+          (nested_function
+            outputs: (output_parameters)? @syntax.function.nested.outputs
+            name: (identifier) @syntax.function.nested.name
+            inputs: (input_parameters)? @syntax.function.nested.params
+            body: (block) @syntax.function.nested.body) @syntax.function.nested,
+            
+          ; Anonymous function patterns
+          (lambda
+            parameters: (parameter_list
+              parameters: (identifier)* @syntax.function.lambda.param)? @syntax.function.lambda.params
+            body: (_) @syntax.function.lambda.body) @syntax.function.lambda
         ]
     """,
-
+    
     # Class patterns
     "class": """
         [
-          (classdef_statement
-            name: (identifier) @class.name
-            superclasses: (_)? @class.super
-            body: (_)* @class.body) @class.def,
-          (properties_block
-            attributes: (attributes)? @properties.attrs
-            properties: (_)* @properties.list) @properties,
-          (methods_block
-            attributes: (attributes)? @methods.attrs
-            methods: (_)* @methods.list) @methods
+          (classdef
+            attributes: (attribute_list
+              [(identifier) @syntax.class.attr.name
+               (attribute
+                 name: (identifier) @syntax.class.attr.name
+                 value: (_) @syntax.class.attr.value)]*) @syntax.class.attributes
+            name: (identifier) @syntax.class.name
+            superclasses: (superclass_list
+              classes: (identifier)* @syntax.class.superclass)? @syntax.class.inheritance
+            body: (block
+              [(property_block
+                 attributes: (attribute_list)? @syntax.class.property.attributes
+                 definitions: (property_list
+                   properties: [(identifier) @syntax.class.property.name]*) @syntax.class.property.list) @syntax.class.property
+               (methods_block
+                 attributes: (attribute_list)? @syntax.class.methods.attributes
+                 definitions: (function_list
+                   functions: [(function_definition) @syntax.class.method]*) @syntax.class.methods.list) @syntax.class.methods
+               (events_block
+                 attributes: (attribute_list)? @syntax.class.events.attributes
+                 definitions: (event_list
+                   events: [(identifier) @syntax.class.event.name]*) @syntax.class.events.list) @syntax.class.events]*) @syntax.class.body) @syntax.class.def
         ]
     """,
-
-    # Control flow patterns
-    "control_flow": """
+    
+    # Structure category with rich patterns
+    "module": """
         [
-          (if_statement
-            condition: (_) @if.condition
-            body: (_)* @if.body
-            alternatives: (_)* @if.alternatives) @if,
-          (switch_statement
-            expression: (_) @switch.expr
-            cases: (_)* @switch.cases) @switch,
-          (for_statement
-            iterator: (_) @for.iterator
-            body: (_)* @for.body) @for,
-          (while_statement
-            condition: (_) @while.condition
-            body: (_)* @while.body) @while,
-          (try_statement
-            body: (_)* @try.body
-            catch: (_)? @try.catch) @try,
-          (break_statement) @break,
-          (continue_statement) @continue,
-          (return_statement) @return
+          (script_file
+            name: (identifier) @structure.script.name) @structure.script,
+            
+          (function_file
+            function: (function_definition) @structure.function.def) @structure.function
         ]
     """,
-
-    # Assignment patterns
-    "assignment": """
-        [
-          (assignment
-            left: (_) @assign.target
-            right: (_) @assign.value) @assign
-        ]
-    """,
-
-    # Expression patterns
-    "expression": """
-        [
-          (binary_operator
-            left: (_) @expr.binary.left
-            operator: (_) @expr.binary.op
-            right: (_) @expr.binary.right) @expr.binary,
-          (unary_operator
-            operator: (_) @expr.unary.op
-            operand: (_) @expr.unary.value) @expr.unary,
-          (comparison_operator
-            left: (_) @expr.comp.left
-            operator: (_) @expr.comp.op
-            right: (_) @expr.comp.right) @expr.comp
-        ]
-    """,
-
-    # Matrix/Array patterns
-    "matrix": """
-        [
-          (matrix
-            rows: (_)* @matrix.rows) @matrix,
-          (cell
-            elements: (_)* @cell.elements) @cell,
-          (range
-            start: (_) @range.start
-            step: (_)? @range.step
-            end: (_) @range.end) @range
-        ]
-    """,
-
-    # Field access patterns
-    "field": """
-        [
-          (field_expression
-            object: (_) @field.object
-            field: (identifier) @field.name) @field
-        ]
-    """,
-
-    # Lambda patterns
-    "lambda": """
-        [
-          (lambda
-            parameters: (_)? @lambda.params
-            body: (_) @lambda.body) @lambda
-        ]
-    """,
-
-    # Value patterns
-    "value": """
-        [
-          (number) @value.number,
-          (string) @value.string,
-          (boolean) @value.boolean
-        ]
-    """,
-
-    # Documentation patterns
+    
+    # Documentation category with rich patterns
     "documentation": """
         [
-          (comment) @doc.comment
+          ; Basic comments (from common)
+          (comment) @documentation.comment,
+          
+          ; Help text
+          (comment) @documentation.help {
+            match: "^%[%\\s]"
+          },
+          
+          ; Documentation sections
+          (comment) @documentation.section {
+            match: "^%\\s*[A-Z][A-Za-z\\s]+:?"
+          },
+          
+          ; See also references
+          (comment) @documentation.seealso {
+            match: "^%\\s*See also:"
+          }
+        ]
+    """,
+    
+    # Array patterns
+    "array": """
+        [
+          (array
+            elements: [(number) @semantics.array.number
+                      (string) @semantics.array.string
+                      (identifier) @semantics.array.variable
+                      (operator) @semantics.array.operator]*) @semantics.array,
+                      
+          (cell_array
+            elements: (_)* @semantics.cell.elements) @semantics.cell,
+                      
+          (array_indexing
+            array: (_) @semantics.array.index.array
+            indices: (index_list
+              indices: (_)* @semantics.array.index.expr)) @semantics.array.index
+        ]
+    """,
+    
+    # Control flow patterns
+    "control": """
+        [
+          (for_loop
+            iterator: (identifier) @semantics.control.for.iterator
+            range: (_) @semantics.control.for.range
+            body: (block) @semantics.control.for.body) @semantics.control.for,
+            
+          (while_loop
+            condition: (_) @semantics.control.while.condition
+            body: (block) @semantics.control.while.body) @semantics.control.while,
+            
+          (if_statement
+            condition: (_) @semantics.control.if.condition
+            body: (block) @semantics.control.if.body
+            elseif_clauses: (elseif_clause
+              condition: (_) @semantics.control.elseif.condition
+              body: (block) @semantics.control.elseif.body)*
+            else_clause: (else_clause
+              body: (block) @semantics.control.else.body)?) @semantics.control.if,
+              
+          (try_statement
+            body: (block) @semantics.control.try.body
+            catch_clause: (catch_clause
+              identifier: (identifier)? @semantics.control.catch.error
+              body: (block) @semantics.control.catch.body)?) @semantics.control.try
+        ]
+    """,
+    
+    # Graphics patterns
+    "graphics": """
+        [
+          (function_call
+            function: (identifier) @semantics.graphics.func
+            (#match? @semantics.graphics.func "^(plot|figure|subplot|surf|mesh|imagesc)$")
+            arguments: (argument_list) @semantics.graphics.args) @semantics.graphics.call,
+            
+          (handle
+            type: (identifier) @semantics.graphics.handle.type
+            properties: (property_list
+              properties: [(property_assignment
+                           name: (identifier) @semantics.graphics.handle.prop.name
+                           value: (_) @semantics.graphics.handle.prop.value)]*) @semantics.graphics.handle.props) @semantics.graphics.handle
         ]
     """
 } 

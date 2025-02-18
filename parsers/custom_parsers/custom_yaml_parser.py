@@ -1,204 +1,217 @@
+"""Custom parser for YAML with enhanced documentation and configuration features."""
+
+from typing import Dict, List, Any
+from parsers.common_parser_utils import build_parser_output
+import re
 import yaml
-from parsers.common_parser_utils import extract_features_from_ast, build_parser_output
-
-def get_yaml_type(value):
-    """Determine a YAML data type from a Python value."""
-    if value is None:
-        return "null"
-    elif isinstance(value, bool):
-        return "boolean"
-    elif isinstance(value, int):
-        return "integer"
-    elif isinstance(value, float):
-        return "float"
-    elif isinstance(value, str):
-        return "string"
-    else:
-        return "unknown"
-
-def convert_to_ast(data):
-    """
-    Recursively converts Python data (obtained via PyYAML) into an AST-like
-    structure including metadata for database ingestion.
-    """
-    if isinstance(data, dict):
-        children = []
-        for key, value in data.items():
-            pair_node = {
-                "type": "block_mapping_pair",
-                "yaml_type": "mapping_pair",
-                "start_point": [0, 0],
-                "end_point": [0, 0],
-                "start_byte": 0,
-                "end_byte": 0,
-                "children": [
-                    {
-                        # Key node for the mapping pair
-                        "type": "plain_scalar",
-                        "yaml_type": get_yaml_type(key),
-                        "value": str(key),
-                        "start_point": [0, 0],
-                        "end_point": [0, 0],
-                        "start_byte": 0,
-                        "end_byte": 0,
-                    },
-                    {
-                        # The colon (:) node separator
-                        "type": ":",
-                        "start_point": [0, 0],
-                        "end_point": [0, 0],
-                        "start_byte": 0,
-                        "end_byte": 0,
-                    },
-                    # Recursively convert the value.
-                    convert_to_ast(value)
-                ]
-            }
-            children.append(pair_node)
-        return {
-            "type": "block_mapping",
-            "yaml_type": "mapping",
-            "children": children,
-            "start_point": [0, 0],
-            "end_point": [0, 0],
-            "start_byte": 0,
-            "end_byte": 0
-        }
-    elif isinstance(data, list):
-        items = []
-        for item in data:
-            sequence_item = {
-                "type": "block_sequence_item",
-                "yaml_type": "sequence_item",
-                "start_point": [0, 0],
-                "end_point": [0, 0],
-                "start_byte": 0,
-                "end_byte": 0,
-                "children": [convert_to_ast(item)]
-            }
-            items.append(sequence_item)
-        return {
-            "type": "block_sequence",
-            "yaml_type": "sequence",
-            "children": items,
-            "start_point": [0, 0],
-            "end_point": [0, 0],
-            "start_byte": 0,
-            "end_byte": 0
-        }
-    else:
-        # For scalars, also capture the specific data type in 'yaml_type'.
-        return {
-            "type": "flow_node",
-            "yaml_type": "scalar",
-            "start_point": [0, 0],
-            "end_point": [0, 0],
-            "start_byte": 0,
-            "end_byte": 0,
-            "children": [
-                {
-                    "type": "plain_scalar",
-                    "yaml_type": get_yaml_type(data),
-                    "value": data,
-                    "start_point": [0, 0],
-                    "end_point": [0, 0],
-                    "start_byte": 0,
-                    "end_byte": 0,
-                }
-            ]
-        }
+from utils.logger import log
 
 def parse_yaml_code(source_code: str) -> dict:
     """
-    Parse the provided YAML source code using PyYAML and extend the
-    generated structure with metadata including AST positions (set to default
-    values) and the YAML type for each node.
+    Parse YAML content as structured code while preserving documentation features.
     
-    The root AST node type is now set to "yaml_stream" (to match our YAML query patterns).
+    Handles both configuration and documentation use cases:
+    - Configuration: Preserves structure and relationships
+    - Documentation: Captures metadata and content organization
+    - Comments: Maintains documentation within configuration
     """
-    # Split the source into lines to compute simple positions.
-    lines = source_code.splitlines()
-    total_lines = len(lines)
-    last_line_length = len(lines[-1]) if lines else 0
-
-    # Change the root type from "stream" to "yaml_stream" to match our query patterns.
-    stream_node = {
-        "type": "yaml_stream",
-        "start_point": [0, 0],
-        "end_point": [total_lines - 1, last_line_length],
-        "start_byte": 0,
-        "end_byte": len(source_code),
-        "children": []
-    }
-    
-    # If the first line is a comment, extract it as documentation.
-    documentation = ""
-    current_byte = 0
-    children = []
-    if lines and lines[0].strip().startswith("#"):
-        comment_line = lines[0]
-        comment_node = {
-            "type": "comment",
-            "start_point": [0, 0],
-            "end_point": [0, len(comment_line)],
-            "start_byte": 0,
-            "end_byte": len(comment_line)
-        }
-        children.append(comment_node)
-        documentation = comment_line.strip()
-        current_byte += len(comment_line) + 1  # Account for newline
-        doc_start_line = 1
-    else:
-        doc_start_line = 0
-
-    # Create a document node spanning the remainder of the file.
-    document_node = {
-        "type": "document",
-        "start_point": [doc_start_line, 0],
-        "end_point": [total_lines - 1, last_line_length],
-        "start_byte": current_byte,
-        "end_byte": len(source_code),
-        "children": []
-    }
-    
-    # Parse the YAML content using PyYAML.
     try:
-        parsed_data = yaml.safe_load(source_code)
-    except Exception:
-        parsed_data = None
-    
-    if parsed_data is not None:
-        block_node = {
-            "type": "block_node",
-            "yaml_type": "document_body",
-            "start_point": [doc_start_line, 0],
-            "end_point": [total_lines - 1, last_line_length],
-            "start_byte": current_byte,
-            "end_byte": len(source_code),
-            "children": [convert_to_ast(parsed_data)]
+        # Track document structure and features
+        features: Dict[str, Any] = {
+            "syntax": {
+                "mappings": [],    # key-value pairs
+                "sequences": [],   # lists/arrays
+                "scalars": [],     # simple values
+                "anchors": []      # YAML anchors and aliases
+            },
+            "structure": {
+                "documents": [],   # multiple docs in single file
+                "sections": [],    # top-level keys
+                "includes": []     # external references
+            },
+            "semantics": {
+                "definitions": [], # schema definitions
+                "references": [],  # internal references
+                "environment": []  # env var references
+            },
+            "documentation": {
+                "comments": [],    # Regular comments
+                "metadata": {},    # Document metadata
+                "descriptions": [] # Key descriptions
+            }
         }
-    else:
-        block_node = {
-            "type": "block_node",
-            "yaml_type": "document_body",
-            "start_point": [doc_start_line, 0],
-            "end_point": [total_lines - 1, last_line_length],
-            "start_byte": current_byte,
-            "end_byte": len(source_code),
-            "children": []
+        
+        # Regex patterns for YAML elements
+        patterns = {
+            'comment': re.compile(r'^\s*#\s*(.+)$'),
+            'key_value': re.compile(r'^\s*([^:]+):\s*(.*)$'),
+            'list_item': re.compile(r'^\s*-\s+(.+)$'),
+            'anchor': re.compile(r'&([^\s]+)\s'),
+            'alias': re.compile(r'\*([^\s]+)'),
+            'env_var': re.compile(r'\$\{([^}]+)\}'),
+            'include': re.compile(r'!include\s+(.+)$')
         }
-    document_node["children"].append(block_node)
-    children.append(document_node)
-    stream_node["children"] = children
-    
-    features = extract_features_from_ast(stream_node)
-    
-    return build_parser_output(
-        source_code=source_code,
-        language="yaml",
-        ast=stream_node,
-        features=features,
-        total_lines=total_lines,
-        documentation=documentation,
-        complexity=1
-    )
+        
+        def process_node(node: Any, path: List[str], line_number: int) -> Dict:
+            """Process a YAML node and extract its features."""
+            if isinstance(node, dict):
+                return process_mapping(node, path, line_number)
+            elif isinstance(node, list):
+                return process_sequence(node, path, line_number)
+            else:
+                return process_scalar(node, path, line_number)
+        
+        def process_mapping(mapping: Dict, path: List[str], line_number: int) -> Dict:
+            """Process a YAML mapping (dictionary)."""
+            mapping_features = {
+                "type": "mapping",
+                "path": path,
+                "line": line_number,
+                "keys": [],
+                "children": []
+            }
+            
+            for key, value in mapping.items():
+                key_path = path + [str(key)]
+                
+                # Check for documentation in key names
+                if str(key).endswith('_doc') or str(key).endswith('_description'):
+                    features["documentation"]["descriptions"].append({
+                        "path": '.'.join(key_path[:-1]),
+                        "content": str(value),
+                        "line": line_number
+                    })
+                
+                mapping_features["keys"].append({
+                    "key": key,
+                    "path": '.'.join(key_path),
+                    "line": line_number
+                })
+                
+                child_node = process_node(value, key_path, line_number)
+                mapping_features["children"].append(child_node)
+            
+            features["syntax"]["mappings"].append(mapping_features)
+            return mapping_features
+        
+        def process_sequence(sequence: List, path: List[str], line_number: int) -> Dict:
+            """Process a YAML sequence (list)."""
+            sequence_features = {
+                "type": "sequence",
+                "path": path,
+                "line": line_number,
+                "items": []
+            }
+            
+            for i, item in enumerate(sequence):
+                item_path = path + [str(i)]
+                child_node = process_node(item, item_path, line_number)
+                sequence_features["items"].append(child_node)
+            
+            features["syntax"]["sequences"].append(sequence_features)
+            return sequence_features
+        
+        def process_scalar(value: Any, path: List[str], line_number: int) -> Dict:
+            """Process a YAML scalar (simple value)."""
+            scalar_feature = {
+                "type": "scalar",
+                "path": path,
+                "value": str(value),
+                "line": line_number
+            }
+            
+            # Check for environment variables
+            env_vars = patterns['env_var'].findall(str(value))
+            if env_vars:
+                features["semantics"]["environment"].extend([
+                    {"name": var, "path": '.'.join(path), "line": line_number}
+                    for var in env_vars
+                ])
+            
+            features["syntax"]["scalars"].append(scalar_feature)
+            return scalar_feature
+        
+        # Parse comments and structure first
+        lines = source_code.splitlines()
+        current_comment_block = []
+        
+        for i, line in enumerate(lines):
+            comment_match = patterns['comment'].match(line)
+            if comment_match:
+                comment_content = comment_match.group(1)
+                current_comment_block.append(comment_content)
+                continue
+            
+            if current_comment_block:
+                features["documentation"]["comments"].append({
+                    "content": "\n".join(current_comment_block),
+                    "line": i
+                })
+                current_comment_block = []
+            
+            # Check for includes
+            include_match = patterns['include'].search(line)
+            if include_match:
+                features["structure"]["includes"].append({
+                    "path": include_match.group(1),
+                    "line": i + 1
+                })
+            
+            # Check for anchors and aliases
+            anchor_match = patterns['anchor'].search(line)
+            if anchor_match:
+                features["syntax"]["anchors"].append({
+                    "name": anchor_match.group(1),
+                    "line": i + 1
+                })
+        
+        # Parse YAML content
+        try:
+            docs = list(yaml.safe_load_all(source_code))
+        except Exception as e:
+            log(f"Error parsing YAML content: {e}", level="error")
+            docs = []
+        
+        # Process each document
+        ast_children = []
+        for doc_index, doc in enumerate(docs):
+            doc_node = process_node(doc, [f"doc_{doc_index}"], 0)
+            ast_children.append(doc_node)
+            features["structure"]["documents"].append({
+                "index": doc_index,
+                "root": doc_node
+            })
+        
+        # Build the AST
+        ast = {
+            "type": "yaml_file",
+            "children": ast_children,
+            "start_point": [0, 0],
+            "end_point": [len(lines) - 1, len(lines[-1]) if lines else 0],
+            "start_byte": 0,
+            "end_byte": len(source_code)
+        }
+        
+        return build_parser_output(
+            source_code=source_code,
+            language="yaml",
+            ast=ast,
+            features=features,
+            total_lines=len(lines),
+            documentation="\n".join(comment["content"] 
+                                  for comment in features["documentation"]["comments"]),
+            complexity=len(features["syntax"]["mappings"]) + 
+                      len(features["syntax"]["sequences"])
+        )
+        
+    except Exception as e:
+        log(f"Error in YAML parser: {e}", level="error")
+        return build_parser_output(
+            source_code=source_code,
+            language="yaml",
+            ast={"type": "error", "message": str(e)},
+            features={},
+            total_lines=len(source_code.splitlines()),
+            documentation="",
+            complexity=0
+        )

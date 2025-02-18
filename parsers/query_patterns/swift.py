@@ -1,197 +1,160 @@
 """Swift-specific Tree-sitter patterns."""
 
+from .common import COMMON_PATTERNS
+
 SWIFT_PATTERNS = {
-    # Basic pattern for function detection
+    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
+    
+    # Syntax category with rich patterns
     "function": """
         [
-          (function_declaration)
-          (closure_expression)
-        ] @function
-    """,
-    # Extended pattern for detailed function information
-    "function_details": """
-        [
+          ; Basic function (from common)
+          (function_declaration) @syntax.function,
+          
+          ; Rich function patterns
           (function_declaration
-            name: (identifier) @function.name
-            parameters: (parameter_clause) @function.params
-            body: (code_block) @function.body) @function.def,
-          (closure_expression
-            parameters: (parameter_clause)? @function.params
-            body: (code_block) @function.body) @function.def
+            attributes: (attribute)* @syntax.function.attributes
+            modifiers: [(private) (public) (internal) (fileprivate) (static) (class) (final)]* @syntax.function.modifier
+            name: (identifier) @syntax.function.name
+            generic_parameter_clause: (generic_parameter_clause
+              (generic_parameter
+                name: (type_identifier) @syntax.function.type_param.name
+                type_constraints: (type_constraints
+                  (inheritance_constraint
+                    type: (_) @syntax.function.type_param.constraint))*) @syntax.function.type_param)* @syntax.function.type_params
+            parameter_clause: (parameter_clause
+              (parameter
+                attributes: (attribute)* @syntax.function.param.attributes
+                modifiers: [(inout)]* @syntax.function.param.modifier
+                name: (identifier) @syntax.function.param.name
+                type: (_) @syntax.function.param.type
+                default_value: (_)? @syntax.function.param.default)*) @syntax.function.params
+            return_type: (type_annotation
+              type: (_) @syntax.function.return_type)? @syntax.function.return
+            generic_where_clause: (generic_where_clause)? @syntax.function.where
+            body: (code_block) @syntax.function.body) @syntax.function.def,
+            
+          ; Method patterns
+          (function_declaration
+            modifiers: [(mutating) (override)]* @syntax.function.method.modifier) @syntax.function.method
         ]
     """,
-    # Class patterns
+    
     "class": """
         [
+          ; Basic class (from common)
+          (class_declaration) @syntax.class,
+          
+          ; Rich class patterns
           (class_declaration
-            attributes: (attribute)* @class.attributes
-            modifiers: (declaration_modifier)* @class.modifiers
-            name: (type_identifier) @class.name
-            type_parameters: (generic_parameter_clause)? @class.type_params
-            inheritance: (type_inheritance_clause)? @class.inheritance
-            body: (class_body) @class.body) @class.def
-        ]
-    """,
-    # Protocol patterns
-    "protocol": """
-        [
+            attributes: (attribute)* @syntax.class.attributes
+            modifiers: [(private) (public) (internal) (fileprivate) (final)]* @syntax.class.modifier
+            name: (type_identifier) @syntax.class.name
+            generic_parameter_clause: (generic_parameter_clause)? @syntax.class.type_params
+            type_inheritance_clause: (type_inheritance_clause
+              [(class_requirement) @syntax.class.superclass
+               (type_identifier) @syntax.class.protocol]*) @syntax.class.inheritance
+            generic_where_clause: (generic_where_clause)? @syntax.class.where
+            members: (class_body
+              [(property_declaration) @syntax.class.property
+               (function_declaration) @syntax.class.method
+               (initializer_declaration) @syntax.class.initializer
+               (deinitializer_declaration) @syntax.class.deinitializer
+               (subscript_declaration) @syntax.class.subscript
+               (protocol_property_declaration) @syntax.class.protocol_property]*) @syntax.class.body) @syntax.class.def,
+               
+          ; Protocol patterns
           (protocol_declaration
-            attributes: (attribute)* @protocol.attributes
-            modifiers: (declaration_modifier)* @protocol.modifiers
-            name: (type_identifier) @protocol.name
-            type_parameters: (generic_parameter_clause)? @protocol.type_params
-            inheritance: (type_inheritance_clause)? @protocol.inheritance
-            body: (protocol_body) @protocol.body) @protocol.def
+            attributes: (attribute)* @syntax.protocol.attributes
+            modifiers: [(private) (public) (internal) (fileprivate)]* @syntax.protocol.modifier
+            name: (type_identifier) @syntax.protocol.name
+            type_inheritance_clause: (type_inheritance_clause)? @syntax.protocol.inheritance
+            members: (protocol_body) @syntax.protocol.body) @syntax.protocol.def
         ]
     """,
-    # Extension patterns
-    "extension": """
+    
+    # Structure category with rich patterns
+    "module": """
         [
+          (import_declaration
+            path: (identifier)+ @structure.import.path
+            attributes: (attribute)* @structure.import.attributes) @structure.import,
+            
           (extension_declaration
-            attributes: (attribute)* @extension.attributes
-            modifiers: (declaration_modifier)* @extension.modifiers
-            type: (type_identifier) @extension.type
-            inheritance: (type_inheritance_clause)? @extension.inheritance
-            where: (generic_where_clause)? @extension.where
-            body: (extension_body) @extension.body) @extension.def
+            type: (type_identifier) @structure.extension.type
+            type_inheritance_clause: (type_inheritance_clause)? @structure.extension.protocols
+            generic_where_clause: (generic_where_clause)? @structure.extension.where
+            members: (extension_body) @structure.extension.body) @structure.extension
         ]
     """,
+    
     # Property patterns
     "property": """
         [
-          (variable_declaration
-            attributes: (attribute)* @property.attributes
-            modifiers: (declaration_modifier)* @property.modifiers
-            name: (pattern) @property.name
-            type: (type_annotation)? @property.type
-            value: (code_block)? @property.value) @property.def,
+          (property_declaration
+            attributes: (attribute)* @semantics.property.attributes
+            modifiers: [(private) (public) (internal) (fileprivate) (static) (class)]* @semantics.property.modifier
+            name: (identifier) @semantics.property.name
+            type: (type_annotation
+              type: (_) @semantics.property.type)? @semantics.property.type_annotation
+            getter_setter_block: (getter_setter_block
+              [(getter_clause) @semantics.property.getter
+               (setter_clause) @semantics.property.setter])? @semantics.property.accessors) @semantics.property,
+               
           (computed_property
-            attributes: (attribute)* @property.computed.attributes
-            modifiers: (declaration_modifier)* @property.computed.modifiers
-            name: (pattern) @property.computed.name
-            type: (type_annotation)? @property.computed.type
-            getter: (getter_clause) @property.computed.getter
-            setter: (setter_clause)? @property.computed.setter) @property.computed.def
+            code_block: (code_block) @semantics.property.computed.body) @semantics.property.computed
         ]
     """,
-    # Method patterns
-    "method": """
+    
+    # Documentation category with rich patterns
+    "documentation": """
         [
-          (instance_method
-            attributes: (attribute)* @method.attributes
-            modifiers: (declaration_modifier)* @method.modifiers
-            name: (identifier) @method.name
-            parameters: (parameter_clause) @method.params
-            return_type: (return_clause)? @method.return
-            body: (code_block) @method.body) @method.def,
-          (class_method
-            attributes: (attribute)* @method.class.attributes
-            modifiers: (declaration_modifier)* @method.class.modifiers
-            name: (identifier) @method.class.name
-            parameters: (parameter_clause) @method.class.params
-            return_type: (return_clause)? @method.class.return
-            body: (code_block) @method.class.body) @method.class.def
+          ; Basic comments (from common)
+          (comment) @documentation.comment,
+          
+          ; Rich documentation patterns
+          (documentation_comment
+            text: /\\/\\/\\/.*/) @documentation.doc.line,
+            
+          (documentation_comment
+            text: /\\/\\*\\*.*?\\*\\// @documentation.doc.block),
+            
+          ; Documentation keywords
+          (documentation_comment
+            text: /- [a-zA-Z]+:.*/) @documentation.doc.keyword
         ]
     """,
-    # Type patterns
-    "type": """
-        [
-          (typealias_declaration
-            attributes: (attribute)* @type.alias.attributes
-            modifiers: (declaration_modifier)* @type.alias.modifiers
-            name: (type_identifier) @type.alias.name
-            type_parameters: (generic_parameter_clause)? @type.alias.type_params
-            value: (type) @type.alias.value) @type.alias.def,
-          (struct_declaration
-            attributes: (attribute)* @type.struct.attributes
-            modifiers: (declaration_modifier)* @type.struct.modifiers
-            name: (type_identifier) @type.struct.name
-            type_parameters: (generic_parameter_clause)? @type.struct.type_params
-            inheritance: (type_inheritance_clause)? @type.struct.inheritance
-            body: (struct_body) @type.struct.body) @type.struct.def
-        ]
-    """,
-    # Enum patterns
-    "enum": """
-        [
-          (enum_declaration
-            attributes: (attribute)* @enum.attributes
-            modifiers: (declaration_modifier)* @enum.modifiers
-            name: (type_identifier) @enum.name
-            type_parameters: (generic_parameter_clause)? @enum.type_params
-            inheritance: (type_inheritance_clause)? @enum.inheritance
-            body: (enum_body
-              (enum_case
-                attributes: (attribute)* @enum.case.attributes
-                modifiers: (declaration_modifier)* @enum.case.modifiers
-                name: (identifier) @enum.case.name
-                parameters: (parameter_clause)? @enum.case.params)*) @enum.body) @enum.def
-        ]
-    """,
-    # Control flow patterns
-    "control_flow": """
-        [
-          (if_statement
-            condition: (condition_list) @if.condition
-            body: (code_block) @if.body
-            else: (else_clause)? @if.else) @if,
-          (guard_statement
-            condition: (condition_list) @guard.condition
-            body: (code_block) @guard.body) @guard,
-          (switch_statement
-            expression: (_) @switch.expr
-            cases: (switch_case_list
-              (case_item
-                pattern: (_) @case.pattern
-                where: (where_clause)? @case.where
-                body: (code_block) @case.body)*) @switch.cases) @switch
-        ]
-    """,
+    
     # Error handling patterns
-    "error_handling": """
+    "error": """
         [
           (do_statement
-            body: (code_block) @do.body
-            catch: (catch_clause
-              pattern: (_)? @catch.pattern
-              where: (where_clause)? @catch.where
-              body: (code_block) @catch.body)*) @do,
+            code_block: (code_block) @semantics.error.do.block
+            catch_clauses: (catch_clause
+              pattern: (_) @semantics.error.catch.pattern
+              where_clause: (where_clause)? @semantics.error.catch.where
+              code_block: (code_block) @semantics.error.catch.block)*) @semantics.error.do,
+              
           (throw_statement
-            expression: (_) @throw.expr) @throw
+            expression: (_) @semantics.error.throw.expr) @semantics.error.throw,
+            
+          (try_expression
+            expression: (_) @semantics.error.try.expr) @semantics.error.try
         ]
     """,
+    
     # Concurrency patterns
     "concurrency": """
         [
-          (async_let_declaration
-            pattern: (_) @async.let.pattern
-            type: (type_annotation)? @async.let.type
-            value: (_) @async.let.value) @async.let,
+          (actor_declaration
+            name: (type_identifier) @semantics.concurrency.actor.name
+            members: (actor_body) @semantics.concurrency.actor.body) @semantics.concurrency.actor,
+            
+          (async_function
+            modifiers: (async) @semantics.concurrency.async.modifier) @semantics.concurrency.async,
+            
           (await_expression
-            expression: (_) @await.expr) @await
-        ]
-    """,
-    # Property wrapper patterns
-    "property_wrapper": """
-        [
-          (property_wrapper_declaration
-            attributes: (attribute)* @wrapper.attributes
-            modifiers: (declaration_modifier)* @wrapper.modifiers
-            name: (type_identifier) @wrapper.name
-            type_parameters: (generic_parameter_clause)? @wrapper.type_params
-            wrapped_type: (type) @wrapper.wrapped_type
-            body: (property_wrapper_body) @wrapper.body) @wrapper.def
-        ]
-    """,
-    # Result builder patterns
-    "result_builder": """
-        [
-          (result_builder_declaration
-            attributes: (attribute)* @builder.attributes
-            modifiers: (declaration_modifier)* @builder.modifiers
-            name: (type_identifier) @builder.name
-            type_parameters: (generic_parameter_clause)? @builder.type_params
-            body: (result_builder_body) @builder.body) @builder.def
+            expression: (_) @semantics.concurrency.await.expr) @semantics.concurrency.await
         ]
     """
 } 

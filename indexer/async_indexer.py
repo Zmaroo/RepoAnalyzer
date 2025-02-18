@@ -1,51 +1,83 @@
 import os
 from indexer.file_config import CODE_EXTENSIONS, DOC_EXTENSIONS
 from indexer.common_indexer import async_index_files, index_file_async
+from async_utils import async_get_files, async_process_index_file
+from file_utils import read_text_file
 from utils.logger import log
 from parsers.file_parser import process_file
-from db.neo4j_tools import Neo4jTools
+from db.neo4j_tools import Neo4jTools, upsert_doc
 from db.neo4j_projections import Neo4jProjections
 from typing import Dict, Any
 import asyncio
+from parsers.language_mapping import FileType, get_file_classification
+from parsers.file_parser import FileProcessor
 
 async def async_index_repository(repo_path: str, repo_id: int) -> None:
-    """Enhanced repository indexing with Neo4j graph projections and analysis."""
-    log(f"Indexing repository [{repo_id}] at: {repo_path}")
+    """Enhanced active project indexing with improved error handling."""
+    log(f"Starting active project indexing [{repo_id}] at: {repo_path}")
     
-    # Initialize Neo4j tools and projections
     neo4j = Neo4jTools()
-    projections = Neo4jProjections()
-    
     try:
-        # Process and index code files using the unified async_index_files from common_indexer.
-        await async_index_files(
-            repo_path, 
-            repo_id, 
-            CODE_EXTENSIONS,
-            process_file,
-            lambda file_path, content: index_code_file(neo4j, repo_id, file_path, content),
-            "code",
-            wrap_sync=True
-        )
+        # Get files by FileType
+        code_files = await async_get_files(repo_path, {FileType.CODE})
+        doc_files = await async_get_files(repo_path, {FileType.DOC})
         
-        # Create code dependency projection
-        graph_name = f"code_dep_{repo_id}"
-        projection_result = projections.create_code_dependency_projection(graph_name)
+        total_files = len(code_files) + len(doc_files)
+        processed_files = 0
         
-        if projection_result:
-            log(f"Created graph projection with {projection_result.get('nodes', 0)} nodes and "
-                f"{projection_result.get('rels', 0)} relationships")
+        # Process code files
+        processor = FileProcessor()
+        for batch in [code_files[i:i+10] for i in range(0, len(code_files), 10)]:
+            tasks = []
+            for file_path in batch:
+                tasks.append(async_process_index_file(
+                    file_path=file_path,
+                    base_path=repo_path,
+                    repo_id=repo_id,
+                    file_processor=processor.process_file,
+                    index_function=neo4j.upsert_code_node,
+                    file_type="active_code"
+                ))
+            await asyncio.gather(*tasks, return_exceptions=True)
+            processed_files += len(batch)
+            log(f"Progress: {processed_files}/{total_files} files processed")
             
-            # Run community detection
+        # Process documentation files similarly
+        doc_batches = [doc_files[i:i+10] for i in range(0, len(doc_files), 10)]
+        for batch in doc_batches:
+            tasks = []
+            for file_path in batch:
+                tasks.append(async_process_index_file(
+                    file_path=file_path,
+                    base_path=repo_path,
+                    repo_id=repo_id,
+                    file_processor=read_text_file,
+                    index_function=upsert_doc,
+                    file_type="doc"
+                ))
+            await asyncio.gather(*tasks, return_exceptions=True)
+            processed_files += len(batch)
+            log(f"Progress: {processed_files}/{total_files} files processed")
+
+        # Run graph analysis after indexing
+        graph_name = f"repo_{repo_id}_graph"
+        projections = Neo4jProjections()
+        
+        try:
+            projections.create_code_dependency_projection(graph_name)
+            log(f"Created graph projection for repository {repo_id}")
+            
             communities = projections.run_community_detection(graph_name)
             if communities:
                 log(f"Identified {len(set(c['community'] for c in communities))} code communities")
             
-            # Run centrality analysis
             central_components = projections.run_centrality_analysis(graph_name)
             if central_components:
                 log(f"Identified {len(central_components)} central code components")
                 
+        except Exception as e:
+            log(f"Graph analysis failed: {e}", level="error")
+            
     finally:
         neo4j.close()
 

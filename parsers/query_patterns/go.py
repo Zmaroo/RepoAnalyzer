@@ -1,139 +1,168 @@
 """Go-specific Tree-sitter patterns."""
 
+from .common import COMMON_PATTERNS
+
 GO_PATTERNS = {
-    # Basic pattern for function detection
+    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
+    
+    # Syntax category with rich patterns
     "function": """
         [
-          (function_declaration)
-          (method_declaration)
-        ] @function
-    """,
-    # Extended pattern for detailed function information
-    "function_details": """
-        [
-        (function_declaration
-           name: (identifier) @function.name
+          ; Basic function (from common)
+          (function_declaration) @syntax.function,
+          
+          ; Rich function patterns
+          (function_declaration
+            name: (identifier) @syntax.function.name
+            type_parameters: (type_parameter_list
+              (type_parameter
+                name: (identifier) @syntax.function.type_param.name
+                type: (type_spec)? @syntax.function.type_param.constraint)*) @syntax.function.type_params
             parameters: (parameter_list
-              (parameter_declaration
-                name: (identifier) @function.param.name
-                type: (_) @function.param.type)*) @function.params
-            result: (parameter_list)? @function.return_type
-            body: (block) @function.body) @function.def,
+              [(parameter_declaration
+                 name: (identifier) @syntax.function.param.name
+                 type: (_) @syntax.function.param.type)
+               (variadic_parameter_declaration
+                 name: (identifier) @syntax.function.param.name
+                 type: (_) @syntax.function.param.type)]*) @syntax.function.params
+            result: [(type_identifier) (parameter_list)]? @syntax.function.return_type
+            body: (block) @syntax.function.body) @syntax.function.def,
+            
+          ; Method patterns
           (method_declaration
             receiver: (parameter_list
               (parameter_declaration
-                name: (identifier)? @function.receiver.name
-                type: (_) @function.receiver.type)) @function.receiver
-            name: (identifier) @function.name
-            parameters: (parameter_list
-              (parameter_declaration
-                name: (identifier) @function.param.name
-                type: (_) @function.param.type)*) @function.params
-            result: (parameter_list)? @function.return_type
-            body: (block) @function.body) @function.def
+                name: (identifier)? @syntax.function.method.receiver.name
+                type: (_) @syntax.function.method.receiver.type)) @syntax.function.method.receiver
+            name: (identifier) @syntax.function.method.name
+            parameters: (parameter_list) @syntax.function.method.params
+            result: (_)? @syntax.function.method.return_type
+            body: (block) @syntax.function.method.body) @syntax.function.method
         ]
     """,
-    # Type patterns
+    
     "type": """
         [
+          ; Basic type (from common)
+          (type_declaration) @syntax.type,
+          
+          ; Rich type patterns
           (type_declaration
-            (type_spec
-              name: (type_identifier) @type.name
-              type: (_) @type.value)) @type.def,
-          (type_identifier) @type.ref
+            name: (type_identifier) @syntax.type.name
+            type: [(struct_type
+                    fields: (field_declaration_list
+                      [(field_declaration
+                         name: (field_identifier) @syntax.type.struct.field.name
+                         type: (_) @syntax.type.struct.field.type
+                         tag: (raw_string_literal)? @syntax.type.struct.field.tag)
+                       (embedded_field
+                         type: (_) @syntax.type.struct.embed.type)]*) @syntax.type.struct.fields) @syntax.type.struct
+                   (interface_type
+                     methods: (method_spec_list
+                       [(method_spec
+                          name: (identifier) @syntax.type.interface.method.name
+                          parameters: (parameter_list) @syntax.type.interface.method.params
+                          result: (_)? @syntax.type.interface.method.return_type)
+                        (type_identifier) @syntax.type.interface.embed]*) @syntax.type.interface.methods) @syntax.type.interface]) @syntax.type.def
         ]
     """,
-    # Interface patterns
-    "interface": """
-        (interface_type
-          (method_spec
-            name: (identifier) @interface.method.name
-            parameters: (parameter_list) @interface.method.params
-            result: (parameter_list)? @interface.method.return_type)*) @interface
-    """,
-    # Struct patterns
-    "struct": """
-        (struct_type
-          (field_declaration_list
-            (field_declaration
-              name: (field_identifier) @struct.field.name
-              type: (_) @struct.field.type
-              tag: (raw_string_literal)? @struct.field.tag)*)) @struct
-    """,
-    # Package patterns
+    
+    # Structure category with rich patterns
     "package": """
         [
+          ; Basic package (from common)
+          (package_clause) @structure.package,
+          
+          ; Rich package patterns
           (package_clause
-            (package_identifier) @package.name) @package,
-        (import_declaration
-            (import_spec_list
+            name: (identifier) @structure.package.name) @structure.package.def,
+            
+          (import_declaration
+            specs: (import_spec_list
               (import_spec
-                name: (identifier)? @import.alias
-                path: (interpreted_string_literal) @import.path)*)) @import
+                name: (identifier)? @structure.import.alias
+                path: (interpreted_string_literal) @structure.import.path)*) @structure.import.specs) @structure.import
         ]
     """,
-    # Variable declaration patterns
-    "variable": """
+    
+    # Concurrency patterns
+    "concurrency": """
         [
-          (var_declaration
-            (var_spec
-              name: (identifier) @variable.name
-              type: (_)? @variable.type
-              value: (_)? @variable.value)) @variable.def,
-        (short_var_declaration
-            left: (expression_list
-              (identifier) @variable.name)
-            right: (expression_list
-              (_) @variable.value)) @variable.short_def
-        ]
-    """,
-    # Control flow patterns
-    "control_flow": """
-        [
-        (if_statement
-            condition: (_) @if.condition
-            body: (block) @if.body
-            else: (block)? @if.else) @if,
-          (for_statement
-            clause: (_)? @for.clause
-            body: (block) @for.body) @for,
-          (range_statement
-            left: (_)? @range.vars
-            right: (_) @range.expr
-            body: (block) @range.body) @range
-        ]
-    """,
-    # Channel operation patterns
-    "channel": """
-        [
-          (channel_type) @channel.type,
+          ; Goroutines
+          (go_expression
+            expression: (_) @semantics.concurrency.go.expr) @semantics.concurrency.go,
+            
+          ; Channels
+          (channel_type
+            value: (_) @semantics.concurrency.chan.type) @semantics.concurrency.chan,
+            
           (send_statement
-            channel: (_) @channel.name
-            value: (_) @channel.value) @channel.send,
-          (receive_statement
-            left: (_) @channel.receiver
-            right: (_) @channel.source) @channel.receive
+            channel: (_) @semantics.concurrency.send.channel
+            value: (_) @semantics.concurrency.send.value) @semantics.concurrency.send,
+            
+          (receive_expression
+            channel: (_) @semantics.concurrency.receive.channel) @semantics.concurrency.receive,
+            
+          ; Select
+          (select_statement
+            body: (communication_case
+              communication: (_) @semantics.concurrency.select.comm
+              body: (_) @semantics.concurrency.select.body)*) @semantics.concurrency.select
         ]
     """,
-    # Error handling patterns
-    "error_handling": """
+    
+    # Documentation category with rich patterns
+    "documentation": """
         [
-          (defer_statement
-            (_) @defer.expr) @defer,
-          (go_statement
-            (_) @go.expr) @go,
-          (return_statement
-            (_)* @return.values) @return
+          ; Basic comments (from common)
+          (comment) @documentation.comment,
+          
+          ; Rich documentation patterns
+          (comment) @documentation.comment,
+          
+          ; Godoc patterns
+          (comment
+            text: /\\/\\/\\s*[A-Z].*/) @documentation.godoc.line,
+            
+          (comment
+            text: /\\/\\*\\s*[A-Z].*?\\*\\// @documentation.godoc.block)
         ]
     """,
-    "build_tags": """
-        (comment
-            text: (comment) @build.tag.text
-            (#match? @build.tag.text "^//\\s*\\+build.*$")) @build.tag
+    
+    # Testing patterns
+    "testing": """
+        [
+          (function_declaration
+            name: (identifier) @semantics.test.name
+            (#match? @semantics.test.name "^Test")
+            parameters: (parameter_list
+              (parameter_declaration
+                type: (type_identifier) @semantics.test.param.type
+                (#match? @semantics.test.param.type "^\\*?testing\\.T$"))) @semantics.test.function,
+                
+          (call_expression
+            function: (selector_expression
+              operand: (identifier)
+              field: (identifier) @semantics.test.method
+              (#match? @semantics.test.method "^(Error|Fatal|Log)"))
+            arguments: (argument_list) @semantics.test.args) @semantics.test.call
+        ]
     """,
-    "generate": """
-        (comment
-            text: (comment) @generate.text
-            (#match? @generate.text "^//go:generate.*$")) @generate
+    
+    # Error handling patterns
+    "error": """
+        [
+          (if_statement
+            condition: (binary_expression
+              left: (_) @semantics.error.check.value
+              operator: "!="
+              right: (identifier) @semantics.error.check.nil
+              (#match? @semantics.error.check.nil "^nil$")) @semantics.error.check
+            consequence: (block) @semantics.error.handle) @semantics.error.if,
+            
+          (type_assertion_expression
+            type: (type_identifier) @semantics.error.type
+            (#match? @semantics.error.type "^error$")) @semantics.error.assert
+        ]
     """
 } 

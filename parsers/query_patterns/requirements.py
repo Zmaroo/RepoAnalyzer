@@ -72,5 +72,32 @@ REQUIREMENTS_PATTERNS = {
         [
           (comment) @comment
         ]
-    """
+    """,
+
+    "semantics": {
+        "variable": [
+            """
+            (requirement
+                package: (package) @name
+                version_spec: (version_spec)? @version) @variable
+            """
+        ]
+    },
+
+    "structure": {
+        "import": [
+            """
+            (requirement
+                url_spec: (url_spec)? @url) @import
+            """
+        ]
+    },
+
+    "documentation": {
+        "comment": [
+            """
+            (comment) @comment
+            """
+        ]
+    }
 }

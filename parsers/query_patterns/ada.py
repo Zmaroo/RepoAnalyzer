@@ -19,5 +19,22 @@ ADA_PATTERNS = {
                 name: (identifier)? @function.name)
             body: (block) @function.body) @function.def
         ]
+    """,
+    # Add common patterns that exist in other languages
+    "variable": """
+        [
+          (variable_declaration
+            name: (identifier) @variable.name
+            type: (_) @variable.type
+            value: (_)? @variable.value) @variable.def
+        ]
+    """,
+    
+    "type": """
+        [
+          (type_declaration
+            name: (identifier) @type.name
+            definition: (_) @type.def) @type
+        ]
     """
 } 

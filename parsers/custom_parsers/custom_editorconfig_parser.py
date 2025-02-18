@@ -11,75 +11,137 @@ import re
 
 def parse_editorconfig_code(source_code: str) -> dict:
     """
-    Parse an EditorConfig file.
-
-    Returns a dictionary with:
-      - "content": the raw source code,
-      - "language": "editorconfig",
-      - "ast_data": a custom AST with sections and properties,
-      - "ast_features": features extracted from the AST,
-      - "lines_of_code": the total number of lines,
-      - "documentation": any leading comment as documentation (if present),
-      - "complexity": a placeholder value.
+    Parse EditorConfig files to generate an AST aligned with PATTERN_CATEGORIES.
+    
+    Maps EditorConfig constructs to standard categories:
+    - structure: sections (namespace)
+    - syntax: section headers (class)
+    - semantics: properties (variable)
+    - documentation: comments (comment)
     """
     lines = source_code.splitlines()
     total_lines = len(lines)
+    children = []
     
-    # Attempt to extract a top-level documentation comment.
-    documentation = ""
-    if re.match(r'^\s*#', source_code):
-        # Extract the documentation comment from the file
-        documentation = source_code.splitlines()[0].strip()
+    # Regex patterns for EditorConfig parsing
+    section_pattern = re.compile(r'^\[(.*)\]$')
+    property_pattern = re.compile(r'^([^=]+)=(.*)$')
+    comment_pattern = re.compile(r'^[#;](.*)$')
     
-    ast_children = []
-    current_section = {}
+    current_section = None
+    current_section_properties = []
+    
+    def flush_section():
+        """Process and add the current section to children."""
+        nonlocal current_section, current_section_properties
+        if current_section:
+            # Add the section header as a class
+            children.append({
+                "type": "syntax",
+                "category": "class",
+                "name": current_section["glob"],
+                "line": current_section["line"]
+            })
+            
+            # Add the section properties as a namespace
+            if current_section_properties:
+                children.append({
+                    "type": "structure",
+                    "category": "namespace",
+                    "name": current_section["glob"],
+                    "children": current_section_properties,
+                    "start_line": current_section["line"],
+                    "end_line": current_section_properties[-1]["line"]
+                })
+            
+            current_section = None
+            current_section_properties = []
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
+    for i, line in enumerate(lines):
+        line = line.strip()
+        
+        # Skip empty lines
+        if not line:
             continue
-        if stripped.startswith("[") and stripped.endswith("]"):
-            # Start a new section.
-            # If there is an existing section, add it to the children.
-            if current_section.get("name"):
-                ast_children.append(current_section)
-            section_name = stripped[1:-1].strip()
+            
+        # Check for comments
+        comment_match = comment_pattern.match(line)
+        if comment_match:
+            children.append({
+                "type": "documentation",
+                "category": "comment",
+                "content": comment_match.group(1).strip(),
+                "line": i + 1
+            })
+            continue
+            
+        # Check for section headers
+        section_match = section_pattern.match(line)
+        if section_match:
+            # Flush previous section
+            flush_section()
+            
+            # Start new section
             current_section = {
-                "type": "section",
-                "name": section_name,
-                "children": []
+                "glob": section_match.group(1).strip(),
+                "line": i + 1
             }
-        elif "=" in line:
-            # A key-value property line.
-            key, value = map(str.strip, line.split("=", 1))
-            property_node = {
-                "type": "property",
-                "key": key,
+            continue
+            
+        # Check for properties
+        property_match = property_pattern.match(line)
+        if property_match and current_section:
+            key = property_match.group(1).strip()
+            value = property_match.group(2).strip()
+            
+            current_section_properties.append({
+                "type": "semantics",
+                "category": "variable",
+                "name": key,
                 "value": value,
-                "text": stripped
-            }
-            # Append the property to the current section.
-            current_section.setdefault("children", []).append(property_node)
-        else:
-            # Could be a stray comment or free-form text.
-            pass
-
-    if current_section.get("name"):
-        ast_children.append(current_section)
-
-    # Insert the documentation node at the beginning if documentation exists.
-    if documentation:
-        ast_children.insert(0, {"type": "documentation", "text": documentation})
+                "line": i + 1
+            })
     
+    # Flush final section
+    flush_section()
+    
+    # Build the AST root
     ast = {
-        "type": "editorconfig",
-        "children": ast_children,
+        "type": "module",
+        "category": "structure",
+        "children": children,
         "start_point": [0, 0],
         "end_point": [total_lines - 1, len(lines[-1]) if lines else 0],
         "start_byte": 0,
         "end_byte": len(source_code)
     }
-    features = extract_features_from_ast(ast)
+
+    # Extract features based on pattern categories
+    features = {
+        "syntax": {
+            "class": [node for node in children 
+                     if node["type"] == "syntax" and node["category"] == "class"]
+        },
+        "structure": {
+            "namespace": [node for node in children 
+                         if node["type"] == "structure" and node["category"] == "namespace"]
+        },
+        "semantics": {
+            "variable": [node for node in ast["children"] 
+                        if node["type"] == "semantics" and node["category"] == "variable"]
+        },
+        "documentation": {
+            "comment": [node for node in children 
+                       if node["type"] == "documentation" and node["category"] == "comment"]
+        }
+    }
+
+    # Extract documentation from comments
+    documentation = "\n".join(
+        node["content"] for node in children
+        if node["type"] == "documentation" and node["category"] == "comment"
+    )
+
     return build_parser_output(
         source_code=source_code,
         language="editorconfig",

@@ -1,19 +1,37 @@
-"""Tree-sitter patterns for PowerShell programming language."""
+"""Query patterns for PowerShell files."""
 
 POWERSHELL_PATTERNS = {
-    # Basic pattern for function detection
-    "function": """
-        [
-          (function_definition)
-        ] @function
-    """,
-    # Extended pattern for detailed function information
-    "function_details": """
-        [
-          (function_definition
-             name: (identifier) @function.name
-             parameters: (parameter_block)? @function.params
-            body: (script_block) @function.body) @function.def
+    "syntax": {
+        "function": [
+            """
+            (function_definition
+                name: (identifier) @name
+                parameters: (parameter_block)? @params
+                body: (script_block) @body) @function
+            """
         ]
-    """
+    },
+    "structure": {
+        "import": [
+            """
+            (using_statement
+                module: (_) @module) @import
+            """
+        ]
+    },
+    "semantics": {
+        "variable": [
+            """
+            (variable
+                name: (_) @name) @variable
+            """
+        ]
+    },
+    "documentation": {
+        "comment": [
+            """
+            (comment) @comment
+            """
+        ]
+    }
 } 

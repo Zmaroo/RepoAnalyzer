@@ -1,19 +1,58 @@
-"""Erlang-specific Tree-sitter patterns."""
+"""Query patterns for Erlang files."""
 
 ERLANG_PATTERNS = {
-    # Function patterns
-    "function": """
-        [
-          (fun_decl
-            clause: (_) @function.clause) @function.def,
-          (fun_clause
-            name: (_)? @function.name
-            args: (expr_args) @function.params
-            guard: (_)? @function.guard
-            body: (clause_body) @function.body) @function.clause
+    "syntax": {
+        "function": [
+            """
+            (fun_decl
+                clause: (_) @function.clause) @function.def
+            """,
+            """
+            (fun_clause
+                name: (_)? @function.name
+                args: (expr_args) @function.params
+                guard: (_)? @function.guard
+                body: (clause_body) @function.body) @function.clause
+            """
+        ],
+        "class": [
+            """
+            (module_attribute
+                name: (_) @module.name) @class
+            """
         ]
-    """,
-
+    },
+    "structure": {
+        "import": [
+            """
+            (import_attribute
+                module: (_) @import.module
+                functions: (_) @import.functions) @import
+            """
+        ],
+        "namespace": [
+            """
+            (behaviour_attribute
+                module: (_) @behaviour.module) @namespace
+            """
+        ]
+    },
+    "semantics": {
+        "variable": [
+            """
+            (variable_definition
+                name: (_) @name
+                value: (_) @value) @variable
+            """
+        ]
+    },
+    "documentation": {
+        "comment": [
+            """
+            (comment) @comment
+            """
+        ]
+    },
     # Module patterns
     "module": """
         [

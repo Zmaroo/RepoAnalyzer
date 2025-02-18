@@ -24,6 +24,7 @@ MODULE_LANGUAGE_MAP = {
     'editorconfig': 'editorconfig',
     'elisp': 'elisp',
     'elixir': 'elixir',
+    'elm': 'elm',             # Added Elm mapping
     'env': 'env',
     'erlang': 'erlang',
     'fish': 'fish',
@@ -31,6 +32,8 @@ MODULE_LANGUAGE_MAP = {
     'gdscript': 'gdscript',
     'gitignore': 'gitignore',
     'gleam': 'gleam',
+    'hack': 'hack',          # Added Hack mapping
+    'haxe': 'haxe',          # Added Haxe mapping
     'json': 'json',
     'julia': 'julia',
     'kotlin': 'kotlin',
@@ -51,13 +54,24 @@ MODULE_LANGUAGE_MAP = {
     'ruby': 'ruby',
     'rust': 'rust',
     'scala': 'scala',
+    'solidity': 'solidity',   # Added Solidity mapping
     'swift': 'swift',
-    'tcl': 'tcl',
+    'tcl': 'tcl',             # Added Tcl mapping
     'typescript': 'typescript',
+    'verilog': 'verilog',     # Added Verilog mapping
     'vue': 'vue',
     'xml': 'xml',
     'yaml': 'yaml',
     'zig': 'zig',
+    'pascal': 'pascal',       # Added Pascal mapping
+    'cobalt': 'cobalt',       # Added Cobalt mapping
+    'purescript': 'purescript',  # Added Purescript mapping
+    'asciidoc': 'asciidoc',   # AsciiDoc parser
+    'html': 'html',           # Custom HTML parser
+    'ini': 'ini',             # Custom INI/Properties parser
+    'json': 'json',           # Custom JSON parser
+    'rst': 'rst',             # reStructuredText parser
+    'toml': 'toml',           # Custom TOML parser
 }
 
 QUERY_PATTERNS = {}
@@ -97,14 +111,67 @@ for module_info in pkgutil.iter_modules([package_dir]):
                     QUERY_PATTERNS[key] = patterns
                 log(f"Loaded query patterns for '{key}' from attribute '{attr}'", level="debug")
 
-# Import new query pattern modules for cobalt and pascal.
-from .cobalt import COBALT_PATTERNS
-from .pascal import PASCAL_PATTERNS
+
+# Add pattern categories for better organization
+PATTERN_CATEGORIES = {
+    "syntax": [
+        "function", "class", "module",
+        # Add markup-specific patterns
+        "section", "block", "element", "directive",
+        "macro", "attribute"
+    ],
+    "semantics": [
+        "variable", "type", "expression",
+        # Add markup-specific patterns
+        "link", "reference", "definition", "term",
+        "callout", "citation"
+    ],
+    "documentation": [
+        "comment", "docstring",
+        # Add markup-specific patterns
+        "metadata", "description", "admonition",
+        "annotation", "field"
+    ],
+    "structure": [
+        "namespace", "import", "export",
+        # Add markup-specific patterns
+        "hierarchy", "include", "anchor", "toc"
+    ]
+}
 
 def get_query_patterns(language: str):
-    normalized_lang = normalize_language_name(language)
-    patterns = QUERY_PATTERNS.get(normalized_lang)
-    if patterns is None:
-        log(f"No query patterns found for language '{normalized_lang}', returning empty dict", level="warning")
-        patterns = {}
-    return patterns
+    """Get query patterns for a language with improved error handling."""
+    try:
+        normalized_lang = normalize_language_name(language)
+        patterns = QUERY_PATTERNS.get(normalized_lang)
+        if patterns is None:
+            log(f"No query patterns found for language '{normalized_lang}', returning empty dict", 
+                level="warning")
+            patterns = {}
+        return patterns
+    except Exception as e:
+        log(f"Error getting query patterns for '{language}': {e}", level="error")
+        return {}
+
+def validate_pattern_category(pattern_name: str) -> str:
+    """
+    Validate and return the category a pattern belongs to.
+    
+    Args:
+        pattern_name: The name of the pattern to categorize
+        
+    Returns:
+        str: The category name, or 'unknown' if not found
+    """
+    for category, patterns in PATTERN_CATEGORIES.items():
+        if pattern_name in patterns:
+            return category
+    return "unknown"
+
+def get_patterns_by_category(language: str, category: str) -> dict:
+    """Get all patterns for a language belonging to a specific category."""
+    all_patterns = get_query_patterns(language)
+    return {
+        name: pattern for name, pattern in all_patterns.items()
+        if validate_pattern_category(name) == category
+    }

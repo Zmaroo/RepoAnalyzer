@@ -1,194 +1,159 @@
 """Ruby-specific Tree-sitter patterns."""
 
+from .common import COMMON_PATTERNS
+
 RUBY_PATTERNS = {
-    # Basic pattern for function detection
+    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
+    
+    # Syntax category with rich patterns
     "function": """
         [
-          (method)
-          (singleton_method)
-          (block)
-        ] @function
-    """,
-    # Extended pattern for detailed function information
-    "function_details": """
-        [
+          ; Basic method (from common)
+          (method) @syntax.method,
+          
+          ; Rich method patterns
           (method
-            name: (identifier) @function.name
+            name: (identifier) @syntax.function.name
             parameters: (method_parameters
-              [
-                (identifier) @function.param.name
-                (optional_parameter
-                  name: (identifier) @function.param.name
-                  value: (_) @function.param.default)
-                (keyword_parameter
-                  name: (identifier) @function.param.name
-                  value: (_)? @function.param.default)
-                (rest_parameter
-                  name: (identifier) @function.param.rest)
-                (block_parameter
-                  name: (identifier) @function.param.block)
-              ]*) @function.params
-            [
-              (body_statement) @function.body
-              (comment)* @function.doc
-            ]) @function.def,
+              [(identifier) @syntax.function.param.name
+               (optional_parameter
+                 name: (identifier) @syntax.function.param.name
+                 value: (_) @syntax.function.param.default)
+               (rest_parameter
+                 name: (identifier) @syntax.function.param.rest)
+               (keyword_parameter
+                 name: (identifier) @syntax.function.param.keyword
+                 value: (_)? @syntax.function.param.default)
+               (hash_splat_parameter
+                 name: (identifier) @syntax.function.param.kwargs)]*) @syntax.function.params
+            body: (body_statement) @syntax.function.body) @syntax.function.def,
+            
+          ; Singleton method patterns
           (singleton_method
-            object: (_) @function.singleton
-            name: (identifier) @function.name
-            parameters: (method_parameters)? @function.params
-            body: (body_statement) @function.body) @function.def,
-          (block
-            parameters: (block_parameters)? @block.params
-            body: (body_statement) @block.body) @block.do
+            object: (_) @syntax.function.singleton.object
+            name: (identifier) @syntax.function.singleton.name
+            parameters: (method_parameters)? @syntax.function.singleton.params
+            body: (body_statement) @syntax.function.singleton.body) @syntax.function.singleton
         ]
     """,
-    # Class patterns
+    
     "class": """
         [
+          ; Basic class (from common)
+          (class) @syntax.class,
+          
+          ; Rich class patterns
           (class
-            name: (constant) @class.name
+            name: (constant) @syntax.class.name
             superclass: (superclass
-              value: (constant) @class.superclass)?
+              name: (constant) @syntax.class.superclass)? @syntax.class.extends
             body: (body_statement
-              [
-                (comment)* @class.doc
-                (method)* @class.methods
-                (singleton_class
-                  value: (self) @class.singleton
-                  body: (body_statement))* @class.singleton_methods
-              ])) @class.def,
-          (singleton_class
-            value: (_) @class.singleton.value
-            body: (body_statement) @class.singleton.body) @class.singleton
+              [(method) @syntax.class.method
+               (singleton_method) @syntax.class.singleton_method
+               (class_variable) @syntax.class.class_var
+               (instance_variable) @syntax.class.instance_var
+               (constant) @syntax.class.constant]*) @syntax.class.body) @syntax.class.def,
+               
+          ; Module patterns
+          (module
+            name: (constant) @syntax.module.name
+            body: (body_statement) @syntax.module.body) @syntax.module.def
         ]
     """,
-    # Module patterns
+    
+    # Structure category with rich patterns
     "module": """
-        (module
-          name: (constant) @module.name
-          body: (body_statement
-            [
-              (comment)* @module.doc
-              (method)* @module.methods
-              (module_function
-                (identifier)* @module.function)*
-              ])) @module.def
-    """,
-    # Metaprogramming patterns
-    "metaprogramming": """
         [
-        (call
-            receiver: (_)?
-            method: [
-              (identifier) @meta.method
-              (#match? @meta.method "^(define_method|alias_method|attr_accessor|attr_reader|attr_writer|include|extend|prepend)$")
-            ]
-            arguments: (argument_list
-              (_)* @meta.args)) @meta.call,
-          (class_variable) @meta.class_var,
-          (instance_variable) @meta.instance_var
+          (module
+            name: (constant) @structure.module.name
+            body: (body_statement
+              [(include) @structure.module.include
+               (extend) @structure.module.extend
+               (prepend) @structure.module.prepend]*) @structure.module.body) @structure.module,
+               
+          (require
+            name: (string) @structure.require.name) @structure.require,
+            
+          (require_relative
+            name: (string) @structure.require.relative.name) @structure.require.relative
         ]
     """,
+    
+    # Metaprogramming patterns
+    "meta": """
+        [
+          ; Method missing
+          (method
+            name: (identifier) @semantics.meta.method_missing
+            (#match? @semantics.meta.method_missing "^method_missing$")) @semantics.meta.method_missing.def,
+            
+          ; Dynamic method definition
+          (call
+            method: (identifier) @semantics.meta.define_method
+            (#match? @semantics.meta.define_method "^define_method$")
+            arguments: (argument_list
+              name: (_) @semantics.meta.define_method.name
+              block: (block) @semantics.meta.define_method.body)) @semantics.meta.define_method.call,
+            
+          ; Attribute accessors
+          (call
+            method: [(identifier) (constant)]
+            (#match? @method "^(attr_reader|attr_writer|attr_accessor)$")
+            arguments: (argument_list
+              (_)* @semantics.meta.attr.name)) @semantics.meta.attr
+        ]
+    """,
+    
     # Block patterns
     "block": """
         [
-          (do_block
-            parameters: (block_parameters)? @block.params
-            body: (body_statement) @block.body) @block.do,
           (block
-            parameters: (block_parameters)? @block.params
-            body: (body_statement) @block.body) @block.brace
+            parameters: (block_parameters
+              [(identifier) @semantics.block.param.name
+               (destructured_parameter
+                 (identifier)+ @semantics.block.param.destructure)]*) @semantics.block.params
+            body: (body_statement) @semantics.block.body) @semantics.block,
+            
+          (do_block
+            parameters: (block_parameters)? @semantics.block.do.params
+            body: (body_statement) @semantics.block.do.body) @semantics.block.do
         ]
     """,
-    # Control flow patterns
-    "control_flow": """
+    
+    # Documentation category with rich patterns
+    "documentation": """
         [
-          (if
-            condition: (_) @if.condition
-            consequence: (_) @if.then
-            alternative: (_)? @if.else) @if,
-          (unless
-            condition: (_) @unless.condition
-            consequence: (_) @unless.then
-            alternative: (_)? @unless.else) @unless,
-          (while
-            condition: (_) @while.condition
-            body: (_) @while.body) @while,
-          (until
-            condition: (_) @until.condition
-            body: (_) @until.body) @until,
-          (for
-            pattern: (_) @for.pattern
-            collection: (_) @for.collection
-            body: (_) @for.body) @for,
-          (case
-            value: (_)? @case.value
-            (when
-              pattern: (_) @when.pattern
-              body: (_) @when.body)*
-            else: (_)? @case.else) @case
+          ; Basic comments (from common)
+          (comment) @documentation.comment,
+          
+          ; RDoc patterns
+          (comment
+            text: /^#\\s*@.*/) @documentation.rdoc.directive,
+            
+          ; Yard patterns
+          (comment
+            text: /^#\\s*@[a-zA-Z]+.*/) @documentation.yard.tag
         ]
     """,
-    # Exception handling patterns
-    "exception": """
+    
+    # Rails patterns
+    "rails": """
         [
-          (begin
-            body: (_) @begin.body
-            (rescue
-              exception: (_)? @rescue.type
-              variable: (_)? @rescue.var
-              body: (_) @rescue.body)*
-            (else
-              body: (_) @rescue.else)?
-            (ensure
-              body: (_) @rescue.ensure)?) @begin,
-          (rescue_modifier
-            body: (_) @rescue_mod.body
-            handler: (_) @rescue_mod.handler) @rescue_mod
-        ]
-    """,
-    # String patterns
-    "string": """
-        [
-          (string
-            (string_content) @string.content) @string,
-          (heredoc_beginning) @heredoc.start
-          (heredoc_body
-            (string_content) @heredoc.content) @heredoc,
-          (interpolation
-            (_) @string.interpolation) @interpolation
-        ]
-    """,
-    # Symbol patterns
-    "symbol": """
-        [
-          (simple_symbol) @symbol,
-          (hash_key_symbol) @symbol.key,
-          (symbol_array) @symbol.array
-        ]
-    """,
-    "rails_patterns": """
-        [
-            (call
-                method: (identifier) @rails.method
-                (#match? @rails.method "^(belongs_to|has_many|has_one|validates|scope|before_action|after_action)$")
-                arguments: (argument_list)? @rails.args) @rails.call,
-            (class
-                (constant) @model.name
-                (superclass
-                    (constant) @model.parent
-                    (#match? @model.parent "^(ApplicationRecord|ActiveRecord::Base)$"))) @model
-        ]
-    """,
-    "meta_programming": """
-        [
-            (call
-                method: (identifier) @meta.method
-                (#match? @meta.method "^(class_eval|instance_eval|define_method|method_missing|respond_to_missing\\?)$")
-                arguments: (argument_list)? @meta.args) @meta.call,
-            (singleton_class
-                value: (_) @meta.target
-                body: (body_statement) @meta.body) @meta.singleton
+          ; Active Record associations
+          (call
+            method: (identifier) @semantics.rails.association
+            (#match? @semantics.rails.association "^(belongs_to|has_many|has_one|has_and_belongs_to_many)$")
+            arguments: (argument_list
+              name: (symbol) @semantics.rails.association.name
+              options: (hash)? @semantics.rails.association.options)) @semantics.rails.association.def,
+            
+          ; Validations
+          (call
+            method: (identifier) @semantics.rails.validation
+            (#match? @semantics.rails.validation "^validates?(_[a-z_]+)?$")
+            arguments: (argument_list
+              fields: (_)+ @semantics.rails.validation.fields
+              options: (hash)? @semantics.rails.validation.options)) @semantics.rails.validation.def
         ]
     """
 } 

@@ -1,20 +1,38 @@
-"""Tree-sitter patterns for Objective-C programming language."""
+"""Query patterns for Objective-C files."""
 
 OBJECTIVEC_PATTERNS = {
-    # Basic pattern for function detection
-    "function": """
-        [
-          (method_declaration)
-        ] @function
-    """,
-    # Extended pattern for detailed function information
-    "function_details": """
-        [
-          (method_declaration
-             receiver: (object)?
-             selector: (selector) @function.name
-             parameters: (parameter_list)? @function.params
-            body: (compound_statement) @function.body) @function.def
+    "syntax": {
+        "function": [
+            """
+            (method_declaration
+                receiver: (object)?
+                selector: (selector) @name
+                parameters: (parameter_list)? @params
+                body: (compound_statement) @body) @function
+            """
+        ],
+        "class": [
+            """
+            (class_interface
+                name: (identifier) @name
+                superclass: (superclass_reference)? @super
+                protocols: (protocol_reference_list)? @protocols) @class
+            """
         ]
-    """
+    },
+    "structure": {
+        "import": [
+            """
+            (preproc_include
+                path: (string_literal) @path) @import
+            """
+        ]
+    },
+    "documentation": {
+        "comment": [
+            """
+            (comment) @comment
+            """
+        ]
+    }
 } 

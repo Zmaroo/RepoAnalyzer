@@ -1,237 +1,132 @@
+"""Shared patterns between JavaScript and TypeScript."""
+
+from .common import COMMON_PATTERNS
+
 JS_TS_SHARED_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
+    # Syntax category
     "function": """
         [
           ; Regular function declaration
           (function_declaration
-            name: (identifier) @function.name
-            parameters: (formal_parameters) @function.params
-            body: (statement_block) @function.body) @function.def
+            name: (identifier) @syntax.function.name
+            parameters: (formal_parameters) @syntax.function.params
+            body: (statement_block) @syntax.function.body) @syntax.function.def,
             
           ; Arrow function
           (arrow_function
-            parameters: (formal_parameters) @function.params
+            parameters: (formal_parameters) @syntax.function.params
             body: [
-              (statement_block) @function.body
-              (expression) @function.body
-            ]) @function.def
+              (statement_block) @syntax.function.body
+              (expression) @syntax.function.body
+            ]) @syntax.function.arrow,
             
           ; Method definition
           (method_definition
-            name: (property_identifier) @function.name
-            parameters: (formal_parameters) @function.params
-            body: (statement_block) @function.body) @function.def
+            name: (property_identifier) @syntax.function.name
+            parameters: (formal_parameters) @syntax.function.params
+            body: (statement_block) @syntax.function.body) @syntax.function.method,
             
           ; Function expression
           (function_expression
-            name: (identifier)? @function.name
-            parameters: (formal_parameters) @function.params
-            body: (statement_block) @function.body) @function.def
-            
-          ; Object method
-          (method_definition
-            name: (property_identifier) @function.name
-            parameters: (formal_parameters) @function.params
-            body: (statement_block) @function.body) @function.def
-
-          ; Arrow function in variable declaration
-          (variable_declarator
-            name: (identifier) @function.name
-            value: [
-              (arrow_function
-                parameters: (formal_parameters) @function.params
-                body: [
-                  (statement_block) @function.body
-                  (expression) @function.body
-                ]) @function.def
-              (function_expression
-                parameters: (formal_parameters) @function.params
-                body: (statement_block) @function.body) @function.def
-            ])
-
-          ; Arrow function in object property
-          (pair
-            key: (property_identifier) @function.name
-            value: [
-              (arrow_function
-                parameters: (formal_parameters) @function.params
-                body: [
-                  (statement_block) @function.body
-                  (expression) @function.body
-                ]) @function.def
-              (function_expression
-                parameters: (formal_parameters) @function.params
-                body: (statement_block) @function.body) @function.def
-            ])
-
-          ; Arrow function in array
-          (array
-            [
-              (arrow_function
-                parameters: (formal_parameters) @function.params
-                body: [
-                  (statement_block) @function.body
-                  (expression) @function.body
-                ]) @function.def
-              (function_expression
-                parameters: (formal_parameters) @function.params
-                body: (statement_block) @function.body) @function.def
-            ])
-
-          ; Arrow function in assignment
-          (assignment_expression
-            left: (_) @function.name
-            right: [
-              (arrow_function
-                parameters: (formal_parameters) @function.params
-                body: [
-                  (statement_block) @function.body
-                  (expression) @function.body
-                ]) @function.def
-              (function_expression
-                parameters: (formal_parameters) @function.params
-                body: (statement_block) @function.body) @function.def
-            ])
-
-          ; Arrow function in call expression arguments
-          (call_expression
-            arguments: (arguments
-              [
-                (arrow_function
-                  parameters: (formal_parameters) @function.params
-                  body: [
-                    (statement_block) @function.body
-                    (expression) @function.body
-                  ]) @function.def
-                (function_expression
-                  parameters: (formal_parameters) @function.params
-                  body: (statement_block) @function.body) @function.def
-              ]))
-
-          ; Arrow function in method chain
-          (member_expression
-            object: (call_expression
-              function: (member_expression
-                property: (property_identifier) @method.name)
-              arguments: (arguments
-                [
-                  (arrow_function
-                    parameters: (formal_parameters) @function.params
-                    body: [
-                      (statement_block) @function.body
-                      (expression) @function.body
-                    ]) @function.def
-                  (function_expression
-                    parameters: (formal_parameters) @function.params
-                    body: (statement_block) @function.body) @function.def
-                ])))
-
-          ; Nested arrow function in method chain (e.g., map(x => x * 2))
-          (call_expression
-            function: (member_expression
-              property: (property_identifier) @method.name)
-            arguments: (arguments
-              (arrow_function
-                parameters: (formal_parameters) @function.params
-                body: [
-                  (statement_block) @function.body
-                  (expression) @function.body
-                ]) @function.def))
-
-          ; Nested arrow function in method chain with multiple arguments
-          (call_expression
-            function: (member_expression
-              property: (property_identifier) @method.name)
-            arguments: (arguments
-              [
-                (arrow_function
-                  parameters: (formal_parameters) @function.params
-                  body: [
-                    (statement_block) @function.body
-                    (expression) @function.body
-                  ]) @function.def
-                (_)*
-              ]))
-
-          ; Arrow function in return statement
-          (return_statement
-            (arrow_function
-              parameters: (formal_parameters) @function.params
-              body: [
-                (statement_block) @function.body
-                (expression) @function.body
-              ]) @function.def)
+            name: (identifier)? @syntax.function.name
+            parameters: (formal_parameters) @syntax.function.params
+            body: (statement_block) @syntax.function.body) @syntax.function.expr
         ]
     """,
-    "class": """
-        (class_declaration
-          name: (identifier) @class.name
-          body: (class_body [
-            (method_definition
-              name: (property_identifier) @class.method.name
-              parameters: (formal_parameters) @class.method.params
-              body: (statement_block) @class.method.body)
-            (public_field_definition
-              name: (property_identifier) @class.field.name
-              value: (_)? @class.field.value)
-          ]*) @class.body
-          extends: (extends_clause
-            value: [
-              (identifier) @class.extends
-              (member_expression) @class.extends
-            ])?) @class.def
+    
+    # Semantics category
+    "variable": """
+        [
+          ; Variable declarations
+          (variable_declaration
+            kind: (_) @semantics.variable.kind
+            (variable_declarator
+              name: (identifier) @semantics.variable.name
+              value: (_)? @semantics.variable.value)) @semantics.variable.def,
+              
+          ; Destructuring patterns
+          (object_pattern
+            (shorthand_property_identifier_pattern) @semantics.variable.destructure.shorthand
+            (pair_pattern
+              key: (_) @semantics.variable.destructure.key
+              value: (_) @semantics.variable.destructure.value)) @semantics.variable.destructure
+        ]
     """,
+    
+    "expression": """
+        [
+          ; Object expressions
+          (object
+            (pair
+              key: (_) @semantics.object.key
+              value: (_) @semantics.object.value)) @semantics.object,
+              
+          ; Array expressions
+          (array
+            (_)* @semantics.array.element) @semantics.array,
+              
+          ; Template literals
+          (template_string
+            (template_substitution
+              (_) @semantics.template.expression)) @semantics.template
+        ]
+    """,
+    
+    # Documentation category
+    "documentation": """
+        [
+          ; JSDoc comments
+          (comment
+            (comment_block) @documentation.jsdoc.block
+            (#match? @documentation.jsdoc.block "^/\\*\\*")) @documentation.jsdoc,
+            
+          ; Regular comments
+          (comment) @documentation.comment,
+          
+          ; Inline documentation
+          (comment
+            (#match? @documentation.comment "//")) @documentation.inline
+        ]
+    """,
+    
+    # Structure category
     "import": """
         [
           ; ES6 imports
           (import_statement
-            source: (string) @import.source
+            source: (string) @structure.import.source
             clause: [
-              ; Default import
               (import_clause
-                (identifier) @import.default)
-              ; Named imports
+                (identifier) @structure.import.default)
               (named_imports
                 (import_specifier
-                  name: (identifier) @import.name
-                  alias: (identifier)? @import.alias)) 
-            ]) @import
+                  name: (identifier) @structure.import.name
+                  alias: (identifier)? @structure.import.alias))
+            ]) @structure.import,
             
-          ; Require
+          ; Dynamic imports
           (call_expression
-            function: (identifier) @import.require
-            (#eq? @import.require "require")
-            arguments: (arguments (string) @import.source)) @import.require
-            
-          ; Dynamic import
-          (call_expression
-            function: (import) @import.dynamic
-            arguments: (arguments (string) @import.source)) @import.dynamic
+            function: (import) @structure.import.dynamic
+            arguments: (arguments (string) @structure.import.source)) @structure.import.dynamic
         ]
     """,
-    "jsx_element": """
+    
+    "export": """
         [
-          ; JSX/TSX Element
-          (jsx_element
-            opening_element: (jsx_opening_element
-              name: (_) @jsx.tag.name
-              attributes: (jsx_attributes
-                (jsx_attribute
-                  name: (jsx_attribute_name) @jsx.attr.name
-                  value: (_)? @jsx.attr.value)*)?
-            ) @jsx.open
-            children: (_)* @jsx.children
-            closing_element: (jsx_closing_element)? @jsx.close
-          ) @jsx.element
-          
-          ; JSX/TSX Fragment
-          (jsx_fragment
-            children: (_)* @jsx.fragment.children
-          ) @jsx.fragment
-          
-          ; JSX/TSX Expression
-          (jsx_expression
-            expression: (_) @jsx.expression.value
-          ) @jsx.expression
+          ; Named exports
+          (export_statement
+            declaration: (_) @structure.export.declaration) @structure.export,
+            
+          ; Default exports
+          (export_statement
+            value: (_) @structure.export.default
+            (#match? @structure.export.default "default")) @structure.export.default,
+            
+          ; Re-exports
+          (export_statement
+            source: (string) @structure.export.source) @structure.export.from
         ]
     """
 }

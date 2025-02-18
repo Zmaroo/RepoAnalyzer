@@ -1,114 +1,86 @@
-"""XML-specific Tree-sitter patterns."""
+"""Query patterns for XML files with enhanced documentation support."""
 
 XML_PATTERNS = {
-    # Document patterns
-    "document": """
-        [
-          (document
-            (prolog)? @document.prolog
-            (element) @document.root
-            (comment)* @document.comments) @document
-        ]
-    """,
-
-    # Prolog patterns
-    "prolog": """
-        [
-          (prolog
-            (xml_decl)? @prolog.xml_decl
-            (doctype)? @prolog.doctype
-            (processing_instruction)* @prolog.instructions) @prolog
-        ]
-    """,
-
-    # Element patterns
-    "element": """
-        [
-          (element
-            (start_tag
-              name: (_) @element.name
-              (attribute)* @element.attributes) @element.start
-            (_)* @element.content
-            (end_tag)? @element.end) @element,
-          (empty_element
-            name: (_) @element.empty.name
-            (attribute)* @element.empty.attributes) @element.empty
-        ]
-    """,
-
-    # Attribute patterns
-    "attribute": """
-        [
-          (attribute
-            name: (_) @attr.name
-            value: (quoted_attribute_value) @attr.value) @attr
-        ]
-    """,
-
-    # Content patterns
-    "content": """
-        [
-          (text) @content.text,
-          (cdata) @content.cdata,
-          (comment) @content.comment,
-          (processing_instruction) @content.instruction
-        ]
-    """,
-
-    # DTD patterns
-    "dtd": """
-        [
-          (doctype
-            name: (_) @dtd.name
-            external_id: (external_id)? @dtd.external_id
-            (dtd_content)? @dtd.content) @dtd,
-          (element_declaration
-            name: (_) @dtd.element.name
-            content: (_) @dtd.element.content) @dtd.element,
-          (attlist_declaration
-            name: (_) @dtd.attlist.name
-            (attribute_declaration)* @dtd.attlist.attributes) @dtd.attlist
-        ]
-    """,
-
-    # Processing instruction patterns
-    "processing_instruction": """
-        [
-          (processing_instruction
-            name: (_) @pi.name
-            value: (_)? @pi.value) @pi
-        ]
-    """,
-
-    # Namespace patterns
-    "namespace": """
-        [
-          (attribute
-            name: (qualified_name
-              prefix: (_) @ns.prefix
-              local_name: (_) @ns.local) @ns.name) @ns.attr,
-          (element
-            name: (qualified_name
-              prefix: (_) @ns.element.prefix
-              local_name: (_) @ns.element.local) @ns.element.name) @ns.element
-        ]
-    """,
-
-    # Entity patterns
-    "entity": """
-        [
-          (entity_reference) @entity.reference,
-          (character_reference) @entity.char,
-          (parameter_entity_reference) @entity.parameter
-        ]
-    """,
-
-    # Documentation patterns
-    "documentation": """
-        [
-          (comment) @doc.comment,
-          (processing_instruction
-            name: "doc") @doc.instruction
-        ]
-    """
+    "syntax": {
+        "element": """
+            (element
+                tag: (_) @syntax.element.tag
+                namespace: (_)? @syntax.element.namespace
+                attributes: (_)* @syntax.element.attributes
+                children: (_)* @syntax.element.children) @syntax.element
+        """,
+        "attribute": """
+            (attribute
+                name: (_) @syntax.attribute.name
+                value: (_) @syntax.attribute.value) @syntax.attribute
+        """,
+        "namespace": """
+            (namespace
+                prefix: (_)? @syntax.namespace.prefix
+                uri: (_) @syntax.namespace.uri) @syntax.namespace
+        """,
+        "entity": """
+            (entity
+                name: (_) @syntax.entity.name
+                value: (_) @syntax.entity.value) @syntax.entity
+        """
+    },
+    "structure": {
+        "hierarchy": """
+            (element
+                path: (_) @structure.hierarchy.path
+                depth: (_) @structure.hierarchy.depth) @structure.hierarchy
+        """,
+        "reference": """
+            (attribute
+                [ends-with "ref"]
+                value: (_) @structure.reference.value) @structure.reference
+        """,
+        "include": """
+            (processing_instruction
+                [contains "include"]
+                content: (_) @structure.include.content) @structure.include
+        """
+    },
+    "semantics": {
+        "identifier": """
+            [
+                (attribute
+                    name: ["id" "xml:id"]
+                    value: (_) @semantics.identifier.value) @semantics.identifier
+                
+                (attribute
+                    [ends-with "ref"]
+                    value: (_) @semantics.identifier.reference) @semantics.identifier.ref
+            ]
+        """,
+        "schema": """
+            (processing_instruction
+                [contains "schemaLocation"]
+                content: (_) @semantics.schema.location) @semantics.schema
+        """,
+        "datatype": """
+            (attribute
+                name: ["type" "xsi:type"]
+                value: (_) @semantics.datatype.value) @semantics.datatype
+        """
+    },
+    "documentation": {
+        "comment": """
+            (comment
+                content: (_) @documentation.comment.content) @documentation.comment
+        """,
+        "processing": """
+            (processing_instruction
+                content: (_) @documentation.processing.content) @documentation.processing
+        """,
+        "doctype": """
+            (doctype
+                content: (_) @documentation.doctype.content) @documentation.doctype
+        """,
+        "cdata": """
+            (cdata
+                content: (_) @documentation.cdata.content) @documentation.cdata
+        """
+    }
 } 

@@ -1,3 +1,11 @@
+import sys
+import os
+
+# Insert the project root into sys.path so that modules can be found.
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import argparse
 import logging
 from utils.logger import log, logger

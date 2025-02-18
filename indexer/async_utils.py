@@ -4,6 +4,7 @@ from typing import List, Set, Optional, Callable, Awaitable
 import aiofiles
 from indexer.file_utils import get_files, is_binary_file
 from utils.logger import log
+from parsers.language_mapping import FileType
 
 async def async_read_text_file(file_path: str, encoding: str = "utf-8") -> str:
     """
@@ -19,15 +20,12 @@ async def async_read_text_file(file_path: str, encoding: str = "utf-8") -> str:
 
 async def async_get_files(
     dir_path: str, 
-    extensions: Set[str], 
+    file_types: Set[FileType],
     ignore_dirs: Optional[Set[str]] = None
 ) -> List[str]:
-    """
-    Asynchronously collects files from dir_path that match the given extensions.
-    Wraps the synchronous get_files function in run_in_executor.
-    """
+    """Asynchronously collects files from dir_path based on FileType."""
     loop = asyncio.get_running_loop()
-    files = await loop.run_in_executor(None, get_files, dir_path, extensions, ignore_dirs)
+    files = await loop.run_in_executor(None, get_files, dir_path, file_types, ignore_dirs)
     return files
 
 async def async_process_index_file(

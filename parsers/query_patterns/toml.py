@@ -1,100 +1,86 @@
-"""TOML-specific Tree-sitter patterns."""
+"""
+Query patterns for TOML files with enhanced documentation support.
+"""
 
 TOML_PATTERNS = {
-    # Document patterns
-    "document": """
-        [
-          (document
-            (pair)* @document.pairs
-            (table)* @document.tables
-            (table_array_element)* @document.table_arrays) @document
-        ]
-    """,
-
-    # Table patterns
-    "table": """
-        [
-          (table
-            name: (bare_key) @table.name.bare
-            name: (quoted_key) @table.name.quoted
-            name: (dotted_key) @table.name.dotted
-            (pair)* @table.pairs) @table,
-          (table_array_element
-            name: (bare_key) @table.array.name.bare
-            name: (quoted_key) @table.array.name.quoted
-            name: (dotted_key) @table.array.name.dotted
-            (pair)* @table.array.pairs) @table.array
-        ]
-    """,
-
-    # Key patterns
-    "key": """
-        [
-          (bare_key) @key.bare,
-          (quoted_key
-            (escape_sequence)* @key.quoted.escape) @key.quoted,
-          (dotted_key
-            (bare_key)* @key.dotted.bare
-            (quoted_key)* @key.dotted.quoted) @key.dotted
-        ]
-    """,
-
-    # Value patterns
-    "value": """
-        [
-          (string
-            (escape_sequence)* @value.string.escape) @value.string,
-          (integer) @value.integer,
-          (float) @value.float,
-          (boolean) @value.boolean,
-          (array) @value.array,
-          (inline_table) @value.inline_table,
-          (local_date) @value.date,
-          (local_time) @value.time,
-          (local_date_time) @value.datetime,
-          (offset_date_time) @value.datetime_offset
-        ]
-    """,
-
-    # Array patterns
-    "array": """
-        [
-          (array
-            (_)* @array.items) @array
-        ]
-    """,
-
-    # Table patterns (inline)
-    "inline_table": """
-        [
-          (inline_table
-            (pair)* @inline_table.pairs) @inline_table
-        ]
-    """,
-
-    # Pair patterns
-    "pair": """
-        [
-          (pair
-            key: (_) @pair.key
-            value: (_) @pair.value) @pair
-        ]
-    """,
-
-    # Date/Time patterns
-    "datetime": """
-        [
-          (local_date) @datetime.date,
-          (local_time) @datetime.time,
-          (local_date_time) @datetime.local,
-          (offset_date_time) @datetime.offset
-        ]
-    """,
-
-    # Documentation patterns
-    "documentation": """
-        [
-          (comment) @doc.comment
-        ]
-    """
+    "syntax": {
+        "table": """
+            (table
+                path: (_) @syntax.table.path
+                keys: (_)* @syntax.table.keys) @syntax.table
+        """,
+        "array": """
+            (array
+                path: (_) @syntax.array.path
+                length: (_) @syntax.array.length) @syntax.array
+        """,
+        "value": """
+            (value
+                path: (_) @syntax.value.path
+                value_type: (_) @syntax.value.type) @syntax.value
+        """,
+        "inline": """
+            [
+                (inline_table
+                    path: (_) @syntax.inline.path
+                    keys: (_)* @syntax.inline.keys) @syntax.inline.table
+                
+                (inline_array
+                    path: (_) @syntax.inline.path
+                    items: (_)* @syntax.inline.items) @syntax.inline.array
+            ]
+        """
+    },
+    "structure": {
+        "section": """
+            (section
+                name: (_) @structure.section.name
+                line: (_) @structure.section.line) @structure.section
+        """,
+        "subsection": """
+            (section
+                parent: (_) @structure.subsection.parent
+                name: (_) @structure.subsection.name
+                line: (_) @structure.subsection.line) @structure.subsection
+        """,
+        "reference": """
+            (value
+                path: (_) @structure.reference.path
+                [contains "."]) @structure.reference
+        """
+    },
+    "semantics": {
+        "definition": """
+            (value
+                path: (_) @semantics.definition.path
+                value_type: (_) @semantics.definition.type) @semantics.definition
+        """,
+        "type": """
+            (type
+                path: (_) @semantics.type.path
+                type: (_) @semantics.type.name) @semantics.type
+        """,
+        "path": """
+            (path
+                segments: (_)* @semantics.path.segments) @semantics.path
+        """
+    },
+    "documentation": {
+        "comment": """
+            (comment
+                content: (_) @documentation.comment.content
+                line: (_) @documentation.comment.line) @documentation.comment
+        """,
+        "description": """
+            (description
+                content: (_) @documentation.description.content
+                line: (_) @documentation.description.line) @documentation.description
+        """,
+        "metadata": """
+            (comment
+                [starts-with "@"]
+                content: (_) @documentation.metadata.content
+                line: (_) @documentation.metadata.line) @documentation.metadata
+        """
+    }
 } 

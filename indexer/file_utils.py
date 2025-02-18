@@ -1,15 +1,14 @@
 import os
 from typing import List, Set, Callable, Optional
 from utils.logger import log
-from parsers.language_mapping import get_language_for_extension
+from parsers.language_mapping import get_language_for_extension, SPECIAL_FILENAMES, get_file_classification, FileType
 
-def get_files(dir_path: str, extensions: Set[str], ignore_dirs: Optional[Set[str]] = None) -> List[str]:
+def get_files(dir_path: str, file_types: Set[FileType], ignore_dirs: Optional[Set[str]] = None) -> List[str]:
     """
-    Recursively collects files from dir_path that have one of the specified extensions.
-    Uses os.scandir for performance and optionally ignores directories in ignore_dirs.
+    Recursively collects files from dir_path based on FileType classification.
     """
     if ignore_dirs is None:
-        ignore_dirs = {'.git', '__pycache__'}
+        ignore_dirs = {'.git', '__pycache__', 'node_modules', 'venv', '.venv'}
     files: List[str] = []
 
     def _recurse(path: str) -> None:
@@ -21,8 +20,8 @@ def get_files(dir_path: str, extensions: Set[str], ignore_dirs: Optional[Set[str
                             continue
                         _recurse(entry.path)
                     elif entry.is_file(follow_symlinks=False):
-                        ext = os.path.splitext(entry.name)[1]
-                        if ext.lower() in extensions:
+                        classification = get_file_classification(entry.path)
+                        if classification and classification.file_type in file_types:
                             files.append(entry.path)
         except Exception as e:
             log(f"Error scanning directory {path}: {e}", level="error")
@@ -37,11 +36,10 @@ def is_binary_file(file_path: str, blocksize: int = 1024) -> bool:
     try:
         with open(file_path, 'rb') as f:
             chunk = f.read(blocksize)
-            if b'\0' in chunk:
-                return True
+            return b'\0' in chunk
     except Exception as e:
         log(f"Error reading file {file_path} for binary check: {e}", level="error")
-    return False
+        return False
 
 def read_text_file(file_path: str, encoding: str = "utf-8") -> str:
     """
@@ -51,9 +49,17 @@ def read_text_file(file_path: str, encoding: str = "utf-8") -> str:
     try:
         with open(file_path, "r", encoding=encoding) as f:
             return f.read()
+    except UnicodeDecodeError:
+        try:
+            # Fallback to latin-1 encoding
+            with open(file_path, "r", encoding="latin-1") as f:
+                return f.read()
+        except Exception as e:
+            log(f"Error reading text file {file_path} with fallback encoding: {e}", level="error")
+            return ""
     except Exception as e:
         log(f"Error reading text file {file_path}: {e}", level="error")
-    return ""
+        return ""
 
 def process_index_file(
     file_path: str,

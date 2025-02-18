@@ -1,184 +1,153 @@
 """C++-specific Tree-sitter patterns."""
 
+from .common import COMMON_PATTERNS
+
 CPP_PATTERNS = {
-    # Basic pattern for function detection
+    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
+    
+    # Syntax category with rich patterns
     "function": """
         [
-          (function_definition)
-          (method_definition)
-          (lambda_expression)
-        ] @function
-    """,
-    # Extended pattern for detailed function information
-    "function_details": """
-        [
-        (function_definition
-            type: (primitive_type)? @function.return_type
-           declarator: (function_declarator
-              declarator: (identifier) @function.name
-              parameters: (parameter_list
-                (parameter_declaration
-                  type: (_) @function.param.type
-                  declarator: (identifier) @function.param.name)*) @function.params)
-            body: (compound_statement) @function.body) @function.def,
-          (method_definition
-            type: (_)? @function.return_type
+          ; Basic function (from common)
+          (function_definition) @syntax.function,
+          
+          ; Rich function patterns
+          (function_definition
+            specifiers: [(virtual) (static) (inline) (explicit) (constexpr) (friend)]* @syntax.function.specifier
+            type: (_) @syntax.function.return_type
             declarator: (function_declarator
-              declarator: (identifier) @function.name
+              declarator: (identifier) @syntax.function.name
               parameters: (parameter_list
-                (parameter_declaration
-                  type: (_) @function.param.type
-                  declarator: (identifier) @function.param.name)*) @function.params)
-            body: (compound_statement) @function.body) @function.def,
-          (lambda_expression
-            captures: (lambda_capture_specifier)? @function.captures
-            parameters: (parameter_list)? @function.params
-            body: [
-              (compound_statement) @function.body
-              (expression_statement) @function.body
-            ]) @function.lambda
+                [(parameter_declaration
+                   type: (_) @syntax.function.param.type
+                   declarator: (_) @syntax.function.param.name
+                   default_value: (_)? @syntax.function.param.default)
+                 (variadic_parameter_declaration) @syntax.function.param.variadic]*) @syntax.function.params
+              trailing_return_type: (type_descriptor)? @syntax.function.trailing_return) @syntax.function.declarator
+            requires: (requires_clause)? @syntax.function.requires
+            body: (compound_statement) @syntax.function.body) @syntax.function.def,
+            
+          ; Method patterns
+          (function_definition
+            specifiers: [(virtual) (static) (const) (override) (final) (noexcept)]* @syntax.function.method.specifier
+            declarator: (function_declarator
+              declarator: (qualified_identifier) @syntax.function.method.name) @syntax.function.method.declarator) @syntax.function.method,
+            
+          ; Constructor patterns
+          (constructor_or_destructor_definition
+            specifiers: [(explicit) (constexpr)]* @syntax.function.constructor.specifier
+            declarator: (function_declarator
+              declarator: (qualified_identifier) @syntax.function.constructor.name
+              parameters: (parameter_list) @syntax.function.constructor.params)
+            initializer_list: (initializer_list)? @syntax.function.constructor.init
+            body: (compound_statement) @syntax.function.constructor.body) @syntax.function.constructor
         ]
     """,
-    # Class patterns
+    
     "class": """
         [
+          ; Basic class (from common)
+          (class_specifier) @syntax.class,
+          
+          ; Rich class patterns
           (class_specifier
-            name: (type_identifier) @class.name
-            bases: (base_class_clause
-              (base_class
-                name: (type_identifier) @class.base
-                access_specifier: (_)? @class.base.access)*)?
+            name: (type_identifier) @syntax.class.name
+            virtual_specifier: (virtual_specifier)? @syntax.class.virtual
+            base_classes: (base_class_clause
+              [(access_specifier)? @syntax.class.base.access
+               (type_identifier) @syntax.class.base.name]*) @syntax.class.bases
             body: (field_declaration_list
-              [
-                (access_specifier) @class.access
-                (field_declaration
-                  type: (_) @class.field.type
-                  declarator: (field_identifier) @class.field.name)*
-                (function_definition)* @class.methods
-              ])) @class.def,
+              [(access_specifier) @syntax.class.access
+               (field_declaration) @syntax.class.field
+               (function_definition) @syntax.class.method
+               (constructor_or_destructor_definition) @syntax.class.constructor
+               (friend_declaration) @syntax.class.friend
+               (template_declaration) @syntax.class.template
+               (using_declaration) @syntax.class.using]*) @syntax.class.body) @syntax.class.def,
+               
+          ; Struct patterns
           (struct_specifier
-            name: (type_identifier) @struct.name
-            body: (field_declaration_list)) @struct.def
+            name: (type_identifier) @syntax.struct.name
+            body: (field_declaration_list) @syntax.struct.body) @syntax.struct.def
         ]
     """,
+    
     # Template patterns
     "template": """
         [
           (template_declaration
             parameters: (template_parameter_list
-              [
-                (type_parameter_declaration
-                  name: (type_identifier) @template.param.name)
-                (parameter_declaration
-                  type: (_) @template.param.type
-                  declarator: (identifier) @template.param.name)
-                )
-              ]*) @template.params
-            declaration: (_) @template.body) @template.def,
+              [(type_parameter_declaration
+                 type: (type_identifier) @semantics.template.param.type
+                 default: (_)? @semantics.template.param.default)
+               (parameter_declaration
+                 type: (_) @semantics.template.param.type
+                 declarator: (_) @semantics.template.param.name)]*) @semantics.template.params
+            declaration: (_) @semantics.template.declaration) @semantics.template.def,
+            
           (template_instantiation
-            name: (identifier) @template.inst.name
+            name: (_) @semantics.template.inst.name
             arguments: (template_argument_list
-              (_)* @template.inst.args)) @template.inst
+              (_)* @semantics.template.inst.arg)) @semantics.template.inst
         ]
     """,
-    # Namespace patterns
+    
+    # Structure category with rich patterns
     "namespace": """
         [
           (namespace_definition
-            name: (identifier) @namespace.name
-            body: (declaration_list) @namespace.body) @namespace.def,
+            name: (identifier) @structure.namespace.name
+            body: (declaration_list) @structure.namespace.body) @structure.namespace,
+            
           (using_declaration
-            name: (qualified_identifier) @using.name) @using,
+            name: (qualified_identifier) @structure.using.name) @structure.using,
+            
           (using_directive
-            name: (qualified_identifier) @using.namespace) @using.directive
+            namespace_name: (qualified_identifier) @structure.using.namespace) @structure.using.directive
         ]
     """,
-    # Type patterns
-    "type": """
+    
+    # Modern C++ features
+    "modern": """
         [
-          (type_identifier) @type.name,
-          (primitive_type) @type.primitive,
-          (sized_type_specifier) @type.sized,
-          (type_qualifier) @type.qualifier,
-          (enum_specifier
-            name: (type_identifier) @enum.name
-            body: (enumerator_list
-              (enumerator
-                name: (identifier) @enum.value.name
-                value: (_)? @enum.value.init)*)) @enum.def
+          ; Lambda expressions
+          (lambda_expression
+            captures: (lambda_capture_specifier)? @semantics.lambda.captures
+            parameters: (parameter_list)? @semantics.lambda.params
+            body: (compound_statement) @semantics.lambda.body) @semantics.lambda,
+            
+          ; Concepts
+          (concept_definition
+            name: (identifier) @semantics.concept.name
+            parameters: (template_parameter_list)? @semantics.concept.params
+            constraint: (_) @semantics.concept.constraint) @semantics.concept,
+            
+          ; Ranges
+          (range_based_for_statement
+            declarator: (_) @semantics.range.var
+            range: (_) @semantics.range.expr
+            body: (_) @semantics.range.body) @semantics.range.for
         ]
     """,
-    # Operator patterns
-    "operator": """
+    
+    # Documentation category with rich patterns
+    "documentation": """
         [
-          (operator_name) @operator.name,
-          (operator_cast
-            type: (_) @operator.cast.type) @operator.cast,
-          (operator_assignment) @operator.assignment,
-          (operator_binary) @operator.binary,
-          (operator_unary) @operator.unary
-        ]
-    """,
-    # Exception handling patterns
-    "exception": """
-        [
-          (try_statement
-            body: (compound_statement) @try.body
-            (catch_clause
-              parameters: (parameter_list) @catch.params
-              body: (compound_statement) @catch.body)*
-            (finally_clause
-              body: (compound_statement))? @finally.body) @try,
-          (throw_statement
-            value: (_) @throw.value) @throw
-        ]
-    """,
-    # Memory management patterns
-    "memory": """
-        [
-          (new_expression
-            type: (_) @new.type
-            arguments: (argument_list)? @new.args) @new,
-          (delete_expression
-            value: (_) @delete.value) @delete,
-          (pointer_expression
-            operator: (_) @pointer.op
-            argument: (_) @pointer.arg) @pointer
-        ]
-    """,
-    # Preprocessor patterns
-    "preprocessor": """
-        [
-          (preproc_include
-            path: (_) @include.path) @include,
-          (preproc_def
-            name: (identifier) @define.name
-            value: (_)? @define.value) @define,
-          (preproc_ifdef
-            name: (identifier) @ifdef.name) @ifdef,
-          (preproc_function_def
-            name: (identifier) @macro.name
-            parameters: (preproc_params)? @macro.params) @macro
-        ]
-    """,
-    "modern_features": """
-        [
-            (concept_definition
-                name: (identifier) @concept.name
-                parameters: (template_parameter_list)? @concept.params
-                body: (_) @concept.body) @concept,
-            (requires_clause
-                requirements: (_) @requires.constraints) @requires,
-            (range_based_for_statement
-                declarator: (_) @range.var
-                range: (_) @range.expr
-                body: (_) @range.body) @range,
-            (fold_expression
-                pack: (_) @fold.pack
-                operator: (_) @fold.op) @fold,
-            (structured_binding_declaration
-                bindings: (identifier)* @binding.names
-                value: (_) @binding.value) @binding
+          ; Basic comments (from common)
+          (comment) @documentation.comment,
+          
+          ; Rich documentation patterns
+          (comment) @documentation.comment,
+          
+          ; Doxygen patterns
+          (comment
+            text: /\\/\\*\\*.*?\\*\\// @documentation.doxygen.block) @documentation.doxygen,
+          (comment
+            text: /\\/\\/\\/.*/) @documentation.doxygen.line,
+            
+          ; Documentation commands
+          (comment
+            text: /@[a-zA-Z]+.*/) @documentation.command
         ]
     """
 } 

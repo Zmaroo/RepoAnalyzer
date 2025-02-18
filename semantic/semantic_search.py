@@ -3,18 +3,15 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 from indexer.doc_index import upsert_doc
 from utils.logger import log
-import redis
 import json
 import hashlib
 from embedding.embedding_models import CodeEmbedder
+from utils.cache import cache  # Use our unified cache
 
 _model = None
 _tokenizer = None
 
-# Connect to Redis (adjust host, port, and db if needed)
-redis_client = redis.Redis(host='localhost', port=6379, db=0)
-
-# Initialize the code embedder once (could also be done lazily)
+# Initialize the code embedder once.
 code_embedder = CodeEmbedder()
 
 def init_model():
@@ -26,45 +23,51 @@ def init_model():
 def compute_embedding(text) -> list:
     """
     Computes the embedding of the given text using the loaded model.
-    Uses Redis to cache the computed embedding for future calls.
+    Uses the unified cache to store/retrieve the computed embedding for future calls.
     
     If the passed text is not a string, this function will:
       - If it's a bytes object, decode it using UTF-8.
       - If it has a 'text' attribute (like a tree_sitter.Node), use that.
       - Otherwise, fallback to str(text).
     """
-    # If text is of type bytes, decode it:
+    # Ensure text is a string.
     if isinstance(text, bytes):
         try:
             text = text.decode('utf-8')
         except Exception:
             text = str(text)
-    
-    # If text is not a string, try to get a .text attribute or convert it:
     if not isinstance(text, str):
         try:
             text = text.text
         except AttributeError:
             text = str(text)
     
+    # Create a cache key based on MD5 hash of the text.
     key = "embedding:" + hashlib.md5(text.encode('utf-8')).hexdigest()
-    cached = redis_client.get(key)
+    cached = cache.get(key)
     if cached is not None:
-        # Return the cached embedding (stored as a JSON string)
-        embedding = json.loads(cached.decode('utf-8'))
-        log(f"Loaded embedding from cache for key {key}", level="debug")
-        return embedding
-
-    # Compute embedding if not cached
+        try:
+            embedding = json.loads(cached)
+            log(f"Loaded embedding from cache for key {key}", level="debug")
+            return embedding
+        except Exception:
+            pass  # If deserialization fails, continue to compute.
+    
+    # Compute embedding if not cached.
     init_model()
-    inputs = _tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    inputs = _tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512)
+    # Ensure inputs are on the proper device.
+    inputs = inputs.to(_model.device)
     with torch.no_grad():
         outputs = _model(**inputs)
-    embedding = outputs.last_hidden_state[:, 0, :].squeeze().tolist()
-
-    # Save the computed embedding in Redis with an expiry time (e.g., one hour)
-    redis_client.setex(key, 3600, json.dumps(embedding))
-    log(f"Stored embedding in cache for key {key}", level="debug")
+    embedding = outputs.last_hidden_state[:, 0, :].squeeze().cpu().tolist()
+    
+    # Save the computed embedding in cache (expire in 3600 seconds).
+    try:
+        cache.set(key, json.dumps(embedding), ex=3600)
+        log(f"Stored embedding in cache for key {key}", level="debug")
+    except Exception as e:
+        log(f"Error caching embedding: {e}", level="warning")
     return embedding
 
 def to_pgvector_literal(vector_list: list) -> str:
