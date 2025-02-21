@@ -1,62 +1,90 @@
 import os
 import asyncio
-from typing import List, Set, Optional, Callable, Awaitable
+from typing import List, Set, Optional, Callable, Awaitable, Any, Dict
 import aiofiles
-from indexer.file_utils import get_files, is_binary_file
 from utils.logger import log
-from parsers.language_mapping import FileType
+from indexer.file_processor import FileProcessor
 
-async def async_read_text_file(file_path: str, encoding: str = "utf-8") -> str:
+def async_handle_errors(async_func):
     """
-    Asynchronously reads and returns the content of a text file using aiofiles.
-    Logs an error and returns an empty string if the file cannot be read.
+    A decorator for async functions to catch and log exceptions.
+    The decorator logs the error and returns None.
     """
+    async def wrapper(*args, **kwargs):
+        try:
+            return await async_func(*args, **kwargs)
+        except Exception as e:
+            log(f"Async error in function '{async_func.__name__}': {e}", level="error")
+            return None
+    return wrapper
+
+@async_handle_errors
+async def async_read_file(file_path: str) -> Optional[str]:
+    """Read file content asynchronously."""
     try:
-        async with aiofiles.open(file_path, "r", encoding=encoding) as f:
+        async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
             return await f.read()
+    except UnicodeDecodeError:
+        log(f"Binary or invalid encoding in file: {file_path}", level="debug")
+        return None
     except Exception as e:
-        log(f"Error asynchronously reading text file {file_path}: {e}", level="error")
-        return ""
+        log(f"Error reading file {file_path}: {e}", level="error")
+        return None
 
-async def async_get_files(
-    dir_path: str, 
-    file_types: Set[FileType],
-    ignore_dirs: Optional[Set[str]] = None
-) -> List[str]:
-    """Asynchronously collects files from dir_path based on FileType."""
-    loop = asyncio.get_running_loop()
-    files = await loop.run_in_executor(None, get_files, dir_path, file_types, ignore_dirs)
-    return files
+@async_handle_errors
+async def async_read_text_file(file_path: str) -> Optional[str]:
+    """Read text file content asynchronously with encoding detection."""
+    try:
+        async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+            return await f.read()
+    except UnicodeDecodeError:
+        # Try alternative encodings
+        encodings = ['latin-1', 'cp1252', 'iso-8859-1']
+        for encoding in encodings:
+            try:
+                async with aiofiles.open(file_path, 'r', encoding=encoding) as f:
+                    return await f.read()
+            except UnicodeDecodeError:
+                continue
+        log(f"Unable to decode file with any encoding: {file_path}", level="error")
+        return None
 
+@async_handle_errors
 async def async_process_index_file(
     file_path: str,
     base_path: str,
     repo_id: int,
-    file_processor: Callable[[str], Awaitable[Optional[str]]],
-    index_function: Callable[[int, str, str], None],
+    processor: FileProcessor,
     file_type: str
 ) -> None:
-    """
-    Asynchronously processes a file for indexing in a standardized way.
-
-    Parameters:
-      file_path: Absolute path of the file to process.
-      base_path: Base directory used to compute the relative path.
-      repo_id: Identifier of the repository.
-      file_processor: Asynchronous function to process the file (e.g., async_read_text_file).
-      index_function: Function to upsert the processed file (e.g., upsert_code or upsert_doc).
-      file_type: A string indicating the type of file ("code" or "doc") for logging.
-    """
+    """Asynchronously process and index a file using FileProcessor"""
     try:
-        if is_binary_file(file_path):
-            log(f"Skipping binary file asynchronously: {file_path}", level="warning")
-            return
-        result = await file_processor(file_path)
-        if not result:
-            log(f"No result from processing asynchronously {file_path}", level="debug")
-            return
-        rel_path = os.path.relpath(file_path, base_path)
-        index_function(repo_id, rel_path, result)
-        log(f"Indexed {file_type} file asynchronously: {rel_path}", level="info")
+        await processor.process_file(file_path, repo_id, base_path)
     except Exception as e:
-        log(f"Error processing {file_type} file asynchronously {file_path}: {e}", level="error") 
+        log(f"Error processing file {file_path}: {e}", level="error")
+
+@async_handle_errors
+async def batch_process_files(
+    files: List[str],
+    base_path: str,
+    repo_id: int,
+    batch_size: int = 10
+) -> None:
+    """Process files in batches using FileProcessor"""
+    processor = FileProcessor()
+    try:
+        for i in range(0, len(files), batch_size):
+            batch = files[i:i + batch_size]
+            tasks = [
+                async_process_index_file(
+                    file_path=f,
+                    base_path=base_path,
+                    repo_id=repo_id,
+                    processor=processor,
+                    file_type="code"  # FileProcessor handles type internally
+                )
+                for f in batch
+            ]
+            await asyncio.gather(*tasks)
+    finally:
+        processor.clear_cache() 

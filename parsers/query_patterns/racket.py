@@ -4,20 +4,36 @@ Query patterns for Racket files.
 
 RACKET_PATTERNS = {
     "syntax": {
-        "function": [
+        "function": {
+            "pattern": """
+            [
+                (list_lit
+                    .
+                    (sym_lit) @def_type
+                    (#match? @def_type "^(define|lambda)$")
+                    .
+                    [(sym_lit) (list_lit)] @syntax.function.name
+                    .
+                    (list_lit)? @syntax.function.params
+                    .
+                    (_)* @syntax.function.body) @syntax.function.def
+            ]
             """
-            (list_lit
-                .
-                (sym_lit) @def_type
-                (#match? @def_type "^(define|lambda)$")
-                .
-                (sym_lit) @name
-                .
-                (list_lit)? @params
-                .
-                (_)* @body) @function
+        },
+        "macro": {
+            "pattern": """
+            [
+                (list_lit
+                    .
+                    (sym_lit) @def_type
+                    (#match? @def_type "^(define-syntax|define-syntax-rule)$")
+                    .
+                    (sym_lit) @syntax.macro.name
+                    .
+                    (_)* @syntax.macro.body) @syntax.macro.def
+            ]
             """
-        ],
+        },
         "class": [
             """
             (list_lit
@@ -32,28 +48,32 @@ RACKET_PATTERNS = {
         ]
     },
     "structure": {
-        "namespace": [
+        "module": {
+            "pattern": """
+            [
+                (list_lit
+                    .
+                    (sym_lit) @def_type
+                    (#match? @def_type "^(module|module\\*)$")
+                    .
+                    (sym_lit) @structure.module.name
+                    .
+                    (sym_lit) @structure.module.lang
+                    .
+                    (_)* @structure.module.body) @structure.module.def
+            ]
             """
-            (list_lit
-                .
-                (sym_lit) @def_type
-                (#match? @def_type "^(module|module\\*)$")
-                .
-                (sym_lit) @name
-                .
-                (_)* @body) @namespace
-            """
-        ],
-        "import": [
-            """
+        },
+        "require": {
+            "pattern": """
             (list_lit
                 .
                 (sym_lit) @def_type
                 (#match? @def_type "^(require)$")
                 .
-                (_)* @imports) @import
+                (_)* @structure.require.specs) @structure.require.def
             """
-        ]
+        }
     },
     "semantics": {
         "variable": [
@@ -80,10 +100,14 @@ RACKET_PATTERNS = {
                 (_)* @content) @docstring
             """
         ],
-        "comment": [
+        "comment": {
+            "pattern": """
+            [
+                (comment) @documentation.comment,
+                (block_comment) @documentation.block_comment,
+                (sexp_comment) @documentation.sexp_comment
+            ]
             """
-            (comment) @comment
-            """
-        ]
+        }
     }
 } 

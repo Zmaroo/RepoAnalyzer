@@ -1,204 +1,140 @@
-"""Custom parser for HTML with enhanced documentation and structure features."""
+"""Custom parser for HTML with enhanced documentation features."""
 
-from typing import Dict, List, Any
-from parsers.common_parser_utils import build_parser_output
-import xml.etree.ElementTree as ET
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from parsers.base_parser import CustomParser
+from parsers.file_classification import FileClassification
+from parsers.query_patterns.html import HTML_PATTERNS, PatternCategory
+from utils.logger import log
+from xml.etree.ElementTree import Element, fromstring
 from xml.sax.saxutils import escape, unescape
 import re
-from utils.logger import log
 
-def parse_html_code(source_code: str) -> dict:
-    """
-    Parse HTML content as structured code while preserving documentation features.
+@dataclass
+class HtmlNode:
+    """Base class for HTML AST nodes."""
+    type: str
+    start_point: List[int]
+    end_point: List[int]
+    children: List[Any]
+
+class HtmlParser(CustomParser):
+    """Parser for HTML files."""
     
-    Handles:
-    - Document structure (elements, attributes, metadata)
-    - Documentation (comments, meta tags, schema)
-    - Script and style blocks
-    - Template syntax
-    - Inline documentation
-    """
-    features: Dict[str, Any] = {
-        "syntax": {
-            "elements": [],      # HTML elements
-            "attributes": [],    # Element attributes
-            "scripts": [],       # Script blocks
-            "styles": [],        # Style blocks
-            "templates": []      # Template syntax
-        },
-        "structure": {
-            "head": None,        # Head section
-            "body": None,        # Body section
-            "sections": [],      # Semantic sections
-            "navigation": [],    # Nav elements
-            "forms": []          # Form structures
-        },
-        "semantics": {
-            "meta": [],         # Meta information
-            "links": [],        # Links and references
-            "schema": [],       # Schema.org markup
-            "aria": []          # Accessibility attributes
-        },
-        "documentation": {
-            "comments": [],     # HTML comments
-            "doctype": None,    # DOCTYPE declaration
-            "metadata": {},     # Document metadata
-            "descriptions": []  # Content descriptions
+    def __init__(self, language_id: str = "html", classification: Optional[FileClassification] = None):
+        super().__init__(language_id, classification)
+        self.patterns = {
+            name: re.compile(pattern.pattern, re.DOTALL)
+            for category in HTML_PATTERNS.values()
+            for name, pattern in category.items()
         }
-    }
     
-    # Enhanced patterns for HTML parsing
-    patterns = {
-        'comment': re.compile(r'<!--(.*?)-->', re.DOTALL),
-        'doctype': re.compile(r'<!DOCTYPE\s+([^>]+)>', re.DOTALL),
-        'meta': re.compile(r'<meta\s+([^>]+)>', re.DOTALL),
-        'script': re.compile(r'<script[^>]*>(.*?)</script>', re.DOTALL),
-        'style': re.compile(r'<style[^>]*>(.*?)</style>', re.DOTALL),
-        'template': re.compile(r'{[{%].*?[%}]}', re.DOTALL)
-    }
-    
-    def process_element(element: ET.Element, path: List[str], depth: int) -> Dict:
-        """Process an HTML element and its children."""
-        tag = element.tag.lower()  # HTML is case-insensitive
-        
-        element_data = {
-            "type": "element",
-            "tag": tag,
-            "path": '/'.join(path + [tag]),
-            "depth": depth,
-            "attributes": [],
+    def _create_node(
+        self,
+        node_type: str,
+        start_point: List[int],
+        end_point: List[int],
+        **kwargs
+    ) -> Dict:
+        """Create a standardized AST node."""
+        return {
+            "type": node_type,
+            "start_point": start_point,
+            "end_point": end_point,
             "children": [],
-            "has_text": bool(element.text and element.text.strip())
+            **kwargs
         }
+
+    def _process_element(self, element: Element, path: List[str], depth: int) -> Dict:
+        """Process an HTML element and its children."""
+        tag = element.tag.lower()
         
-        # Process attributes with enhanced HTML features
+        element_data = self._create_node(
+            "element",
+            [0, 0],  # Will be updated later
+            [0, 0],  # Will be updated later
+            tag=tag,
+            path='/'.join(path + [tag]),
+            depth=depth,
+            attributes=[],
+            has_text=bool(element.text and element.text.strip())
+        )
+        
+        # Process attributes
         for name, value in element.attrib.items():
             attr_data = {
                 "name": name.lower(),
                 "value": value,
-                "element_path": element_data["path"]
+                "element_path": element_data["path"],
+                "line_number": element_data["start_point"][0] + 1
             }
-            
-            # Classify special attributes
-            if name.startswith('data-'):
-                features["semantics"]["meta"].append(attr_data)
-            elif name.startswith('aria-') or name == 'role':
-                features["semantics"]["aria"].append(attr_data)
-            elif name in ('itemscope', 'itemtype', 'itemprop'):
-                features["semantics"]["schema"].append(attr_data)
-            
             element_data["attributes"].append(attr_data)
-            features["syntax"]["attributes"].append(attr_data)
+            
+            # Process semantic attributes (ARIA, data-*, etc.)
+            if name.startswith('aria-') or name.startswith('data-'):
+                semantic_data = {
+                    "type": "semantic_attribute",
+                    "name": name,
+                    "value": value,
+                    "category": "aria" if name.startswith('aria-') else "data",
+                    "line_number": element_data["start_point"][0] + 1
+                }
+                element_data["children"].append(semantic_data)
         
         # Process children
         for child in element:
-            child_data = process_element(child, path + [tag], depth + 1)
+            child_data = self._process_element(child, path + [tag], depth + 1)
             element_data["children"].append(child_data)
         
-        # Track special elements
-        if tag == 'meta':
-            features["semantics"]["meta"].append(element_data)
-        elif tag == 'nav':
-            features["structure"]["navigation"].append(element_data)
-        elif tag == 'form':
-            features["structure"]["forms"].append(element_data)
-        elif tag == 'section' or tag == 'article':
-            features["structure"]["sections"].append(element_data)
-        
-        features["syntax"]["elements"].append(element_data)
         return element_data
-    
-    try:
-        # Process pre-parsing content
-        original_content = source_code
-        
-        # Extract and store comments
-        for match in patterns['comment'].finditer(source_code):
-            comment_content = match.group(1).strip()
-            features["documentation"]["comments"].append({
-                "content": comment_content,
-                "start": match.start(),
-                "end": match.end()
-            })
-        
-        # Extract and store DOCTYPE
-        doctype_match = patterns['doctype'].search(source_code)
-        if doctype_match:
-            features["documentation"]["doctype"] = {
-                "content": doctype_match.group(1).strip(),
-                "start": doctype_match.start(),
-                "end": doctype_match.end()
-            }
-        
-        # Extract and store scripts
-        for match in patterns['script'].finditer(source_code):
-            features["syntax"]["scripts"].append({
-                "content": match.group(1).strip(),
-                "start": match.start(),
-                "end": match.end()
-            })
-        
-        # Extract and store styles
-        for match in patterns['style'].finditer(source_code):
-            features["syntax"]["styles"].append({
-                "content": match.group(1).strip(),
-                "start": match.start(),
-                "end": match.end()
-            })
-        
-        # Extract template syntax
-        for match in patterns['template'].finditer(source_code):
-            features["syntax"]["templates"].append({
-                "content": match.group(0),
-                "start": match.start(),
-                "end": match.end()
-            })
-        
-        # Parse HTML content
-        root = ET.fromstring(source_code)
-        
-        # Build AST
-        ast = {
-            "type": "html_document",
-            "root": process_element(root, [], 0),
-            "start_point": [0, 0],
-            "end_point": [len(source_code.splitlines()) - 1, 
-                         len(source_code.splitlines()[-1]) if source_code.splitlines() else 0],
-            "start_byte": 0,
-            "end_byte": len(source_code)
-        }
-        
-        # Extract documentation
-        documentation = "\n".join(
-            comment["content"] for comment in features["documentation"]["comments"]
-        )
-        
-        # Calculate complexity
-        complexity = (
-            len(features["syntax"]["elements"]) +
-            len(features["syntax"]["attributes"]) +
-            len(features["syntax"]["scripts"]) +
-            len(features["syntax"]["styles"])
-        )
-        
-        return build_parser_output(
-            source_code=source_code,
-            language="html",
-            ast=ast,
-            features=features,
-            total_lines=len(source_code.splitlines()),
-            documentation=documentation,
-            complexity=complexity
-        )
-        
-    except Exception as e:
-        log(f"Error in HTML parser: {e}", level="error")
-        return build_parser_output(
-            source_code=source_code,
-            language="html",
-            ast={"type": "error", "message": str(e)},
-            features={},
-            total_lines=len(source_code.splitlines()),
-            documentation="",
-            complexity=0
-        ) 
+
+    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+        """Parse HTML content into AST structure."""
+        try:
+            lines = source_code.splitlines()
+            ast = self._create_node(
+                "html_document",
+                [0, 0],
+                [len(lines) - 1, len(lines[-1]) if lines else 0],
+                children=[]
+            )
+            
+            # Process comments and doctypes first
+            for pattern_name in ['comment', 'doctype']:
+                for match in self.patterns[pattern_name].finditer(source_code):
+                    node = self._create_node(
+                        pattern_name,
+                        [source_code.count('\n', 0, match.start()), match.start()],
+                        [source_code.count('\n', 0, match.end()), match.end()],
+                        **HTML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(match)
+                    )
+                    ast["children"].append(node)
+            
+            # Parse HTML structure
+            try:
+                root = fromstring(source_code)
+                ast["root"] = self._process_element(root, [], 0)
+            except Exception as e:
+                log(f"Error parsing HTML structure: {e}", level="error")
+                ast["parse_error"] = str(e)
+            
+            # Process scripts and styles
+            for pattern_name in ['script', 'style']:
+                for match in self.patterns[pattern_name].finditer(source_code):
+                    node = self._create_node(
+                        pattern_name,
+                        [source_code.count('\n', 0, match.start()), match.start()],
+                        [source_code.count('\n', 0, match.end()), match.end()],
+                        **HTML_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
+                    )
+                    ast["children"].append(node)
+            
+            return ast
+            
+        except Exception as e:
+            log(f"Error parsing HTML content: {e}", level="error")
+            return {
+                "type": "html_document",
+                "error": str(e),
+                "children": []
+            } 

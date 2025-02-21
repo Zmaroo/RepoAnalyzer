@@ -1,0 +1,10 @@
+# Sample TOML file
+title = "Configuration File"
+
+[server]
+host = "localhost"
+port = 8080
+
+[database]
+url = "postgres://localhost:5432/db"
+max_connections = 100 

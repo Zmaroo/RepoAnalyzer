@@ -1,224 +1,138 @@
-"""
-Custom Nim parser.
+"""Custom parser for Nim with enhanced documentation features."""
 
-This parser applies simple regex patterns to extract key elements from Nim source files,
-for example, procedure (proc) and type definitions.
-"""
-
-from parsers.common_parser_utils import extract_features_from_ast, build_parser_output
-
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from parsers.base_parser import CustomParser
+from parsers.file_classification import FileClassification
+from parsers.query_patterns.nim import NIM_PATTERNS, PatternCategory
+from utils.logger import log
 import re
 
-def parse_nim_code(source_code: str) -> dict:
-    """
-    Parse Nim source files to generate an AST aligned with PATTERN_CATEGORIES.
+@dataclass
+class NimNode:
+    """Base class for Nim AST nodes."""
+    type: str
+    start_point: List[int]
+    end_point: List[int]
+    children: List[Any]
+
+class NimParser(CustomParser):
+    """Parser for Nim files."""
     
-    Maps Nim constructs to standard categories:
-    - syntax: procedures (function), types/objects (class)
-    - structure: modules (namespace), imports (import)
-    - documentation: doc comments (docstring), comments (comment)
-    - semantics: variables/constants (variable), expressions (expression)
-    """
-    lines = source_code.splitlines()
-    total_lines = len(lines)
-    children = []
+    def __init__(self, language_id: str = "nim", classification: Optional[FileClassification] = None):
+        super().__init__(language_id, classification)
+        self.patterns = {
+            name: re.compile(pattern.pattern)
+            for category in NIM_PATTERNS.values()
+            for name, pattern in category.items()
+        }
     
-    # Regex patterns for Nim parsing
-    proc_pattern = re.compile(r'^proc\s+(\w+)\*?\s*\((.*?)\)(?:\s*:\s*(\w+))?\s*=')
-    type_pattern = re.compile(r'^type\s+(\w+)\*?\s*=\s*(?:object|enum|tuple|ref\s+object)')
-    import_pattern = re.compile(r'^import\s+(.*?)(?:\s+except\s+.*)?$')
-    var_pattern = re.compile(r'^(var|let|const)\s+(\w+)\*?\s*(?::\s*(\w+))?\s*=\s*(.+)$')
-    doc_comment_pattern = re.compile(r'^##\s*(.*)$')
-    comment_pattern = re.compile(r'^#\s*(.*)$')
-    
-    def process_parameters(params_str: str) -> list:
-        """Process procedure parameters into variable nodes."""
+    def _create_node(
+        self,
+        node_type: str,
+        start_point: List[int],
+        end_point: List[int],
+        **kwargs
+    ) -> Dict:
+        """Create a standardized AST node."""
+        return {
+            "type": node_type,
+            "start_point": start_point,
+            "end_point": end_point,
+            "children": [],
+            **kwargs
+        }
+
+    def _process_parameters(self, params_str: str) -> List[Dict]:
+        """Process procedure parameters into parameter nodes."""
         if not params_str.strip():
             return []
-            
+        
         param_nodes = []
         params = [p.strip() for p in params_str.split(',')]
         for param in params:
-            if ':' in param:
-                names, type_str = param.split(':', 1)
-                for name in names.split(','):
-                    param_nodes.append({
-                        "type": "semantics",
-                        "category": "variable",
-                        "name": name.strip(),
-                        "value_type": type_str.strip()
-                    })
+            if match := self.patterns['parameter'].match(param):
+                param_nodes.append(
+                    NIM_PATTERNS[PatternCategory.SEMANTICS]['parameter'].extract(match)
+                )
         return param_nodes
 
-    current_doc = []
-    
-    def flush_doc() -> dict:
-        """Convert accumulated doc comments into a docstring node."""
-        nonlocal current_doc
-        if current_doc:
-            doc_node = {
-                "type": "documentation",
-                "category": "docstring",
-                "content": "\n".join(current_doc)
-            }
+    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+        """Parse Nim content into AST structure."""
+        try:
+            lines = source_code.splitlines()
+            ast = self._create_node(
+                "module",
+                [0, 0],
+                [len(lines) - 1, len(lines[-1]) if lines else 0],
+                children=[]
+            )
+
             current_doc = []
-            return doc_node
-        return None
+            
+            for i, line in enumerate(lines):
+                line_start = [i, 0]
+                line_end = [i, len(line)]
+                
+                line = line.strip()
+                if not line:
+                    continue
 
-    i = 0
-    while i < total_lines:
-        line = lines[i].strip()
-        
-        # Skip empty lines
-        if not line:
+                # Process documentation
+                if doc_match := self.patterns['docstring'].match(line):
+                    node = self._create_node(
+                        "docstring",
+                        line_start,
+                        line_end,
+                        **NIM_PATTERNS[PatternCategory.DOCUMENTATION]['docstring'].extract(doc_match)
+                    )
+                    current_doc.append(node)
+                    continue
+
+                # Process procedures
+                if proc_match := self.patterns['proc'].match(line):
+                    node = self._create_node(
+                        "proc",
+                        line_start,
+                        line_end,
+                        **NIM_PATTERNS[PatternCategory.SYNTAX]['proc'].extract(proc_match)
+                    )
+                    node["parameters"] = self._process_parameters(node["parameters"])
+                    if current_doc:
+                        node["documentation"] = current_doc
+                        current_doc = []
+                    ast["children"].append(node)
+                    continue
+
+                # Process other patterns
+                for pattern_name, category in [
+                    ('type', PatternCategory.SYNTAX),
+                    ('import', PatternCategory.STRUCTURE),
+                    ('variable', PatternCategory.SEMANTICS)
+                ]:
+                    if match := self.patterns[pattern_name].match(line):
+                        node = self._create_node(
+                            pattern_name,
+                            line_start,
+                            line_end,
+                            **NIM_PATTERNS[category][pattern_name].extract(match)
+                        )
+                        if current_doc:
+                            node["documentation"] = current_doc
+                            current_doc = []
+                        ast["children"].append(node)
+                        break
+
+            # Add any remaining documentation
             if current_doc:
-                doc_node = flush_doc()
-                if doc_node:
-                    children.append(doc_node)
-            i += 1
-            continue
-            
-        # Check for doc comments
-        doc_match = doc_comment_pattern.match(line)
-        if doc_match:
-            current_doc.append(doc_match.group(1))
-            i += 1
-            continue
-            
-        # Check for regular comments
-        comment_match = comment_pattern.match(line)
-        if comment_match:
-            children.append({
-                "type": "documentation",
-                "category": "comment",
-                "content": comment_match.group(1),
-                "line": i + 1
-            })
-            i += 1
-            continue
-            
-        # Process any accumulated doc comments
-        if current_doc:
-            doc_node = flush_doc()
-            if doc_node:
-                children.append(doc_node)
-            
-        # Check for procedures
-        proc_match = proc_pattern.match(line)
-        if proc_match:
-            name, params, return_type = proc_match.groups()
-            proc_node = {
-                "type": "syntax",
-                "category": "function",
-                "name": name,
-                "parameters": process_parameters(params),
-                "return_type": return_type,
-                "line": i + 1
-            }
-            children.append(proc_node)
-            i += 1
-            continue
-            
-        # Check for types
-        type_match = type_pattern.match(line)
-        if type_match:
-            name = type_match.group(1)
-            type_node = {
-                "type": "syntax",
-                "category": "class",
-                "name": name,
-                "line": i + 1
-            }
-            children.append(type_node)
-            i += 1
-            continue
-            
-        # Check for imports
-        import_match = import_pattern.match(line)
-        if import_match:
-            imports = import_match.group(1).split(',')
-            for imp in imports:
-                imp = imp.strip()
-                if imp:
-                    children.append({
-                        "type": "structure",
-                        "category": "import",
-                        "name": imp,
-                        "line": i + 1
-                    })
-            i += 1
-            continue
-            
-        # Check for variables/constants
-        var_match = var_pattern.match(line)
-        if var_match:
-            kind, name, type_str, value = var_match.groups()
-            var_node = {
-                "type": "semantics",
-                "category": "variable",
-                "name": name,
-                "value_type": type_str,
-                "value": value,
-                "is_const": kind == "const",
-                "line": i + 1
-            }
-            children.append(var_node)
-            
-        i += 1
-    
-    # Flush any remaining doc comments
-    if current_doc:
-        doc_node = flush_doc()
-        if doc_node:
-            children.append(doc_node)
-    
-    # Build the AST root
-    ast = {
-        "type": "module",
-        "category": "structure",
-        "children": children,
-        "start_point": [0, 0],
-        "end_point": [total_lines - 1, len(lines[-1]) if lines else 0],
-        "start_byte": 0,
-        "end_byte": len(source_code)
-    }
+                ast["trailing_documentation"] = current_doc
 
-    # Extract features based on pattern categories
-    features = {
-        "syntax": {
-            "function": [node for node in children 
-                        if node["type"] == "syntax" and node["category"] == "function"],
-            "class": [node for node in children 
-                     if node["type"] == "syntax" and node["category"] == "class"]
-        },
-        "structure": {
-            "import": [node for node in children 
-                      if node["type"] == "structure" and node["category"] == "import"]
-        },
-        "semantics": {
-            "variable": [node for node in children 
-                        if node["type"] == "semantics" and node["category"] == "variable"]
-        },
-        "documentation": {
-            "docstring": [node for node in children 
-                         if node["type"] == "documentation" and node["category"] == "docstring"],
-            "comment": [node for node in children 
-                       if node["type"] == "documentation" and node["category"] == "comment"]
-        }
-    }
-
-    # Extract documentation from doc comments and regular comments
-    documentation = "\n".join(
-        node["content"] for node in children
-        if node["type"] == "documentation"
-    )
-
-    return build_parser_output(
-        source_code=source_code,
-        language="nim",
-        ast=ast,
-        features=features,
-        total_lines=total_lines,
-        documentation=documentation,
-        complexity=1
-    )
+            return ast
+            
+        except Exception as e:
+            log(f"Error parsing Nim content: {e}", level="error")
+            return {
+                "type": "module",
+                "error": str(e),
+                "children": []
+            }

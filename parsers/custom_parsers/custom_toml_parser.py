@@ -1,183 +1,142 @@
-"""Custom parser for TOML with enhanced documentation and configuration features."""
+"""Custom parser for TOML with enhanced documentation features."""
 
-from typing import Dict, List, Any
-from parsers.common_parser_utils import build_parser_output
-import re
-import tomli
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from parsers.base_parser import CustomParser
+from parsers.file_classification import FileClassification
+from parsers.query_patterns.toml import TOML_PATTERNS, PatternCategory
 from utils.logger import log
+import tomli
 
-def parse_toml_code(source_code: str) -> dict:
-    """
-    Parse TOML content as structured code while preserving documentation features.
+@dataclass
+class TomlNode:
+    """Base class for TOML AST nodes."""
+    type: str
+    start_point: List[int]
+    end_point: List[int]
+    children: List[Any]
+
+class TomlParser(CustomParser):
+    """Parser for TOML files."""
     
-    Handles:
-    - Document structure (tables, arrays)
-    - Documentation (comments, descriptions)
-    - Configuration (key-value pairs)
-    - Metadata and schema
-    """
-    features: Dict[str, Any] = {
-        "syntax": {
-            "tables": [],       # TOML tables
-            "arrays": [],       # Array tables
-            "values": [],       # Key-value pairs
-            "inline": []        # Inline tables/arrays
-        },
-        "structure": {
-            "sections": [],     # Top-level tables
-            "subsections": [],  # Nested tables
-            "references": []    # Cross-references
-        },
-        "semantics": {
-            "definitions": [], # Value definitions
-            "types": [],      # Data types
-            "paths": []       # Dotted keys
-        },
-        "documentation": {
-            "comments": [],    # TOML comments
-            "metadata": {},    # Document metadata
-            "descriptions": [] # Value descriptions
+    def __init__(self, language_id: str = "toml", classification: Optional[FileClassification] = None):
+        super().__init__(language_id, classification)
+        self.patterns = {
+            name: pattern.pattern
+            for category in TOML_PATTERNS.values()
+            for name, pattern in category.items()
         }
-    }
-    
-    # Enhanced patterns for TOML parsing
-    patterns = {
-        'comment': re.compile(r'#\s*(.+)$', re.MULTILINE),
-        'table': re.compile(r'^\s*\[(.*?)\]\s*$', re.MULTILINE),
-        'array_table': re.compile(r'^\s*\[\[(.*?)\]\]\s*$', re.MULTILINE),
-        'key_value': re.compile(r'^\s*([\w.-]+)\s*=\s*(.+)$', re.MULTILINE),
-        'doc_comment': re.compile(r'#\s*@\w+\s*(.+)$', re.MULTILINE)
-    }
-    
-    def process_value(value: Any, path: List[str]) -> Dict:
+
+    def _create_node(
+        self,
+        node_type: str,
+        start_point: List[int],
+        end_point: List[int],
+        **kwargs
+    ) -> Dict:
+        """Create a standardized AST node."""
+        return {
+            "type": node_type,
+            "start_point": start_point,
+            "end_point": end_point,
+            "children": [],
+            **kwargs
+        }
+
+    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> Dict:
         """Process a TOML value and extract its features."""
-        value_data = {
-            "type": "value",
-            "path": '.'.join(path),
-            "value_type": type(value).__name__
-        }
+        value_data = self._create_node(
+            "value",
+            start_point,
+            [start_point[0], start_point[1] + len(str(value))],
+            path='.'.join(path),
+            value_type=type(value).__name__,
+            value=value
+        )
         
         if isinstance(value, dict):
             value_data["type"] = "table"
             value_data["keys"] = list(value.keys())
-            features["syntax"]["tables"].append(value_data)
-            
             for key, val in value.items():
-                process_value(val, path + [key])
+                child = self._process_value(
+                    val,
+                    path + [key],
+                    [start_point[0], start_point[1] + len(key) + 1]
+                )
+                value_data["children"].append(child)
                 
         elif isinstance(value, list):
             value_data["type"] = "array"
             value_data["length"] = len(value)
-            features["syntax"]["arrays"].append(value_data)
-            
             for i, item in enumerate(value):
-                process_value(item, path + [f"[{i}]"])
-                
-        else:
-            features["syntax"]["values"].append(value_data)
-            features["semantics"]["types"].append({
-                "path": value_data["path"],
-                "type": value_data["value_type"]
-            })
+                child = self._process_value(
+                    item,
+                    path + [f"[{i}]"],
+                    [start_point[0], start_point[1] + i]
+                )
+                value_data["children"].append(child)
         
         return value_data
-    
-    try:
-        # Process comments first
-        lines = source_code.splitlines()
-        current_comments = []
-        
-        for i, line in enumerate(lines):
-            # Handle comments
-            comment_match = patterns['comment'].match(line)
-            if comment_match:
-                comment_content = comment_match.group(1)
-                
-                # Check for documentation comments
-                doc_match = patterns['doc_comment'].match(line)
-                if doc_match:
-                    features["documentation"]["descriptions"].append({
-                        "content": doc_match.group(1),
-                        "line": i + 1
-                    })
-                else:
-                    current_comments.append({
-                        "content": comment_content,
-                        "line": i + 1
-                    })
-                continue
-            
-            # Process accumulated comments
-            if current_comments:
-                features["documentation"]["comments"].extend(current_comments)
-                current_comments = []
-            
-            # Track table headers
-            table_match = patterns['table'].match(line)
-            if table_match:
-                table_name = table_match.group(1)
-                features["structure"]["sections"].append({
-                    "name": table_name,
-                    "line": i + 1
-                })
-            
-            # Track array tables
-            array_match = patterns['array_table'].match(line)
-            if array_match:
-                array_name = array_match.group(1)
-                features["structure"]["sections"].append({
-                    "name": array_name,
-                    "is_array": True,
-                    "line": i + 1
-                })
-        
-        # Parse TOML content
+
+    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+        """Parse TOML content into AST structure."""
         try:
-            data = tomli.loads(source_code)
+            lines = source_code.splitlines()
+            ast = self._create_node(
+                "document",
+                [0, 0],
+                [len(lines) - 1, len(lines[-1]) if lines else 0],
+                children=[]
+            )
+
+            # Process comments and structure
+            current_comments = []
+            for i, line in enumerate(lines):
+                line_start = [i, 0]
+                line_end = [i, len(line)]
+                
+                # Process patterns
+                matched = False
+                for category in TOML_PATTERNS.values():
+                    for pattern_name, pattern in category.items():
+                        if match := self.patterns[pattern_name].match(line):
+                            node = self._create_node(
+                                pattern_name,
+                                line_start,
+                                line_end,
+                                **pattern.extract(match)
+                            )
+                            if current_comments:
+                                node["comments"] = current_comments
+                                current_comments = []
+                            ast["children"].append(node)
+                            matched = True
+                            break
+                    if matched:
+                        break
+
+                if not matched and line.strip():
+                    current_comments.append(line)
+
+            # Parse TOML content
+            try:
+                data = tomli.loads(source_code)
+                root_value = self._process_value(data, [], [0, 0])
+                ast["children"].append(root_value)
+            except Exception as e:
+                log(f"Error parsing TOML content: {e}", level="error")
+                return {
+                    "type": "document",
+                    "error": str(e),
+                    "children": []
+                }
+
+            return ast
+            
         except Exception as e:
             log(f"Error parsing TOML content: {e}", level="error")
-            data = {}
-        
-        # Process the parsed data
-        ast = {
-            "type": "toml_document",
-            "root": process_value(data, []),
-            "start_point": [0, 0],
-            "end_point": [len(lines) - 1, len(lines[-1]) if lines else 0],
-            "start_byte": 0,
-            "end_byte": len(source_code)
-        }
-        
-        # Extract documentation
-        documentation = "\n".join(
-            comment["content"] for comment in features["documentation"]["comments"]
-        )
-        
-        # Calculate complexity
-        complexity = (
-            len(features["syntax"]["tables"]) +
-            len(features["syntax"]["arrays"]) +
-            len(features["structure"]["sections"])
-        )
-        
-        return build_parser_output(
-            source_code=source_code,
-            language="toml",
-            ast=ast,
-            features=features,
-            total_lines=len(lines),
-            documentation=documentation,
-            complexity=complexity
-        )
-        
-    except Exception as e:
-        log(f"Error in TOML parser: {e}", level="error")
-        return build_parser_output(
-            source_code=source_code,
-            language="toml",
-            ast={"type": "error", "message": str(e)},
-            features={},
-            total_lines=len(source_code.splitlines()),
-            documentation="",
-            complexity=0
-        ) 
+            return {
+                "type": "document",
+                "error": str(e),
+                "children": []
+            } 

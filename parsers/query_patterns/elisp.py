@@ -1,20 +1,36 @@
 """Query patterns for Emacs Lisp files."""
 
+from .common import COMMON_PATTERNS
+
 ELISP_PATTERNS = {
+    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
+    
     "syntax": {
-        "function": [
-            """
-            (function_definition
-                name: (symbol) @function.name
-                parameters: (_)? @function.params
-                docstring: (string)? @function.doc
-                [
-                    (bytecode) @function.bytecode
-                    (list) @function.body
-                    (special_form) @function.special
-                ]*) @function.def
-            """
-        ],
+        "function": {
+            "pattern": """
+            [
+                (function_definition
+                    name: (symbol) @syntax.function.name
+                    parameters: (_)? @syntax.function.params
+                    docstring: (string)? @syntax.function.doc
+                    [
+                        (bytecode) @syntax.function.bytecode
+                        (list) @syntax.function.body
+                        (special_form) @syntax.function.special
+                    ]*) @syntax.function.def,
+                    
+                (special_form
+                    name: (symbol) @syntax.special.name
+                    (#match? @syntax.special.name "^(defun|cl-defun|defsubst)$")
+                    parameters: (_)? @syntax.special.params
+                    body: (_)* @syntax.special.body) @syntax.special.def
+            ]
+            """,
+            "extract": lambda node: {
+                "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
+                "type": "function"
+            }
+        },
         "class": [
             """
             (macro_definition
@@ -43,28 +59,33 @@ ELISP_PATTERNS = {
         ]
     },
     "semantics": {
-        "variable": [
-            """
-            (list
-                [
-                    (symbol) @list.symbol
-                    (string) @list.string
-                    (integer) @list.integer
-                    (float) @list.float
-                    (char) @list.char
-                    (list) @list.nested
-                    (quote) @list.quote
-                    (unquote) @list.unquote
-                    (unquote_splice) @list.splice
-                ]*) @variable
-            """
-        ]
+        "variable": {
+            "pattern": """
+            [
+                (list
+                    (symbol) @semantics.var.keyword
+                    (#match? @semantics.var.keyword "^(defvar|defconst|defcustom)$")
+                    (symbol) @semantics.var.name
+                    value: (_)? @semantics.var.value
+                    docstring: (string)? @semantics.var.doc) @semantics.var.def
+            ]
+            """,
+            "extract": lambda node: {
+                "name": node["captures"].get("semantics.var.name", {}).get("text", ""),
+                "type": node["captures"].get("semantics.var.keyword", {}).get("text", "")
+            }
+        }
     },
     "documentation": {
-        "comment": [
-            """
-            (comment) @comment
-            """
-        ]
+        "comments": {
+            "pattern": """
+            [
+                (comment) @documentation.comment
+            ]
+            """,
+            "extract": lambda node: {
+                "text": node["captures"].get("documentation.comment", {}).get("text", "")
+            }
+        }
     }
 } 

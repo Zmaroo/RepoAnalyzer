@@ -59,7 +59,7 @@ docs/api/
 *.db
 *.sqlite3
 node-types/
-tests/
+#tests/
 
 # Tree-sitter
 .tree-sitter-language-pack-repo/

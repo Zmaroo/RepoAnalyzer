@@ -4,126 +4,99 @@ This module defines basic queries for capturing Elm constructs such as module de
 value declarations, type aliases, and union types.
 """
 
+from parsers.file_classification import FileType
+from .common import COMMON_PATTERNS
+
 ELM_PATTERNS = {
-    # Syntax patterns
-    "function": """
-        [
-          (value_declaration
-            pattern: (lower_pattern) @function.name
-            type_annotation: (type_annotation)? @function.type
-            value: (value_expr) @function.body) @function.def,
-          (port_annotation
-            name: (lower_name) @function.name
-            type_expression: (_) @function.type) @function.port,
-          (port_declaration
-            name: (lower_name) @function.name
-            type_expression: (_) @function.type) @function.port_def
-        ]
-    """,
+    **COMMON_PATTERNS,
     
-    "class": [
-        """
-        (type_declaration
-            name: (upper_case_identifier) @name
-            type_variables: (lower_pattern)* @type_vars
-            constructors: (union_variant)+ @constructors) @class
-        """,
-        """
-        (type_alias_declaration
-            name: (upper_case_identifier) @name
-            type_variables: (lower_pattern)* @type_vars
-            type_expression: (_) @type) @class
-        """
-    ],
-    
-    # Structure patterns
-    "namespace": [
-        """
-        (module_declaration
-            name: (upper_case_qid) @name
-            exposing: (exposed_values)? @exports) @namespace
-        """,
-        """
-        (effect_module_declaration
-            name: (upper_case_qid) @name
-            exposing: (exposed_values)? @exports) @namespace
-        """
-    ],
-    
-    "import": [
-        """
-        (import_declaration
-            module_name: (upper_case_qid) @module
-            as_name: (upper_case_identifier)? @alias
-            exposing: (exposed_values)? @exposed) @import
-        """
-    ],
-    
-    # Semantics patterns
-    "variable": [
-        """
-        (lower_pattern) @variable
-        """,
-        """
-        (record_pattern
-            fields: (lower_pattern)+ @fields) @variable
-        """,
-        """
-        (record_type
-            name: (lower_name) @name
-            fields: (field_type)+ @fields) @variable
-        """
-    ],
-    
-    "expression": [
-        """
-        (call_expr
-            target: (_) @function
-            arguments: (_)+ @args) @expression
-        """,
-        """
-        (operator_expr
-            operator: (_) @operator
-            left: (_) @left
-            right: (_) @right) @expression
-        """,
-        """
-        (if_else_expr
-            if: (_) @condition
-            then: (_) @then
-            else: (_) @else) @expression
-        """,
-        """
-        (case_of_expr
-            expr: (_) @value
-            branches: (case_of_branch)+ @branches) @expression
-        """,
-        """
-        (let_in_expr
-            declarations: (value_declaration)+ @declarations
-            expression: (_) @body) @expression
-        """
-    ],
-    
-    # Documentation patterns
-    "documentation": """
-        [
-          (block_comment) @doc.block,
-          (line_comment) @doc.line,
-          (block_comment
-            content: (_) @doc.content
-            (#match? @doc.content "^\\|\\s*@docs")) @doc.api
-        ]
-    """,
-    
-    "comment": [
-        """
-        (block_comment) @comment
-        """,
-        """
-        (line_comment) @comment
-        """
-    ]
+    "syntax": {
+        "function": {
+            "pattern": """
+            (value_declaration
+              pattern: (lower_pattern) @syntax.function.name
+              type_annotation: (type_annotation)? @syntax.function.type
+              value: (value_expr) @syntax.function.body) @syntax.function.def
+            """,
+            "extract": lambda node: {
+                "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
+                "type": "function"
+            }
+        },
+        "class": {
+            "pattern": """
+            [
+                (type_declaration
+                    name: (upper_case_identifier) @syntax.class.name
+                    type_variables: (lower_pattern)* @syntax.class.type_vars
+                    constructors: (union_variant)+ @syntax.class.constructors) @syntax.class.def,
+                (type_alias_declaration
+                    name: (upper_case_identifier) @syntax.class.name
+                    type_variables: (lower_pattern)* @syntax.class.type_vars
+                    type_expression: (_) @syntax.class.type) @syntax.class.def
+            ]
+            """
+        }
+    },
+
+    "semantics": {
+        "type": {
+            "pattern": """
+            [
+                (type_annotation
+                    name: (_) @semantics.type.name
+                    expression: (_) @semantics.type.expr) @semantics.type.def,
+                (type_variable
+                    name: (lower_case_identifier) @semantics.type.var) @semantics.type.def
+            ]
+            """
+        },
+        "variable": {
+            "pattern": """
+            [
+                (lower_pattern) @semantics.variable,
+                (record_pattern
+                    fields: (lower_pattern)+ @semantics.variable.fields) @semantics.variable.def
+            ]
+            """
+        }
+    },
+
+    "documentation": {
+        "comment": {
+            "pattern": """
+            [
+                (line_comment) @documentation.comment.line,
+                (block_comment) @documentation.comment.block
+            ]
+            """
+        },
+        "docstring": {
+            "pattern": """
+            (block_comment
+                content: (_) @documentation.docstring.content
+                (#match? @documentation.docstring.content "^\\|\\s*@docs")) @documentation.docstring.def
+            """
+        }
+    },
+
+    "structure": {
+        "module": {
+            "pattern": """
+            (module_declaration
+                name: (upper_case_qid) @structure.module.name
+                exposing: (exposed_values)? @structure.module.exports) @structure.module.def
+            """
+        },
+        "import": {
+            "pattern": """
+            (import_declaration
+                module_name: (upper_case_qid) @structure.import.module
+                as_name: (upper_case_identifier)? @structure.import.alias
+                exposing: (exposed_values)? @structure.import.exposed) @structure.import.def
+            """
+        }
+    }
 }
 
 # Additional metadata for pattern categories

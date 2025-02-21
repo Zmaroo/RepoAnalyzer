@@ -12,94 +12,96 @@ Important:
     the repository indexing code.
 """
 
-from ai_tools.graph_capabilities import GraphAnalysisCapabilities
-from semantic.semantic_search import search_code
+from ai_tools.graph_capabilities import GraphAnalysis
+from semantic.search import semantic_search, search_code, search_docs
 from utils.logger import log
 from ai_tools.code_understanding import CodeUnderstanding
-from semantic.semantic_search import search_docs, search_available_docs, share_docs_with_repo
-from typing import List, Dict, Optional
-from indexer.doc_index import (
+from semantic.search import search_available_docs, share_docs_with_repo
+from typing import List, Dict, Optional, Any
+from semantic.search import (
     get_repo_docs,
     create_doc_cluster,
-    update_doc_version
+    update_doc_version,
+    search_docs,
 )
 from embedding.embedding_models import DocEmbedder
 from sklearn.cluster import DBSCAN
-import numpy as np
 from difflib import SequenceMatcher
+from utils.error_handling import (
+    handle_async_errors,
+    handle_errors,
+    ProcessingError,
+    AsyncErrorBoundary,
+    ErrorBoundary
+)
+import numpy as np
+import os
+from config import parser_config  # Add configuration import
 
 
-class AIAssistantInterface:
-    """
-    A unified interface for the AI assistant functionalities.
-
-    This class wraps the graph analysis capabilities and semantic search,
-    exposing a simplified API for code analysis tasks.
-    """
+class AIAssistant:
+    """Unified AI assistance interface."""
+    
     def __init__(self):
-        self.graph_analysis = GraphAnalysisCapabilities()
-        self.code_understanding = CodeUnderstanding()
-        self.doc_embedder = DocEmbedder()
-        # Additional AI tools can be initialized here in the future.
+        with ErrorBoundary("AI Assistant initialization"):
+            self.graph_analysis = GraphAnalysis()
+            self.code_understanding = CodeUnderstanding()
+            self.doc_embedder = DocEmbedder()
+            
+            # Validate language data path from config
+            if not os.path.exists(parser_config.language_data_path):
+                raise ProcessingError(
+                    f"Invalid language data path: {parser_config.language_data_path}"
+                )
+            # Additional AI tools can be initialized here in the future.
 
-    def analyze_repository(self, repo_id: int) -> dict:
-        """
-        Performs comprehensive analysis combining graph analysis and code understanding.
-        """
-        try:
-            # Get graph analysis results
-            graph_results = self.graph_analysis.trace_code_flow("entry_point", repo_id)
-            
-            # Get code understanding results
-            understanding_results = self.code_understanding.analyze_codebase(repo_id)
-            
-            return {
-                "graph_analysis": graph_results,
-                "code_understanding": understanding_results
-            }
-        except Exception as e:
-            log(f"Error in repository analysis: {e}", level="error")
-            return {}
-
-    def get_code_context(self, file_path: str, repo_id: int) -> dict:
-        """
-        Gets comprehensive context about a code file combining:
-        1. Similar code components
-        2. Code relationships
-        3. Semantic understanding
-        """
-        try:
-            # Get graph-based similar components
-            graph_similar = self.graph_analysis.find_similar_code(file_path, repo_id)
-            
-            # Get comprehensive code context
-            code_context = self.code_understanding.get_code_context(file_path, repo_id)
+    @handle_async_errors(error_types=ProcessingError)
+    async def analyze_repository(self, repo_id: int) -> Dict[str, Any]:
+        """Perform comprehensive repository analysis."""
+        async with AsyncErrorBoundary("repository analysis"):
+            structure = await self.analyze_code_structure(repo_id)
+            codebase = await self.code_understanding.analyze_codebase(repo_id)
+            docs = self.analyze_documentation(repo_id)
             
             return {
-                "graph_similar": graph_similar,
-                "code_context": code_context
+                "structure": structure,
+                "codebase": codebase,
+                "documentation": docs
             }
-        except Exception as e:
-            log(f"Error getting code context: {e}", level="error")
-            return {}
 
-    def find_similar_code(self, file_path: str, repo_id: int, limit: int = 5) -> list:
-        """
-        Finds similar code components based on node2vec embeddings.
+    @handle_async_errors(error_types=ProcessingError)
+    async def analyze_code_structure(
+        self,
+        repo_id: int,
+        file_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Analyze code structure using graph capabilities."""
+        async with AsyncErrorBoundary("code structure analysis"):
+            metrics = await self.graph_analysis.get_code_metrics(repo_id, file_path)
+            dependencies = await self.graph_analysis.get_dependencies(repo_id, file_path)
+            
+            return {
+                "metrics": metrics,
+                "dependencies": dependencies
+            }
 
-        Args:
-            file_path: Path of the source code file.
-            repo_id: Repository identifier.
-            limit: Maximum number of similar components to return.
-
-        Returns:
-            List of dictionaries with similar code details.
-        """
-        try:
-            return self.graph_analysis.find_similar_code(file_path, repo_id, limit=limit)
-        except Exception as e:
-            log(f"Error finding similar code for {file_path}: {e}", level="error")
-            return []
+    @handle_async_errors(error_types=ProcessingError)
+    async def get_code_context(
+        self,
+        repo_id: int,
+        file_path: str
+    ) -> Dict[str, Any]:
+        """Get comprehensive code context."""
+        async with AsyncErrorBoundary("code context retrieval"):
+            structure = await self.analyze_code_structure(repo_id, file_path)
+            references = await self.graph_analysis.get_references(repo_id, file_path)
+            context = await self.code_understanding.get_code_context(file_path, repo_id)
+            
+            return {
+                "structure": structure,
+                "references": references,
+                "context": context
+            }
 
     def trace_code_flow(self, entry_point: str, repo_id: int) -> list:
         """
@@ -119,9 +121,7 @@ class AIAssistantInterface:
             return []
 
     def search_code_snippets(self, query: str, repo_id: int, limit: int = 3) -> list:
-        """
-        Searches for code snippets matching the query using semantic search.
-        """
+        """Searches for code snippets matching the query using semantic search."""
         try:
             return search_code(query, repo_id=repo_id, limit=limit)
         except Exception as e:
@@ -140,107 +140,78 @@ class AIAssistantInterface:
         """Share selected documentation with a target repository."""
         return share_docs_with_repo(doc_ids, target_repo_id)
 
-    def analyze_documentation(self, repo_id: int) -> Dict:
-        """Enhanced documentation analysis"""
-        docs = get_repo_docs(repo_id)
-        
-        analysis = {
-            "total_docs": len(docs),
-            "doc_types": {},
-            "clusters": self._analyze_doc_clusters(docs),
-            "coverage": self._analyze_coverage(docs),
-            "quality_metrics": self._batch_quality_analysis(docs),
-            "version_history": self._analyze_versions(docs),
-            "shared_docs": self._analyze_sharing(docs)
-        }
-        
-        return analysis
-
-    def _analyze_doc_clusters(self, docs: List[Dict]) -> Dict:
-        """Cluster similar documentation together"""
-        if not docs:
-            return {}
+    @handle_errors(error_types=ProcessingError)
+    def analyze_documentation(self, repo_id: int) -> Dict[str, Any]:
+        """Analyze repository documentation."""
+        with ErrorBoundary("documentation analysis"):
+            docs = get_repo_docs(repo_id)
             
-        # Get embeddings for all docs
-        embeddings = np.array([
-            self.doc_embedder.embed(doc['content'])
-            for doc in docs
-        ])
-        
-        # Perform clustering
-        clustering = DBSCAN(eps=0.3, min_samples=2).fit(embeddings)
-        
-        clusters = {}
-        for i, label in enumerate(clustering.labels_):
-            if label >= 0:  # Ignore noise points (-1)
-                if label not in clusters:
-                    clusters[label] = []
-                clusters[label].append({
-                    'id': docs[i]['id'],
-                    'path': docs[i]['file_path'],
-                    'similarity_score': self._calculate_cluster_coherence(
-                        embeddings[i],
-                        embeddings[clustering.labels_ == label]
-                    )
-                })
-        
-        return clusters
+            return {
+                "total_docs": len(docs),
+                "clusters": self._analyze_doc_clusters(docs),
+                "coverage": self._analyze_coverage(docs),
+                "quality": self._batch_quality_analysis(docs)
+            }
 
-    def _analyze_coverage(self, docs: List[Dict]) -> Dict:
-        """Analyze documentation coverage"""
-        coverage = {
-            "total_lines": sum(len(doc['content'].splitlines()) for doc in docs),
-            "coverage_by_type": {},
-            "missing_areas": [],
-            "suggestions": []
-        }
-        
-        # Analyze coverage by documentation type
-        for doc in docs:
-            doc_type = doc.get('doc_type', 'unknown')
-            if doc_type not in coverage["coverage_by_type"]:
-                coverage["coverage_by_type"][doc_type] = 0
-            coverage["coverage_by_type"][doc_type] += 1
+    @handle_errors(error_types=ProcessingError)
+    def _analyze_doc_clusters(self, docs: List[Dict]) -> Dict[str, Any]:
+        """Cluster similar documentation."""
+        with ErrorBoundary("documentation clustering"):
+            if not docs:
+                return {}
             
-        # Identify potential gaps
-        code_patterns = ['class', 'function', 'method', 'api']
-        for pattern in code_patterns:
-            if not any(pattern in doc['content'].lower() for doc in docs):
-                coverage["missing_areas"].append(f"No documentation found for {pattern}")
-                
-        return coverage
+            embeddings = np.array([
+                self.doc_embedder.embed(doc['content'])
+                for doc in docs
+            ])
+            
+            clustering = DBSCAN(eps=0.3, min_samples=2).fit(embeddings)
+            
+            clusters = {}
+            for i, label in enumerate(clustering.labels_):
+                if label >= 0:
+                    if label not in clusters:
+                        clusters[label] = []
+                    clusters[label].append({
+                        'id': docs[i]['id'],
+                        'path': docs[i]['file_path']
+                    })
+            
+            return clusters
 
-    def _batch_quality_analysis(self, docs: List[Dict]) -> Dict:
-        """Batch analyze documentation quality"""
-        quality_metrics = {}
-        
-        for doc in docs:
-            metrics = {
-                "completeness": self._analyze_completeness(doc['content']),
-                "clarity": self._analyze_clarity(doc['content']),
-                "structure": self._analyze_structure(doc['content']),
-                "maintainability": self._analyze_maintainability(doc),
-                "consistency": self._analyze_consistency(doc, docs)
+    @handle_errors(error_types=ProcessingError)
+    def _analyze_coverage(self, docs: List[Dict]) -> Dict[str, Any]:
+        """Analyze documentation coverage."""
+        with ErrorBoundary("coverage analysis"):
+            coverage = {
+                "total_lines": sum(len(doc['content'].splitlines()) for doc in docs),
+                "coverage_by_type": {},
+                "missing_areas": []
             }
             
-            quality_metrics[doc['id']] = metrics
+            for doc in docs:
+                doc_type = doc.get('doc_type', 'unknown')
+                if doc_type not in coverage["coverage_by_type"]:
+                    coverage["coverage_by_type"][doc_type] = 0
+                coverage["coverage_by_type"][doc_type] += 1
             
-        return quality_metrics
+            return coverage
 
-    def _analyze_versions(self, docs: List[Dict]) -> Dict:
-        """Analyze documentation version history"""
-        version_analysis = {}
-        
-        for doc in docs:
-            versions = self._get_doc_versions(doc['id'])
-            if versions:
-                version_analysis[doc['id']] = {
-                    "version_count": len(versions),
-                    "last_updated": versions[-1]['created_at'],
-                    "change_summary": self._generate_change_summary(versions)
+    @handle_errors(error_types=ProcessingError)
+    def _batch_quality_analysis(self, docs: List[Dict]) -> Dict[str, Any]:
+        """Analyze documentation quality."""
+        with ErrorBoundary("quality analysis"):
+            quality_metrics = {}
+            
+            for doc in docs:
+                metrics = {
+                    "completeness": len(doc['content'].split()) / 100,  # Basic metric
+                    "has_examples": "```" in doc['content'],
+                    "has_sections": "#" in doc['content']
                 }
-                
-        return version_analysis
+                quality_metrics[doc['id']] = metrics
+            
+            return quality_metrics
 
     def suggest_documentation_improvements(self, repo_id: int) -> List[Dict]:
         """Suggest specific documentation improvements"""
@@ -314,8 +285,13 @@ class AIAssistantInterface:
             
         return max_similarity
 
+    @handle_errors(error_types=ProcessingError)
     def close(self) -> None:
-        """
-        Clean up resources.
-        """
-        self.graph_analysis.close()
+        """Clean up resources."""
+        with ErrorBoundary("AI Assistant cleanup"):
+            self.graph_analysis.close()
+            self.code_understanding.cleanup()
+            self.doc_embedder.cleanup()
+
+# Global instance
+ai_assistant = AIAssistant()

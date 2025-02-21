@@ -1,6 +1,13 @@
 # AI Tools Documentation
 
-This directory contains documentation for the AI tools and capabilities.
+This directory contains the core documentation for the AI-powered code analysis tools implemented in the `ai_tools` module.
+
+## Latest Updates
+
+- Integrated asynchronous indexing and error handling in coordination with the indexing and watcher modules.
+- Enhanced code understanding and graph analysis capabilities.
+- Improved semantic search that combines information from both code and documentation.
+- Documentation now aligns with the current implementation in `ai_tools`.
 
 ## Features
 
@@ -15,6 +22,11 @@ This directory contains documentation for the AI tools and capabilities.
 - Code embeddings generation
 - Graph database integration
 - Query processing
+- Graph analysis capabilities (see `graph_capabilities.py`)
+- **Unified AI Interface** (see `ai_interface.py`)
+- Code structure analysis and code understanding (see `code_understanding.py`)
+- Semantic search implementation with support for asynchronous processes and database integrations
+- Enhanced pattern matching and error handling utilities
 
 ## Contents
 

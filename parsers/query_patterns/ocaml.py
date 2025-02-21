@@ -9,6 +9,25 @@ downstream processing can store all key pieces of information.
 """
 
 from .common import COMMON_PATTERNS
+from parsers.file_classification import FileType
+from parsers.pattern_processor import QueryPattern, PatternCategory
+from typing import Dict, Any, Match
+
+def extract_let_binding(match: Match) -> Dict[str, Any]:
+    """Extract let binding information."""
+    return {
+        "type": "let_binding",
+        "name": match.group(1),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
+
+def extract_type_definition(match: Match) -> Dict[str, Any]:
+    """Extract type definition information."""
+    return {
+        "type": "type_definition",
+        "name": match.group(1),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
 
 OCAML_PATTERNS = {
     **COMMON_PATTERNS,  # Keep as fallback for basic patterns
@@ -95,22 +114,25 @@ OCAML_PATTERNS = {
     """,
     
     # Documentation category with rich patterns
-    "documentation": """
-        [
-          ; Basic comments (from common)
-          (comment) @documentation.comment,
-          
-          ; OCamldoc documentation
-          (comment) @documentation.ocamldoc {
-            match: "^(\\*\\*|\\*)"
-          },
-          
-          ; OCamldoc tags
-          (comment) @documentation.ocamldoc.tag {
-            match: "@[a-zA-Z]+"
-          }
-        ]
-    """,
+    "documentation": {
+        "doc_comment": QueryPattern(
+            pattern=r'^\s*\(\*\*\s*(.*?)\s*\*\)',
+            extract=lambda m: {
+                "type": "doc_comment",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches documentation comments",
+            examples=["(** This is a doc comment *)"]
+        ),
+        "comment": {
+            "pattern": r'^\s*\(\*\s*(.*?)\s*\*\)',
+            "extract": lambda match: {
+                "type": "comment",
+                "content": match.group(1)
+            }
+        }
+    },
     
     # Pattern matching patterns
     "pattern": """
@@ -179,5 +201,70 @@ OCAML_PATTERNS = {
                      pattern: (_) @semantics.exception.try.pattern
                      body: (_) @semantics.exception.try.handler)]*) @semantics.exception.try
         ]
-    """
+    """,
+    
+    PatternCategory.SYNTAX: {
+        "let_binding": QueryPattern(
+            pattern=r'^\s*(let(?:\s+rec)?\s+[a-zA-Z0-9_\'-]+)',
+            extract=extract_let_binding,
+            description="Matches OCaml let bindings",
+            examples=["let x = 5", "let rec factorial n ="]
+        ),
+        "type_definition": QueryPattern(
+            pattern=r'^\s*type\s+([a-zA-Z0-9_\'-]+)',
+            extract=extract_type_definition,
+            description="Matches type definitions",
+            examples=["type person = {name: string}"]
+        )
+    },
+    PatternCategory.STRUCTURE: {
+        "module_declaration": QueryPattern(
+            pattern=r'^\s*module\s+([A-Z][a-zA-Z0-9_\'-]*)',
+            extract=lambda m: {
+                "type": "module_declaration",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches module declarations",
+            examples=["module MyModule = struct"]
+        ),
+        "open_statement": QueryPattern(
+            pattern=r'^\s*open\s+([A-Z][a-zA-Z0-9_.]*)',
+            extract=lambda m: {
+                "type": "open_statement",
+                "module": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches open statements",
+            examples=["open List"]
+        )
+    },
+    PatternCategory.SEMANTICS: {
+        "exception_declaration": QueryPattern(
+            pattern=r'^\s*exception\s+([A-Z][a-zA-Z0-9_\'-]*)',
+            extract=lambda m: {
+                "type": "exception_declaration",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches exception declarations",
+            examples=["exception MyError"]
+        )
+    }
+}
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "module": {
+        "can_contain": ["let_binding", "type_definition", "module_declaration", "exception_declaration"],
+        "can_be_contained_by": []
+    },
+    "let_binding": {
+        "can_contain": ["doc_comment"],
+        "can_be_contained_by": ["module"]
+    },
+    "type_definition": {
+        "can_contain": ["doc_comment"],
+        "can_be_contained_by": ["module"]
+    }
 } 

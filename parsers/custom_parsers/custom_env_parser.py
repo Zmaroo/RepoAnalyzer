@@ -5,157 +5,133 @@ This parser processes .env files by extracting key=value pairs.
 Comments (lines starting with #) are skipped (or can be used as documentation).
 """
 
-from parsers.common_parser_utils import extract_features_from_ast, build_parser_output
+from typing import Dict, List, Any, Optional, Tuple
+from dataclasses import dataclass
+from parsers.base_parser import CustomParser
+from parsers.file_classification import FileClassification
+from parsers.pattern_processor import PatternCategory 
+from parsers.query_patterns.env import ENV_PATTERNS
+from utils.logger import log
 import re
 
-def parse_env_code(source_code: str) -> dict:
-    """
-    Parse environment files (.env) to generate an AST aligned with PATTERN_CATEGORIES.
+@dataclass
+class EnvNode:
+    """Base class for Env AST nodes."""
+    type: str
+    start_point: List[int]
+    end_point: List[int]
+    children: List[Any]
+
+class EnvParser(CustomParser):
+    """Parser for .env files."""
     
-    Maps env constructs to standard categories:
-    - semantics: variable assignments (variable)
-    - structure: export statements (export)
-    - documentation: comments (comment), multi-line values (docstring)
-    """
-    lines = source_code.splitlines()
-    total_lines = len(lines)
-    children = []
+    def __init__(self, language_id: str = "env", classification: Optional[FileClassification] = None):
+        super().__init__(language_id, classification)
+        self.patterns = {
+            name: re.compile(pattern.pattern)
+            for category in ENV_PATTERNS.values()
+            for name, pattern in category.items()
+        }
     
-    # Regex patterns for env file parsing
-    export_pattern = re.compile(r'^export\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$')
-    variable_pattern = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$')
-    comment_pattern = re.compile(r'^[\s]*[#;](.*)$')
-    
-    def process_value(value: str, line_num: int) -> tuple:
-        """Process a value that might be multi-line or quoted."""
+    def _create_node(
+        self,
+        node_type: str,
+        start_point: List[int],
+        end_point: List[int],
+        **kwargs
+    ) -> Dict:
+        """Create a standardized AST node."""
+        return {
+            "type": node_type,
+            "start_point": start_point,
+            "end_point": end_point,
+            "children": [],
+            **kwargs
+        }
+
+    def _process_value(self, value: str) -> Tuple[str, str]:
+        """Process a value that might be quoted or multiline."""
         if value.startswith('"') or value.startswith("'"):
             quote = value[0]
             if value.endswith(quote) and len(value) > 1:
-                return value[1:-1], "string"
+                return value[1:-1], "quoted"
         elif value.startswith('`') and value.endswith('`'):
-            # Multi-line value
-            return {
-                "type": "documentation",
-                "category": "docstring",
-                "content": value[1:-1],
-                "line": line_num
-            }, "multi-line"
+            return value[1:-1], "multiline"
         return value, "raw"
 
-    current_line = 0
-    while current_line < total_lines:
-        line = lines[current_line].strip()
-        
-        # Skip empty lines
-        if not line:
-            current_line += 1
-            continue
+    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+        """Parse env content into AST structure."""
+        try:
+            lines = source_code.splitlines()
+            ast = self._create_node(
+                "env_file",
+                [0, 0],
+                [len(lines) - 1, len(lines[-1]) if lines else 0],
+                children=[]
+            )
             
-        # Check for comments
-        comment_match = comment_pattern.match(line)
-        if comment_match:
-            children.append({
-                "type": "documentation",
-                "category": "comment",
-                "content": comment_match.group(1).strip(),
-                "line": current_line + 1
-            })
-            current_line += 1
-            continue
+            for i, line in enumerate(lines):
+                line_start = [i, 0]
+                line_end = [i, len(line)]
+                
+                # Skip empty lines
+                if not line.strip():
+                    continue
+                
+                # Process comments
+                if comment_match := self.patterns['comment'].match(line):
+                    node = self._create_node(
+                        "comment",
+                        line_start,
+                        line_end,
+                        content=comment_match.group(1).strip()
+                    )
+                    ast["children"].append(node)
+                    continue
+                
+                # Process exports
+                if export_match := self.patterns['export'].match(line):
+                    name, raw_value = export_match.groups()
+                    value, value_type = self._process_value(raw_value)
+                    
+                    node = self._create_node(
+                        "export",
+                        line_start,
+                        line_end,
+                        name=name,
+                        value=value,
+                        value_type=value_type
+                    )
+                    ast["children"].append(node)
+                    continue
+                
+                # Process variables
+                if var_match := self.patterns['variable'].match(line):
+                    name, raw_value = var_match.groups()
+                    value, value_type = self._process_value(raw_value)
+                    
+                    node = self._create_node(
+                        "variable",
+                        line_start,
+                        line_end,
+                        name=name,
+                        value=value,
+                        value_type=value_type
+                    )
+                    ast["children"].append(node)
+                    
+                    # Process semantic patterns
+                    for pattern_name in ['url', 'path']:
+                        if pattern_match := self.patterns[pattern_name].search(raw_value):
+                            semantic_data = ENV_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(pattern_match)
+                            node["semantics"] = semantic_data
             
-        # Check for export statements
-        export_match = export_pattern.match(line)
-        if export_match:
-            name, raw_value = export_match.groups()
-            value, value_type = process_value(raw_value, current_line + 1)
+            return ast
             
-            if value_type == "multi-line":
-                children.append(value)  # Add multi-line docstring node
-                children.append({
-                    "type": "structure",
-                    "category": "export",
-                    "name": name,
-                    "value": value["content"],
-                    "line": current_line + 1
-                })
-            else:
-                children.append({
-                    "type": "structure",
-                    "category": "export",
-                    "name": name,
-                    "value": value,
-                    "line": current_line + 1
-                })
-            current_line += 1
-            continue
-            
-        # Check for variable assignments
-        var_match = variable_pattern.match(line)
-        if var_match:
-            name, raw_value = var_match.groups()
-            value, value_type = process_value(raw_value, current_line + 1)
-            
-            if value_type == "multi-line":
-                children.append(value)  # Add multi-line docstring node
-                children.append({
-                    "type": "semantics",
-                    "category": "variable",
-                    "name": name,
-                    "value": value["content"],
-                    "line": current_line + 1
-                })
-            else:
-                children.append({
-                    "type": "semantics",
-                    "category": "variable",
-                    "name": name,
-                    "value": value,
-                    "line": current_line + 1
-                })
-            
-        current_line += 1
-    
-    # Build the AST root
-    ast = {
-        "type": "module",
-        "category": "structure",
-        "children": children,
-        "start_point": [0, 0],
-        "end_point": [total_lines - 1, len(lines[-1]) if lines else 0],
-        "start_byte": 0,
-        "end_byte": len(source_code)
-    }
-
-    # Extract features based on pattern categories
-    features = {
-        "semantics": {
-            "variable": [node for node in children 
-                        if node["type"] == "semantics" and node["category"] == "variable"]
-        },
-        "structure": {
-            "export": [node for node in children 
-                      if node["type"] == "structure" and node["category"] == "export"]
-        },
-        "documentation": {
-            "comment": [node for node in children 
-                       if node["type"] == "documentation" and node["category"] == "comment"],
-            "docstring": [node for node in children 
-                         if node["type"] == "documentation" and node["category"] == "docstring"]
-        }
-    }
-
-    # Extract documentation from comments and multi-line values
-    documentation = "\n".join(
-        node["content"] for node in children
-        if node["type"] == "documentation"
-    )
-
-    return build_parser_output(
-        source_code=source_code,
-        language="env",
-        ast=ast,
-        features=features,
-        total_lines=total_lines,
-        documentation=documentation,
-        complexity=1
-    )
+        except Exception as e:
+            log(f"Error parsing env content: {e}", level="error")
+            return {
+                "type": "env_file",
+                "error": str(e),
+                "children": []
+            }

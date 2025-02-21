@@ -1,48 +1,120 @@
-"""Hack-specific Tree-sitter patterns.
+"""Query patterns for Hack files."""
 
-This file provides basic queries for detecting functions (both free functions and methods)
-and class declarations. The queries rely on node types such as "function_declaration",
-"methodish_declaration", "class_declaration", and field names ("name", "parameters", "body")
-as defined in node-types/hack-node-types.json.
-"""
+from parsers.file_classification import FileType
+from .common import COMMON_PATTERNS
 
 HACK_PATTERNS = {
-    # Basic pattern for function detection (free functions and methods)
-    "function": r"""
-        [
-          (function_declaration) @function,
-          (methodish_declaration) @function
-        ]
-    """,
+    **COMMON_PATTERNS,
+    
+    "syntax": {
+        "function": {
+            "pattern": """
+            [
+                (function_declaration
+                    name: (identifier) @syntax.function.name
+                    parameters: (parameter_list) @syntax.function.params
+                    body: (compound_statement) @syntax.function.body) @syntax.function.def,
+                (method_declaration
+                    name: (identifier) @syntax.function.method.name
+                    parameters: (parameter_list) @syntax.function.method.params
+                    body: (compound_statement) @syntax.function.method.body) @syntax.function.method
+            ]
+            """
+        },
+        "class": {
+            "pattern": """
+            [
+                (class_declaration
+                    name: (identifier) @syntax.class.name
+                    body: (member_declarations) @syntax.class.body) @syntax.class.def,
+                (trait_declaration
+                    name: (identifier) @syntax.trait.name
+                    body: (member_declarations) @syntax.trait.body) @syntax.trait.def
+            ]
+            """
+        },
+        "interface": {
+            "pattern": """
+            (interface_declaration
+                name: (identifier) @syntax.interface.name
+                body: (member_declarations) @syntax.interface.body) @syntax.interface.def
+            """
+        },
+        "enum": {
+            "pattern": """
+            [
+                (enum_declaration
+                    name: (identifier) @syntax.enum.name
+                    body: (enum_members) @syntax.enum.body) @syntax.enum.def,
+                (enum_class_declaration
+                    name: (identifier) @syntax.enum.class.name
+                    body: (member_declarations) @syntax.enum.class.body) @syntax.enum.class.def
+            ]
+            """
+        },
+        "typedef": {
+            "pattern": """
+            (alias_declaration
+                name: (identifier) @syntax.typedef.name
+                type: (_) @syntax.typedef.type) @syntax.typedef.def
+            """
+        }
+    },
 
-    # Extended pattern for detailed function definitions:
-    # Captures the function name, parameters, and body.
-    "function_details": r"""
-        [
-          (function_declaration
-            name: (name) @function.name
-            parameters: (parameters) @function.params
-            body: (body) @function.body) @function.def,
-          (methodish_declaration
-            name: (name) @function.name
-            parameters: (parameters) @function.params
-            body: (body) @function.body) @function.def
-        ]
-    """,
+    "semantics": {
+        "variable": {
+            "pattern": """
+            [
+                (property_declaration
+                    type: (_)? @semantics.variable.type
+                    value: (_)? @semantics.variable.value) @semantics.variable.property,
+                (variable_declaration
+                    name: (_) @semantics.variable.name
+                    value: (_)? @semantics.variable.value) @semantics.variable.def
+            ]
+            """
+        },
+        "expression": {
+            "pattern": """
+            [
+                (call_expression
+                    function: (_) @semantics.expression.name
+                    arguments: (_)? @semantics.expression.args) @semantics.expression.call,
+                (binary_expression
+                    left: (_) @semantics.expression.binary.left
+                    right: (_) @semantics.expression.binary.right) @semantics.expression.binary
+            ]
+            """
+        }
+    },
 
-    # Pattern for class declarations:
-    # Captures the class name and its body.
-    "class": r"""
-        (class_declaration
-            name: (name) @class.name
-            body: (body) @class.body) @class.def
-    """,
+    "documentation": {
+        "comment": {
+            "pattern": """
+            [
+                (comment) @documentation.comment,
+                (doc_comment) @documentation.comment.doc
+            ]
+            """
+        }
+    },
 
-    # Optional: Pattern for variable declarations:
-    # (Assumes a node type "variable_declaration" with a "name" field and an optional initializer.)
-    "variable": r"""
-        (variable_declaration
-            name: (name) @variable.name
-            initializer: (binary_expression)? @variable.value) @variable.def
-    """
+    "structure": {
+        "namespace": {
+            "pattern": """
+            (namespace_declaration
+                name: (_) @structure.namespace.name) @structure.namespace.def
+            """
+        },
+        "import": {
+            "pattern": """
+            [
+                (use_declaration
+                    clauses: (_) @structure.import.clauses) @structure.import.use,
+                (require_clause
+                    path: (_) @structure.import.path) @structure.import.require
+            ]
+            """
+        }
+    }
 } 

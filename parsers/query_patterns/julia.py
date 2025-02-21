@@ -2,87 +2,108 @@
 Query patterns for Julia files.
 """
 
+from parsers.file_classification import FileType
+from .common import COMMON_PATTERNS
+
 JULIA_PATTERNS = {
+    **COMMON_PATTERNS,
+    
     "syntax": {
-        "function": [
+        "function": {
+            "pattern": """
+            [
+                (function_definition
+                    name: (identifier) @syntax.function.name
+                    parameters: (parameter_list) @syntax.function.params
+                    body: (block) @syntax.function.body) @syntax.function.def,
+                (short_function_definition
+                    name: (identifier) @syntax.function.name
+                    parameters: (parameter_list) @syntax.function.params
+                    body: (_) @syntax.function.body) @syntax.function.def
+            ]
             """
-            (function_definition
-                name: (identifier) @name
-                parameters: (parameter_list) @params
-                body: (block) @body) @function
-            """,
-            """
-            (short_function_definition
-                name: (identifier) @name
-                parameters: (parameter_list) @params
-                body: (_) @body) @function
-            """
-        ],
-        "class": [
-            """
+        },
+        "struct": {
+            "pattern": """
             (struct_definition
-                name: (identifier) @name
-                body: (field_list) @body) @class
-            """,
+                name: (identifier) @syntax.struct.name
+                body: (field_list) @syntax.struct.body) @syntax.struct.def
             """
-            (abstract_definition
-                name: (identifier) @name) @class
+        },
+        "module": {
+            "pattern": """
+            [
+                (module_definition
+                    name: (identifier) @syntax.module.name
+                    body: (block) @syntax.module.body) @syntax.module.def,
+                (baremodule_definition
+                    name: (identifier) @syntax.module.bare.name
+                    body: (block) @syntax.module.bare.body) @syntax.module.bare.def
+            ]
             """
-        ]
+        }
     },
-    "structure": {
-        "namespace": [
-            """
-            (module_definition
-                name: (identifier) @name
-                body: (block) @body) @namespace
-            """
-        ],
-        "import": [
-            """
-            (import_statement
-                (identifier) @module) @import
-            """,
-            """
-            (using_statement
-                (identifier) @module) @import
-            """
-        ]
-    },
+
     "semantics": {
-        "variable": [
+        "variable": {
+            "pattern": """
+            [
+                (assignment
+                    left: (identifier) @semantics.variable.name
+                    right: (_) @semantics.variable.value) @semantics.variable.def,
+                (const_statement
+                    name: (identifier) @semantics.variable.const.name
+                    value: (_) @semantics.variable.const.value) @semantics.variable.const
+            ]
             """
-            (assignment
-                left: (identifier) @name
-                right: (_) @value) @variable
-            """,
+        },
+        "type": {
+            "pattern": """
+            [
+                (type_definition
+                    name: (identifier) @semantics.type.name
+                    value: (_) @semantics.type.value) @semantics.type.def,
+                (primitive_definition
+                    type: (type_head) @semantics.type.primitive.head) @semantics.type.primitive
+            ]
             """
-            (const_statement
-                name: (identifier) @name
-                value: (_) @value) @variable
-            """
-        ],
-        "type": [
-            """
-            (type_definition
-                name: (identifier) @name
-                value: (_) @type) @type_decl
-            """
-        ]
+        }
     },
+
     "documentation": {
-        "docstring": [
+        "comment": {
+            "pattern": """
+            [
+                (line_comment) @documentation.comment.line,
+                (block_comment) @documentation.comment.block
+            ]
             """
-            (string_literal) @docstring
+        },
+        "docstring": {
+            "pattern": """
+            (string_literal) @documentation.docstring {
+                match: "^\\"\\"\\""
+            }
             """
-        ],
-        "comment": [
+        }
+    },
+
+    "structure": {
+        "import": {
+            "pattern": """
+            [
+                (import_statement
+                    path: (identifier) @structure.import.path) @structure.import.def,
+                (using_statement
+                    path: (identifier) @structure.import.using.path) @structure.import.using
+            ]
             """
-            (line_comment) @comment
-            """,
+        },
+        "export": {
+            "pattern": """
+            (export_statement
+                names: (_) @structure.export.names) @structure.export.def
             """
-            (block_comment) @comment
-            """
-        ]
+        }
     }
 } 

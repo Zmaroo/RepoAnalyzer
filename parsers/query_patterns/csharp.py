@@ -14,29 +14,16 @@ CSHARP_PATTERNS = {
           ; Rich method patterns
           (method_declaration
             attributes: (attribute_list)* @syntax.function.attributes
-            modifiers: [(public) (private) (protected) (internal) (static) (virtual) (override) (abstract) (async)]* @syntax.function.modifier
-            type_parameter_list: (type_parameter_list
-              (type_parameter
-                attributes: (attribute_list)* @syntax.function.type_param.attributes
-                variance_annotation: [(in) (out)]? @syntax.function.type_param.variance
-                name: (identifier) @syntax.function.type_param.name
-                constraints: (type_parameter_constraints_clause)? @syntax.function.type_param.constraints)*) @syntax.function.type_params
-            return_type: (_) @syntax.function.return_type
+            modifiers: (_)* @syntax.function.modifier
+            type: (_) @syntax.function.return_type
             name: (identifier) @syntax.function.name
-            parameter_list: (parameter_list
-              (parameter
-                attributes: (attribute_list)* @syntax.function.param.attributes
-                modifiers: [(ref) (out) (params)]* @syntax.function.param.modifier
-                type: (_) @syntax.function.param.type
-                name: (identifier) @syntax.function.param.name
-                default_value: (_)? @syntax.function.param.default)*) @syntax.function.params
-            constraints: (type_parameter_constraints_clause)* @syntax.function.constraints
-            body: [(block) (arrow_expression_clause)]? @syntax.function.body) @syntax.function.def,
+            parameters: (parameter_list) @syntax.function.params
+            body: [(block) (arrow_expression_clause)]? @syntax.function.body) @syntax.function.method,
             
           ; Constructor patterns
           (constructor_declaration
             attributes: (attribute_list)* @syntax.function.constructor.attributes
-            modifiers: [(public) (private) (protected) (internal)]* @syntax.function.constructor.modifier
+            modifiers: (_)* @syntax.function.constructor.modifier
             name: (identifier) @syntax.function.constructor.name
             parameter_list: (parameter_list) @syntax.function.constructor.params
             initializer: (constructor_initializer)? @syntax.function.constructor.init
@@ -52,26 +39,16 @@ CSHARP_PATTERNS = {
           ; Rich class patterns
           (class_declaration
             attributes: (attribute_list)* @syntax.class.attributes
-            modifiers: [(public) (private) (protected) (internal) (static) (abstract) (sealed) (partial)]* @syntax.class.modifier
+            modifiers: (_)* @syntax.class.modifier
             name: (identifier) @syntax.class.name
-            type_parameter_list: (type_parameter_list)? @syntax.class.type_params
-            base_list: (base_list
-              [(primary_constructor_base_type) @syntax.class.extends.primary
-               (base_type) @syntax.class.implements]*) @syntax.class.bases
-            constraints: (type_parameter_constraints_clause)* @syntax.class.constraints
-            body: (declaration_list
-              [(field_declaration) @syntax.class.field
-               (property_declaration) @syntax.class.property
-               (method_declaration) @syntax.class.method
-               (constructor_declaration) @syntax.class.constructor
-               (delegate_declaration) @syntax.class.delegate
-               (event_declaration) @syntax.class.event
-               (indexer_declaration) @syntax.class.indexer]*) @syntax.class.body) @syntax.class.def,
+            type_parameters: (type_parameter_list)? @syntax.class.type_params
+            base_list: (base_list)? @syntax.class.bases
+            body: (declaration_list) @syntax.class.body) @syntax.class.def,
                
           ; Interface patterns
           (interface_declaration
             attributes: (attribute_list)* @syntax.interface.attributes
-            modifiers: [(public) (private) (protected) (internal)]* @syntax.interface.modifier
+            modifiers: (_)* @syntax.interface.modifier
             name: (identifier) @syntax.interface.name
             type_parameter_list: (type_parameter_list)? @syntax.interface.type_params
             base_list: (base_list)? @syntax.interface.extends

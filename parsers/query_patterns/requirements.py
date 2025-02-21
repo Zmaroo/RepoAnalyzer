@@ -5,99 +5,73 @@ These patterns target the 'package' nodes extracted from a requirements file.
 """
 
 REQUIREMENTS_PATTERNS = {
-    # Package requirement patterns
-    "requirement": """
-        [
-          (requirement
-            package: (package) @req.name
-            version_spec: (version_spec
-              version_cmp: (version_cmp) @req.version.operator
-              version: (version) @req.version.number)? @req.version
-            url_spec: (url_spec
-              url: (url) @req.url)? @req.url_spec
-            marker_spec: (marker_spec
-              marker_var: (marker_var) @req.marker.var
-              marker_op: (marker_op) @req.marker.op
-              (quoted_string)? @req.marker.value)? @req.marker
-            extras: (extras
-              package: (package)* @req.extras.package)? @req.extras) @req.def
-        ]
-    """,
-
-    # Global option patterns
-    "global_opt": """
-        [
-          (global_opt
-            option: (option) @opt.name
+    "syntax": {
+        "requirement": {
+            "pattern": """
             [
-              (argument) @opt.arg
-              (quoted_string) @opt.string
-              (path) @opt.path
-              (url) @opt.url
-            ]*) @opt.def
-        ]
-    """,
-
-    # Environment variable patterns
-    "env_var": """
-        [
-          (env_var) @env.var
-        ]
-    """,
-
-    # URL patterns
-    "url": """
-        [
-          (url
-            env_var: (env_var)* @url.env_var) @url.def
-        ]
-    """,
-
-    # File structure patterns
-    "file": """
-        [
-          (file
-            [
-              (requirement) @file.requirement
-              (global_opt) @file.global_opt
-              (comment) @file.comment
-              (path) @file.path
-              (url) @file.url
-            ]*) @file.def
-        ]
-    """,
-
-    # Comment patterns
-    "comment": """
-        [
-          (comment) @comment
-        ]
-    """,
-
-    "semantics": {
-        "variable": [
+                (requirement
+                    package: (package) @syntax.requirement.name
+                    version_spec: (version_spec
+                        version_cmp: (version_cmp) @syntax.requirement.version.operator
+                        version: (version) @syntax.requirement.version.number)? @syntax.requirement.version
+                    extras: (extras
+                        package: (package)* @syntax.requirement.extras.package)? @syntax.requirement.extras
+                    marker_spec: (marker_spec
+                        marker_var: (marker_var) @syntax.requirement.marker.var
+                        marker_op: (marker_op) @syntax.requirement.marker.op
+                        (quoted_string)? @syntax.requirement.marker.value)? @syntax.requirement.marker) @syntax.requirement.def,
+                
+                (requirement_opt
+                    option: (option) @syntax.requirement.option.name
+                    value: [(argument) (quoted_string)] @syntax.requirement.option.value) @syntax.requirement.option.def
+            ]
             """
-            (requirement
-                package: (package) @name
-                version_spec: (version_spec)? @version) @variable
-            """
-        ]
+        }
     },
-
     "structure": {
-        "import": [
+        "file": {
+            "pattern": """
+            [
+                (file
+                    [(requirement) (global_opt) (comment) (path) (url)]* @structure.file.content) @structure.file.def,
+                
+                (global_opt
+                    option: (option) @structure.option.name
+                    [(argument) (quoted_string) (path) (url)]* @structure.option.value) @structure.option.def
+            ]
             """
-            (requirement
-                url_spec: (url_spec)? @url) @import
+        },
+        "url": {
+            "pattern": """
+            [
+                (url_spec
+                    url: (url
+                        env_var: (env_var)* @structure.url.env_var) @structure.url.value) @structure.url.def,
+                
+                (path) @structure.path
+            ]
             """
-        ]
+        }
     },
-
+    "semantics": {
+        "variable": {
+            "pattern": """
+            [
+                (env_var) @semantics.variable.env,
+                (marker_var) @semantics.variable.marker
+            ]
+            """
+        }
+    },
     "documentation": {
-        "comment": [
+        "comment": {
+            "pattern": """
+            [
+                (comment) @documentation.comment,
+                (linebreak
+                    comment: (comment) @documentation.comment.inline) @documentation.comment.line
+            ]
             """
-            (comment) @comment
-            """
-        ]
+        }
     }
 }

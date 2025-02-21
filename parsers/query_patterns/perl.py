@@ -164,56 +164,79 @@ PERL_PATTERNS = {
     """,
     
     "syntax": {
-        "function": [
+        "function": {
+            "pattern": """
+            [
+                (subroutine_declaration
+                    attributes: (attribute_list)? @syntax.function.attributes
+                    name: [(bare_word) @syntax.function.name
+                          (package_qualified_word) @syntax.function.qualified_name]
+                    prototype: (prototype)? @syntax.function.prototype
+                    signature: (signature)? @syntax.function.signature
+                    body: (block) @syntax.function.body) @syntax.function.def,
+                (anonymous_subroutine
+                    attributes: (attribute_list)? @syntax.function.anon.attributes
+                    body: (block) @syntax.function.anon.body) @syntax.function.anon
+            ]
             """
-            (subroutine_declaration
-                name: (identifier) @name
-                block: (block) @body) @function
+        },
+        "class": {
+            "pattern": """
+            [
+                (package_statement
+                    name: (package_qualified_word) @syntax.class.name
+                    version: (version_number)? @syntax.class.version
+                    block: (block)? @syntax.class.body) @syntax.class.def,
+                (use_statement
+                    module: (bare_word) @syntax.class.moose
+                    (#match? @syntax.class.moose "^(Moose|Moo|Mouse)$")) @syntax.class.moose.use
+            ]
             """
-        ],
-        "class": [
-            """
-            (package_declaration
-                name: (package_name) @name) @class
-            """
-        ]
+        }
     },
     
     "structure": {
-        "namespace": [
+        "namespace": {
+            "pattern": """
+            [
+                (package_statement
+                    name: (package_qualified_word) @structure.namespace.name
+                    version: (version_number)? @structure.namespace.version) @structure.namespace,
+                (block) @structure.namespace.block
+            ]
             """
-            (package_statement
-                name: (package_name) @name) @namespace
+        },
+        "import": {
+            "pattern": """
+            [
+                (use_statement
+                    module: (package_qualified_word) @structure.import.module
+                    version: (version_number)? @structure.import.version
+                    imports: (import_list)? @structure.import.list) @structure.import.use,
+                (require_statement
+                    module: (package_qualified_word) @structure.import.require.module
+                    version: (version_number)? @structure.import.require.version) @structure.import.require
+            ]
             """
-        ],
-        "import": [
-            """
-            (use_statement
-                module: (module_name) @module) @import
-            """,
-            """
-            (require_statement
-                module: (module_name) @module) @import
-            """
-        ]
+        }
     },
     
     "semantics": {
-        "variable": [
+        "variable": {
+            "pattern": """
+            [
+                (scalar
+                    sigil: "$" @semantics.var.scalar.sigil
+                    name: (_) @semantics.var.scalar.name) @semantics.var.scalar,
+                (array
+                    sigil: "@" @semantics.var.array.sigil
+                    name: (_) @semantics.var.array.name) @semantics.var.array,
+                (hash
+                    sigil: "%" @semantics.var.hash.sigil
+                    name: (_) @semantics.var.hash.name) @semantics.var.hash
+            ]
             """
-            (scalar_declaration
-                name: (scalar) @name
-                value: (_)? @value) @variable
-            """,
-            """
-            (array_declaration
-                name: (array) @name) @variable
-            """,
-            """
-            (hash_declaration
-                name: (hash) @name) @variable
-            """
-        ],
+        },
         "expression": [
             """
             (function_call
@@ -224,15 +247,14 @@ PERL_PATTERNS = {
     },
     
     "documentation": {
-        "docstring": [
+        "comment": {
+            "pattern": """
+            [
+                (comment) @documentation.comment,
+                (pod_statement
+                    content: (_)* @documentation.pod.content) @documentation.pod
+            ]
             """
-            (pod_statement) @docstring
-            """
-        ],
-        "comment": [
-            """
-            (comment) @comment
-            """
-        ]
+        }
     }
 } 

@@ -1,73 +1,157 @@
 """
-Query patterns for YAML files with enhanced documentation support.
+Query patterns for YAML files aligned with standard PATTERN_CATEGORIES.
 """
 
+from typing import Dict, Any, Match
+from parsers.pattern_processor import QueryPattern, PatternCategory
+from parsers.file_classification import FileType
+
+def extract_mapping(match: Match) -> Dict[str, Any]:
+    """Extract mapping information."""
+    return {
+        "type": "mapping",
+        "indent": len(match.group(1)),
+        "key": match.group(2).strip(),
+        "value": match.group(3).strip(),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
+
+def extract_sequence(match: Match) -> Dict[str, Any]:
+    """Extract sequence information."""
+    return {
+        "type": "sequence",
+        "indent": len(match.group(1)),
+        "value": match.group(2).strip(),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
+
+def extract_anchor(match: Match) -> Dict[str, Any]:
+    """Extract anchor information."""
+    return {
+        "type": "anchor",
+        "name": match.group(1),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
+
 YAML_PATTERNS = {
-    "syntax": {
-        "mapping": """
-            (mapping
-                keys: (_)* @syntax.mapping.keys
-                children: (_)* @syntax.mapping.children) @syntax.mapping
-        """,
-        "sequence": """
-            (sequence
-                items: (_)* @syntax.sequence.items) @syntax.sequence
-        """,
-        "scalar": """
-            (scalar
-                value: (_) @syntax.scalar.value) @syntax.scalar
-        """,
-        "anchor": """
-            (anchor
-                name: (_) @syntax.anchor.name) @syntax.anchor
-        """
+    PatternCategory.SYNTAX: {
+        "mapping": QueryPattern(
+            pattern=r'^(\s*)([^:]+):\s*(.*)$',
+            extract=extract_mapping,
+            description="Matches YAML key-value mappings",
+            examples=["key: value"]
+        ),
+        "sequence": QueryPattern(
+            pattern=r'^(\s*)-\s+(.+)$',
+            extract=extract_sequence,
+            description="Matches YAML sequence items",
+            examples=["- item"]
+        ),
+        "scalar": QueryPattern(
+            pattern=r'^(\s*)([^:-].*)$',
+            extract=lambda m: {
+                "type": "scalar",
+                "value": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches YAML scalar values"
+        )
     },
-    "structure": {
-        "document": """
-            (yaml_file
-                children: (_)* @structure.document.children) @structure.document
-        """,
-        "section": """
-            (mapping
-                path: (_) @structure.section.path
-                keys: (_)* @structure.section.keys) @structure.section
-        """,
-        "include": """
-            (include
-                path: (_) @structure.include.path) @structure.include
-        """
+    
+    PatternCategory.STRUCTURE: {
+        "anchor": QueryPattern(
+            pattern=r'&(\w+)\s',
+            extract=extract_anchor,
+            description="Matches YAML anchors",
+            examples=["&anchor_name"]
+        ),
+        "alias": QueryPattern(
+            pattern=r'\*(\w+)',
+            extract=lambda m: {
+                "type": "alias",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches YAML aliases",
+            examples=["*anchor_reference"]
+        ),
+        "tag": QueryPattern(
+            pattern=r'!(\w+)(?:\s|$)',
+            extract=lambda m: {
+                "type": "tag",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches YAML tags",
+            examples=["!tag_name"]
+        )
     },
-    "semantics": {
-        "definition": """
-            (mapping
-                key: (_) @semantics.definition.key
-                value: (_) @semantics.definition.value) @semantics.definition
-        """,
-        "reference": """
-            (alias
-                name: (_) @semantics.reference.name) @semantics.reference
-        """,
-        "environment": """
-            (scalar
-                value: (_) @semantics.environment.value
-                [contains "${"] @semantics.environment) @semantics.environment.variable
-        """
+    
+    PatternCategory.DOCUMENTATION: {
+        "comment": QueryPattern(
+            pattern=r'^\s*#\s*(.*)$',
+            extract=lambda m: {
+                "type": "comment",
+                "content": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches YAML comments",
+            examples=["# Comment"]
+        ),
+        "doc_comment": QueryPattern(
+            pattern=r'^\s*#\s*@(\w+)\s+(.*)$',
+            extract=lambda m: {
+                "type": "doc_comment",
+                "tag": m.group(1),
+                "content": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches YAML documentation comments",
+            examples=["# @param description"]
+        )
     },
-    "documentation": {
-        "comment": """
-            (comment
-                content: (_) @documentation.comment.content) @documentation.comment
-        """,
-        "metadata": """
-            (mapping
-                key: (_) @documentation.metadata.key
-                [ends-with "_doc" "_description"]
-                value: (_) @documentation.metadata.value) @documentation.metadata
-        """,
-        "description": """
-            (mapping
-                path: (_) @documentation.description.path
-                content: (_) @documentation.description.content) @documentation.description
-        """
+    
+    PatternCategory.SEMANTICS: {
+        "variable": QueryPattern(
+            pattern=r'^\s*(\w+):\s*\$\{([^}]+)\}$',
+            extract=lambda m: {
+                "type": "variable",
+                "name": m.group(1),
+                "reference": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches YAML variable references",
+            examples=["key: ${VARIABLE}"]
+        ),
+        "import": QueryPattern(
+            pattern=r'^\s*(import|include|require):\s*(.+)$',
+            extract=lambda m: {
+                "type": "import",
+                "kind": m.group(1),
+                "path": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches YAML imports and includes",
+            examples=[
+                "import: other.yaml",
+                "include: config/*.yaml"
+            ]
+        )
+    }
+}
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "document": {
+        "can_contain": ["mapping", "sequence", "comment"],
+        "can_be_contained_by": []
+    },
+    "mapping": {
+        "can_contain": ["mapping", "sequence"],
+        "can_be_contained_by": ["document", "mapping", "sequence"]
+    },
+    "sequence": {
+        "can_contain": ["mapping", "sequence"],
+        "can_be_contained_by": ["document", "mapping", "sequence"]
     }
 } 

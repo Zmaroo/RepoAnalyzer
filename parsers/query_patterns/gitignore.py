@@ -1,40 +1,45 @@
 """Query patterns for gitignore files."""
 
+from parsers.file_classification import FileType
+from .common import COMMON_PATTERNS
+
 GITIGNORE_PATTERNS = {
+    **COMMON_PATTERNS,
+    
     "syntax": {
-        "function": [
-            """
+        "pattern": {
+            "pattern": """
             (pattern
-                directory_flag: (_)? @pattern.directory
-                relative_flag: (_)? @pattern.relative
+                directory_flag: (_)? @syntax.pattern.directory
+                relative_flag: (_)? @syntax.pattern.relative
                 [
-                    (pattern_char) @pattern.char
-                    (pattern_char_escaped) @pattern.char_escaped
-                    (wildcard_char_single) @pattern.wildcard_single
-                    (wildcard_chars) @pattern.wildcard
-                    (wildcard_chars_allow_slash) @pattern.wildcard_slash
-                    (bracket_expr) @pattern.bracket
-                    (negation) @pattern.negation
-                ]*) @function
+                    (pattern_char) @syntax.pattern.char
+                    (pattern_char_escaped) @syntax.pattern.char_escaped
+                    (wildcard_char_single) @syntax.pattern.wildcard_single
+                    (wildcard_chars) @syntax.pattern.wildcard
+                    (wildcard_chars_allow_slash) @syntax.pattern.wildcard_slash
+                    (bracket_expr) @syntax.pattern.bracket
+                    (negation) @syntax.pattern.negation
+                ]*) @syntax.pattern.def
             """
-        ]
+        }
     },
+
     "structure": {
-        "namespace": [
-            """
-            (file
+        "document": {
+            "pattern": """
+            (document
                 [
-                    (pattern) @file.pattern
-                    (comment) @file.comment
-                ]*) @namespace
+                    (pattern) @structure.document.pattern
+                    (comment) @structure.document.comment
+                ]*) @structure.document.def
             """
-        ]
+        }
     },
+
     "documentation": {
-        "comment": [
-            """
-            (comment) @comment
-            """
-        ]
+        "comment": {
+            "pattern": "(comment) @documentation.comment"
+        }
     }
 } 

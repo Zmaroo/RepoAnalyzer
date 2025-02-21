@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sample HTML</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="main-nav">
+        <ul>
+            <li><a href="#home">Home</a></li>
+            <li><a href="#about">About</a></li>
+            <li><a href="#contact">Contact</a></li>
+        </ul>
+    </nav>
+
+    <!-- Main content -->
+    <main>
+        <h1>Welcome to our site</h1>
+        <p>This is a sample HTML file to test tree-sitter patterns.</p>
+        
+        <section id="features">
+            <h2>Features</h2>
+            <ul>
+                <li>Regular elements</li>
+                <li>Self-closing elements like <img src="test.jpg" alt="Test image"/></li>
+                <li>Script elements</li>
+                <li>Style elements</li>
+            </ul>
+        </section>
+
+        <form action="/submit" method="post">
+            <input type="text" name="username" required/>
+            <input type="email" name="email" placeholder="Enter your email"/>
+            <button type="submit">Submit</button>
+        </form>
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Page loaded');
+        });
+    </script>
+</body>
+</html> 

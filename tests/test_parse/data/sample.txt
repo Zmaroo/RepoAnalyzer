@@ -1,0 +1,3 @@
+This is a plain text file.
+It has multiple lines.
+Each line should be parsed as a node by our custom parser.

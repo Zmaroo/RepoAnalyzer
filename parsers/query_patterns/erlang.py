@@ -1,191 +1,95 @@
 """Query patterns for Erlang files."""
 
+from parsers.file_classification import FileType
+from .common import COMMON_PATTERNS
+
 ERLANG_PATTERNS = {
+    **COMMON_PATTERNS,
+    
     "syntax": {
-        "function": [
+        "function": {
+            "pattern": """
+            [
+                (fun_decl
+                    clause: (_) @syntax.function.clause) @syntax.function.def,
+                (fun_clause
+                    name: (_)? @syntax.function.name
+                    args: (expr_args) @syntax.function.params
+                    guard: (_)? @syntax.function.guard
+                    body: (clause_body) @syntax.function.body) @syntax.function.clause
+            ]
             """
-            (fun_decl
-                clause: (_) @function.clause) @function.def
-            """,
+        },
+        "type": {
+            "pattern": """
+            [
+                (type_attribute
+                    name: (_) @syntax.type.name
+                    args: (_)? @syntax.type.args
+                    value: (_) @syntax.type.value) @syntax.type.def,
+                (opaque
+                    name: (_) @syntax.type.name
+                    args: (_)? @syntax.type.args
+                    value: (_) @syntax.type.value) @syntax.type.def
+            ]
             """
-            (fun_clause
-                name: (_)? @function.name
-                args: (expr_args) @function.params
-                guard: (_)? @function.guard
-                body: (clause_body) @function.body) @function.clause
-            """
-        ],
-        "class": [
-            """
-            (module_attribute
-                name: (_) @module.name) @class
-            """
-        ]
+        }
     },
-    "structure": {
-        "import": [
-            """
-            (import_attribute
-                module: (_) @import.module
-                functions: (_) @import.functions) @import
-            """
-        ],
-        "namespace": [
-            """
-            (behaviour_attribute
-                module: (_) @behaviour.module) @namespace
-            """
-        ]
-    },
+
     "semantics": {
-        "variable": [
+        "variable": {
+            "pattern": """
+            [
+                (var) @semantics.variable,
+                (record_field
+                    name: (_) @semantics.variable.name
+                    expr: (_)? @semantics.variable.value) @semantics.variable.def
+            ]
             """
-            (variable_definition
-                name: (_) @name
-                value: (_) @value) @variable
+        },
+        "expression": {
+            "pattern": """
+            [
+                (binary_op_expr
+                    lhs: (_) @semantics.expression.left
+                    rhs: (_) @semantics.expression.right) @semantics.expression.binary,
+                (call
+                    expr: (_) @semantics.expression.target
+                    args: (_) @semantics.expression.args) @semantics.expression.call
+            ]
             """
-        ]
+        }
     },
+
     "documentation": {
-        "comment": [
+        "comment": {
+            "pattern": "(comment) @documentation.comment"
+        },
+        "docstring": {
+            "pattern": """
+            (comment 
+                (#match? @documentation.comment "^%+\\s*@doc")) @documentation.docstring
             """
-            (comment) @comment
-            """
-        ]
+        }
     },
-    # Module patterns
-    "module": """
-        [
-          (module_attribute
-            name: (_) @module.name) @module,
-          (behaviour_attribute
-            module: (_) @behaviour.module) @behaviour
-        ]
-    """,
 
-    # Export/Import patterns
-    "export": """
-        [
-          (export_attribute
-            functions: (_) @export.functions) @export,
-          (export_type_attribute
-            types: (_) @export.types) @export.type,
-          (import_attribute
-            module: (_) @import.module
-            functions: (_) @import.functions) @import
-        ]
-    """,
-
-    # Type patterns
-    "type": """
-        [
-          (type_attribute
-            name: (_) @type.name
-            args: (_)? @type.args
-            value: (_) @type.value) @type.def,
-          (opaque
-            name: (_) @type.opaque.name
-            args: (_)? @type.opaque.args
-            value: (_) @type.opaque.value) @type.opaque
-        ]
-    """,
-
-    # Record patterns
-    "record": """
-        [
-          (record_decl
-            name: (_) @record.name
-            fields: (record_field
-              name: (_) @record.field.name
-              ty: (_)? @record.field.type
-              expr: (_)? @record.field.default)*) @record.def,
-          (record_expr
-            name: (_) @record.expr.name
-            fields: (_)* @record.expr.fields) @record.expr
-        ]
-    """,
-
-    # Expression patterns
-    "expression": """
-        [
-          (binary_op_expr
-            lhs: (_) @expr.binary.left
-            rhs: (_) @expr.binary.right) @expr.binary,
-          (unary_op_expr
-            operand: (_) @expr.unary.operand) @expr.unary,
-          (call
-            expr: (_) @expr.call.target
-            args: (_) @expr.call.args) @expr.call
-        ]
-    """,
-
-    # Control flow patterns
-    "control_flow": """
-        [
-          (case_expr
-            expr: (_) @case.expr
-            clauses: (_)* @case.clauses) @case,
-          (if_expr
-            clauses: (_)* @if.clauses) @if,
-          (receive_expr
-            clauses: (_)* @receive.clauses
-            after: (_)? @receive.after) @receive,
-          (try_expr
-            body: (_) @try.body
-            clauses: (_)* @try.clauses
-            after: (_)? @try.after) @try
-        ]
-    """,
-
-    # List comprehension patterns
-    "comprehension": """
-        [
-          (list_comprehension
-            expr: (_) @comprehension.expr
-            lc_exprs: (_) @comprehension.generators) @comprehension.list,
-          (binary_comprehension
-            expr: (_) @comprehension.expr
-            lc_exprs: (_) @comprehension.generators) @comprehension.binary
-        ]
-    """,
-
-    # Literal patterns
-    "literal": """
-        [
-          (atom) @literal.atom,
-          (char) @literal.char,
-          (float) @literal.float,
-          (integer) @literal.integer,
-          (string) @literal.string,
-          (var) @literal.variable
-        ]
-    """,
-
-    # Macro patterns
-    "macro": """
-        [
-          (macro_call_expr
-            name: (_) @macro.name
-            args: (_)? @macro.args) @macro.call,
-          (pp_define
-            name: (_) @macro.def.name
-            args: (_)? @macro.def.args
-            value: (_)? @macro.def.value) @macro.def
-        ]
-    """,
-
-    # Attribute patterns
-    "attribute": """
-        [
-          (feature_attribute
-            feature: (_) @attr.feature.name
-            flag: (_) @attr.feature.flag) @attr.feature,
-          (file_attribute
-            original_file: (_) @attr.file.name
-            original_line: (_) @attr.file.line) @attr.file,
-          (wild_attribute
-            name: (_) @attr.name
-            value: (_) @attr.value) @attr
-        ]
-    """
+    "structure": {
+        "module": {
+            "pattern": """
+            (module_attribute
+                name: (_) @structure.module.name) @structure.module.def
+            """
+        },
+        "import": {
+            "pattern": """
+            [
+                (import_attribute
+                    module: (_) @structure.import.module
+                    functions: (_) @structure.import.functions) @structure.import.def,
+                (behaviour_attribute
+                    module: (_) @structure.import.module) @structure.import.behaviour
+            ]
+            """
+        }
+    }
 } 

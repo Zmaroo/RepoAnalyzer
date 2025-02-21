@@ -1,95 +1,122 @@
-"""Query patterns for AsciiDoc files with enhanced documentation support."""
+"""Query patterns for AsciiDoc files."""
+
+from parsers.pattern_processor import QueryPattern, PatternCategory
+from typing import Dict, Any, Match
+
+def extract_header(match: Match) -> Dict[str, Any]:
+    """Extract header information."""
+    return {
+        "type": "header",
+        "title": match.group(1),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
+
+def extract_section(match: Match) -> Dict[str, Any]:
+    """Extract section information."""
+    return {
+        "type": "section",
+        "level": len(match.group(1)),
+        "title": match.group(2),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
 
 ASCIIDOC_PATTERNS = {
-    "syntax": {
-        "section": """
-            (section
-                title: (_) @syntax.section.title
-                level: (_) @syntax.section.level) @syntax.section
-        """,
-        "block": """
-            (block
-                type: (_) @syntax.block.type
-                content: (_) @syntax.block.content) @syntax.block
-        """,
-        "macro": """
-            (macro
-                name: (_) @syntax.macro.name
-                target: (_) @syntax.macro.target
-                attributes: (_)? @syntax.macro.attributes) @syntax.macro
-        """,
-        "attribute": """
-            (attribute
-                name: (_) @syntax.attribute.name
-                value: (_) @syntax.attribute.value) @syntax.attribute
-        """,
-        "list": """
-            (list
-                type: (_) @syntax.list.type
-                items: (_)* @syntax.list.items) @syntax.list
-        """
+    PatternCategory.SYNTAX: {
+        "header": QueryPattern(
+            pattern=r'^=\s+(.+)$',
+            extract=extract_header,
+            description="Matches AsciiDoc document headers",
+            examples=["= Document Title"]
+        ),
+        "section": QueryPattern(
+            pattern=r'^(=+)\s+(.+)$',
+            extract=extract_section,
+            description="Matches AsciiDoc section headers",
+            examples=["== Section Title", "=== Subsection Title"]
+        ),
+        "attribute": QueryPattern(
+            pattern=r'^:([^:]+):\s*(.*)$',
+            extract=lambda m: {
+                "type": "attribute",
+                "name": m.group(1),
+                "value": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches AsciiDoc attributes",
+            examples=[":attribute-name: value"]
+        ),
+        "block": QueryPattern(
+            pattern=r'^(----|\[.*?\])\s*$',
+            extract=lambda m: {
+                "type": "block",
+                "delimiter": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches AsciiDoc blocks",
+            examples=["----", "[source,python]"]
+        )
     },
-    "structure": {
-        "hierarchy": """
-            (section
-                title: (_) @structure.hierarchy.title
-                level: (_) @structure.hierarchy.level
-                parent: (_)? @structure.hierarchy.parent) @structure.hierarchy
-        """,
-        "include": """
-            (include
-                path: (_) @structure.include.path
-                options: (_)? @structure.include.options) @structure.include
-        """,
-        "reference": """
-            (reference
-                target: (_) @structure.reference.target) @structure.reference
-        """,
-        "anchor": """
-            (anchor
-                id: (_) @structure.anchor.id) @structure.anchor
-        """
+    
+    PatternCategory.STRUCTURE: {
+        "include": QueryPattern(
+            pattern=r'^include::([^[\]]+)(?:\[(.*?)\])?$',
+            extract=lambda m: {
+                "type": "include",
+                "path": m.group(1),
+                "options": m.group(2) if m.group(2) else {},
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches AsciiDoc include directives",
+            examples=["include::file.adoc[]"]
+        ),
+        "anchor": QueryPattern(
+            pattern=r'^\[\[([^\]]+)\]\]$',
+            extract=lambda m: {
+                "type": "anchor",
+                "id": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches AsciiDoc anchors",
+            examples=["[[anchor-id]]"]
+        )
     },
-    "semantics": {
-        "link": """
-            (link
-                url: (_) @semantics.link.url
-                text: (_)? @semantics.link.text) @semantics.link
-        """,
-        "callout": """
-            (callout
-                number: (_) @semantics.callout.number) @semantics.callout
-        """,
-        "footnote": """
-            (footnote
-                id: (_)? @semantics.footnote.id
-                content: (_) @semantics.footnote.content) @semantics.footnote
-        """,
-        "term": """
-            (term
-                name: (_) @semantics.term.name
-                definition: (_) @semantics.term.definition) @semantics.term
-        """
+    
+    PatternCategory.DOCUMENTATION: {
+        "admonition": QueryPattern(
+            pattern=r'^(NOTE|TIP|IMPORTANT|WARNING|CAUTION):\s+(.+)$',
+            extract=lambda m: {
+                "type": "admonition",
+                "admonition_type": m.group(1),
+                "content": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches AsciiDoc admonitions",
+            examples=["NOTE: Important information"]
+        )
     },
-    "documentation": {
-        "metadata": """
-            (header
-                title: (_) @documentation.metadata.title
-                attributes: (_)* @documentation.metadata.attributes) @documentation.metadata
-        """,
-        "comment": """
-            (comment
-                content: (_) @documentation.comment.content) @documentation.comment
-        """,
-        "admonition": """
-            (admonition
-                type: (_) @documentation.admonition.type
-                content: (_) @documentation.admonition.content) @documentation.admonition
-        """,
-        "annotation": """
-            (annotation
-                type: (_) @documentation.annotation.type
-                content: (_) @documentation.annotation.content) @documentation.annotation
-        """
+    
+    PatternCategory.SEMANTICS: {
+        "callout": QueryPattern(
+            pattern=r'<(\d+)>',
+            extract=lambda m: {
+                "type": "callout",
+                "number": int(m.group(1)),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches AsciiDoc callouts",
+            examples=["<1>"]
+        ),
+        "macro": QueryPattern(
+            pattern=r'([a-z]+)::([^[\]]+)(?:\[(.*?)\])?',
+            extract=lambda m: {
+                "type": "macro",
+                "name": m.group(1),
+                "target": m.group(2),
+                "attributes": m.group(3) if m.group(3) else None,
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches AsciiDoc macros",
+            examples=["image::file.png[]", "link::https://example.com[]"]
+        )
     }
 } 

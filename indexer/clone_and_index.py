@@ -1,76 +1,94 @@
+"""Repository cloning and indexing coordination."""
+
 import os
 import tempfile
-import shutil
 import subprocess
+from typing import Optional
 from utils.logger import log
-from db.psql import query
-from indexer.async_indexer import async_index_code, async_index_docs
+from db.upsert_ops import upsert_repository
+from indexer.unified_indexer import process_repository_indexing
 import asyncio
+from contextlib import asynccontextmanager
+from config import postgres_config, neo4j_config
 
-def get_or_create_repo(repo_name: str, source_url: str = None, repo_type: str = "active", active_repo_id: int | None = None) -> int:
+@asynccontextmanager
+async def repository_transaction():
     """
-    Retrieves the repository ID by its unique repository name.
-    If the repository doesn't exist, it will be created with the given type
-    ('active' or 'reference') and associated active_repo_id if applicable.
+    Context manager for repository operations ensuring proper cleanup.
     """
-    result = query("SELECT id FROM repositories WHERE repo_name = %s;", (repo_name,))
-    if result:
-        return result[0]["id"]
-
-    insert_sql = """
-        INSERT INTO repositories (repo_name, source_url, repo_type, active_repo_id)
-        VALUES (%s, %s, %s, %s)
-        RETURNING id;
-    """
-    result = query(insert_sql, (repo_name, source_url, repo_type, active_repo_id))
-    return result[0]["id"]
-
-def clone_and_index_repo(repo_url: str, repo_name: str | None = None, active_repo_id: int | None = None):
-    """
-    Clones a reference repository into a temporary directory, indexes its files asynchronously,
-    and then deletes the temp folder. For reference repos, active_repo_id is passed so that
-    the repository is associated with the given active project.
-    """
-    if repo_name is None:
-        repo_name = repo_url.split('/')[-1].replace('.git', '')
-    # Create a repository entry with type "reference" and associate it with the active repo.
-    repo_id = get_or_create_repo(repo_name, repo_url, repo_type="reference", active_repo_id=active_repo_id)
-
-    tmp_dir = tempfile.mkdtemp(prefix=f"repo-{repo_id}-")
-    log(f"🔄 Cloning {repo_url} into {tmp_dir}")
     try:
-        subprocess.run(["git", "clone", repo_url, tmp_dir], check=True)
-        from indexer.async_indexer import async_index_repository
-        from utils.async_runner import submit_async_task
-        future = submit_async_task(async_index_repository(tmp_dir, repo_id))
-        # Wait for asynchronous indexing to complete before cleanup
-        future.result()
-    except subprocess.CalledProcessError as e:
-        log(f"❌ Error cloning repository: {e}", level="error")
+        yield
+    except Exception as e:
+        log(f"Repository transaction failed: {e}", level="error")
+        raise
     finally:
-        shutil.rmtree(tmp_dir)
-        log(f"🧹 Removed temporary folder: {tmp_dir}")
+        # Ensure any temporary resources are cleaned up
+        pass
 
-def index_active_project():
+async def get_or_create_repo(
+    repo_name: str,
+    source_url: Optional[str] = None,
+    repo_type: str = "active",
+    active_repo_id: Optional[int] = None
+) -> int:
     """
-    Initiates asynchronous indexing for the active project.
-    Uses the new async_index_code and async_index_docs functions
-    to index source code and documentation respectively.
+    Retrieves or creates a repository using the centralized upsert operation.
     """
-    repository_id = get_or_create_repo("active")
-    base_path = "./active_project"  # Update this path as needed
+    async with repository_transaction():
+        repo_data = {
+            'repo_name': repo_name,
+            'source_url': source_url,
+            'repo_type': repo_type,
+            'active_repo_id': active_repo_id
+        }
+        return await upsert_repository(repo_data)
 
-    loop = asyncio.get_event_loop()
-    tasks = [
-        async_index_code(repository_id, base_path),
-        async_index_docs(repository_id, base_path)
-    ]
-    loop.run_until_complete(asyncio.gather(*tasks))
-    log("Active project indexing completed.")
+async def clone_repository(repo_url: str, target_dir: str) -> bool:
+    """Clone a git repository to target directory."""
+    try:
+        result = subprocess.run(
+            ['git', 'clone', '--depth', '1', repo_url, target_dir],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        log(f"Successfully cloned {repo_url}", level="info")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        log(f"Git clone failed: {e.stderr}", level="error")
+        return False
+    except Exception as e:
+        log(f"Error cloning repository: {e}", level="error")
+        return False
 
-if __name__ == "__main__":
-    # Index the current active project
-    index_active_project()
+async def clone_and_index_repo(
+    repo_url: str,
+    repo_name: Optional[str] = None,
+    active_repo_id: Optional[int] = None
+) -> None:
+    """Clone and index a reference repository."""
+    if not repo_name:
+        repo_name = repo_url.split('/')[-1].replace('.git', '')
     
-    # Example: Index a reference repository (comment out if not needed)
-    # clone_and_index_repo("https://github.com/samuelcolvin/pydantic.git", "pydantic")
+    async with repository_transaction():
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                # Clone repository
+                if not await clone_repository(repo_url, temp_dir):
+                    return
+                
+                # Create repository record
+                repo_id = await get_or_create_repo(
+                    repo_name,
+                    source_url=repo_url,
+                    repo_type="reference",
+                    active_repo_id=active_repo_id
+                )
+                
+                # Index repository using unified indexer
+                await process_repository_indexing(temp_dir, repo_id, repo_type="reference")
+                
+            except Exception as e:
+                log(f"Error processing reference repository: {e}", level="error")
+                raise

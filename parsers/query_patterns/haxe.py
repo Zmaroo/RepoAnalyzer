@@ -1,51 +1,80 @@
-"""Haxe-specific Tree-sitter patterns.
+"""Query patterns for Haxe files."""
 
-This file provides basic queries for detecting function and class declarations
-(as well as interfaces, typedefs, and variables) using the node types defined in
-node-types/haxe-node-types.json. The queries capture key elements like the identifier,
-parameter list, block body, etc.
-"""
+from parsers.file_classification import FileType
+from .common import COMMON_PATTERNS
 
 HAXE_PATTERNS = {
-    # Basic pattern for function detection.
-    "function": r"""
-        (function_declaration) @function
-    """,
+    **COMMON_PATTERNS,
+    
+    "syntax": {
+        "function": {
+            "pattern": """
+            (function_declaration
+                name: (identifier) @syntax.function.name
+                parameters: (parameter_list)? @syntax.function.params
+                body: (block)? @syntax.function.body) @syntax.function.def
+            """
+        },
+        "class": {
+            "pattern": """
+            (class_declaration
+                name: (identifier) @syntax.class.name
+                body: (class_body)? @syntax.class.body) @syntax.class.def
+            """
+        },
+        "interface": {
+            "pattern": """
+            (interface_declaration
+                name: (identifier) @syntax.interface.name
+                body: (interface_body)? @syntax.interface.body) @syntax.interface.def
+            """
+        },
+        "typedef": {
+            "pattern": """
+            (typedef_declaration
+                name: (identifier) @syntax.typedef.name
+                type: (type)? @syntax.typedef.type) @syntax.typedef.def
+            """
+        }
+    },
 
-    # Extended pattern for detailed function information:
-    # Captures the function name, parameters (if available), and body.
-    "function_details": r"""
-        (function_declaration
-            name: (identifier) @function.name
-            parameters: (parameter_list)? @function.params
-            body: (block)? @function.body) @function.def
-    """,
+    "semantics": {
+        "variable": {
+            "pattern": """
+            (variable_declaration
+                name: (identifier) @semantics.variable.name
+                initializer: (expression)? @semantics.variable.value) @semantics.variable.def
+            """
+        },
+        "type": {
+            "pattern": """
+            (type
+                name: (identifier) @semantics.type.name) @semantics.type.def
+            """
+        }
+    },
 
-    # Pattern for class declarations.
-    "class": r"""
-        (class_declaration
-            name: (identifier) @class.name
-            body: (class_body)? @class.body) @class.def
-    """,
+    "documentation": {
+        "comment": {
+            "pattern": """
+            (comment) @documentation.comment
+            """
+        }
+    },
 
-    # Pattern for interface declarations.
-    "interface": r"""
-        (interface_declaration
-            name: (identifier) @interface.name
-            body: (interface_body)? @interface.body) @interface.def
-    """,
-
-    # Pattern for typedef declarations.
-    "typedef": r"""
-        (typedef_declaration
-            name: (identifier) @typedef.name
-            type: (type)? @typedef.type) @typedef.def
-    """,
-
-    # Pattern for variable declarations.
-    "variable": r"""
-        (variable_declaration
-            name: (identifier) @variable.name
-            initializer: (expression)? @variable.value) @variable.def
-    """
+    "structure": {
+        "import": {
+            "pattern": """
+            (import_statement
+                package: (package_name)? @structure.import.package
+                type: (type_name)? @structure.import.type) @structure.import.def
+            """
+        },
+        "package": {
+            "pattern": """
+            (package_statement
+                name: (package_name) @structure.package.name) @structure.package.def
+            """
+        }
+    }
 } 

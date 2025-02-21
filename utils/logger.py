@@ -1,46 +1,119 @@
-import os
+"""Enhanced logging system with error handling."""
+
 import logging
 import sys
-
-def is_logging_disabled() -> bool:
-    # Check the environment variable every time log() is called.
-    # This ensures that even if DISABLE_LOGGING wasn't set early,
-    # subsequent calls will obey it.
-    return os.getenv("DISABLE_LOGGING", "False").lower() in ("true", "1", "t")
-
-# If logging is disabled at import time, disable it immediately.
-if is_logging_disabled():
-    logging.disable(logging.CRITICAL)
-
-# Configure logging with more detailed format for tests
-test_formatter = logging.Formatter(
-    '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+import os
+from datetime import datetime
+from typing import Optional, Dict, Any
+from functools import wraps
+import json
+from utils.error_handling import (
+    handle_errors,
+    ProcessingError,
+    ErrorBoundary
 )
 
-# Create a stream handler that writes to stdout
-stream_handler = logging.StreamHandler(sys.stdout)
-stream_handler.setFormatter(test_formatter)
-stream_handler.setLevel(logging.DEBUG)  # Set to DEBUG to catch all messages
+class EnhancedLogger:
+    """Enhanced logging with structured output and error handling."""
+    
+    def __init__(self):
+        self._initialize_logger()
+        self.log_levels = {
+            "debug": logging.DEBUG,
+            "info": logging.INFO,
+            "warning": logging.WARNING,
+            "error": logging.ERROR,
+            "critical": logging.CRITICAL
+        }
+    
+    @handle_errors(error_types=ProcessingError)
+    def _initialize_logger(self):
+        """Initialize logging configuration."""
+        with ErrorBoundary("logger initialization"):
+            # Create logs directory if it doesn't exist
+            log_dir = "logs"
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+            
+            # Set up file handler
+            log_file = os.path.join(
+                log_dir,
+                f"app_{datetime.now().strftime('%Y%m%d')}.log"
+            )
+            
+            # Configure logging
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.FileHandler(log_file),
+                    logging.StreamHandler(sys.stdout)
+                ]
+            )
+    
+    @handle_errors(error_types=ProcessingError)
+    def log(
+        self,
+        message: str,
+        level: str = "info",
+        context: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Log a message with optional context.
+        
+        Args:
+            message: The message to log
+            level: The log level (debug, info, warning, error, critical)
+            context: Optional dictionary of contextual information
+        """
+        with ErrorBoundary("logging operation"):
+            log_level = self.log_levels.get(level.lower(), logging.INFO)
+            
+            # Create structured log entry
+            log_entry = {
+                "message": message,
+                "timestamp": datetime.now().isoformat(),
+                "level": level
+            }
+            
+            if context:
+                log_entry["context"] = context
+            
+            # Format as JSON for structured logging
+            structured_message = json.dumps(log_entry)
+            
+            # Log using standard logging
+            logging.log(log_level, structured_message)
+    
+    @handle_errors(error_types=ProcessingError)
+    def debug(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Log debug message."""
+        self.log(message, "debug", context)
+    
+    @handle_errors(error_types=ProcessingError)
+    def info(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Log info message."""
+        self.log(message, "info", context)
+    
+    @handle_errors(error_types=ProcessingError)
+    def warning(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Log warning message."""
+        self.log(message, "warning", context)
+    
+    @handle_errors(error_types=ProcessingError)
+    def error(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Log error message."""
+        self.log(message, "error", context)
+    
+    @handle_errors(error_types=ProcessingError)
+    def critical(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """Log critical message."""
+        self.log(message, "critical", context)
 
-# Configure root logger
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-logger.addHandler(stream_handler)
+# Global logger instance
+logger = EnhancedLogger()
 
-# Create a specific logger for tree-sitter
-tree_sitter_logger = logging.getLogger('tree-sitter')
-tree_sitter_logger.setLevel(logging.DEBUG)
-tree_sitter_logger.addHandler(stream_handler)
-
-def log(message: str, level: str = "info") -> None:
-    if is_logging_disabled():
-        return
-
-    if level.lower() == "debug":
-        logger.debug(message)
-    elif level.lower() == "warning":
-        logger.warning(message)
-    elif level.lower() == "error":
-        logger.error(message)
-    else:
-        logger.info(message)
+# Convenience function
+def log(message: str, level: str = "info", context: Optional[Dict[str, Any]] = None):
+    """Global logging function."""
+    logger.log(message, level, context)

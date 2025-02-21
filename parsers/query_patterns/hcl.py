@@ -1,45 +1,69 @@
 """Query patterns for HCL files."""
 
+from parsers.file_classification import FileType
+from .common import COMMON_PATTERNS
+
 HCL_PATTERNS = {
+    **COMMON_PATTERNS,
+    
     "syntax": {
-        "function": [
-            """
+        "function": {
+            "pattern": """
             (function_call
-                name: (identifier) @function.name
-                arguments: (_)* @function.args) @function
+                name: (identifier) @syntax.function.name
+                arguments: (function_arguments)? @syntax.function.args) @syntax.function.def
             """
-        ]
-    },
-    "structure": {
-        "namespace": [
-            """
+        },
+        "block": {
+            "pattern": """
             (block
-                (identifier) @block.type
-                (string_lit)* @block.labels
-                (body) @block.body) @namespace
+                type: (identifier) @syntax.block.type
+                labels: (string_lit)* @syntax.block.labels
+                body: (body) @syntax.block.body) @syntax.block.def
             """
-        ]
+        }
     },
+
     "semantics": {
-        "variable": [
-            """
+        "variable": {
+            "pattern": """
             (attribute
-                name: (identifier) @attr.name
-                value: (expression) @attr.value) @variable
+                name: (identifier) @semantics.variable.name
+                value: (expression) @semantics.variable.value) @semantics.variable.def
             """
-        ],
-        "expression": [
+        },
+        "expression": {
+            "pattern": """
+            [
+                (expression
+                    content: (_) @semantics.expression.content) @semantics.expression.def,
+                (template_expr
+                    content: (_) @semantics.expression.template.content) @semantics.expression.template
+            ]
             """
-            (expression
-                (_) @expr.content) @expression
+        },
+        "type": {
+            "pattern": """
+            (type_expr
+                name: (identifier) @semantics.type.name) @semantics.type.def
             """
-        ]
+        }
     },
+
     "documentation": {
-        "comment": [
+        "comment": {
+            "pattern": """
+            (comment) @documentation.comment
             """
-            (comment) @comment
+        }
+    },
+
+    "structure": {
+        "block": {
+            "pattern": """
+            (config_file
+                body: (body) @structure.block.body) @structure.block.def
             """
-        ]
+        }
     }
 } 

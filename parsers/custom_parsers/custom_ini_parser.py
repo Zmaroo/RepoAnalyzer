@@ -1,255 +1,129 @@
-"""Custom parser for INI/Properties files with enhanced documentation features."""
+"""Custom parser for INI/Properties files."""
 
-from typing import Dict, List, Any
-from parsers.common_parser_utils import build_parser_output
-import configparser
-import re
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from parsers.base_parser import CustomParser
+from parsers.file_classification import FileClassification
+from parsers.query_patterns.ini import INI_PATTERNS, PatternCategory
 from utils.logger import log
+import re
 
-def parse_ini_code(source_code: str) -> dict:
-    """
-    Parse INI/Properties content as structured code while preserving documentation.
+@dataclass
+class IniNode:
+    """Base class for INI AST nodes."""
+    type: str
+    start_point: List[int]
+    end_point: List[int]
+    children: List[Any]
+
+class IniParser(CustomParser):
+    """Parser for INI files."""
     
-    Handles:
-    - Section-based structure
-    - Key-value pairs
-    - Comments and documentation
-    - Include directives
-    - Environment variables
-    - Cross-references
-    """
-    features: Dict[str, Any] = {
-        "syntax": {
-            "sections": [],     # INI sections
-            "properties": [],   # Key-value pairs
-            "includes": [],     # Include directives
-            "variables": []     # Variable references
-        },
-        "structure": {
-            "root": None,       # Global section
-            "hierarchy": [],    # Section hierarchy
-            "references": []    # Cross-references
-        },
-        "semantics": {
-            "definitions": [], # Value definitions
-            "environment": [], # Environment variables
-            "paths": []       # File paths
-        },
-        "documentation": {
-            "comments": [],    # Regular comments
-            "metadata": {},    # Section metadata
-            "descriptions": [] # Property descriptions
+    def __init__(self, language_id: str = "ini", classification: Optional[FileClassification] = None):
+        super().__init__(language_id, classification)
+        self.patterns = {
+            name: re.compile(pattern.pattern)
+            for category in INI_PATTERNS.values()
+            for name, pattern in category.items()
         }
-    }
     
-    # Enhanced patterns for INI/Properties parsing
-    patterns = {
-        'section': re.compile(r'^\s*\[(.*?)\]\s*(?:#\s*(.*))?$'),
-        'property': re.compile(r'^\s*([\w.-]+)\s*[=:]\s*(.+?)(?:\s*[#;]\s*(.*))?$'),
-        'comment': re.compile(r'^\s*[#;]\s*(.+)$'),
-        'include': re.compile(r'^\s*[@!]include\s+(.+)$'),
-        'env_var': re.compile(r'\${([^}]+)}'),
-        'reference': re.compile(r'\${([\w.-]+)}')
-    }
-    
-    def process_section(name: str, properties: Dict[str, str], 
-                       comments: List[str], line_number: int) -> Dict:
-        """Process a section and its properties."""
-        section_data = {
-            "type": "section",
-            "name": name,
-            "line": line_number,
-            "properties": [],
-            "comments": comments
+    def _create_node(
+        self,
+        node_type: str,
+        start_point: List[int],
+        end_point: List[int],
+        **kwargs
+    ) -> Dict:
+        """Create a standardized AST node."""
+        return {
+            "type": node_type,
+            "start_point": start_point,
+            "end_point": end_point,
+            "children": [],
+            **kwargs
         }
-        
-        features["syntax"]["sections"].append(section_data)
-        
-        # Add to hierarchy
-        if name != "DEFAULT":
-            features["structure"]["hierarchy"].append({
-                "name": name,
-                "line": line_number
-            })
-        
-        # Process properties
-        for key, value in properties.items():
-            prop_data = {
-                "key": key,
-                "value": value,
-                "section": name
-            }
-            
-            # Check for environment variables
-            env_vars = patterns['env_var'].findall(value)
-            for var in env_vars:
-                features["semantics"]["environment"].append({
-                    "variable": var,
-                    "section": name,
-                    "key": key
-                })
-            
-            # Check for references
-            refs = patterns['reference'].findall(value)
-            for ref in refs:
-                features["structure"]["references"].append({
-                    "from": f"{name}.{key}",
-                    "to": ref
-                })
-            
-            # Check for paths
-            if any(ext in value for ext in ['.txt', '.ini', '.conf', '.properties']):
-                features["semantics"]["paths"].append({
-                    "path": value,
-                    "section": name,
-                    "key": key
-                })
-            
-            section_data["properties"].append(prop_data)
-            features["syntax"]["properties"].append(prop_data)
-        
-        return section_data
-    
-    try:
-        lines = source_code.splitlines()
-        current_section = None
-        current_comments = []
-        sections = {}
-        section_comments = {}
-        
-        # First pass: collect comments and sections
-        for i, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-            
-            # Check for comments
-            comment_match = patterns['comment'].match(line)
-            if comment_match:
-                comment_content = comment_match.group(1)
-                current_comments.append({
-                    "content": comment_content,
-                    "line": i + 1
-                })
-                features["documentation"]["comments"].append({
-                    "content": comment_content,
-                    "line": i + 1
-                })
-                continue
-            
-            # Check for include directives
-            include_match = patterns['include'].match(line)
-            if include_match:
-                features["syntax"]["includes"].append({
-                    "path": include_match.group(1),
-                    "line": i + 1
-                })
-                continue
-            
-            # Check for sections
-            section_match = patterns['section'].match(line)
-            if section_match:
-                section_name = section_match.group(1)
-                section_desc = section_match.group(2)
-                
-                if section_desc:
-                    features["documentation"]["descriptions"].append({
-                        "section": section_name,
-                        "content": section_desc,
-                        "line": i + 1
-                    })
-                
-                if current_comments:
-                    section_comments[section_name] = current_comments
-                    current_comments = []
-                
-                current_section = section_name
-                sections[current_section] = {}
-                continue
-            
-            # Check for properties
-            property_match = patterns['property'].match(line)
-            if property_match:
-                key = property_match.group(1)
-                value = property_match.group(2)
-                prop_comment = property_match.group(3)
-                
-                if current_section is None:
-                    current_section = "DEFAULT"
-                    sections[current_section] = {}
-                
-                sections[current_section][key] = value
-                
-                if prop_comment:
-                    features["documentation"]["descriptions"].append({
-                        "section": current_section,
-                        "key": key,
-                        "content": prop_comment,
-                        "line": i + 1
-                    })
-                
-                if current_comments:
-                    features["documentation"]["descriptions"].append({
-                        "section": current_section,
-                        "key": key,
-                        "content": "\n".join(c["content"] for c in current_comments),
-                        "line": i + 1
-                    })
-                    current_comments = []
-        
-        # Process sections and build AST
-        ast_children = []
-        for section_name, properties in sections.items():
-            section_data = process_section(
-                section_name,
-                properties,
-                section_comments.get(section_name, []),
-                next((i for i, line in enumerate(lines) 
-                      if patterns['section'].match(line) 
-                      and patterns['section'].match(line).group(1) == section_name), 0)
+
+    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+        """Parse INI content into AST structure."""
+        try:
+            lines = source_code.splitlines()
+            ast = self._create_node(
+                "ini_file",
+                [0, 0],
+                [len(lines) - 1, len(lines[-1]) if lines else 0],
+                children=[]
             )
-            ast_children.append(section_data)
-        
-        # Build the AST
-        ast = {
-            "type": "ini_document",
-            "children": ast_children,
-            "start_point": [0, 0],
-            "end_point": [len(lines) - 1, len(lines[-1]) if lines else 0],
-            "start_byte": 0,
-            "end_byte": len(source_code)
-        }
-        
-        # Extract documentation
-        documentation = "\n".join(
-            comment["content"] for comment in features["documentation"]["comments"]
-        )
-        
-        # Calculate complexity
-        complexity = (
-            len(features["syntax"]["sections"]) +
-            len(features["syntax"]["properties"]) +
-            len(features["structure"]["references"])
-        )
-        
-        return build_parser_output(
-            source_code=source_code,
-            language="ini",
-            ast=ast,
-            features=features,
-            total_lines=len(lines),
-            documentation=documentation,
-            complexity=complexity
-        )
-        
-    except Exception as e:
-        log(f"Error in INI parser: {e}", level="error")
-        return build_parser_output(
-            source_code=source_code,
-            language="ini",
-            ast={"type": "error", "message": str(e)},
-            features={},
-            total_lines=len(source_code.splitlines()),
-            documentation="",
-            complexity=0
-        ) 
+            
+            current_section = None
+            current_comment_block = []
+            
+            for i, line in enumerate(lines):
+                line_start = [i, 0]
+                line_end = [i, len(line)]
+                
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Process comments
+                if comment_match := self.patterns['comment'].match(line):
+                    node = self._create_node(
+                        "comment",
+                        line_start,
+                        line_end,
+                        **INI_PATTERNS[PatternCategory.DOCUMENTATION]['comment'].extract(comment_match)
+                    )
+                    current_comment_block.append(node)
+                    continue
+                
+                # Process sections
+                if section_match := self.patterns['section'].match(line):
+                    node = self._create_node(
+                        "section",
+                        line_start,
+                        line_end,
+                        **INI_PATTERNS[PatternCategory.SYNTAX]['section'].extract(section_match)
+                    )
+                    if current_comment_block:
+                        node["comments"] = current_comment_block
+                        current_comment_block = []
+                    ast["children"].append(node)
+                    current_section = node
+                    continue
+                
+                # Process properties
+                if property_match := self.patterns['property'].match(line):
+                    node = self._create_node(
+                        "property",
+                        line_start,
+                        line_end,
+                        **INI_PATTERNS[PatternCategory.SYNTAX]['property'].extract(property_match)
+                    )
+                    if current_comment_block:
+                        node["comments"] = current_comment_block
+                        current_comment_block = []
+                    
+                    # Check for semantic patterns
+                    for pattern_name in ['environment', 'path']:
+                        if semantic_match := self.patterns[pattern_name].match(line):
+                            semantic_data = INI_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(semantic_match)
+                            node["semantics"] = semantic_data
+                    
+                    if current_section:
+                        current_section["children"].append(node)
+                    else:
+                        ast["children"].append(node)
+            
+            # Add any remaining comments
+            if current_comment_block:
+                ast["trailing_comments"] = current_comment_block
+            
+            return ast
+            
+        except Exception as e:
+            log(f"Error parsing INI content: {e}", level="error")
+            return {
+                "type": "ini_file",
+                "error": str(e),
+                "children": []
+            } 

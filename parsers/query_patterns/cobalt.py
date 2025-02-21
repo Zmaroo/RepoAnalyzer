@@ -1,82 +1,131 @@
 """Query patterns for the Cobalt programming language."""
 
-# The following are example patterns for detecting functions in cobalt.
+from parsers.pattern_processor import QueryPattern, PatternCategory
+from typing import Dict, Any, Match
+
+def extract_function(match: Match) -> Dict[str, Any]:
+    """Extract function information."""
+    return {
+        "type": "function",
+        "name": match.group(1),
+        "parameters": [p.strip() for p in match.group(2).split(',') if p.strip()],
+        "return_type": match.group(3),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
+
+def extract_class(match: Match) -> Dict[str, Any]:
+    """Extract class information."""
+    return {
+        "type": "class",
+        "name": match.group(1),
+        "parent": match.group(2),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
+
 COBALT_PATTERNS = {
-    "function": """
-        (
-            (function_declaration
-                name: (identifier) @function.name
-                parameters: (parameter_list) @function.params
-                return_type: (type_annotation)? @function.return_type
-            )
+    PatternCategory.SYNTAX: {
+        "function": QueryPattern(
+            pattern=r'^fn\s+(\w+)\s*\((.*?)\)(?:\s*->\s*(\w+))?\s*{',
+            extract=extract_function,
+            description="Matches Cobalt function declarations",
+            examples=[
+                "fn main() {",
+                "fn calculate(x: int, y: int) -> int {"
+            ]
+        ),
+        "class": QueryPattern(
+            pattern=r'^class\s+(\w+)(?:\s*:\s*(\w+))?\s*{',
+            extract=extract_class,
+            description="Matches Cobalt class declarations",
+            examples=[
+                "class MyClass {",
+                "class Derived: Base {"
+            ]
         )
-    """,
+    },
     
-    "class": """
-        (
-            (class_declaration
-                name: (identifier) @class.name
-                superclass: (superclass_clause)? @class.superclass
-            )
+    PatternCategory.STRUCTURE: {
+        "import": QueryPattern(
+            pattern=r'^import\s+([\w.]+)(?:\s+as\s+(\w+))?$',
+            extract=lambda m: {
+                "type": "import",
+                "path": m.group(1),
+                "alias": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches Cobalt import statements",
+            examples=[
+                "import std.io",
+                "import math.vector as vec"
+            ]
+        ),
+        "namespace": QueryPattern(
+            pattern=r'^namespace\s+([\w.]+)\s*{',
+            extract=lambda m: {
+                "type": "namespace",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches Cobalt namespace declarations",
+            examples=["namespace core.utils {"]
         )
-    """,
+    },
     
-    "variable": """
-        (
-            (variable_declaration
-                kind: (var_or_const) @variable.kind
-                name: (identifier) @variable.name
-                type: (type_annotation)? @variable.type
-                value: (expression)? @variable.value
-            )
+    PatternCategory.DOCUMENTATION: {
+        "docstring": QueryPattern(
+            pattern=r'^///\s*(.*)$',
+            extract=lambda m: {
+                "type": "docstring",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches Cobalt docstrings",
+            examples=["/// Function documentation"]
+        ),
+        "comment": QueryPattern(
+            pattern=r'^//\s*(.*)$',
+            extract=lambda m: {
+                "type": "comment",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches Cobalt comments",
+            examples=["// Regular comment"]
         )
-    """,
+    },
     
-    "import": """
-        (
-            (import_declaration
-                path: (string_literal) @import.path
-                alias: (identifier)? @import.alias
-            )
+    PatternCategory.SEMANTICS: {
+        "variable": QueryPattern(
+            pattern=r'^(let|var)\s+(\w+)(?:\s*:\s*(\w+))?(?:\s*=\s*(.+))?$',
+            extract=lambda m: {
+                "type": "variable",
+                "name": m.group(2),
+                "value_type": m.group(3),
+                "value": m.group(4),
+                "is_mutable": m.group(1) == "var",
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches Cobalt variable declarations",
+            examples=[
+                "let x: int = 42",
+                "var name = \"value\""
+            ]
         )
-    """,
-    
-    "comment": """
-        (
-            (comment) @comment.content
-            (#doc_comment) @comment.doc
-        )
-    """
+    }
 }
 
-# Additional metadata for pattern categories
-PATTERN_METADATA = {
-    "syntax": {
-        "function": {
-            "contains": ["params", "return_type"],
-            "contained_by": ["class"]
-        },
-        "class": {
-            "contains": ["superclass"],
-            "contained_by": []
-        }
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "function": {
+        "can_contain": ["variable", "comment", "docstring"],
+        "can_be_contained_by": ["class", "namespace"]
     },
-    "structure": {
-        "import": {
-            "contains": [],
-            "contained_by": []
-        }
+    "class": {
+        "can_contain": ["function", "variable", "comment", "docstring"],
+        "can_be_contained_by": ["namespace"]
     },
-    "semantics": {
-        "variable": {
-            "contains": ["value"],
-            "contained_by": ["function"]
-        }
-    },
-    "documentation": {
-        "comment": {
-            "contains": [],
-            "contained_by": ["function"]
-        }
+    "namespace": {
+        "can_contain": ["class", "function", "variable", "comment"],
+        "can_be_contained_by": ["namespace"]
     }
 } 

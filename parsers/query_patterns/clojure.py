@@ -1,177 +1,123 @@
 """Tree-sitter patterns for Clojure programming language."""
 
+from .common import COMMON_PATTERNS
+
 CLOJURE_PATTERNS = {
-    # Syntax patterns
-    "function": [
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^(defn|defn-|fn)$")
-            .
-            (sym_lit) @name
-            .
-            (vec_lit)? @params
-            .
-            (_)* @body) @function
-        """,
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^defmacro$")
-            .
-            (sym_lit) @name
-            .
-            (vec_lit)? @params
-            .
-            (_)* @body) @function
-        """
-    ],
+    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
     
-    "class": [
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^defrecord$")
-            .
-            (sym_lit) @name
-            .
-            (vec_lit) @fields
-            .
-            (_)* @protocols) @class
-        """,
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^defprotocol$")
-            .
-            (sym_lit) @name
-            .
-            (_)* @methods) @class
-        """,
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^deftype$")
-            .
-            (sym_lit) @name
-            .
-            (vec_lit) @fields
-            .
-            (_)* @implementations) @class
-        """
-    ],
+    "syntax": {
+        "function": {
+            "pattern": """
+            [
+                (list_lit
+                    .
+                    (sym_lit) @syntax.function.type
+                    (#match? @syntax.function.type "^(defn|defn-|fn)$")
+                    .
+                    (sym_lit) @syntax.function.name
+                    .
+                    (vec_lit)? @syntax.function.params
+                    .
+                    (_)* @syntax.function.body) @syntax.function.def,
+                
+                (list_lit
+                    .
+                    (sym_lit) @syntax.macro.type
+                    (#match? @syntax.macro.type "^defmacro$")
+                    .
+                    (sym_lit) @syntax.macro.name
+                    .
+                    (vec_lit)? @syntax.macro.params
+                    .
+                    (_)* @syntax.macro.body) @syntax.macro.def
+            ]
+            """,
+            "extract": lambda node: {
+                "name": node["captures"].get("syntax.function.name", {}).get("text", "") or
+                       node["captures"].get("syntax.macro.name", {}).get("text", ""),
+                "type": "macro" if "syntax.macro.def" in node["captures"] else "function"
+            }
+        },
+        
+        "class": {
+            "pattern": """
+            [
+                (list_lit
+                    .
+                    (sym_lit) @syntax.class.type
+                    (#match? @syntax.class.type "^(defrecord|defprotocol|deftype)$")
+                    .
+                    (sym_lit) @syntax.class.name
+                    .
+                    [(vec_lit) @syntax.class.fields
+                     (_)* @syntax.class.body]) @syntax.class.def
+            ]
+            """,
+            "extract": lambda node: {
+                "name": node["captures"].get("syntax.class.name", {}).get("text", ""),
+                "type": node["captures"].get("syntax.class.type", {}).get("text", "")
+            }
+        }
+    },
     
-    # Structure patterns
-    "namespace": [
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^ns$")
-            .
-            (sym_lit) @name
-            .
-            (_)* @body) @namespace
-        """,
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^in-ns$")
-            .
-            (quote) @name) @namespace
-        """
-    ],
+    "semantics": {
+        "variable": {
+            "pattern": """
+            [
+                (list_lit
+                    .
+                    (sym_lit) @semantics.var.type
+                    (#match? @semantics.var.type "^(def|defonce)$")
+                    .
+                    (sym_lit) @semantics.var.name
+                    .
+                    (_)? @semantics.var.value) @semantics.var.def
+            ]
+            """,
+            "extract": lambda node: {
+                "name": node["captures"].get("semantics.var.name", {}).get("text", ""),
+                "type": "defonce" if "defonce" in node["captures"].get("semantics.var.type", {}).get("text", "") else "def"
+            }
+        }
+    },
     
-    "import": [
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^(:require|:use)$")
-            .
-            (_)+ @imports) @import
-        """,
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^import$")
-            .
-            (_)+ @imports) @import
-        """
-    ],
+    "structure": {
+        "namespace": {
+            "pattern": """
+            [
+                (list_lit
+                    .
+                    (sym_lit) @structure.ns.type
+                    (#match? @structure.ns.type "^(ns|in-ns)$")
+                    .
+                    [(sym_lit) @structure.ns.name
+                     (quote) @structure.ns.quoted]
+                    .
+                    (_)* @structure.ns.body) @structure.ns.def
+            ]
+            """,
+            "extract": lambda node: {
+                "name": node["captures"].get("structure.ns.name", {}).get("text", ""),
+                "type": node["captures"].get("structure.ns.type", {}).get("text", "")
+            }
+        }
+    },
     
-    # Semantics patterns
-    "variable": [
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^def$")
-            .
-            (sym_lit) @name
-            .
-            (_)? @value) @variable
-        """,
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^defonce$")
-            .
-            (sym_lit) @name
-            .
-            (_)? @value) @variable
-        """
-    ],
-    
-    "expression": [
-        """
-        (list_lit
-            .
-            (sym_lit) @operator
-            (#match? @operator "^(->|->>|as->|cond->|cond->>|some->|some->>)$")
-            .
-            (_)+ @forms) @expression
-        """,
-        """
-        (list_lit
-            .
-            (sym_lit) @operator
-            (#match? @operator "^(if|when|cond|case|condp)$")
-            .
-            (_)+ @branches) @expression
-        """
-    ],
-    
-    # Documentation patterns
-    "docstring": [
-        """
-        (list_lit
-            .
-            (sym_lit) @def_type
-            (#match? @def_type "^(defn|defmacro|defprotocol|defrecord|deftype)$")
-            .
-            (sym_lit)
-            .
-            (str_lit) @content) @docstring
-        """
-    ],
-    
-    "comment": [
-        """
-        (comment) @comment
-        """,
-        """
-        (dis_expr) @comment
-        """
-    ]
+    "documentation": {
+        "comments": {
+            "pattern": """
+            [
+                (comment) @documentation.comment,
+                (dis_expr) @documentation.disabled
+            ]
+            """,
+            "extract": lambda node: {
+                "text": node["captures"].get("documentation.comment", {}).get("text", "") or
+                       node["captures"].get("documentation.disabled", {}).get("text", ""),
+                "type": "comment" if "documentation.comment" in node["captures"] else "disabled"
+            }
+        }
+    }
 }
 
 # Additional metadata for pattern categories

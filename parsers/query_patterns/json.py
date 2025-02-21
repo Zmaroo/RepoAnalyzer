@@ -2,84 +2,144 @@
 Query patterns for JSON files with enhanced documentation support.
 """
 
+from parsers.file_classification import FileType
+from parsers.query_patterns import PATTERN_CATEGORIES
+from parsers.pattern_processor import QueryPattern, PatternCategory
+from typing import Dict, Any, Match
+
+def extract_object(node: Dict) -> Dict[str, Any]:
+    """Extract object information."""
+    return {
+        "type": "object",
+        "path": node["path"],
+        "keys": [child["key"] for child in node.get("children", [])]
+    }
+
+def extract_array(node: Dict) -> Dict[str, Any]:
+    """Extract array information."""
+    return {
+        "type": "array",
+        "path": node["path"],
+        "length": len(node.get("children", []))
+    }
+
 JSON_PATTERNS = {
-    "syntax": {
-        "object": """
-            (object
-                path: (_) @syntax.object.path
-                keys: (_)* @syntax.object.keys) @syntax.object
-        """,
-        "array": """
-            (array
-                path: (_) @syntax.array.path
-                length: (_) @syntax.array.length) @syntax.array
-        """,
-        "value": """
-            (value
-                path: (_) @syntax.value.path
-                type: (_) @syntax.value.type) @syntax.value
-        """,
-        "type": """
-            (type
-                path: (_) @syntax.type.path
-                name: (_) @syntax.type.name) @syntax.type
-        """
+    PatternCategory.SYNTAX: {
+        "object": QueryPattern(
+            pattern=lambda node: node["type"] == "object",
+            extract=extract_object,
+            description="Matches JSON objects",
+            examples=[{"name": "value"}]
+        ),
+        "array": QueryPattern(
+            pattern=lambda node: node["type"] == "array",
+            extract=extract_array,
+            description="Matches JSON arrays",
+            examples=[[1, 2, 3]]
+        ),
+        "value": QueryPattern(
+            pattern=lambda node: "value" in node,
+            extract=lambda node: {
+                "type": "value",
+                "path": node["path"],
+                "value_type": type(node["value"]).__name__,
+                "value": node["value"]
+            },
+            description="Matches JSON primitive values",
+            examples=["string", 42, True, None]
+        )
     },
-    "structure": {
-        "root": """
-            (json_document
-                root: (_) @structure.root.node) @structure.root
-        """,
-        "path": """
-            (path
-                segments: (_)* @structure.path.segments) @structure.path
-        """,
-        "reference": """
-            (reference
-                path: (_) @structure.reference.path
-                target: (_) @structure.reference.target) @structure.reference
-        """
+    
+    PatternCategory.STRUCTURE: {
+        "root": QueryPattern(
+            pattern=lambda node: node["type"] == "json_document",
+            extract=lambda node: {
+                "type": "root",
+                "root_type": node["root"]["type"]
+            },
+            description="Matches JSON document root",
+            examples=[{"root": {"type": "object"}}]
+        ),
+        "reference": QueryPattern(
+            pattern=lambda node: isinstance(node.get("value", ""), str) and "$ref" in str(node.get("key", "")),
+            extract=lambda node: {
+                "type": "reference",
+                "path": node["path"],
+                "target": node["value"]
+            },
+            description="Matches JSON references",
+            examples=[{"$ref": "#/definitions/type"}]
+        )
     },
-    "semantics": {
-        "definition": """
-            (definition
-                path: (_) @semantics.definition.path
-                schema: (_) @semantics.definition.schema) @semantics.definition
-        """,
-        "variable": """
-            (variable
-                path: (_) @semantics.variable.path
-                name: (_) @semantics.variable.name) @semantics.variable
-        """,
-        "pattern": """
-            (pattern
-                path: (_) @semantics.pattern.path
-                regex: (_) @semantics.pattern.regex) @semantics.pattern
-        """
+    
+    PatternCategory.DOCUMENTATION: {
+        "description": QueryPattern(
+            pattern=lambda node: "description" in str(node.get("key", "")),
+            extract=lambda node: {
+                "type": "description",
+                "path": node["path"],
+                "content": node.get("value", "")
+            },
+            description="Matches description fields",
+            examples=[{"description": "A detailed description"}]
+        ),
+        "metadata": QueryPattern(
+            pattern=lambda node: node["type"] == "object" and any(
+                k in ["title", "version", "$schema"] for k in 
+                [child.get("key", "") for child in node.get("children", [])]
+            ),
+            extract=lambda node: {
+                "type": "metadata",
+                "path": node["path"],
+                "properties": {
+                    child["key"]: child["value"]
+                    for child in node.get("children", [])
+                    if child.get("key") in ["title", "version", "$schema"]
+                }
+            },
+            description="Matches JSON Schema metadata",
+            examples=[{"title": "Schema", "version": "1.0"}]
+        )
     },
-    "documentation": {
-        "comment": """
-            [
-                (comment_single
-                    content: (_) @documentation.comment.content
-                    line: (_) @documentation.comment.line) @documentation.comment.single
-                
-                (comment_multi
-                    content: (_) @documentation.comment.content
-                    start: (_) @documentation.comment.start
-                    end: (_) @documentation.comment.end) @documentation.comment.multi
-            ]
-        """,
-        "schema": """
-            (schema
-                type: (_) @documentation.schema.type
-                title: (_)? @documentation.schema.title
-                description: (_)? @documentation.schema.description) @documentation.schema
-        """,
-        "description": """
-            (description
-                path: (_) @documentation.description.path
-                content: (_) @documentation.description.content) @documentation.description
-        """
+    
+    PatternCategory.SEMANTICS: {
+        "variable": QueryPattern(
+            pattern=lambda node: isinstance(node.get("value", ""), str) and "${" in str(node["value"]),
+            extract=lambda node: {
+                "type": "variable",
+                "path": node["path"],
+                "name": node["value"]
+            },
+            description="Matches variable references",
+            examples=[{"key": "${variable}"}]
+        ),
+        "schema_type": QueryPattern(
+            pattern=lambda node: "type" in str(node.get("key", "")),
+            extract=lambda node: {
+                "type": "schema_type",
+                "path": node["path"],
+                "value": node.get("value", "")
+            },
+            description="Matches JSON Schema type definitions",
+            examples=[{"type": "string"}]
+        )
+    }
+}
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "object": {
+        "can_contain": ["object", "array", "value"],
+        "can_be_contained_by": ["object", "array", "root"]
+    },
+    "array": {
+        "can_contain": ["object", "array", "value"],
+        "can_be_contained_by": ["object", "array", "root"]
+    },
+    "value": {
+        "can_be_contained_by": ["object", "array"]
+    },
+    "reference": {
+        "can_be_contained_by": ["object"]
     }
 } 

@@ -1,0 +1,34 @@
+groovy: |
+  [
+    (method_declaration)
+    (constructor_declaration)
+    (closure_expression)
+  ] @function
+
+racket: |
+  [
+    (definition
+      name: (_)
+      value: (_)
+    )
+    (lambda)
+    (function)
+  ] @function
+
+clojure: |
+  (list_lit
+    .
+    [
+      (symbol) @sym
+      (#match? @sym "^(defn|fn|defrecord|defprotocol)$")
+    ]
+  ) @function
+
+elixir: |
+  [
+    (call
+      target: (identifier) @name
+      (#match? @name "^(def|defp|defmodule)$")
+    )
+    (anonymous_function)
+  ] @function 

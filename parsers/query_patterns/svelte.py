@@ -2,48 +2,76 @@
 
 SVELTE_PATTERNS = {
     "syntax": {
-        "function": [
-            """
+        "script": {
+            "pattern": """
             (script_element
                 (start_tag)
-                (raw_text)? @body
-                (end_tag)) @function
+                (raw_text)? @syntax.script.content
+                (end_tag)) @syntax.script.def
             """
-        ],
-        "class": [
-            """
+        },
+        "style": {
+            "pattern": """
             (style_element
                 (start_tag)
-                (raw_text)? @body
-                (end_tag)) @class
+                (raw_text)? @syntax.style.content
+                (end_tag)) @syntax.style.def
             """
-        ]
+        },
+        "control_flow": {
+            "pattern": """
+            [
+                (if_statement
+                    (expression) @syntax.if.condition
+                    (_)* @syntax.if.consequence
+                    (else_statement)? @syntax.if.alternative) @syntax.if.def,
+                
+                (each_statement
+                    (each_start_expr) @syntax.each.start
+                    (_)* @syntax.each.body
+                    (each_end_expr)? @syntax.each.end) @syntax.each.def,
+                
+                (await_statement
+                    (expression) @syntax.await.expression
+                    (then_expr)? @syntax.await.then
+                    (catch_statement)? @syntax.await.catch) @syntax.await.def
+            ]
+            """
+        }
     },
     "structure": {
-        "namespace": [
-            """
+        "element": {
+            "pattern": """
             (element
                 (start_tag
-                    (tag_name) @name
-                    (attribute)* @attrs)
-                (_)* @content
-                (end_tag)?) @namespace
+                    (tag_name) @structure.element.name
+                    (attribute)* @structure.element.attributes)
+                (_)* @structure.element.content
+                (end_tag)?) @structure.element.def
             """
-        ]
+        }
     },
     "semantics": {
-        "expression": [
+        "expression": {
+            "pattern": """
+            [
+                (expression
+                    (_) @semantics.expression.content) @semantics.expression.def,
+                
+                (const_expr
+                    (_) @semantics.constant.value) @semantics.constant.def,
+                
+                (debug_expr
+                    (_) @semantics.debug.value) @semantics.debug.def
+            ]
             """
-            (expression
-                (_) @content) @expression
-            """
-        ]
+        }
     },
     "documentation": {
-        "comment": [
+        "comment": {
+            "pattern": """
+            (comment) @documentation.comment
             """
-            (comment) @comment
-            """
-        ]
+        }
     }
 } 

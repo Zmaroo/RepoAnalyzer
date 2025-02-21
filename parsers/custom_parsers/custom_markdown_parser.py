@@ -1,210 +1,132 @@
 """Custom parser for Markdown with enhanced documentation features."""
 
-from typing import Dict, List, Any
-from parsers.common_parser_utils import build_parser_output
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from parsers.base_parser import CustomParser
+from parsers.file_classification import FileClassification
+from parsers.query_patterns.markdown import MARKDOWN_PATTERNS, PatternCategory
+from utils.logger import log
 import re
 
-def parse_markdown_code(source_code: str) -> dict:
-    """
-    Parse Markdown content as structured code while preserving documentation features.
+@dataclass
+class MarkdownNode:
+    """Base class for Markdown AST nodes."""
+    type: str
+    start_point: List[int]
+    end_point: List[int]
+    children: List[Any]
+
+class MarkdownParser(CustomParser):
+    """Parser for Markdown files."""
     
-    Generates an AST that captures both document structure and semantic content:
-    - Headers become namespace/module-like structures
-    - Code blocks are parsed as embedded code
-    - Lists become structured data
-    - Links become references
-    - Metadata (frontmatter) becomes module-level attributes
-    """
-    lines = source_code.splitlines()
-    total_lines = len(lines)
-    
-    # Track document structure
-    current_section = None
-    sections: List[Dict] = []
-    features: Dict[str, Any] = {
-        "syntax": {
-            "headers": [],
-            "code_blocks": [],
-            "emphasis": []
-        },
-        "structure": {
-            "sections": [],
-            "lists": [],
-            "tables": []
-        },
-        "semantics": {
-            "links": [],
-            "references": [],
-            "definitions": []
-        },
-        "documentation": {
-            "metadata": {},
-            "comments": [],
-            "blockquotes": []
+    def __init__(self, language_id: str = "markdown", classification: Optional[FileClassification] = None):
+        super().__init__(language_id, classification)
+        self.patterns = {
+            'header': re.compile(r'^(#{1,6})\s+(.+)$'),
+            'list_item': re.compile(r'^(\s*)[*+-]\s+(.+)$'),
+            'numbered_list': re.compile(r'^(\s*)\d+\.\s+(.+)$'),
+            'code_block': re.compile(r'^```(\w*)$'),
+            'link': re.compile(r'\[([^\]]+)\]\(([^)]+)\)'),
+            'image': re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
         }
-    }
-    
-    # Regex patterns for Markdown elements
-    patterns = {
-        'header': re.compile(r'^(#{1,6})\s+(.+)$'),
-        'code_block': re.compile(r'^```(\w*)$'),
-        'list_item': re.compile(r'^(\s*)[*+-]\s+(.+)$'),
-        'numbered_list': re.compile(r'^(\s*)\d+\.\s+(.+)$'),
-        'link': re.compile(r'\[([^\]]+)\]\(([^)]+)\)'),
-        'emphasis': re.compile(r'[*_]{1,2}([^*_]+)[*_]{1,2}'),
-        'blockquote': re.compile(r'^\s*>\s*(.+)$'),
-        'table_header': re.compile(r'^\|(.+)\|$'),
-        'frontmatter_delimiter': re.compile(r'^---\s*$')
-    }
-    
-    def process_code_block(start_idx: int, language: str) -> Dict:
-        """Process a code block and return its content and metadata."""
-        code_content = []
-        end_idx = start_idx + 1
-        
-        while end_idx < total_lines:
-            if lines[end_idx].strip() == '```':
-                break
-            code_content.append(lines[end_idx])
-            end_idx += 1
-            
+
+    def _create_node(
+        self,
+        node_type: str,
+        start_point: List[int],
+        end_point: List[int],
+        **kwargs
+    ) -> Dict:
+        """Create a standardized AST node."""
         return {
-            "type": "code_block",
-            "language": language,
-            "content": "\n".join(code_content),
-            "start_line": start_idx,
-            "end_line": end_idx,
-            "start_point": [start_idx, 0],
-            "end_point": [end_idx, 3]
+            "type": node_type,
+            "start_point": start_point,
+            "end_point": end_point,
+            "children": [],
+            **kwargs
         }
-    
-    def process_list(start_idx: int, indent_level: int) -> Dict:
-        """Process a list structure and return its items and metadata."""
-        items = []
-        current_idx = start_idx
-        
-        while current_idx < total_lines:
-            line = lines[current_idx]
-            list_match = (patterns['list_item'].match(line) or 
-                         patterns['numbered_list'].match(line))
+
+    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+        """Parse Markdown content into AST structure."""
+        try:
+            lines = source_code.splitlines()
+            ast = self._create_node(
+                "document",
+                [0, 0],
+                [len(lines) - 1, len(lines[-1]) if lines else 0],
+                children=[]
+            )
             
-            if not list_match or len(list_match.group(1)) != indent_level:
-                break
-                
-            items.append({
-                "content": list_match.group(2),
-                "line": current_idx + 1
-            })
-            current_idx += 1
+            current_section = None
+            in_code_block = False
+            code_block_content = []
+            code_block_lang = None
+
+            for i, line in enumerate(lines):
+                line_start = [i, 0]
+                line_end = [i, len(line)]
+
+                # Process headers
+                if not in_code_block and (header_match := self.patterns['header'].match(line)):
+                    level, content = header_match.groups()
+                    node = self._create_node(
+                        "header",
+                        line_start,
+                        line_end,
+                        level=len(level),
+                        content=content
+                    )
+                    ast["children"].append(node)
+                    current_section = node
+                    continue
+
+                # Process code blocks
+                if code_match := self.patterns['code_block'].match(line):
+                    if not in_code_block:
+                        in_code_block = True
+                        code_block_lang = code_match.group(1)
+                        code_block_content = []
+                        code_block_start = line_start
+                    else:
+                        node = self._create_node(
+                            "code_block",
+                            code_block_start,
+                            line_end,
+                            language=code_block_lang,
+                            content="\n".join(code_block_content)
+                        )
+                        if current_section:
+                            current_section["children"].append(node)
+                        else:
+                            ast["children"].append(node)
+                        in_code_block = False
+                    continue
+
+                if in_code_block:
+                    code_block_content.append(line)
+                    continue
+
+                # Process lists
+                if list_match := self.patterns['list_item'].match(line):
+                    indent, content = list_match.groups()
+                    node = self._create_node(
+                        "list_item",
+                        line_start,
+                        line_end,
+                        content=content,
+                        indent=len(indent)
+                    )
+                    if current_section:
+                        current_section["children"].append(node)
+                    else:
+                        ast["children"].append(node)
+
+            return ast
             
-        return {
-            "type": "list",
-            "items": items,
-            "indent_level": indent_level,
-            "start_line": start_idx,
-            "end_line": current_idx - 1
-        }
-    
-    # Process frontmatter if present
-    i = 0
-    if i < total_lines and patterns['frontmatter_delimiter'].match(lines[i]):
-        frontmatter = []
-        i += 1
-        while i < total_lines and not patterns['frontmatter_delimiter'].match(lines[i]):
-            frontmatter.append(lines[i])
-            i += 1
-        if i < total_lines:  # Skip closing delimiter
-            i += 1
-        features["documentation"]["metadata"]["frontmatter"] = "\n".join(frontmatter)
-    
-    # Main parsing loop
-    while i < total_lines:
-        line = lines[i]
-        
-        # Process headers
-        header_match = patterns['header'].match(line)
-        if header_match:
-            level = len(header_match.group(1))
-            content = header_match.group(2)
-            header_node = {
-                "type": "header",
-                "level": level,
-                "content": content,
-                "line": i + 1,
+        except Exception as e:
+            log(f"Error parsing Markdown content: {e}", level="error")
+            return {
+                "type": "document",
+                "error": str(e),
                 "children": []
-            }
-            features["syntax"]["headers"].append(header_node)
-            current_section = header_node
-            sections.append(current_section)
-            i += 1
-            continue
-        
-        # Process code blocks
-        code_match = patterns['code_block'].match(line)
-        if code_match:
-            language = code_match.group(1)
-            code_block = process_code_block(i, language)
-            features["syntax"]["code_blocks"].append(code_block)
-            if current_section:
-                current_section["children"].append(code_block)
-            i = code_block["end_line"] + 1
-            continue
-        
-        # Process lists
-        list_match = patterns['list_item'].match(line)
-        if list_match:
-            indent_level = len(list_match.group(1))
-            list_struct = process_list(i, indent_level)
-            features["structure"]["lists"].append(list_struct)
-            if current_section:
-                current_section["children"].append(list_struct)
-            i = list_struct["end_line"] + 1
-            continue
-        
-        # Process blockquotes
-        blockquote_match = patterns['blockquote'].match(line)
-        if blockquote_match:
-            features["documentation"]["blockquotes"].append({
-                "content": blockquote_match.group(1),
-                "line": i + 1
-            })
-            i += 1
-            continue
-        
-        # Process inline elements
-        link_matches = patterns['link'].finditer(line)
-        for match in link_matches:
-            features["semantics"]["links"].append({
-                "text": match.group(1),
-                "url": match.group(2),
-                "line": i + 1
-            })
-        
-        emphasis_matches = patterns['emphasis'].finditer(line)
-        for match in emphasis_matches:
-            features["syntax"]["emphasis"].append({
-                "content": match.group(1),
-                "line": i + 1
-            })
-        
-        i += 1
-    
-    # Build the AST
-    ast = {
-        "type": "document",
-        "children": sections,
-        "start_point": [0, 0],
-        "end_point": [total_lines - 1, len(lines[-1]) if lines else 0],
-        "start_byte": 0,
-        "end_byte": len(source_code)
-    }
-    
-    return build_parser_output(
-        source_code=source_code,
-        language="markdown",
-        ast=ast,
-        features=features,
-        total_lines=total_lines,
-        documentation=source_code,  # Original content preserved as documentation
-        complexity=len(sections)  # Complexity based on document structure
-    ) 
+            } 
