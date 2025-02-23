@@ -1,4 +1,21 @@
-"""Unified search functionality using embeddings, vector search, and graph analysis."""
+"""[5.0] Unified search functionality using embeddings and vector search.
+
+Flow:
+1. Search Capabilities:
+   - Code search with vector similarity
+   - Doc search with vector similarity
+   - Graph-enhanced results
+   
+2. Integration Points:
+   - Uses embeddings stored by FileProcessor
+   - Uses graph analysis for enhanced results
+   - Provides backward compatibility APIs
+
+3. Search Pipeline:
+   - Query embedding generation
+   - Vector similarity search
+   - Result enhancement and ranking
+"""
 
 from db.psql import query
 from typing import List, Dict, Optional
@@ -7,6 +24,12 @@ from utils.logger import log
 from utils.cache import cache
 from embedding.embedding_models import code_embedder, doc_embedder
 from ai_tools.graph_capabilities import graph_analysis
+from parsers.models import (
+    FileType,
+    FileClassification,
+    ParserResult,
+    ExtractedFeatures
+)
 from utils.error_handling import (
     handle_async_errors,
     handle_errors,
@@ -16,16 +39,11 @@ from utils.error_handling import (
 )
 
 class SearchEngine:
-    """Handles all search operations combining vector and graph-based search."""
+    """[5.1] Handles all search operations combining vector and graph-based search."""
     
     def __init__(self):
-        self.code_embedder = code_embedder
-        self.doc_embedder = doc_embedder
-    
-    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def semantic_search(self, query: str, repo_id: Optional[int] = None) -> list:
-        """Legacy semantic search method for backward compatibility."""
-        return await self.search_code(query, repo_id)
+        self.code_embedder = code_embedder  # Same embedder as FileProcessor
+        self.doc_embedder = doc_embedder    # Same embedder as FileProcessor
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def search_code(
@@ -35,10 +53,19 @@ class SearchEngine:
         limit: int = 5,
         include_similar: bool = True
     ) -> List[Dict]:
-        """Search code using vector similarity and graph analysis."""
+        """[5.2] Search code using vector similarity and graph analysis.
+        
+        Flow:
+        1. Generate query embedding
+        2. Perform vector similarity search
+        3. Enhance results with graph analysis
+        4. Return ranked results
+        """
+        # Generate query embedding
         query_embedding = await self.code_embedder.embed_async(query_text)
         vector_literal = self._to_pgvector(query_embedding.tolist())
         
+        # Perform vector search
         base_sql = """
         SELECT cs.id, cs.repo_id, cs.file_path, cs.ast,
                cs.embedding <=> $1::vector AS similarity
@@ -46,13 +73,8 @@ class SearchEngine:
         """
         params = [vector_literal]
         if repo_id is not None:
-            base_sql += """
-            JOIN repositories r ON cs.repo_id = r.id
-            WHERE (r.id = $2 OR r.active_repo_id = $2)
-            """
-            params.extend([repo_id])
-        else:
-            base_sql += " WHERE 1=1 "
+            base_sql += " WHERE cs.repo_id = $2"
+            params.append(repo_id)
         base_sql += " ORDER BY similarity ASC LIMIT $3;"
         params.append(limit)
         
@@ -61,7 +83,7 @@ class SearchEngine:
         if not include_similar or not vector_results:
             return vector_results
             
-        # Enhance results with graph-based similar components
+        # Enhance results with graph analysis
         enhanced_results = []
         for result in vector_results:
             similar_components = await graph_analysis.find_similar_components(
@@ -85,7 +107,7 @@ class SearchEngine:
         repo_id: Optional[int] = None,
         limit: int = 5
     ) -> List[Dict]:
-        """Search documentation using vector similarity."""
+        """[5.3] Search documentation using vector similarity."""
         query_embedding = await self.doc_embedder.embed_async(query_text)
         vector_literal = self._to_pgvector(query_embedding.tolist())
         
@@ -96,10 +118,7 @@ class SearchEngine:
         """
         params = [vector_literal]
         if repo_id is not None:
-            base_sql += """
-            JOIN repo_doc_relations rdr ON rd.id = rdr.doc_id
-            WHERE rdr.repo_id = $2
-            """
+            base_sql += " WHERE rd.repo_id = $2"
             params.append(repo_id)
         base_sql += " ORDER BY similarity ASC LIMIT $3;"
         params.append(limit)
@@ -148,31 +167,18 @@ class SearchEngine:
         return await query(sql, (new_content, doc_id))
     
     def _to_pgvector(self, vector_list: list) -> str:
-        """Convert vector to PGVector format."""
+        """[5.4] Convert vector to PGVector format."""
         return "[" + ", ".join(map(str, vector_list)) + "]"
 
 # Global instance
 search_engine = SearchEngine()
 
-# Convenience functions
-async def semantic_search(query: str, repo_id: Optional[int] = None) -> List[Dict]:
-    """Legacy semantic search function for backward compatibility."""
-    return await search_engine.semantic_search(query, repo_id)
-
+# Convenience functions for backward compatibility
 async def search_code(*args, **kwargs) -> List[Dict]:
     return await search_engine.search_code(*args, **kwargs)
 
 async def search_docs(*args, **kwargs) -> List[Dict]:
     return await search_engine.search_docs(*args, **kwargs)
-
-async def get_repo_docs(*args, **kwargs) -> List[Dict]:
-    return await search_engine.get_repo_docs(*args, **kwargs)
-
-async def create_doc_cluster(*args, **kwargs) -> Dict:
-    return await search_engine.create_doc_cluster(*args, **kwargs)
-
-async def update_doc_version(*args, **kwargs) -> Dict:
-    return await search_engine.update_doc_version(*args, **kwargs)
 
 @handle_async_errors(error_types=(ProcessingError, DatabaseError))
 async def search_docs_common(query_embedding: torch.Tensor, repo_id: Optional[int] = None, limit: int = 5) -> List[Dict]:

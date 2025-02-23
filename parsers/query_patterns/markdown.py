@@ -2,7 +2,7 @@
 Query patterns for Markdown files with enhanced documentation support.
 """
 
-from parsers.file_classification import FileType
+from parsers.models import FileType
 from parsers.query_patterns import PATTERN_CATEGORIES
 from parsers.pattern_processor import QueryPattern, PatternCategory
 from typing import Dict, Any, Match

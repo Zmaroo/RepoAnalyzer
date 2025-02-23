@@ -7,6 +7,7 @@ from typing import Optional
 from utils.logger import log
 from db.upsert_ops import upsert_repository
 from indexer.unified_indexer import process_repository_indexing
+from parsers.models import FileType, FileClassification  # Add imports from models
 import asyncio
 from contextlib import asynccontextmanager
 from config import postgres_config, neo4j_config
@@ -75,8 +76,7 @@ async def clone_and_index_repo(
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
                 # Clone repository
-                if not await clone_repository(repo_url, temp_dir):
-                    return
+                await clone_repository(repo_url, temp_dir)
                 
                 # Create repository record
                 repo_id = await get_or_create_repo(

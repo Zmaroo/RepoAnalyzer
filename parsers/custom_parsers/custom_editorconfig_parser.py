@@ -7,47 +7,44 @@ key-value property lines beneath each section.
 """
 
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
+from parsers.models import EditorconfigNode
 from utils.logger import log
 import re
 
-@dataclass
-class EditorconfigNode:
-    """Base class for EditorConfig AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class EditorconfigParser(CustomParser):
+class EditorconfigParser(BaseParser):
     """Parser for EditorConfig files."""
     
-    def __init__(self, language_id: str = "editorconfig", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "editorconfig", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.CONFIG)
         self.patterns = {
             name: re.compile(pattern.pattern)
             for category in EDITORCONFIG_PATTERNS.values()
             for name, pattern in category.items()
         }
     
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
+
     def _create_node(
         self,
         node_type: str,
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> EditorconfigNode:
+        """Create a standardized EditorConfig AST node."""
+        return EditorconfigNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse EditorConfig content into AST structure."""
@@ -56,8 +53,7 @@ class EditorconfigParser(CustomParser):
             ast = self._create_node(
                 "editorconfig",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
             
             current_section = None
@@ -79,9 +75,9 @@ class EditorconfigParser(CustomParser):
                         content=comment_match.group(1).strip()
                     )
                     if current_section:
-                        current_section["children"].append(node)
+                        current_section.children.append(node)
                     else:
-                        ast["children"].append(node)
+                        ast.children.append(node)
                     continue
                 
                 # Process sections
@@ -93,7 +89,7 @@ class EditorconfigParser(CustomParser):
                         glob=section_match.group(1).strip(),
                         properties=[]
                     )
-                    ast["children"].append(current_section)
+                    ast.children.append(current_section)
                     continue
                 
                 # Process properties
@@ -105,8 +101,8 @@ class EditorconfigParser(CustomParser):
                         key=property_match.group(1).strip(),
                         value=property_match.group(2).strip()
                     )
-                    current_section["properties"].append(node)
-                    current_section["children"].append(node)
+                    current_section.properties.append(node)
+                    current_section.children.append(node)
                     continue
                 
                 # Process semantic patterns
@@ -127,17 +123,19 @@ class EditorconfigParser(CustomParser):
                             **node_data
                         )
                         if current_section:
-                            current_section["children"].append(node)
+                            current_section.children.append(node)
                         else:
-                            ast["children"].append(node)
+                            ast.children.append(node)
                         break
             
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing EditorConfig content: {e}", level="error")
-            return {
-                "type": "editorconfig",
-                "error": str(e),
-                "children": []
-            }
+            return EditorconfigNode(
+                type="editorconfig",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__

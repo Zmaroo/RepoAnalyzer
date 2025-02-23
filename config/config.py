@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 from utils.logger import log
 from utils.error_handling import handle_errors, ProcessingError, ErrorBoundary
+from parsers.models import FileType, FileClassification
 
 # Load environment variables from a .env file
 load_dotenv()

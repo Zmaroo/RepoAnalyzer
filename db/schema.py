@@ -1,8 +1,52 @@
 from db.psql import query
 from utils.logger import log
+from utils.error_handling import (
+    handle_async_errors,
+    AsyncErrorBoundary,
+    DatabaseError,
+    PostgresError
+)
+from parsers.models import (  # Add imports
+    FileType,
+    FileClassification,
+    ParserResult,
+    ExtractedFeatures
+)
+import asyncio
+from db.transaction import transaction_scope
+from indexer.async_utils import handle_async_errors, AsyncErrorBoundary
+
+"""[6.6] Database schema management.
+
+Flow:
+1. Schema Operations:
+   - Table creation/deletion
+   - Index management
+   - Vector storage setup
+
+2. Integration Points:
+   - FileProcessor [2.0]: Code and doc storage schema
+   - SearchEngine [5.0]: Vector similarity indexes
+   - UpsertOps [6.5]: Storage operations
+
+3. Tables:
+   - repositories: Project metadata
+   - code_snippets: Code with embeddings
+   - repo_docs: Documentation with embeddings
+   - doc_versions: Version tracking
+   - doc_clusters: Documentation grouping
+"""
+
+# Global schema lock
+_schema_lock = asyncio.Lock()
+
+class SchemaError(DatabaseError):
+    """Schema management specific errors."""
+    pass
 
 async def drop_all_tables():
-    # Drop dependent tables before primary ones.
+    """[6.6.4] Clean database state."""
+    # Drop in correct order for foreign key constraints
     await query("DROP TABLE IF EXISTS repo_doc_relations CASCADE;")
     await query("DROP TABLE IF EXISTS doc_versions CASCADE;")
     await query("DROP TABLE IF EXISTS doc_clusters CASCADE;")
@@ -29,6 +73,7 @@ async def create_repositories_table():
     await query(sql)
 
 async def create_code_snippets_table():
+    """[6.6.1] Create code storage with vector similarity support."""
     sql = """
     CREATE TABLE IF NOT EXISTS code_snippets (
         id SERIAL PRIMARY KEY,
@@ -37,16 +82,16 @@ async def create_code_snippets_table():
         ast TEXT,
         embedding VECTOR(768),  # GraphCodeBERT dimension
         enriched_features JSONB,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,  # Add timestamp
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(repo_id, file_path)
     );
-    CREATE INDEX IF NOT EXISTS idx_code_snippets_embedding ON code_snippets USING ivfflat (embedding vector_cosine_ops);
+    CREATE INDEX IF NOT EXISTS idx_code_snippets_embedding 
+    ON code_snippets USING ivfflat (embedding vector_cosine_ops);
     """
     await query(sql)
 
 async def create_repo_docs_table():
-    """Create the main documentation table along with its indexes."""
-    # Create the table first.
+    """[6.6.2] Create documentation storage with versioning."""
     sql_table = """
     CREATE TABLE IF NOT EXISTS repo_docs (
         id SERIAL PRIMARY KEY,
@@ -57,20 +102,20 @@ async def create_repo_docs_table():
         cluster_id INTEGER,
         related_code_path TEXT,  -- For linking to specific code files
         embedding VECTOR(768) NULL,
-        metadata JSONB,          -- For additional metadata
-        quality_metrics JSONB,   -- Store quality analysis
+        metadata JSONB,
+        quality_metrics JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """
     await query(sql_table)
 
-    # Create indexes separately.
-    sql_index1 = "CREATE INDEX IF NOT EXISTS idx_repo_docs_cluster ON repo_docs(cluster_id);"
-    await query(sql_index1)
-
-    sql_index2 = "CREATE INDEX IF NOT EXISTS idx_repo_docs_embedding ON repo_docs USING ivfflat (embedding vector_cosine_ops);"
-    await query(sql_index2)
+    # Vector similarity index
+    sql_index = """
+    CREATE INDEX IF NOT EXISTS idx_repo_docs_embedding 
+    ON repo_docs USING ivfflat (embedding vector_cosine_ops);
+    """
+    await query(sql_index)
 
 async def create_repo_doc_relations_table():
     """Create junction table for repo-doc relationships"""
@@ -113,13 +158,35 @@ async def create_doc_clusters_table():
     """
     await query(sql)
 
+@handle_async_errors(error_types=(SchemaError, PostgresError))
 async def create_all_tables():
-    # Ensure necessary extensions exist.
-    await query("CREATE EXTENSION IF NOT EXISTS vector;")
-    await create_repositories_table()
-    await create_code_snippets_table()
-    await create_repo_docs_table()
-    await create_repo_doc_relations_table()
-    await create_doc_versions_table()
-    await create_doc_clusters_table()
-    log("✅ Database tables are set up!")
+    """[6.6.3] Initialize complete database schema."""
+    async with _schema_lock:
+        try:
+            async with transaction_scope() as txn:
+                async with AsyncErrorBoundary("schema creation", error_types=(SchemaError, PostgresError)):
+                    # Vector extension
+                    await query("CREATE EXTENSION IF NOT EXISTS vector;")
+                    
+                    # Core tables in dependency order
+                    tables = [
+                        create_repositories_table,
+                        create_code_snippets_table,
+                        create_repo_docs_table,
+                        create_repo_doc_relations_table,
+                        create_doc_versions_table,
+                        create_doc_clusters_table
+                    ]
+                    
+                    for create_table in tables:
+                        try:
+                            await create_table()
+                            log(f"Created table via {create_table.__name__}", level="debug")
+                        except Exception as e:
+                            raise SchemaError(f"Failed to create table {create_table.__name__}: {str(e)}")
+                    
+                    log("✅ Database tables are set up!", context={"tables": len(tables)})
+                    
+        except Exception as e:
+            log("Schema creation failed", level="error", context={"error": str(e)})
+            raise SchemaError(f"Complete schema creation failed: {str(e)}")

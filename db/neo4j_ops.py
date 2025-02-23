@@ -1,4 +1,5 @@
 from neo4j import GraphDatabase
+from db.transaction import transaction_scope
 from config import neo4j_config
 from utils.logger import log
 from db.graph_sync import graph_sync
@@ -7,7 +8,16 @@ from utils.error_handling import (
     handle_async_errors,
     DatabaseError,
     ErrorBoundary,
-    AsyncErrorBoundary
+    AsyncErrorBoundary,
+    Neo4jError,
+    TransactionError
+)
+from parsers.models import (
+    FileType,
+    FileClassification,
+    ParserResult,
+    ExtractedFeatures,
+    FeatureCategory
 )
 import logging
 
@@ -30,6 +40,8 @@ def run_query(cypher: str, params: dict = None) -> list:
             return [record.data() for record in result]
 
 class Neo4jTools:
+    """[6.2.1] Neo4j database operations coordinator."""
+    
     def __init__(self, config=neo4j_config):
         self.config = config
         with ErrorBoundary("Neo4j tools initialization", error_types=DatabaseError):
@@ -39,21 +51,30 @@ class Neo4jTools:
             )
         logging.info("Neo4j driver initialized with URI: %s and Database: %s", config.uri, config.database)
 
-    @handle_async_errors(error_types=DatabaseError)
+    @handle_async_errors(error_types=(Neo4jError, TransactionError))
     async def store_code_node(self, code_data: dict) -> None:
-        """Store code node with graph synchronization."""
-        async with AsyncErrorBoundary("Neo4j node storage", error_types=DatabaseError):
-            query = """
-            MERGE (n:Code {repo_id: $repo_id, file_path: $file_path})
-            SET n += $properties
-            """
-            run_query(query, {
-                "repo_id": code_data["repo_id"],
-                "file_path": code_data["file_path"],
-                "properties": code_data
-            })
-            
-            await graph_sync.ensure_projection(code_data["repo_id"])
+        """[6.2.2] Store code node with transaction coordination."""
+        async with AsyncErrorBoundary("Neo4j node storage", error_types=(Neo4jError, TransactionError)):
+            async with transaction_scope() as txn:
+                try:
+                    query = """
+                    MERGE (n:Code {repo_id: $repo_id, file_path: $file_path})
+                    SET n += $properties
+                    """
+                    await txn.neo4j_transaction.run(query, {
+                        "repo_id": code_data["repo_id"],
+                        "file_path": code_data["file_path"],
+                        "properties": code_data
+                    })
+                    
+                    log("Stored code node", level="debug", context={
+                        "operation": "store_code_node",
+                        "repo_id": code_data["repo_id"],
+                        "file_path": code_data["file_path"]
+                    })
+                    
+                except Exception as e:
+                    raise Neo4jError(f"Failed to store code node: {str(e)}")
     
     @handle_async_errors(error_types=DatabaseError)
     async def update_code_relationships(self, repo_id: int, relationships: list) -> None:
@@ -107,7 +128,37 @@ class Neo4jTools:
         """
         tx.run(query, properties=properties)
 
+    @handle_async_errors(error_types=DatabaseError)
+    async def store_node_with_features(
+        self,
+        repo_id: int,
+        file_path: str,
+        ast: dict,
+        features: ExtractedFeatures
+    ) -> None:
+        """[6.2.3] Store node with all its features and relationships."""
+        # Create base node
+        query = """
+        MERGE (n:Content {repo_id: $repo_id, file_path: $file_path})
+        SET n += $properties
+        """
+        
+        # Properties from all feature categories
+        properties = {
+            "repo_id": repo_id,
+            "file_path": file_path,
+            "ast": ast,
+            "syntax_features": features.get_category(FeatureCategory.SYNTAX),
+            "semantic_features": features.get_category(FeatureCategory.SEMANTICS),
+            "doc_features": features.get_category(FeatureCategory.DOCUMENTATION),
+            "structural_features": features.get_category(FeatureCategory.STRUCTURE)
+        }
+        
+        await self.run_query(query, properties)
+        await self.create_feature_relationships(repo_id, file_path, features)
+
 def create_schema_indexes_and_constraints():
+    """[6.2.4] Initialize Neo4j schema and constraints."""
     queries = [
         """CREATE CONSTRAINT code_unique_path IF NOT EXISTS 
            FOR (n:Code) REQUIRE (n.file_path, n.repo_id) IS UNIQUE""",
@@ -158,7 +209,7 @@ def setup_graph_projections():
 
 @handle_async_errors(error_types=DatabaseError, default_return=False)
 async def auto_reinvoke_projection_once(repo_id: int) -> bool:
-    """Checks for Code nodes and invokes graph projection once if available."""
+    """[6.2.5] Checks for Code nodes and invokes graph projection once if available."""
     async with AsyncErrorBoundary("graph projection", error_types=DatabaseError):
         result = run_query(
             "MATCH (n:Code) WHERE n.repo_id = $repo_id RETURN count(n) AS count",

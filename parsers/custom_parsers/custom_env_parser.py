@@ -6,48 +6,45 @@ Comments (lines starting with #) are skipped (or can be used as documentation).
 """
 
 from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.pattern_processor import PatternCategory 
 from parsers.query_patterns.env import ENV_PATTERNS
+from parsers.models import EnvNode
 from utils.logger import log
 import re
 
-@dataclass
-class EnvNode:
-    """Base class for Env AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class EnvParser(CustomParser):
+class EnvParser(BaseParser):
     """Parser for .env files."""
     
-    def __init__(self, language_id: str = "env", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "env", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.CONFIG)
         self.patterns = {
             name: re.compile(pattern.pattern)
             for category in ENV_PATTERNS.values()
             for name, pattern in category.items()
         }
     
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
+
     def _create_node(
         self,
         node_type: str,
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> EnvNode:
+        """Create a standardized ENV AST node."""
+        return EnvNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
     def _process_value(self, value: str) -> Tuple[str, str]:
         """Process a value that might be quoted or multiline."""
@@ -66,8 +63,7 @@ class EnvParser(CustomParser):
             ast = self._create_node(
                 "env_file",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
             
             for i, line in enumerate(lines):
@@ -86,7 +82,7 @@ class EnvParser(CustomParser):
                         line_end,
                         content=comment_match.group(1).strip()
                     )
-                    ast["children"].append(node)
+                    ast.children.append(node)
                     continue
                 
                 # Process exports
@@ -102,7 +98,7 @@ class EnvParser(CustomParser):
                         value=value,
                         value_type=value_type
                     )
-                    ast["children"].append(node)
+                    ast.children.append(node)
                     continue
                 
                 # Process variables
@@ -118,20 +114,22 @@ class EnvParser(CustomParser):
                         value=value,
                         value_type=value_type
                     )
-                    ast["children"].append(node)
+                    ast.children.append(node)
                     
                     # Process semantic patterns
                     for pattern_name in ['url', 'path']:
                         if pattern_match := self.patterns[pattern_name].search(raw_value):
                             semantic_data = ENV_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(pattern_match)
-                            node["semantics"] = semantic_data
+                            node.metadata["semantics"] = semantic_data
             
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing env content: {e}", level="error")
-            return {
-                "type": "env_file",
-                "error": str(e),
-                "children": []
-            }
+            return EnvNode(
+                type="env_file",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__

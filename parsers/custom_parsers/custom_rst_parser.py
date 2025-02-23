@@ -1,30 +1,27 @@
 """Custom parser for reStructuredText with enhanced documentation features."""
 
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.query_patterns.rst import RST_PATTERNS, PatternCategory
+from parsers.models import RstNode
 from utils.logger import log
 
-@dataclass
-class RstNode:
-    """Base class for RST AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class RstParser(CustomParser):
+class RstParser(BaseParser):
     """Parser for reStructuredText files."""
     
-    def __init__(self, language_id: str = "rst", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "rst", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.DOCUMENTATION)
         self.patterns = {
             name: pattern.pattern
             for category in RST_PATTERNS.values()
             for name, pattern in category.items()
         }
+
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
 
     def _create_node(
         self,
@@ -32,15 +29,15 @@ class RstParser(CustomParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> RstNode:
+        """Create a standardized RST AST node."""
+        return RstNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
     def _get_section_level(self, char: str) -> int:
         """Determine section level based on underline character."""
@@ -57,8 +54,7 @@ class RstParser(CustomParser):
             ast = self._create_node(
                 "document",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
 
             current_section = None
@@ -82,13 +78,13 @@ class RstParser(CustomParser):
                         level=section_level
                     )
                     
-                    while section_stack and section_stack[-1]["level"] >= section_level:
+                    while section_stack and section_stack[-1].metadata.get('level', 0) >= section_level:
                         section_stack.pop()
                     
                     if section_stack:
-                        section_stack[-1]["children"].append(node)
+                        section_stack[-1].children.append(node)
                     else:
-                        ast["children"].append(node)
+                        ast.children.append(node)
                     
                     section_stack.append(node)
                     current_content = []
@@ -107,9 +103,9 @@ class RstParser(CustomParser):
                             )
                             
                             if section_stack:
-                                section_stack[-1]["children"].append(node)
+                                section_stack[-1].children.append(node)
                             else:
-                                ast["children"].append(node)
+                                ast.children.append(node)
                                 
                             matched = True
                             break
@@ -119,12 +115,14 @@ class RstParser(CustomParser):
                 if not matched and line.strip():
                     current_content.append(line)
 
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing RST content: {e}", level="error")
-            return {
-                "type": "document",
-                "error": str(e),
-                "children": []
-            } 
+            return RstNode(
+                type="document",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__ 

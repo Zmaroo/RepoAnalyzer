@@ -27,6 +27,11 @@ import os
 import signal
 import sys
 from utils.logger import log  # Use our central logger
+from parsers.models import (  # Updated imports
+    FileType,
+    FileClassification,
+    ParserResult
+)
 
 # Use the new consolidated module for schema initialization.
 from db.neo4j_ops import (
@@ -68,65 +73,63 @@ async def process_share_docs(share_docs_arg: str):
 # ------------------------------------------------------------------
 
 async def main_async(args):
+    """[0.1] Main async coordinator for all operations."""
     try:
         if args.clean:
             log("Cleaning databases and reinitializing schema...", level="info")
             await drop_all_tables()
             await create_all_tables()
             create_schema_indexes_and_constraints()
-            log("✅ Database schemas initialized.", level="info")
             
         repo_path = args.index if args.index else os.getcwd()
         repo_name = os.path.basename(os.path.abspath(repo_path))
         
-        # Use upsert_repository for consistent repository handling
+        # [0.2] Repository Setup
         repo_id = await upsert_repository({
             'repo_name': repo_name,
             'repo_type': 'active',
             'source_url': args.clone_ref
         })
-        log(f"Active project repo: '{repo_name}' (id={repo_id}) at {repo_path}", level="info")
-
+        
+        # [0.3] Processing Tasks
         tasks = []
+        # Core indexing using UnifiedIndexer [1.0]
         tasks.append(process_repository_indexing(repo_path, repo_id))
+        
+        # Documentation operations
         if args.share_docs:
             tasks.append(process_share_docs(args.share_docs))
         if args.search_docs:
-            results = await search_docs(args.search_docs, repo_id=repo_id)  # Updated function call
+            # Uses SearchEngine [5.0]
+            results = await search_docs(args.search_docs, repo_id=repo_id)
             log(f"Doc search results: {results}", level="info")
 
-        # Run indexing tasks concurrently.
+        # Run all tasks concurrently
         await asyncio.gather(*tasks)
-        log("Active repository indexing completed.", level="info")
         
+        # [0.4] Watch Mode
         if args.watch:
-            log("Watch mode enabled: Starting file watcher and continuous graph projection updates.", level="info")
+            log("Watch mode enabled: Starting file watcher...", level="info")
             from watcher.file_watcher import watch_directory
             
             async def on_file_change(file_path: str):
-                log(f"File changed (detected by watcher): {file_path}", level="info")
+                """Handle file changes using same processing pipeline."""
+                log(f"File changed: {file_path}", level="info")
                 await process_repository_indexing(file_path, repo_id, single_file=True)
-                # Update graph analysis after file changes
                 await graph_analysis.analyze_code_structure(repo_id)
             
             watcher_task = asyncio.create_task(watch_directory(repo_path, on_file_change))
             await watcher_task
         else:
+            # One-time graph analysis
             log("Invoking graph projection once after indexing.", level="info")
             auto_reinvoke_projection_once()
-            await graph_analysis.analyze_code_structure(repo_id)  # Added graph analysis
-            log("Graph projection and analysis complete. Exiting.", level="info")
+            await graph_analysis.analyze_code_structure(repo_id)
 
     except asyncio.CancelledError:
         log("Indexing was cancelled.", level="info")
         raise
     finally:
-        # Query Postgres to see if the repository was stored.
-        try:
-            stored_repos = await query("SELECT * FROM repositories;")
-            log(f"Stored repositories in Postgres: {stored_repos}", level="info")
-        except Exception as e:
-            log(f"Error querying stored repositories: {e}", level="error")
         await close_db_pool()
         log("Cleanup complete.", level="info")
 
@@ -136,11 +139,12 @@ def shutdown_handler(loop):
         task.cancel()
 
 def main():
+    """[0.5] CLI entry point with argument parsing."""
     parser = argparse.ArgumentParser(description="Repository indexing and analysis tool.")
     parser.add_argument("--clean", action="store_true",
                         help="Clean and reinitialize databases before starting")
     parser.add_argument("--index", nargs="?", type=str,
-                        help="Local repository path to index. If omitted, the active project (current directory) is used.",
+                        help="Local repository path to index. If omitted, uses current directory.",
                         default=os.getcwd(), const=os.getcwd())
     parser.add_argument("--clone-ref", type=str,
                         help="Clone and index a reference repository from GitHub (provide Git URL)")
@@ -149,7 +153,7 @@ def main():
     parser.add_argument("--search-docs", type=str,
                         help="Search for documentation by term")
     parser.add_argument("--watch", action="store_true",
-                        help="Keep the process running: watch for file changes and continuously update graph projection")
+                        help="Watch for file changes and continuously update graph projection")
     
     args = parser.parse_args()
 

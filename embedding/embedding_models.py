@@ -6,6 +6,7 @@ import numpy as np
 from typing import Union, Optional
 from utils.logger import log
 from utils.cache import create_cache
+from parsers.models import FileType, FileClassification  # Add imports from models
 from utils.error_handling import (
     handle_errors,
     handle_async_errors,

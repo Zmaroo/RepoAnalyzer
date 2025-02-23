@@ -9,20 +9,15 @@ from utils.error_handling import (
     handle_async_errors,
     DatabaseError,
     AsyncErrorBoundary,
-    ErrorBoundary
+    ErrorBoundary,
+    PostgresError
+)
+from parsers.models import (
+    FileType,
+    FileClassification,
+    ParserResult
 )
 import os
-
-# Create a thread-safe connection pool using the centralized configuration.
-DB_POOL = pool.ThreadedConnectionPool(
-    minconn=1,
-    maxconn=10,
-    host=postgres_config.host,
-    user=postgres_config.user,
-    password=postgres_config.password,
-    database=postgres_config.database,
-    port=postgres_config.port
-)
 
 # Define your PostgreSQL configuration using environment variables or hardcoded values.
 DATABASE_CONFIG = {
@@ -35,22 +30,39 @@ DATABASE_CONFIG = {
 
 _pool = None
 
-@handle_async_errors(error_types=DatabaseError)
+class ConnectionError(DatabaseError):
+    """Database connection specific errors."""
+    pass
+
+@handle_async_errors(error_types=(ConnectionError, PostgresError))
 async def init_db_pool() -> None:
-    """Initialize the database connection pool."""
+    """[6.1.1] Initialize the database connection pool."""
     global _pool
     try:
-        _pool = await asyncpg.create_pool(
-            user=postgres_config.user,
-            password=postgres_config.password,
-            database=postgres_config.database,
-            host=postgres_config.host,
-            port=postgres_config.port,
-            min_size=5,
-            max_size=20
-        )
+        async with AsyncErrorBoundary("db pool initialization", error_types=ConnectionError):
+            _pool = await asyncpg.create_pool(
+                user=postgres_config.user,
+                password=postgres_config.password,
+                database=postgres_config.database,
+                host=postgres_config.host,
+                port=postgres_config.port,
+                min_size=5,
+                max_size=20
+            )
+            
+            # Test connection
+            async with _pool.acquire() as conn:
+                await conn.execute('SELECT 1')
+                
+            log("Database pool initialized", level="info", context={
+                "host": postgres_config.host,
+                "database": postgres_config.database,
+                "pool_size": _pool.get_size()
+            })
+            
     except Exception as e:
-        raise DatabaseError("Failed to initialize database pool", e)
+        log("Failed to initialize database pool", level="error", context={"error": str(e)})
+        raise ConnectionError(f"Failed to initialize database pool: {str(e)}")
 
 @handle_async_errors(error_types=DatabaseError)
 async def close_db_pool() -> None:
@@ -111,18 +123,4 @@ async def get_connection():
 async def release_connection(conn):
     """Release a database connection back to the pool."""
     await _pool.release(conn)
-
-def query_sync(sql, params=None):
-    conn = get_connection()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql, params)
-            result = cur.fetchall() if cur.description else None
-            conn.commit()
-            return result
-    except Exception as e:
-        conn.rollback()
-        raise e
-    finally:
-        release_connection(conn)
 

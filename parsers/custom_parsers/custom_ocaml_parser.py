@@ -22,11 +22,11 @@ Standalone parsing functions have been removed in favor of the classes below.
 
 import re
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.query_patterns.ocaml import OCAML_PATTERNS
 from parsers.query_patterns.ocaml_interface import OCAML_INTERFACE_PATTERNS
+from parsers.models import OcamlNode
 from utils.logger import log
 
 def compute_offset(lines, line_no, col):
@@ -52,25 +52,22 @@ MLI_PATTERNS = {
     "module_declaration": re.compile(r'^\s*module\s+([A-Z][a-zA-Z0-9_\'-]*)')
 }
 
-@dataclass
-class OcamlNode:
-    """Base class for OCaml AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class OcamlParser(CustomParser):
+class OcamlParser(BaseParser):
     """Parser for OCaml files."""
     
-    def __init__(self, language_id: str = "ocaml", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "ocaml", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.CODE)
         self.is_interface = language_id == "ocaml_interface"
         self.patterns = {
-            name: re.compile(pattern_info["pattern"])
+            name: re.compile(pattern.pattern)
             for category in (OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS).values()
-            for name, pattern_info in category.items()
+            for name, pattern in category.items()
         }
+    
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
 
     def _create_node(
         self,
@@ -78,15 +75,15 @@ class OcamlParser(CustomParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> OcamlNode:
+        """Create a standardized OCaml AST node."""
+        return OcamlNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse OCaml content into AST structure."""
@@ -95,8 +92,7 @@ class OcamlParser(CustomParser):
             ast = self._create_node(
                 "ocaml_module" if not self.is_interface else "ocaml_interface",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
 
             patterns = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
@@ -132,79 +128,23 @@ class OcamlParser(CustomParser):
                                 **pattern_info["extract"](match)
                             )
                             if current_doc:
-                                node["documentation"] = current_doc
+                                node.metadata["documentation"] = current_doc
                                 current_doc = []
-                            ast["children"].append(node)
+                            ast.children.append(node)
                             break
 
             # Add any remaining documentation
             if current_doc:
-                ast["trailing_documentation"] = current_doc
+                ast.metadata["trailing_documentation"] = current_doc
 
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing OCaml content: {e}", level="error")
-            return {
-                "type": "ocaml_module" if not self.is_interface else "ocaml_interface",
-                "error": str(e),
-                "children": []
-            }
-
-class OCamlmlParser(CustomParser):
-    def parse(self, source_code: str) -> dict:
-        """
-        Parse OCaml implementation files (.ml) and generate a structured AST.
-        """
-        lines = source_code.splitlines()
-        total_lines = len(lines)
-        children = []
-        # Insert OCaml .ml parsing logic here.
-        
-        ast = {"type": "ocaml_module", "children": children}
-        features = {
-            "documentation": {},
-            "syntax": {},
-            "structure": {}
-        }
-        documentation = "\n".join(
-            node["content"] for node in children if node.get("type") == "documentation"
-        )
-        complexity = 1  # Placeholder; compute based on your parsing details.
-        
-        return {
-            "type": "ocaml_module",
-            "ast": ast,
-            "features": features,
-            "total_lines": total_lines,
-            "documentation": documentation,
-            "complexity": complexity
-        }
-
-class OCamlmliParser(CustomParser):
-    def parse(self, source_code: str) -> dict:
-        """
-        Parse OCaml interface files (.mli) and generate a structured AST.
-        """
-        lines = source_code.splitlines()
-        total_lines = len(lines)
-        children = []
-        # Insert OCaml .mli parsing logic here.
-        
-        ast = {"type": "ocaml_interface", "children": children}
-        features = {
-            "documentation": {},
-            "syntax": {},
-            "structure": {}
-        }
-        documentation = "Extracted OCaml interface documentation"
-        complexity = 1  # Placeholder; compute as needed.
-        
-        return {
-            "type": "ocaml_interface",
-            "ast": ast,
-            "features": features,
-            "total_lines": total_lines,
-            "documentation": documentation,
-            "complexity": complexity
-        } 
+            return OcamlNode(
+                type="ocaml_module" if not self.is_interface else "ocaml_interface",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__ 

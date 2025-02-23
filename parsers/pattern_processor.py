@@ -1,10 +1,28 @@
 """Unified pattern processing and query system."""
 
-from typing import Dict, Any, List, Union, Callable, Optional, Pattern
+from typing import Dict, Any, List, Union, Callable, Optional
 from dataclasses import dataclass, field
+from parsers.language_mapping import TREE_SITTER_LANGUAGES, CUSTOM_PARSER_LANGUAGES
 import re
-from enum import Enum
+
+from parsers.models import (
+    FeatureCategory,
+    PatternDefinition,
+    ExtractedFeatures,
+    FileType,
+    QueryPattern,
+    PatternMatch,
+    FileClassification,
+    ParserType
+)
 from utils.logger import log
+import os
+import pkgutil
+import importlib
+from parsers.language_support import (
+    normalize_language_name,
+    is_supported_language
+)
 
 # Add these common patterns at the top level
 COMMON_PATTERNS = {
@@ -16,89 +34,107 @@ COMMON_PATTERNS = {
     'path': re.compile(r'(?:^|[\s(])(?:/[\w.-]+)+|\b[\w.-]+/[\w.-/]+')
 }
 
-class PatternCategory(Enum):
-    """Categories for query patterns."""
-    SYNTAX = "syntax"
-    STRUCTURE = "structure"
-    SEMANTICS = "semantics"
-    DOCUMENTATION = "documentation"
-
 @dataclass
-class QueryPattern:
-    """Pattern definition with metadata."""
-    pattern: Union[str, Pattern, Callable]
-    extract: Callable
-    description: str = ""
-    examples: List[str] = field(default_factory=list)
-    category: PatternCategory = PatternCategory.SYNTAX
-
-@dataclass
-class PatternMatch:
-    """Container for pattern match results."""
-    text: str
-    start: tuple
-    end: tuple
-    metadata: Dict = field(default_factory=dict)
+class ProcessedPattern:
+    """Holds both tree-sitter and regex versions of a pattern."""
+    tree_sitter: Optional[str] = None
+    regex: Optional[Union[str, re.Pattern]] = None
+    extract: Callable = None
+    definition: Optional[PatternDefinition] = None
 
 class PatternProcessor:
     """Central pattern processing system."""
     
     def __init__(self):
-        self.patterns: Dict[str, Dict[str, QueryPattern]] = {}
-        self._initialize_patterns()
+        self._patterns = self._load_all_patterns()
+        self._tree_sitter_patterns = {}
+        self._regex_patterns = {}
     
-    def _initialize_patterns(self):
-        """Initialize built-in patterns."""
-        # Initialize with common regex patterns
-        self.patterns['common'] = {
-            name: QueryPattern(
-                pattern=regex,
-                extract=lambda m: {'text': m.group(0)},
-                category=PatternCategory.DOCUMENTATION if 'comment' in name or name == 'metadata'
-                        else PatternCategory.SEMANTICS
-            )
-            for name, regex in COMMON_PATTERNS.items()
-        }
-    
-    def add_pattern(self, name: str, pattern: QueryPattern, category: str = 'custom'):
-        """Add a new pattern to the processor."""
-        if category not in self.patterns:
-            self.patterns[category] = {}
-        self.patterns[category][name] = pattern
-    
-    def process_node(self, node: Any, pattern: QueryPattern) -> List[PatternMatch]:
-        """Process a node with a pattern."""
-        matches = []
+    def _load_all_patterns(self) -> dict:
+        """Load all patterns from query_patterns directory."""
+        patterns = {}
+        package_dir = os.path.dirname(__file__)
+        pattern_dir = os.path.join(package_dir, "query_patterns")
         
-        if isinstance(node, str):
-            if isinstance(pattern.pattern, (str, Pattern)):
-                pattern_regex = (pattern.pattern if isinstance(pattern.pattern, Pattern)
-                               else re.compile(pattern.pattern))
+        for module_info in pkgutil.iter_modules([pattern_dir]):
+            module_name = module_info.name
+            if module_name == '__init__':
+                continue
                 
-                for match in pattern_regex.finditer(node):
-                    matches.append(
-                        PatternMatch(
-                            text=match.group(0),
-                            start=(0, match.start()),
-                            end=(0, match.end()),
-                            metadata=pattern.extract(match)
-                        )
-                    )
-            
-            elif callable(pattern.pattern):
-                if pattern.pattern(node):
-                    extracted = pattern.extract(node)
-                    if extracted:
-                        matches.append(
-                            PatternMatch(
-                                text=str(node),
-                                start=(0, 0),
-                                end=(0, 0),
-                                metadata=extracted
-                            )
-                        )
+            try:
+                module = importlib.import_module(f"parsers.query_patterns.{module_name}")
+                key = normalize_language_name(module_name.lower())
+                
+                if is_supported_language(key):
+                    # Load patterns based on parser type
+                    if key in TREE_SITTER_LANGUAGES:
+                        self._load_tree_sitter_patterns(module, key)
+                    elif key in CUSTOM_PARSER_LANGUAGES:
+                        self._load_custom_patterns(module, key)
+                    
+            except Exception as e:
+                log(f"Failed to load patterns for {module_name}: {e}", level="error")
+                
+        return patterns
         
+    def _load_tree_sitter_patterns(self, module: Any, language: str):
+        """Load tree-sitter specific patterns."""
+        for attr in dir(module):
+            if attr.endswith('_PATTERNS'):
+                patterns = getattr(module, attr)
+                if isinstance(patterns, dict):
+                    self._tree_sitter_patterns[language] = patterns
+                    
+    def _load_custom_patterns(self, module: Any, language: str):
+        """Load custom parser patterns."""
+        for attr in dir(module):
+            if attr.endswith('_PATTERNS'):
+                patterns = getattr(module, attr)
+                if isinstance(patterns, dict):
+                    self._regex_patterns[language] = patterns
+
+    def get_patterns_for_file(self, classification: FileClassification) -> dict:
+        """Get patterns based on parser type and language."""
+        patterns = (self._tree_sitter_patterns if classification.parser_type == ParserType.TREE_SITTER 
+                   else self._regex_patterns)
+        return patterns.get(classification.language_id, {})
+        
+    def validate_pattern(self, pattern: ProcessedPattern, language: str) -> bool:
+        """Validate pattern matches parser type."""
+        is_tree_sitter = language in TREE_SITTER_LANGUAGES
+        return is_tree_sitter == (pattern.definition.pattern_type == "tree-sitter")
+
+    def process_node(self, source_code: str, pattern: ProcessedPattern) -> List[PatternMatch]:
+        """Process a node using appropriate pattern type."""
+        if pattern.tree_sitter:
+            return self._process_tree_sitter_pattern(source_code, pattern)
+        elif pattern.regex:
+            return self._process_regex_pattern(source_code, pattern)
+        return []
+
+    def _process_regex_pattern(self, source_code: str, pattern: ProcessedPattern) -> List[PatternMatch]:
+        """Process using regex pattern."""
+        matches = []
+        for match in pattern.regex.finditer(source_code):
+            result = PatternMatch(
+                text=match.group(0),
+                start=match.start(),
+                end=match.end(),
+                metadata={
+                    "groups": match.groups(),
+                    "named_groups": match.groupdict()
+                }
+            )
+            if pattern.extract:
+                result.metadata.update(pattern.extract(result))
+            matches.append(result)
         return matches
+
+    def _process_tree_sitter_pattern(self, source_code: str, pattern: ProcessedPattern) -> List[PatternMatch]:
+        """Process using tree-sitter pattern."""
+        # Tree-sitter pattern processing moved from TreeSitterParser
+        # This is handled in feature extraction now
+        return []
 
 # Global instance
 pattern_processor = PatternProcessor() 

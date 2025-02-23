@@ -10,3 +10,4 @@ torchaudio
 gitpython
 aiofiles
 redis
+pytest-asyncio>=0.23.5

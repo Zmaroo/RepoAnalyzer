@@ -1,59 +1,126 @@
-"""Unified parsing interface."""
+"""Unified parsing interface.
 
-from typing import Optional, Dict, Any
-from parsers.base_parser import ParserResult
-from parsers.language_support import language_registry
-from parsers.models import FileInfo
-from parsers.file_classification import get_file_classification
-from utils.logger import log
-from utils.cache import parser_cache
-from utils.error_handling import (
-    handle_async_errors,
-    ParsingError,
-    AsyncErrorBoundary
+Pipeline Stages:
+1. File Classification & Parser Selection
+   Input: file_path (str), content (str)
+   - Uses: parsers/file_classification.py -> get_file_classification()
+     Returns: Optional[FileClassification]
+   - Uses: parsers/language_support.py -> language_registry.get_parser()
+     Returns: Optional[BaseParser]
+
+2. Content Parsing
+   Input: encoded_content (str)
+   - Uses: parsers/base_parser.py -> BaseParser.parse()
+     Returns: Optional[ParserResult]
+   - Uses: utils/encoding.py -> encode_query_pattern()
+     Returns: str
+
+3. Feature Extraction
+   Input: ast (Dict[str, Any]), source_code (str)
+   - Uses: parsers/base_parser.py -> BaseParser._extract_features()
+     Returns: ExtractedFeatures
+   - Uses: parsers/pattern_processor.py -> pattern_processor.get_patterns_for_file()
+     Returns: Dict[str, Dict[str, ProcessedPattern]]
+
+4. Result Standardization
+   Input: ParserResult, ExtractedFeatures
+   - Uses: parsers/models.py -> ParserResult
+   - Uses: utils/cache.py -> parser_cache
+   Returns: Optional[ParserResult]
+"""
+
+from typing import Optional
+from parsers.models import (
+    ParserResult,
+    FileType,
+    FileClassification,
+    ExtractedFeatures,
+    FileMetadata,
+    ParserType
 )
 
+from parsers.language_support import language_registry, get_language_by_extension
+from parsers.feature_extractor import FeatureExtractor
+from parsers.models import FeatureCategory
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ParsingError
+from utils.encoding import encode_query_pattern
+from utils.logger import log
+from utils.cache import parser_cache
+
 class UnifiedParser:
-    """Main parser interface for all file types."""
-    
-    def __init__(self):
-        self._language_registry = language_registry
+    """Unified parsing interface."""
     
     @handle_async_errors(error_types=(ParsingError, Exception))
     async def parse_file(self, file_path: str, content: str) -> Optional[ParserResult]:
-        """Parse any file using appropriate parser with caching."""
-        cache_key = f"{file_path}:{hash(content)}"
-        
-        # Try to get from cache
-        cached_result = await parser_cache.get_async(cache_key)
-        if cached_result:
-            return ParserResult(**cached_result)
-        
-        async with AsyncErrorBoundary("file parsing", error_types=ParsingError):
-            # Get file classification and language info
-            classification = get_file_classification(file_path)
-            if not classification:
-                log(f"No classification found for {file_path}", level="debug")
+        """Parse file content using appropriate parser."""
+        try:
+            # [1.1] Cache Check
+            # USES: [utils/cache.py] parser_cache.get_async() -> Optional[Dict]
+            cache_key = f"parse:{file_path}:{hash(content)}"
+            cached = await parser_cache.get_async(cache_key)
+            if cached:
+                return ParserResult(**cached)  # USES: [models.py] ParserResult
+
+            # [1.2] Language Detection
+            # USES: [language_support.py] get_language_by_extension() -> Optional[LanguageFeatures]
+            language_features = get_language_by_extension(file_path)
+            if not language_features:
                 return None
-            
-            # Get language info and appropriate parser
-            language_info = self._language_registry.get_language_info(file_path)
-            if not language_info.is_supported:
-                log(f"Language not supported for {file_path}", level="debug")
-                return None
-            
-            # Get parser and parse
-            parser = self._language_registry.get_parser(language_info)
+
+            # [1.3] Classification Creation
+            # USES: [models.py] FileClassification, FileType, ParserType
+            classification = FileClassification(
+                file_type=FileType.CODE,
+                language_id=language_features.canonical_name,
+                parser_type=language_features.parser_type
+            )
+
+            # [2.1] Get Parser Instance
+            # USES: [language_support.py] language_registry.get_parser() -> Optional[BaseParser]
+            parser = language_registry.get_parser(classification)
             if not parser:
                 log(f"No parser available for {file_path}", level="debug")
                 return None
+
+            # [2.2] Parse Content
+            # USES: [utils/encoding.py] encode_query_pattern() -> str
+            # USES: [base_parser.py] BaseParser.parse() -> Optional[ParserResult]
+            parse_result = parser.parse(encode_query_pattern(content))
+            if not parse_result or not parse_result.success:
+                return None
+
+            # Stage 3: Extract features by category
+            features = {}
+            for category in FeatureCategory:
+                category_features = parser._extract_category_features(
+                    category=category,
+                    ast=parse_result.ast,
+                    source_code=content
+                )
+                features[category.value] = category_features
+
+            # Stage 4: Create categorized result
+            result = ParserResult(
+                success=True,
+                ast=parse_result.ast,
+                features={
+                    "syntax": features[FeatureCategory.SYNTAX.value],
+                    "semantics": features[FeatureCategory.SEMANTICS.value],
+                    "documentation": features[FeatureCategory.DOCUMENTATION.value],
+                    "structure": features[FeatureCategory.STRUCTURE.value]
+                },
+                documentation=features[FeatureCategory.DOCUMENTATION.value],
+                complexity=features[FeatureCategory.SYNTAX.value].get("metrics", {}),
+                statistics=parse_result.statistics
+            )
             
-            result = parser.parse(content)
-            
-            # Cache the result
-            await parser_cache.set_async(cache_key, result.dict())
-            
+            # Cache result
+            await parser_cache.set_async(cache_key, result.model_dump())
             return result
+
+        except Exception as e:
+            log(f"Error parsing file {file_path}: {e}", level="error")
+            return None
 
 # Global instance
 unified_parser = UnifiedParser() 

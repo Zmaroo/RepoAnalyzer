@@ -1,26 +1,18 @@
 """Custom parser for Markdown with enhanced documentation features."""
 
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.query_patterns.markdown import MARKDOWN_PATTERNS, PatternCategory
+from parsers.models import MarkdownNode
 from utils.logger import log
 import re
 
-@dataclass
-class MarkdownNode:
-    """Base class for Markdown AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class MarkdownParser(CustomParser):
+class MarkdownParser(BaseParser):
     """Parser for Markdown files."""
     
-    def __init__(self, language_id: str = "markdown", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "markdown", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.DOCUMENTATION)
         self.patterns = {
             'header': re.compile(r'^(#{1,6})\s+(.+)$'),
             'list_item': re.compile(r'^(\s*)[*+-]\s+(.+)$'),
@@ -30,21 +22,26 @@ class MarkdownParser(CustomParser):
             'image': re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
         }
 
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
+
     def _create_node(
         self,
         node_type: str,
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> MarkdownNode:
+        """Create a standardized Markdown AST node."""
+        return MarkdownNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse Markdown content into AST structure."""
@@ -53,8 +50,7 @@ class MarkdownParser(CustomParser):
             ast = self._create_node(
                 "document",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
             
             current_section = None
@@ -76,7 +72,7 @@ class MarkdownParser(CustomParser):
                         level=len(level),
                         content=content
                     )
-                    ast["children"].append(node)
+                    ast.children.append(node)
                     current_section = node
                     continue
 
@@ -96,9 +92,9 @@ class MarkdownParser(CustomParser):
                             content="\n".join(code_block_content)
                         )
                         if current_section:
-                            current_section["children"].append(node)
+                            current_section.children.append(node)
                         else:
-                            ast["children"].append(node)
+                            ast.children.append(node)
                         in_code_block = False
                     continue
 
@@ -117,16 +113,18 @@ class MarkdownParser(CustomParser):
                         indent=len(indent)
                     )
                     if current_section:
-                        current_section["children"].append(node)
+                        current_section.children.append(node)
                     else:
-                        ast["children"].append(node)
+                        ast.children.append(node)
 
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing Markdown content: {e}", level="error")
-            return {
-                "type": "document",
-                "error": str(e),
-                "children": []
-            } 
+            return MarkdownNode(
+                type="document",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__ 

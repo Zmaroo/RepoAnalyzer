@@ -1,147 +1,147 @@
 """Base parser interface and implementations."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
-from parsers.models import ParserResult, ParserConfig, ParsingStatistics
-from parsers.file_classification import FileType, FileClassification
-from parsers.feature_extractor import FeatureExtractor
-from parsers.pattern_processor import pattern_processor
+from typing import Optional, Dict, Any, List
+from parsers.models import (
+    ParserResult,
+    ParserConfig,
+    ParsingStatistics,
+    FileType,
+    ExtractedFeatures,
+    ParserType
+)
+from parsers.feature_extractor import TreeSitterFeatureExtractor, CustomFeatureExtractor
+from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from utils.logger import log
-import time
+from parsers.pattern_processor import PatternProcessor
+from parsers.models import FeatureCategory
 
 class BaseParser(ABC):
-    """Abstract base class for all parsers."""
+    """Abstract base class for all parsers.
     
-    def __init__(self, language_id: str, file_type: FileType):
+    Implementations:
+    - TreeSitterParser: For languages with tree-sitter support
+    - Language-specific parsers (NimParser, PlaintextParser, etc.): For custom parsing
+    """
+    
+    def __init__(self, language_id: str, file_type: FileType, parser_type: ParserType):
         self.language_id = language_id
         self.file_type = file_type
+        self.parser_type = parser_type
         self._initialized = False
         self.config = ParserConfig()
         self.stats = ParsingStatistics()
-        self.feature_extractor = None
-        self.pattern_processor = pattern_processor
+        
+        # Create appropriate feature extractor based on parser type
+        self.feature_extractor = (
+            TreeSitterFeatureExtractor(language_id, file_type)
+            if parser_type == ParserType.TREE_SITTER
+            else CustomFeatureExtractor(language_id, file_type)
+        )
+        
+        self.pattern_processor = PatternProcessor()
     
     @abstractmethod
     def initialize(self) -> bool:
-        """Initialize parser resources."""
-        pass
-    
-    def parse(self, source_code: str) -> ParserResult:
-        """Parse source code into AST and extract features."""
-        start_time = time.time()
+        """Initialize parser-specific resources.
         
-        try:
-            if not self._initialized and not self.initialize():
-                return ParserResult.error("Parser not initialized")
-            
-            # Parse source code
-            parse_start = time.time()
-            ast = self._parse_source(source_code)
-            self.stats.parse_time_ms = (time.time() - parse_start) * 1000
-            
-            if not ast:
-                return ParserResult.error("Failed to parse source code")
-            
-            # Extract features
-            feature_start = time.time()
-            features = self._extract_features(ast, source_code)
-            self.stats.feature_extraction_time_ms = (time.time() - feature_start) * 1000
-            
-            # Calculate complexity
-            complexity_start = time.time()
-            complexity = self._calculate_complexity(features)
-            self.stats.complexity_calculation_time_ms = (time.time() - complexity_start) * 1000
-            
-            # Update statistics
-            self.stats.total_nodes_processed = self._count_nodes(ast)
-            self.stats.total_time_ms = (time.time() - start_time) * 1000
-            
-            return ParserResult(
-                success=True,
-                language=self.language_id,
-                file_type=self.file_type.value,
-                ast=ast,
-                features=features,
-                documentation=features.documentation if features else None,
-                complexity=complexity,
-                source_code=source_code,
-                total_lines=len(source_code.splitlines()),
-                statistics=self.stats
-            )
-            
-        except Exception as e:
-            log(f"Error in parser: {e}", level="error")
-            return ParserResult.error(str(e))
+        Returns:
+            bool: True if initialization successful
+        """
+        pass
     
     @abstractmethod
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Implementation-specific source code parsing."""
+    def _parse_source(self, source_code: str) -> Optional[Dict[str, Any]]:
+        """Generate AST from source code.
+        
+        Args:
+            source_code (str): Source code to parse
+            
+        Returns:
+            Optional[Dict[str, Any]]: AST structure or None if parsing fails
+            
+        For tree-sitter parsers:
+            Returns {"type": "tree-sitter", "root": Node, "tree": Dict}
+            
+        For custom parsers:
+            Returns CustomParserNode.__dict__ with structure:
+            {
+                "type": str,
+                "start_point": List[int],
+                "end_point": List[int],
+                "children": List[Dict],
+                "metadata": Dict[str, Any]
+            }
+        """
         pass
-    
-    def _extract_features(self, ast: Dict[str, Any], source_code: str) -> Dict[str, Any]:
-        """Extract features using feature extractor."""
-        if not self.feature_extractor:
-            self.feature_extractor = FeatureExtractor(self.file_type, self.language_id)
-        return self.feature_extractor.extract_features(ast, source_code, self.pattern_processor.patterns)
-    
-    def _calculate_complexity(self, features: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate code complexity metrics."""
-        from parsers.feature_extractor import calculate_complexity
-        return calculate_complexity(features)
-    
-    def _count_nodes(self, ast: Dict[str, Any]) -> int:
-        """Count total nodes in AST."""
-        if isinstance(ast, dict):
-            return 1 + sum(self._count_nodes(v) for v in ast.values())
-        elif isinstance(ast, list):
-            return sum(self._count_nodes(item) for item in ast)
-        return 0
-    
+
+    def _get_syntax_errors(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get syntax errors from AST.
+        
+        Args:
+            ast (Dict[str, Any]): AST to check for errors
+            
+        Returns:
+            List[Dict[str, Any]]: List of syntax errors
+        """
+        return []
+
+    def parse(self, source_code: str) -> Optional[ParserResult]:
+        """[2.2] Unified parsing pipeline."""
+        try:
+            # [2.2.1] Initialize Parser
+            if not self._initialized and not self.initialize():
+                log(f"Failed to initialize {self.language_id} parser", level="error")
+                return None
+
+            # [2.2.2] Generate AST
+            # USES: Implemented by TreeSitterParser or CustomParser
+            ast = self._parse_source(source_code)
+            if not ast:
+                return None
+
+            # [2.2.3] Extract Features
+            # USES: [feature_extractor.py] FeatureExtractor.extract_features()
+            features = self.feature_extractor.extract_features(ast, source_code)
+
+            # [2.2.4] Get Syntax Errors
+            errors = self._get_syntax_errors(ast)
+
+            # RETURNS: [models.py] ParserResult
+            return ParserResult(
+                success=True,
+                ast=ast,
+                features=features.model_dump(),
+                documentation=features.documentation.model_dump(),
+                complexity=features.metrics.model_dump(),
+                statistics=self.stats.model_dump(),
+                errors=errors
+            )
+        except Exception as e:
+            log(f"Error parsing content: {e}", level="error")
+            return None
+
     def cleanup(self):
-        """Clean up any resources."""
+        """Clean up parser resources."""
         self._initialized = False
         self.stats = ParsingStatistics()
 
-class TreeSitterParser(BaseParser):
-    """Tree-sitter based parser implementation."""
-    
-    def __init__(self, language_id: str, classification: FileClassification):
-        super().__init__(language_id, classification.file_type)
-        self.classification = classification
-        self.parser = None
-        self.language = None
-    
-    def initialize(self) -> bool:
-        """Initialize tree-sitter parser."""
-        try:
-            from tree_sitter import Parser, Language
-            self.parser = Parser()
-            self.language = Language('build/languages.so', self.language_id)
-            self.parser.set_language(self.language)
-            self._initialized = True
-            return True
-        except Exception as e:
-            log(f"Failed to initialize tree-sitter parser: {e}", level="error")
-            return False
-    
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse source code using tree-sitter."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
-        return {"type": "tree-sitter", "root": tree.root_node}
-
-class CustomParser(BaseParser):
-    """Base class for custom parsers."""
-    
-    def __init__(self, language_id: str, classification: FileClassification):
-        super().__init__(language_id, classification.file_type)
-        self.classification = classification
-    
-    def initialize(self) -> bool:
-        """Initialize custom parser."""
-        self._initialized = True
-        return True
-    
-    @abstractmethod
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Implementation-specific parsing logic."""
-        pass 
+    def _extract_category_features(
+        self,
+        category: FeatureCategory,
+        ast: Dict[str, Any],
+        source_code: str
+    ) -> Dict[str, Any]:
+        """Extract features for a specific category."""
+        patterns = self.pattern_processor.get_patterns_for_category(category)
+        
+        if category == FeatureCategory.SYNTAX:
+            return self._extract_syntax_features(ast, patterns)
+        elif category == FeatureCategory.SEMANTICS:
+            return self._extract_semantic_features(ast, patterns)
+        elif category == FeatureCategory.DOCUMENTATION:
+            return self._extract_documentation_features(source_code, patterns)
+        elif category == FeatureCategory.STRUCTURE:
+            return self._extract_structure_features(ast, patterns)
+        
+        return {} 

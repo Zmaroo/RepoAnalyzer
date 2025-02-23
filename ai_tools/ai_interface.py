@@ -1,15 +1,20 @@
-"""
-Unified AI Assistant Interface
+"""[4.1] Unified AI Assistant Interface.
 
-This module exposes a simplified API that combines:
-  • Graph analysis capabilities (for code structure and metrics).
-  • Semantic search functionalities.
+Flow:
+1. Analysis Operations:
+   - Repository analysis
+   - Code structure analysis
+   - Documentation analysis
 
-Important:
-  - Repository indexing is handled separately in index.py (leveraging async_indexer).
-  - This module does NOT serve as an entry point for indexing operations.
-  - Future AI functionalities can be added here without duplicating or interfering with
-    the repository indexing code.
+2. Integration Points:
+   - GraphAnalysis [4.3]: Graph operations
+   - CodeUnderstanding [4.2]: Code analysis
+   - SearchEngine [5.0]: Search operations
+   - DocEmbedder [3.2]: Document embeddings
+
+3. Error Handling:
+   - ProcessingError: AI operations
+   - AsyncErrorBoundary: Async operations
 """
 
 from ai_tools.graph_capabilities import GraphAnalysis
@@ -34,13 +39,19 @@ from utils.error_handling import (
     AsyncErrorBoundary,
     ErrorBoundary
 )
+from parsers.models import (
+    FileType,
+    FileClassification,
+    ParserResult,
+    ExtractedFeatures
+)
 import numpy as np
 import os
 from config import parser_config  # Add configuration import
 
 
 class AIAssistant:
-    """Unified AI assistance interface."""
+    """[4.1.1] Unified AI assistance interface."""
     
     def __init__(self):
         with ErrorBoundary("AI Assistant initialization"):
@@ -48,16 +59,13 @@ class AIAssistant:
             self.code_understanding = CodeUnderstanding()
             self.doc_embedder = DocEmbedder()
             
-            # Validate language data path from config
             if not os.path.exists(parser_config.language_data_path):
-                raise ProcessingError(
-                    f"Invalid language data path: {parser_config.language_data_path}"
-                )
+                raise ProcessingError(f"Invalid language data path")
             # Additional AI tools can be initialized here in the future.
 
     @handle_async_errors(error_types=ProcessingError)
     async def analyze_repository(self, repo_id: int) -> Dict[str, Any]:
-        """Perform comprehensive repository analysis."""
+        """[4.1.2] Perform comprehensive repository analysis."""
         async with AsyncErrorBoundary("repository analysis"):
             structure = await self.analyze_code_structure(repo_id)
             codebase = await self.code_understanding.analyze_codebase(repo_id)

@@ -1,9 +1,21 @@
 """Shared data models for the parser system."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Set, Union
+from typing import Dict, List, Optional, Any, Set, Union, Callable, Literal
 from enum import Enum
 from datetime import datetime
+from pydantic import BaseModel
+import re
+from parsers.feature_extractor import BaseFeatureExtractor, TreeSitterFeatureExtractor, CustomFeatureExtractor
+
+class FileType(Enum):
+    """Types of files that can be processed."""
+    CODE = "code"
+    DOC = "doc"
+    CONFIG = "config"
+    DATA = "data"
+    BINARY = "binary"
+    UNKNOWN = "unknown"
 
 class ParserType(Enum):
     """Types of supported parsers."""
@@ -34,123 +46,262 @@ class SourceRange:
     text: str = ""
 
 @dataclass
-class ParserResult:
-    """Unified parser result."""
-    success: bool = True
+class FileMetadata:
+    """File metadata and configuration."""
+    # Metadata
+    path: str = ""
     language: str = ""
-    file_type: str = ""
-    ast: Optional[Dict[str, Any]] = None
-    features: Optional[Dict[str, Any]] = None
-    documentation: Optional[Dict[str, Any]] = None
-    complexity: Optional[Dict[str, Any]] = None
-    source_code: str = ""
-    total_lines: int = 0
-    statistics: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-
-    @classmethod
-    def error(cls, message: str) -> 'ParserResult':
-        return cls(success=False, error=message)
-
-@dataclass
-class ExtractedFeatures:
-    """Container for extracted features."""
-    syntax: Dict[str, List[Dict]] = field(default_factory=lambda: {
-        'literals': [], 'operators': [], 'keywords': [], 'identifiers': []
-    })
-    structure: Dict[str, List[Dict]] = field(default_factory=lambda: {
-        'functions': [], 'classes': [], 'modules': [], 'blocks': []
-    })
-    semantics: Dict[str, List[Dict]] = field(default_factory=lambda: {
-        'imports': [], 'references': [], 'dependencies': [], 'types': []
-    })
-    documentation: Optional['Documentation'] = None
-    metrics: Optional['ComplexityMetrics'] = None
-
-@dataclass
-class Documentation:
-    """Unified documentation structure."""
-    comments: List[Union[Dict, str]] = field(default_factory=list)
-    docstrings: List[Union[Dict, str]] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    annotations: List[Union[Dict, str]] = field(default_factory=list)
-    description: Optional[str] = None
-    admonitions: List[str] = field(default_factory=list)
-    fields: Dict[str, str] = field(default_factory=dict)
-
-@dataclass
-class ComplexityMetrics:
-    """Code complexity metrics."""
-    cyclomatic: int = 0
-    cognitive: int = 0
-    halstead: Dict[str, float] = field(default_factory=dict)
-    maintainability_index: float = 0.0
-    node_count: int = 0
-    depth: int = 0
-
-@dataclass
-class ParserConfig:
-    """Parser configuration."""
-    max_file_size: int = 1024 * 1024  # 1MB
-    timeout: int = 30  # seconds
-    cache_enabled: bool = True
-    cache_size: int = 1000
-    extract_docs: bool = True
-    calculate_metrics: bool = True
-
-@dataclass
-class ParsingStatistics:
-    """Parser performance statistics."""
-    parse_time_ms: float = 0.0
-    feature_extraction_time_ms: float = 0.0
-    documentation_extraction_time_ms: float = 0.0
-    complexity_calculation_time_ms: float = 0.0
-    total_time_ms: float = 0.0
-    total_nodes_processed: int = 0
-    memory_used_kb: float = 0.0
-
-@dataclass
-class LanguageFeatures:
-    """Language-specific features."""
-    supports_types: bool = False
-    supports_classes: bool = False
-    supports_functions: bool = False
-    supports_modules: bool = False
-    supports_decorators: bool = False
-    supports_async: bool = False
-    supports_generics: bool = False
-    file_extensions: Set[str] = field(default_factory=set)
-    comment_styles: Set[str] = field(default_factory=set)
-    string_delimiters: Set[str] = field(default_factory=set)
-
-@dataclass
-class CodeSymbol:
-    """Code symbol information."""
-    name: str
-    symbol_type: str
-    location: SourceRange
-    scope: str
-    documentation: Optional[str] = None
-    signature: Optional[str] = None
-    references: List[SourceRange] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-@dataclass
-class FileInfo:
-    """File information."""
-    path: str
-    language: str
     encoding: str = "utf-8"
     size: int = 0
     last_modified: datetime = field(default_factory=datetime.now)
     hash: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    # Configuration
+    binary_extensions: Set[str] = field(default_factory=lambda: {
+        # Document formats
+        '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx',
+        # Images
+        '.jpg', '.jpeg', '.png', '.gif', '.ico', '.svg', '.webp',
+        # Archives
+        '.zip', '.tar', '.gz', '.rar', '.7z',
+        # Binaries
+        '.exe', '.dll', '.so', '.dylib',
+        '.pyc', '.pyo', '.pyd',
+        # Media
+        '.mp3', '.mp4', '.wav', '.avi', '.mov',
+        # Database
+        '.db', '.sqlite', '.sqlite3'
+    })
+    
+    ignored_dirs: Set[str] = field(default_factory=lambda: {
+        '__pycache__', '.git', 'node_modules', 'venv', '.venv',
+        'dist', 'build', '.idea', '.vscode', 'coverage', 'docs',
+        'env', '.env', 'bin', 'obj', 'target', 'out',
+        'logs', 'temp', 'tmp', 'cache', '.cache'
+    })
+    
+    ignored_files: Set[str] = field(default_factory=lambda: {
+        # Development artifacts
+        '*.pyc', '*.pyo', '*.pyd', '*.so', '*.dll', '*.dylib',
+        '*.exe', '*.obj', '*.o',
+        # Logs and temporary files
+        '*.log', '*.tmp', '*.temp', '*.swp', '*.swo', '*.bak',
+        '*.cache', '*.DS_Store',
+        # Package files
+        '*.egg-info', '*.egg', '*.whl',
+        # IDE files
+        '*.iml', '*.ipr', '*.iws', '*.project', '*.classpath',
+        # Build artifacts
+        '*.min.js', '*.min.css', '*.map'
+    })
+    
+    ignored_patterns: Set[str] = field(default_factory=lambda: {
+        r'.*\.git.*',  # Git-related files
+        r'.*\.pytest_cache.*',  # Pytest cache
+        r'.*__pycache__.*',  # Python cache
+        r'.*\.coverage.*',  # Coverage reports
+        r'.*\.tox.*',  # Tox test environments
+    })
+
+class ParserResult(BaseModel):
+    """Result from any parser."""
+    success: bool
+    ast: Dict[str, Any]
+    features: Dict[FeatureCategory, Dict[str, Any]] = {
+        FeatureCategory.SYNTAX: {},
+        FeatureCategory.SEMANTICS: {},
+        FeatureCategory.DOCUMENTATION: {},
+        FeatureCategory.STRUCTURE: {}
+    }
+    documentation: Dict[str, Any]
+    complexity: Dict[str, Any]
+    statistics: Dict[str, Any]
+
+    @classmethod
+    def error(cls, message: str) -> 'ParserResult':
+        return cls(success=False, ast={}, features={}, documentation={}, complexity={}, statistics={})
 
 @dataclass
-class CacheConfig:
-    """Cache configuration."""
-    enabled: bool = True
-    max_size: int = 1000
-    ttl_seconds: int = 3600
-    persist: bool = False
-    persist_path: Optional[str] = None 
+class PatternDefinition:
+    """Definition of a pattern with its metadata."""
+    name: str
+    category: FeatureCategory
+    file_type: FileType
+    pattern: str
+    pattern_type: Literal["tree-sitter", "regex"] = "tree-sitter"
+    description: str = ""
+    examples: List[str] = field(default_factory=list)
+
+class Documentation(BaseModel):
+    """Documentation features aligned with pattern categories."""
+    docstrings: List[Dict[str, Any]] = []     # javadoc, xmldoc
+    comments: List[Dict[str, Any]] = []       # comment, todo, fixme
+    annotations: List[Dict[str, Any]] = []    # note, warning
+    metadata: List[Dict[str, Any]] = []       # metadata, description
+    examples: List[Dict[str, Any]] = []       # example, tip, caution
+
+class ComplexityMetrics(BaseModel):
+    """Code complexity metrics."""
+    cyclomatic: int = 0
+    cognitive: int = 0
+    halstead: Dict[str, float] = {}
+    maintainability_index: float = 0.0
+    node_count: int = 0
+    depth: int = 0
+
+@dataclass
+class CustomParserNode:
+    """Base class for all custom parser AST nodes."""
+    type: str
+    start_point: List[int]
+    end_point: List[int]
+    children: List[Any] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class YamlNode(CustomParserNode):
+    """YAML AST node."""
+    value: Any = None
+    key: Optional[str] = None
+
+@dataclass
+class MarkdownNode(CustomParserNode):
+    """Markdown AST node."""
+    content: Optional[str] = None
+    level: Optional[int] = None
+
+@dataclass
+class JsonNode(CustomParserNode):
+    """JSON AST node."""
+    value: Any = None
+    key: Optional[str] = None
+
+@dataclass
+class IniNode(CustomParserNode):
+    """INI AST node."""
+    section: Optional[str] = None
+    key: Optional[str] = None
+    value: Optional[str] = None
+
+@dataclass
+class HtmlNode(CustomParserNode):
+    """HTML AST node."""
+    tag: Optional[str] = None
+    attributes: Dict[str, str] = field(default_factory=dict)
+    text: Optional[str] = None
+
+@dataclass
+class GraphQLNode(CustomParserNode):
+    """GraphQL AST node."""
+    name: Optional[str] = None
+    kind: Optional[str] = None  # type, interface, enum, etc.
+    fields: List[Dict[str, Any]] = field(default_factory=list)
+
+@dataclass
+class EnvNode(CustomParserNode):
+    """ENV file AST node."""
+    name: Optional[str] = None
+    value: Optional[str] = None
+    value_type: Optional[str] = None
+
+@dataclass
+class EditorconfigNode(CustomParserNode):
+    """EditorConfig AST node."""
+    section: Optional[str] = None
+    properties: List[Dict[str, str]] = field(default_factory=list)
+
+@dataclass
+class CobaltNode(CustomParserNode):
+    """Cobalt AST node."""
+    name: Optional[str] = None
+    kind: Optional[str] = None
+    docstring: Optional[str] = None
+
+@dataclass
+class AsciidocNode(CustomParserNode):
+    """AsciiDoc AST node."""
+    content: Optional[str] = None
+    level: Optional[int] = None
+    title: Optional[str] = None
+
+@dataclass
+class NimNode(CustomParserNode):
+    """Nim AST node."""
+    name: Optional[str] = None
+    kind: Optional[str] = None
+    docstring: Optional[str] = None
+
+@dataclass
+class OcamlNode(CustomParserNode):
+    """OCaml AST node."""
+    pass  # Uses base class fields
+
+@dataclass
+class PlaintextNode(CustomParserNode):
+    """Plaintext AST node."""
+    content: Optional[str] = None
+    paragraph: Optional[str] = None
+    section: Optional[str] = None
+
+# Pattern categories based on feature models
+PATTERN_CATEGORIES: Dict[FeatureCategory, Dict[FileType, List[str]]] = {
+    FeatureCategory.SYNTAX: {
+        FileType.CODE: [
+            "interface", "type_alias", "enum", "decorator",
+            "function", "class", "method", "constructor",
+            "struct", "union", "typedef"
+        ],
+        FileType.DOC: [
+            "section", "block", "element", "directive",
+            "macro", "attribute", "heading", "list", "table"
+        ]
+    },
+    FeatureCategory.SEMANTICS: {
+        FileType.CODE: [
+            "type_assertion", "type_predicate", "type_query",
+            "union_type", "intersection_type", "tuple_type",
+            "variable", "type", "expression", "parameter",
+            "return_type", "generic", "template", "operator"
+        ],
+        FileType.DOC: [
+            "link", "reference", "definition", "term",
+            "callout", "citation", "footnote", "glossary"
+        ]
+    },
+    FeatureCategory.DOCUMENTATION: {
+        FileType.CODE: [
+            "comment", "docstring", "javadoc", "xmldoc",
+            "todo", "fixme", "note", "warning"
+        ],
+        FileType.DOC: [
+            "metadata", "description", "admonition",
+            "annotation", "field", "example", "tip", "caution"
+        ]
+    },
+    FeatureCategory.STRUCTURE: {
+        FileType.CODE: [
+            "namespace", "import", "export", "package",
+            "using", "include", "require", "module_import"
+        ],
+        FileType.DOC: [
+            "hierarchy", "include", "anchor", "toc",
+            "cross_reference", "bibliography", "appendix"
+        ]
+    }
+}
+
+@dataclass
+class LanguageFeatures:
+    """Language features and capabilities."""
+    canonical_name: str
+    file_extensions: Set[str]
+    parser_type: ParserType
+    
+    def get_feature_extractor(self) -> 'BaseFeatureExtractor':
+        """Get the appropriate feature extractor for this language."""
+      
+        if self.parser_type == ParserType.TREE_SITTER:
+            return TreeSitterFeatureExtractor(self.canonical_name)
+        return CustomFeatureExtractor(self.canonical_name)
+

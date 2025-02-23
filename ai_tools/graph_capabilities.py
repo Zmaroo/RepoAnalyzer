@@ -1,6 +1,19 @@
-"""
-Neo4j Graph Analysis Capabilities using APOC and Graph Data Science.
-Provides graph-based code analysis features.
+"""[4.3] Graph-based code analysis capabilities.
+
+Flow:
+1. Analysis Operations:
+   - Code metrics calculation
+   - Structure analysis
+   - Similarity detection
+
+2. Integration Points:
+   - Neo4jTools [6.2]: Graph operations
+   - Neo4jProjections [6.2]: Graph projections
+   - GDS Library: Graph algorithms
+
+3. Error Handling:
+   - ProcessingError: Analysis operations
+   - DatabaseError: Graph operations
 """
 
 from typing import Dict, List, Optional, Any
@@ -15,10 +28,16 @@ from utils.error_handling import (
     ErrorBoundary,
     AsyncErrorBoundary
 )
+from parsers.models import (
+    FileType,
+    FileClassification,
+    ParserResult,
+    ExtractedFeatures
+)
 from config import neo4j_config
 
 class GraphAnalysis:
-    """Graph-based code analysis capabilities using GDS."""
+    """[4.3.1] Graph-based code analysis capabilities using GDS."""
     
     def __init__(self):
         with ErrorBoundary("Neo4j tools initialization"):
@@ -45,7 +64,7 @@ class GraphAnalysis:
         repo_id: int,
         file_path: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Get advanced code metrics using GDS."""
+        """[4.3.2] Get advanced code metrics using GDS."""
         async with AsyncErrorBoundary("code metrics analysis"):
             file_filter = 'WHERE n.file_path = $file_path' if file_path else ''
             

@@ -6,47 +6,44 @@ enum, or schema definitions from a GraphQL file.
 """
 
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.query_patterns.graphql import GRAPHQL_PATTERNS, PatternCategory
+from parsers.models import GraphQLNode
 from utils.logger import log
 import re
 
-@dataclass
-class GraphQLNode:
-    """Base class for GraphQL AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class GraphQLParser(CustomParser):
+class GraphQLParser(BaseParser):
     """Parser for GraphQL schema files."""
     
-    def __init__(self, language_id: str = "graphql", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "graphql", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.CODE)
         self.patterns = {
             name: re.compile(pattern.pattern)
             for category in GRAPHQL_PATTERNS.values()
             for name, pattern in category.items()
         }
     
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
+
     def _create_node(
         self,
         node_type: str,
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> GraphQLNode:
+        """Create a standardized GraphQL AST node."""
+        return GraphQLNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
     def _process_arguments(self, args_str: str) -> List[Dict]:
         """Process field arguments into structured nodes."""
@@ -80,8 +77,7 @@ class GraphQLParser(CustomParser):
             ast = self._create_node(
                 "document",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
             
             current_type = None
@@ -104,7 +100,7 @@ class GraphQLParser(CustomParser):
                         line_end,
                         **GRAPHQL_PATTERNS[PatternCategory.DOCUMENTATION]['description'].extract(desc_match)
                     )
-                    ast["children"].append(node)
+                    ast.children.append(node)
                     current_description = node
                     continue
                     
@@ -115,7 +111,7 @@ class GraphQLParser(CustomParser):
                         line_end,
                         **GRAPHQL_PATTERNS[PatternCategory.DOCUMENTATION]['comment'].extract(comment_match)
                     )
-                    ast["children"].append(node)
+                    ast.children.append(node)
                     continue
                 
                 # Process type definitions
@@ -127,9 +123,9 @@ class GraphQLParser(CustomParser):
                         **GRAPHQL_PATTERNS[PatternCategory.SYNTAX]['type'].extract(type_match)
                     )
                     if current_description:
-                        node["description"] = current_description
+                        node.metadata["description"] = current_description
                         current_description = None
-                    ast["children"].append(node)
+                    ast.children.append(node)
                     current_type = node
                     continue
                 
@@ -142,9 +138,9 @@ class GraphQLParser(CustomParser):
                         **GRAPHQL_PATTERNS[PatternCategory.STRUCTURE]['interface'].extract(interface_match)
                     )
                     if current_description:
-                        node["description"] = current_description
+                        node.metadata["description"] = current_description
                         current_description = None
-                    ast["children"].append(node)
+                    ast.children.append(node)
                     current_interface = node
                     continue
                 
@@ -165,9 +161,9 @@ class GraphQLParser(CustomParser):
                     )
                     
                     if current_type:
-                        current_type["children"].append(node)
+                        current_type.children.append(node)
                     else:
-                        current_interface["children"].append(node)
+                        current_interface.children.append(node)
                     continue
                 
                 # Process fragments
@@ -178,14 +174,16 @@ class GraphQLParser(CustomParser):
                         line_end,
                         **GRAPHQL_PATTERNS[PatternCategory.STRUCTURE]['fragment'].extract(fragment_match)
                     )
-                    ast["children"].append(node)
+                    ast.children.append(node)
             
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing GraphQL content: {e}", level="error")
-            return {
-                "type": "document",
-                "error": str(e),
-                "children": []
-            }
+            return GraphQLNode(
+                type="document",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__

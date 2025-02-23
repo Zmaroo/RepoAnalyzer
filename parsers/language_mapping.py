@@ -1,8 +1,9 @@
 """Language mapping definitions."""
 from utils.logger import log
-from typing import Optional, Set
+from typing import Optional, Set, Dict
+import os
+from parsers.models import ParserType, LanguageFeatures
 
-# Language aliases map alternative names to canonical names
 LANGUAGE_ALIASES = {
     "c++": "cpp",
     "cplusplus": "cpp",
@@ -145,9 +146,10 @@ LANGUAGE_ALIASES = {
     "tcl": "tcl",
     "tk": "tcl",
     "sol": "solidity",
+    "ml": "ocaml",
+    "mli": "ocaml_interface",
 }
 
-# Map file extensions to canonical language names
 EXTENSION_TO_LANGUAGE = {
     'py': 'python',
     'js': 'javascript',
@@ -267,72 +269,22 @@ EXTENSION_TO_LANGUAGE = {
     'tcl': 'tcl',
     'tk': 'tcl',
     'sol': 'solidity',
+    'ml': 'ocaml',
+    'mli': 'ocaml_interface',
 }
 
-# Languages supported by tree-sitter
 TREE_SITTER_LANGUAGES = {
-    'python',
-    'javascript',
-    'typescript',
-    'cpp',
-    'c',
-    'cmake',
-    'go',
-    'rust',
-    'php',
-    'csharp',
-    'swift',
-    'kotlin',
-    'scala',
-    'elisp',
-    'elixir',
-    'commonlisp',
-    'cuda',
-    'dart',
-    'dockerfile',
-    'sql',
-    'verilog',
-    'vhdl',
-    'vue',
-    'zig',
-    'css',
-    'elm',
-    'erlang',
-    'fish',
-    'fortran',
-    'gdscript',
-    'gitignore',
-    'gleam',
-    'groovy',
-    'hack',
-    'haxe',
-    'hcl',
-    'latex',
-    'lua',
-    'make',
-    'matlab',
-    'nix',
-    'objc',
-    'pascal',
-    'perl',
-    'powershell',
-    'prisma',
-    'proto',
-    'purescript',
-    'qmljs',
-    'qmldir',
-    'racket',
-    'squirrel',
-    'starlark',
-    'svelte',
-    'tcl'
+    'bash', 'c', 'cpp', 'css', 'dockerfile', 'go', 'html', 'java', 'javascript',
+    'json', 'kotlin', 'lua', 'make', 'markdown', 'php', 'python', 'ruby', 'rust',
+    'scala', 'swift', 'toml', 'tsx', 'typescript', 'yaml', 'zig',
+    'cmake', 'cuda', 'dart', 'elisp', 'elixir', 'elm', 'erlang', 'fish',
+    'fortran', 'gdscript', 'gleam', 'groovy', 'hack', 'haxe', 'hcl',
+    'latex', 'matlab', 'nix', 'objc', 'pascal', 'perl', 'powershell',
+    'prisma', 'proto', 'purescript', 'qmljs', 'racket', 'sql', 'svelte',
+    'tcl', 'verilog', 'vhdl', 'vue'
 }
 
-# Languages with custom parsers
 CUSTOM_PARSER_LANGUAGES = {
-    'dockerfile',
-    'requirements',
-    'properties',
     'env',
     'plaintext',
     'yaml',
@@ -345,6 +297,7 @@ CUSTOM_PARSER_LANGUAGES = {
     'cobalt',
     'xml',
     'html',
+    'ini',
     'json',
     'restructuredtext',
     'toml',
@@ -362,46 +315,3 @@ MIME_TYPES = {
     "html": {"text/html"},
     "css": {"text/css"},
 }
-
-def normalize_language_name(language: str) -> str:
-    """Normalize a language name using LANGUAGE_ALIASES"""
-    if not language:
-        return "unknown"
-    try:
-        normalized = language.lower().replace('-', '_')
-        return LANGUAGE_ALIASES.get(normalized, normalized)
-    except Exception as e:
-        log(f"Error normalizing language name '{language}': {e}", level="error")
-        return "unknown"
-
-def get_language_by_extension(ext: str) -> Optional[str]:
-    """Get canonical language name for a file extension"""
-    if not ext:
-        return None
-    try:
-        clean_ext = ext.lstrip('.').lower()
-        return EXTENSION_TO_LANGUAGE.get(clean_ext)
-    except Exception as e:
-        log(f"Error getting language for extension '{ext}': {e}", level="error")
-        return None
-
-def is_supported_language(language: str) -> bool:
-    """Check if a language is supported by either tree-sitter or custom parser"""
-    try:
-        normalized = normalize_language_name(language)
-        return normalized in TREE_SITTER_LANGUAGES or normalized in CUSTOM_PARSER_LANGUAGES
-    except Exception as e:
-        log(f"Error checking language support for '{language}': {e}", level="error")
-        return False
-
-def get_extensions_for_language(language: str) -> Set[str]:
-    """Get all file extensions associated with a language"""
-    try:
-        if language == "*":
-            return set(EXTENSION_TO_LANGUAGE.keys())
-        normalized = normalize_language_name(language)
-        return {ext for ext, lang in EXTENSION_TO_LANGUAGE.items() 
-                if lang == normalized}
-    except Exception as e:
-        log(f"Error getting extensions for language '{language}': {e}", level="error")
-        return set()

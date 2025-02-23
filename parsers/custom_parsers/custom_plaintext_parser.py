@@ -1,30 +1,27 @@
 """Custom parser for plaintext with enhanced documentation features."""
 
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.query_patterns.plaintext import PLAINTEXT_PATTERNS, PatternCategory
+from parsers.models import PlaintextNode
 from utils.logger import log
 
-@dataclass
-class PlaintextNode:
-    """Base class for plaintext AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class PlaintextParser(CustomParser):
+class PlaintextParser(BaseParser):
     """Parser for plaintext files."""
     
-    def __init__(self, language_id: str = "plaintext", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "plaintext", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.DOCUMENTATION)
         self.patterns = {
             name: pattern.pattern
             for category in PLAINTEXT_PATTERNS.values()
             for name, pattern in category.items()
         }
+
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
 
     def _create_node(
         self,
@@ -32,15 +29,15 @@ class PlaintextParser(CustomParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> PlaintextNode:
+        """Create a standardized plaintext AST node."""
+        return PlaintextNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse plaintext content into AST structure."""
@@ -49,8 +46,7 @@ class PlaintextParser(CustomParser):
             ast = self._create_node(
                 "document",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
 
             current_paragraph = []
@@ -68,7 +64,7 @@ class PlaintextParser(CustomParser):
                             [i - 1, len(current_paragraph[-1])],
                             content="\n".join(current_paragraph)
                         )
-                        ast["children"].append(node)
+                        ast.children.append(node)
                         current_paragraph = []
                     continue
 
@@ -83,7 +79,7 @@ class PlaintextParser(CustomParser):
                                 line_end,
                                 **pattern.extract(match)
                             )
-                            ast["children"].append(node)
+                            ast.children.append(node)
                             matched = True
                             break
                     if matched:
@@ -100,14 +96,16 @@ class PlaintextParser(CustomParser):
                     [len(lines) - 1, len(current_paragraph[-1])],
                     content="\n".join(current_paragraph)
                 )
-                ast["children"].append(node)
+                ast.children.append(node)
 
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing plaintext content: {e}", level="error")
-            return {
-                "type": "document",
-                "error": str(e),
-                "children": []
-            }
+            return PlaintextNode(
+                type="document",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__

@@ -2,49 +2,46 @@
 Custom parser for the Cobalt programming language.
 """
 
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.query_patterns.cobalt import COBALT_PATTERNS
 from parsers.pattern_processor import PatternCategory
+from parsers.models import CobaltNode
 from utils.logger import log
 import re
 
-@dataclass
-class CobaltNode:
-    """Base class for Cobalt AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class CobaltParser(CustomParser):
+class CobaltParser(BaseParser):
     """Parser for the Cobalt programming language."""
     
-    def __init__(self, language_id: str = "cobalt", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "cobalt", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.CODE)
         self.patterns = {
             name: re.compile(pattern.pattern)
             for category in COBALT_PATTERNS.values()
             for name, pattern in category.items()
         }
     
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
+
     def _create_node(
         self,
         node_type: str,
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> CobaltNode:
+        """Create a standardized Cobalt AST node."""
+        return CobaltNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse Cobalt content into AST structure."""
@@ -53,8 +50,7 @@ class CobaltParser(CustomParser):
             ast = self._create_node(
                 "module",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
             
             current_doc = []
@@ -71,7 +67,7 @@ class CobaltParser(CustomParser):
                     
                 # Process regular comments
                 if comment_match := self.patterns['comment'].match(line):
-                    current_scope[-1]["children"].append(
+                    current_scope[-1].children.append(
                         self._create_node(
                             "comment",
                             line_start,
@@ -94,21 +90,21 @@ class CobaltParser(CustomParser):
                                 **node_data
                             )
                             if current_doc:
-                                node["documentation"] = "\n".join(current_doc)
+                                node.metadata["documentation"] = "\n".join(current_doc)
                                 current_doc = []
-                            current_scope[-1]["children"].append(node)
+                            current_scope[-1].children.append(node)
                             current_scope.append(node)
                             break
                 
                 elif line.strip() == "}":
                     if len(current_scope) > 1:
-                        current_scope[-1]["end_point"] = line_end
+                        current_scope[-1].end_point = line_end
                         current_scope.pop()
                     continue
                 
                 # Flush accumulated docstrings before declarations
                 if current_doc and not line.strip().startswith("///"):
-                    current_scope[-1]["children"].append(
+                    current_scope[-1].children.append(
                         self._create_node(
                             "docstring",
                             [i - len(current_doc), 0],
@@ -135,15 +131,17 @@ class CobaltParser(CustomParser):
                             line_end,
                             **node_data
                         )
-                        current_scope[-1]["children"].append(node)
+                        current_scope[-1].children.append(node)
                         break
             
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing Cobalt content: {e}", level="error")
-            return {
-                "type": "module",
-                "error": str(e),
-                "children": []
-            } 
+            return CobaltNode(
+                type="module",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__ 

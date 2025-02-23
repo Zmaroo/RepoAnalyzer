@@ -1,31 +1,28 @@
 """Custom parser for TOML with enhanced documentation features."""
 
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from parsers.base_parser import CustomParser
-from parsers.file_classification import FileClassification
+from parsers.base_parser import BaseParser
+from parsers.models import FileType
 from parsers.query_patterns.toml import TOML_PATTERNS, PatternCategory
+from parsers.models import TomlNode
 from utils.logger import log
 import tomli
 
-@dataclass
-class TomlNode:
-    """Base class for TOML AST nodes."""
-    type: str
-    start_point: List[int]
-    end_point: List[int]
-    children: List[Any]
-
-class TomlParser(CustomParser):
+class TomlParser(BaseParser):
     """Parser for TOML files."""
     
-    def __init__(self, language_id: str = "toml", classification: Optional[FileClassification] = None):
-        super().__init__(language_id, classification)
+    def __init__(self, language_id: str = "toml", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.CONFIG)
         self.patterns = {
             name: pattern.pattern
             for category in TOML_PATTERNS.values()
             for name, pattern in category.items()
         }
+
+    def initialize(self) -> bool:
+        """Initialize parser resources."""
+        self._initialized = True
+        return True
 
     def _create_node(
         self,
@@ -33,17 +30,17 @@ class TomlParser(CustomParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> Dict:
-        """Create a standardized AST node."""
-        return {
-            "type": node_type,
-            "start_point": start_point,
-            "end_point": end_point,
-            "children": [],
+    ) -> TomlNode:
+        """Create a standardized TOML AST node."""
+        return TomlNode(
+            type=node_type,
+            start_point=start_point,
+            end_point=end_point,
+            children=[],
             **kwargs
-        }
+        )
 
-    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> Dict:
+    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> TomlNode:
         """Process a TOML value and extract its features."""
         value_data = self._create_node(
             "value",
@@ -55,26 +52,26 @@ class TomlParser(CustomParser):
         )
         
         if isinstance(value, dict):
-            value_data["type"] = "table"
-            value_data["keys"] = list(value.keys())
+            value_data.type = "table"
+            value_data.metadata["keys"] = list(value.keys())
             for key, val in value.items():
                 child = self._process_value(
                     val,
                     path + [key],
                     [start_point[0], start_point[1] + len(key) + 1]
                 )
-                value_data["children"].append(child)
+                value_data.children.append(child)
                 
         elif isinstance(value, list):
-            value_data["type"] = "array"
-            value_data["length"] = len(value)
+            value_data.type = "array"
+            value_data.metadata["length"] = len(value)
             for i, item in enumerate(value):
                 child = self._process_value(
                     item,
                     path + [f"[{i}]"],
                     [start_point[0], start_point[1] + i]
                 )
-                value_data["children"].append(child)
+                value_data.children.append(child)
         
         return value_data
 
@@ -85,8 +82,7 @@ class TomlParser(CustomParser):
             ast = self._create_node(
                 "document",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
+                [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
 
             # Process comments and structure
@@ -107,9 +103,9 @@ class TomlParser(CustomParser):
                                 **pattern.extract(match)
                             )
                             if current_comments:
-                                node["comments"] = current_comments
+                                node.metadata["comments"] = current_comments
                                 current_comments = []
-                            ast["children"].append(node)
+                            ast.children.append(node)
                             matched = True
                             break
                     if matched:
@@ -122,21 +118,25 @@ class TomlParser(CustomParser):
             try:
                 data = tomli.loads(source_code)
                 root_value = self._process_value(data, [], [0, 0])
-                ast["children"].append(root_value)
+                ast.children.append(root_value)
             except Exception as e:
                 log(f"Error parsing TOML content: {e}", level="error")
-                return {
-                    "type": "document",
-                    "error": str(e),
-                    "children": []
-                }
+                return TomlNode(
+                    type="document",
+                    start_point=[0, 0],
+                    end_point=[0, 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
 
-            return ast
+            return ast.__dict__
             
         except Exception as e:
             log(f"Error parsing TOML content: {e}", level="error")
-            return {
-                "type": "document",
-                "error": str(e),
-                "children": []
-            } 
+            return TomlNode(
+                type="document",
+                start_point=[0, 0],
+                end_point=[0, 0],
+                error=str(e),
+                children=[]
+            ).__dict__ 
