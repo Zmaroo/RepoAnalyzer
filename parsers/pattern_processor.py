@@ -5,11 +5,10 @@ from dataclasses import dataclass, field
 from parsers.language_mapping import TREE_SITTER_LANGUAGES, CUSTOM_PARSER_LANGUAGES
 import re
 
-from parsers.models import (
-    FeatureCategory,
+from .types import FileType, FeatureCategory
+from .models import PATTERN_CATEGORIES, (
     PatternDefinition,
     ExtractedFeatures,
-    FileType,
     QueryPattern,
     PatternMatch,
     FileClassification,

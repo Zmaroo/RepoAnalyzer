@@ -30,18 +30,11 @@ Pipeline Stages:
 """
 
 from typing import Optional
-from parsers.models import (
-    ParserResult,
-    FileType,
-    FileClassification,
-    ExtractedFeatures,
-    FileMetadata,
-    ParserType
-)
+from .types import FileType, FeatureCategory, ParserType
+from .models import FileClassification, ParserResult, PATTERN_CATEGORIES
 
 from parsers.language_support import language_registry, get_language_by_extension
 from parsers.feature_extractor import FeatureExtractor
-from parsers.models import FeatureCategory
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ParsingError
 from utils.encoding import encode_query_pattern
 from utils.logger import log

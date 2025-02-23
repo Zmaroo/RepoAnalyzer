@@ -2,19 +2,18 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
-from parsers.models import (
+from .types import FileType, FeatureCategory, ParserType
+from .models import (
     ParserResult,
     ParserConfig,
     ParsingStatistics,
-    FileType,
-    ExtractedFeatures,
-    ParserType
+    FileClassification,
+    PATTERN_CATEGORIES
 )
 from parsers.feature_extractor import TreeSitterFeatureExtractor, CustomFeatureExtractor
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from utils.logger import log
 from parsers.pattern_processor import PatternProcessor
-from parsers.models import FeatureCategory
 
 class BaseParser(ABC):
     """Abstract base class for all parsers.
