@@ -1,4 +1,7 @@
-from neo4j import GraphDatabase
+"""Neo4j operations."""
+
+from typing import Dict, Any, Optional, List
+from db.connection import driver
 from db.transaction import transaction_scope
 from config import neo4j_config
 from utils.logger import log
@@ -12,32 +15,20 @@ from utils.error_handling import (
     Neo4jError,
     TransactionError
 )
-from parsers.models import (
-    FileType,
-    FileClassification,
-    ParserResult,
+from parsers.types import (
     ExtractedFeatures,
     FeatureCategory
 )
 import logging
 
-# Create the Neo4j driver instance using configuration from .env
-with ErrorBoundary("Neo4j driver initialization", error_types=DatabaseError):
-    driver = GraphDatabase.driver(
-        neo4j_config.uri,
-        auth=(neo4j_config.user, neo4j_config.password)
-    )
-
 # You can add a logging statement to confirm the connection
 log(f"Connected to Neo4j Desktop at {neo4j_config.uri} using database '{neo4j_config.database}'", level="info")
 
-@handle_errors(error_types=DatabaseError, default_return=[])
-def run_query(cypher: str, params: dict = None) -> list:
-    """Execute a Neo4j query."""
-    with ErrorBoundary("Neo4j query execution", error_types=DatabaseError):
-        with driver.session(database=neo4j_config.database) as session:
-            result = session.run(cypher, params or {})
-            return [record.data() for record in result]
+async def run_query(query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Run a Neo4j query and return results."""
+    async with driver.session() as session:
+        result = await session.run(query, params or {})
+        return [record.data() for record in await result.fetch()]
 
 class Neo4jTools:
     """[6.2.1] Neo4j database operations coordinator."""
@@ -45,10 +36,7 @@ class Neo4jTools:
     def __init__(self, config=neo4j_config):
         self.config = config
         with ErrorBoundary("Neo4j tools initialization", error_types=DatabaseError):
-            self.driver = GraphDatabase.driver(
-                config.uri,
-                auth=(config.user, config.password)
-            )
+            self.driver = driver
         logging.info("Neo4j driver initialized with URI: %s and Database: %s", config.uri, config.database)
 
     @handle_async_errors(error_types=(Neo4jError, TransactionError))
@@ -86,7 +74,7 @@ class Neo4jTools:
             MATCH (t:Code {repo_id: $repo_id, file_path: rel.target})
             MERGE (s)-[r:rel.type]->(t)
             """
-            run_query(query, {
+            await run_query(query, {
                 "repo_id": repo_id,
                 "relationships": relationships
             })
@@ -154,7 +142,7 @@ class Neo4jTools:
             "structural_features": features.get_category(FeatureCategory.STRUCTURE)
         }
         
-        await self.run_query(query, properties)
+        await run_query(query, properties)
         await self.create_feature_relationships(repo_id, file_path, features)
 
 def create_schema_indexes_and_constraints():

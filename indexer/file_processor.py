@@ -19,13 +19,11 @@ Flow:
 
 from typing import Optional, Dict
 from tree_sitter_language_pack import SupportedLanguage
-from parsers.models import (
-    FileType,
-    FileClassification,
-    ParserResult
+from indexer.file_utils import get_file_classification
+from parsers.types import (
+    FileType
 )
 from parsers.language_support import language_registry
-from parsers.models import get_file_classification
 from parsers.unified_parser import unified_parser
 from db.upsert_ops import upsert_code_snippet, upsert_doc
 from indexer.file_utils import get_relative_path, is_processable_file

@@ -2,8 +2,8 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
-from parsers.query_patterns.json import JSON_PATTERNS, PatternCategory
+from parsers.query_patterns.json import JSON_PATTERNS
+from parsers.types import PatternCategory, FileType
 from parsers.models import JsonNode
 from utils.logger import log
 import json

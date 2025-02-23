@@ -27,10 +27,23 @@ import os
 import signal
 import sys
 from utils.logger import log  # Use our central logger
-from parsers.models import (  # Updated imports
+from parsers.types import (
+    ParserResult,
     FileType,
+    ParserType,
+    Documentation,
+    ComplexityMetrics,
+    ExtractedFeatures
+)
+from parsers.models import (
+    FileMetadata,
     FileClassification,
-    ParserResult
+    LanguageFeatures,
+    PatternMatch,
+    PatternDefinition,
+    QueryPattern,
+    QueryResult,
+    FeatureExtractor
 )
 
 # Use the new consolidated module for schema initialization.

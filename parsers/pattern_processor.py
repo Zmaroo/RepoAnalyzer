@@ -2,26 +2,19 @@
 
 from typing import Dict, Any, List, Union, Callable, Optional
 from dataclasses import dataclass, field
-from parsers.language_mapping import TREE_SITTER_LANGUAGES, CUSTOM_PARSER_LANGUAGES
+from parsers.language_mapping import TREE_SITTER_LANGUAGES, CUSTOM_PARSER_LANGUAGES, normalize_language_name
 import re
-
-from .types import FileType, FeatureCategory
-from .models import PATTERN_CATEGORIES, (
+from .types import ParserType
+from .models import (
     PatternDefinition,
-    ExtractedFeatures,
-    QueryPattern,
     PatternMatch,
-    FileClassification,
-    ParserType
+    FileClassification
 )
 from utils.logger import log
 import os
 import pkgutil
 import importlib
-from parsers.language_support import (
-    normalize_language_name,
-    is_supported_language
-)
+from parsers.language_mapping import is_supported_language
 
 # Add these common patterns at the top level
 COMMON_PATTERNS = {

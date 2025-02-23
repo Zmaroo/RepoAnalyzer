@@ -4,10 +4,9 @@ Custom parser for the Cobalt programming language.
 
 from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
-from parsers.query_patterns.cobalt import COBALT_PATTERNS
-from parsers.pattern_processor import PatternCategory
 from parsers.models import CobaltNode
+from parsers.query_patterns.cobalt import COBALT_PATTERNS
+from parsers.types import PatternCategory, FileType
 from utils.logger import log
 import re
 

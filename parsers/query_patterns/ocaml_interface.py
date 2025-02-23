@@ -7,8 +7,9 @@ The custom parser returns an AST with a root node ("ocaml_stream") whose childre
 (e.g. @val_declaration) to ensure that all pertinent information is extracted.
 """
 
-from parsers.pattern_processor import QueryPattern, PatternCategory
-from typing import Dict, Any, Match
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 
 def extract_val_declaration(match: Match) -> Dict[str, Any]:
     """Extract value declaration information."""

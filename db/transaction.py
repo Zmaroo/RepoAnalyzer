@@ -2,16 +2,11 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, AsyncGenerator
 from utils.logger import log
 from db.psql import _pool
-from db.neo4j_ops import driver
+from db.connection import driver
 from utils.cache import cache_coordinator
-from parsers.models import (
-    FileType,
-    FileClassification,
-    ParserResult
-)
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
 from utils.error_handling import PostgresError, Neo4jError, TransactionError, CacheError
 

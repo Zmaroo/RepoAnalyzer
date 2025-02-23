@@ -2,9 +2,9 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
-from parsers.query_patterns.ini import INI_PATTERNS, PatternCategory
+from parsers.types import FileType, PatternCategory
 from parsers.models import IniNode
+from parsers.query_patterns.ini import INI_PATTERNS
 from utils.logger import log
 import re
 

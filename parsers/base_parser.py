@@ -2,19 +2,11 @@
 
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
-from .types import FileType, FeatureCategory, ParserType
-from .models import (
-    ParserResult,
-    ParserConfig,
-    ParsingStatistics,
-    FileClassification,
-    PATTERN_CATEGORIES
-)
-from parsers.feature_extractor import TreeSitterFeatureExtractor, CustomFeatureExtractor
-from parsers.language_mapping import TREE_SITTER_LANGUAGES
+from .types import FileType, FeatureCategory, ParserType, ParserResult, ParserConfig, ParsingStatistics
+from dataclasses import dataclass, field
 from utils.logger import log
-from parsers.pattern_processor import PatternProcessor
 
+@dataclass
 class BaseParser(ABC):
     """Abstract base class for all parsers.
     
@@ -23,55 +15,21 @@ class BaseParser(ABC):
     - Language-specific parsers (NimParser, PlaintextParser, etc.): For custom parsing
     """
     
-    def __init__(self, language_id: str, file_type: FileType, parser_type: ParserType):
-        self.language_id = language_id
-        self.file_type = file_type
-        self.parser_type = parser_type
-        self._initialized = False
-        self.config = ParserConfig()
-        self.stats = ParsingStatistics()
-        
-        # Create appropriate feature extractor based on parser type
-        self.feature_extractor = (
-            TreeSitterFeatureExtractor(language_id, file_type)
-            if parser_type == ParserType.TREE_SITTER
-            else CustomFeatureExtractor(language_id, file_type)
-        )
-        
-        self.pattern_processor = PatternProcessor()
+    language_id: str
+    file_type: FileType
+    parser_type: ParserType
+    _initialized: bool = False
+    config: ParserConfig = field(default_factory=lambda: ParserConfig())
+    stats: ParsingStatistics = field(default_factory=lambda: ParsingStatistics())
     
     @abstractmethod
     def initialize(self) -> bool:
-        """Initialize parser-specific resources.
-        
-        Returns:
-            bool: True if initialization successful
-        """
+        """Initialize parser resources."""
         pass
     
     @abstractmethod
     def _parse_source(self, source_code: str) -> Optional[Dict[str, Any]]:
-        """Generate AST from source code.
-        
-        Args:
-            source_code (str): Source code to parse
-            
-        Returns:
-            Optional[Dict[str, Any]]: AST structure or None if parsing fails
-            
-        For tree-sitter parsers:
-            Returns {"type": "tree-sitter", "root": Node, "tree": Dict}
-            
-        For custom parsers:
-            Returns CustomParserNode.__dict__ with structure:
-            {
-                "type": str,
-                "start_point": List[int],
-                "end_point": List[int],
-                "children": List[Dict],
-                "metadata": Dict[str, Any]
-            }
-        """
+        """Parse source code into AST."""
         pass
 
     def _get_syntax_errors(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

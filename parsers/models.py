@@ -2,8 +2,9 @@
 
 from typing import Dict, Any, List, Optional, Set, Union, Callable
 from dataclasses import dataclass, field
-from .types import FileType, FeatureCategory, ParserType
+from parsers.types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics
 from enum import Enum
+from parsers.base_parser import BaseParser
 
 @dataclass
 class FileMetadata:
@@ -26,23 +27,6 @@ class LanguageFeatures:
     canonical_name: str
     file_extensions: Set[str]
     parser_type: ParserType
-
-@dataclass
-class Documentation:
-    """Documentation features."""
-    docstrings: List[Dict[str, Any]] = field(default_factory=list)
-    comments: List[Dict[str, Any]] = field(default_factory=list)
-    todos: List[Dict[str, Any]] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-@dataclass
-class ComplexityMetrics:
-    """Code complexity metrics."""
-    cyclomatic: int = 0
-    cognitive: int = 0
-    halstead: Dict[str, float] = field(default_factory=dict)
-    maintainability_index: float = 0.0
-    lines_of_code: Dict[str, int] = field(default_factory=dict)
 
 @dataclass
 class PatternMatch:
@@ -77,38 +61,21 @@ class QueryResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
-class ExtractedFeatures:
-    """Extracted feature container."""
-    features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    documentation: Documentation = field(default_factory=Documentation)
-    metrics: ComplexityMetrics = field(default_factory=ComplexityMetrics)
+class FeatureExtractor:
+    """Base class for feature extractors."""
+    language_id: str
+    parser_type: ParserType
+    patterns: Dict[str, Any] = field(default_factory=dict)
+    initialized: bool = False
 
-@dataclass
-class ParsingStatistics:
-    """Parsing performance statistics."""
-    parse_time_ms: float = 0.0
-    feature_extraction_time_ms: float = 0.0
-    node_count: int = 0
-    error_count: int = 0
+    def initialize(self) -> bool:
+        """Initialize extractor resources."""
+        self.initialized = True
+        return True
 
-@dataclass
-class ParserConfig:
-    """Parser configuration."""
-    max_file_size: int = 1024 * 1024  # 1MB
-    timeout_ms: int = 5000
-    cache_results: bool = True
-    include_comments: bool = True
-
-@dataclass
-class ParserResult:
-    """Standardized parser result."""
-    success: bool
-    ast: Optional[Dict[str, Any]] = None
-    features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    documentation: Dict[str, Any] = field(default_factory=dict)
-    complexity: Dict[str, Any] = field(default_factory=dict)
-    statistics: Dict[str, Any] = field(default_factory=dict)
-    errors: List[Dict[str, Any]] = field(default_factory=list)
+    def cleanup(self):
+        """Clean up extractor resources."""
+        self.initialized = False
 
 # Pattern category mappings
 PATTERN_CATEGORIES = {
@@ -156,14 +123,6 @@ PATTERN_CATEGORIES = {
         ]
     }
 }
-
-class FileType(Enum):
-    """Enum for file types."""
-    CODE = "code"
-    DOCUMENTATION = "documentation"
-    CONFIG = "config"
-    DATA = "data"
-    MARKUP = "markup"
 
 @dataclass
 class BaseNode:
@@ -278,4 +237,35 @@ class YamlNode(BaseNode):
     """Node for YAML parser."""
     value: Any = None
     path: Optional[str] = None
+
+@dataclass
+class LanguageRegistry:
+    """Registry for language parsers."""
+    _parsers: Dict[str, BaseParser] = field(default_factory=dict)
+    _initialized: bool = False
+
+    def get_parser(self, language_id: str) -> Optional[BaseParser]:
+        """Get parser for language."""
+        return self._parsers.get(language_id)
+
+    def register_parser(self, parser: BaseParser):
+        """Register a parser."""
+        self._parsers[parser.language_id] = parser
+
+    def cleanup(self):
+        """Clean up all parser instances."""
+        for parser in self._parsers.values():
+            parser.cleanup()
+        self._parsers.clear()
+
+# Global instance
+language_registry = LanguageRegistry()
+
+@dataclass
+class ProcessedPattern:
+    """Processed pattern result."""
+    pattern_name: str
+    matches: List[PatternMatch] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
 

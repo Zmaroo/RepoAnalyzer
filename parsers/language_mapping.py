@@ -315,3 +315,19 @@ MIME_TYPES = {
     "html": {"text/html"},
     "css": {"text/css"},
 }
+
+def normalize_language_name(language: str) -> str:
+    """Normalize a language name using LANGUAGE_ALIASES."""
+    if not language:
+        return "unknown"
+    try:
+        normalized = language.lower().replace('-', '_')
+        return LANGUAGE_ALIASES.get(normalized, normalized)
+    except Exception as e:
+        log(f"Error normalizing language name '{language}': {e}", level="error")
+        return "unknown"
+    
+def is_supported_language(language_id: str) -> bool:
+    """Check if language is supported."""
+    normalized = normalize_language_name(language_id)
+    return normalized in TREE_SITTER_LANGUAGES or normalized in CUSTOM_PARSER_LANGUAGES

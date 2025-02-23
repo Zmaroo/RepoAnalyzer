@@ -23,10 +23,10 @@ Standalone parsing functions have been removed in favor of the classes below.
 import re
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
 from parsers.query_patterns.ocaml import OCAML_PATTERNS
 from parsers.query_patterns.ocaml_interface import OCAML_INTERFACE_PATTERNS
 from parsers.models import OcamlNode
+from parsers.types import FileType, PatternCategory
 from utils.logger import log
 
 def compute_offset(lines, line_no, col):

@@ -12,14 +12,16 @@ load_dotenv()
 
 @dataclass
 class PostgresConfig:
+    """PostgreSQL configuration."""
     host: str = os.getenv('PGHOST', 'localhost')
-    user: str = os.getenv('PGUSER', 'user')
-    password: str = os.getenv('PGPASSWORD', 'password')
-    database: str = os.getenv('PGDATABASE', 'mydb')
     port: int = int(os.getenv('PGPORT', '5432'))
+    database: str = os.getenv('PGDATABASE', 'repoanalyzer')
+    user: str = os.getenv('PGUSER', 'postgres')
+    password: str = os.getenv('PGPASSWORD', 'password')
 
 @dataclass
 class Neo4jConfig:
+    """Neo4j configuration."""
     uri: str = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
     user: str = os.getenv('NEO4J_USER', 'neo4j')
     password: str = os.getenv('NEO4J_PASSWORD', 'password')
@@ -27,13 +29,25 @@ class Neo4jConfig:
 
 @dataclass
 class ParserConfig:
+    """Parser configuration."""
+    max_file_size: int = 1024 * 1024  # 1MB
+    timeout: int = 30  # seconds
+    cache_enabled: bool = True
     language_data_path: str = os.getenv('PARSER_LANGUAGE_DATA', 'parsers/data')
-    # Add additional parser-specific settings here if needed.
 
-# Create global configuration objects to be imported elsewhere
+@dataclass
+class RedisConfig:
+    """Redis configuration."""
+    host: str = os.getenv('REDIS_HOST', 'localhost')
+    port: int = int(os.getenv('REDIS_PORT', '6379'))
+    db: int = int(os.getenv('REDIS_DB', '0'))
+    password: str = os.getenv('REDIS_PASSWORD', None)
+
+# Create global configuration instances
 postgres_config = PostgresConfig()
 neo4j_config = Neo4jConfig()
 parser_config = ParserConfig()
+redis_config = RedisConfig()
 
 @handle_errors(error_types=ProcessingError)
 def validate_configs() -> bool:

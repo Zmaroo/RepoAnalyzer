@@ -18,15 +18,10 @@ Flow:
 """
 
 import asyncio
-from typing import Optional, Set, Dict
+from typing import Optional, Set, Dict, Any, List
 from utils.logger import log
-from db.neo4j_ops import run_query, driver
+from db.connection import driver
 from utils.cache import create_cache
-from parsers.models import (  # Add imports
-    FileType,
-    FileClassification,
-    ParserResult
-)
 from utils.error_handling import DatabaseError, Neo4jError
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
 
@@ -100,7 +95,7 @@ class GraphSyncCoordinator:
             CALL gds.graph.exists($projection)
             YIELD exists
             """
-            response = run_query(query, {"projection": projection_name})
+            response = await driver.run(query, {"projection": projection_name})
             exists = response[0].get("exists", False)
             
             if exists:
@@ -126,7 +121,7 @@ class GraphSyncCoordinator:
         )
         """
         try:
-            run_query(projection_query, {"repo_id": repo_id})
+            await driver.run(projection_query, {"repo_id": repo_id})
             await graph_cache.set_async(f"projection:{projection_name}", True)
             log(f"Created graph projection: {projection_name}", level="info")
         except Exception as e:
@@ -137,7 +132,7 @@ class GraphSyncCoordinator:
         """Drops existing graph projection."""
         try:
             query = "CALL gds.graph.drop($projection)"
-            run_query(query, {"projection": projection_name})
+            await driver.run(query, {"projection": projection_name})
             await graph_cache.clear_pattern_async(f"projection:{projection_name}")
             log(f"Dropped graph projection: {projection_name}", level="info")
         except Exception as e:
@@ -161,4 +156,19 @@ class GraphSyncCoordinator:
             self._pending_updates.clear()
 
 # Global instance
-graph_sync = GraphSyncCoordinator() 
+graph_sync = GraphSyncCoordinator()
+
+async def graph_sync(nodes: List[Dict[str, Any]], relationships: List[Dict[str, Any]]) -> bool:
+    """Synchronize graph with provided nodes and relationships."""
+    async with driver.session() as session:
+        # Implement using direct session operations instead of run_query
+        # ... implementation ...
+        return True  # Placeholder return, actual implementation needed
+
+async def graph_sync_from_file(file_path: str) -> bool:
+    # Implementation needed
+    return False  # Placeholder return, actual implementation needed
+
+async def graph_sync_from_search(query: str) -> bool:
+    # Implementation needed
+    return False  # Placeholder return, actual implementation needed 

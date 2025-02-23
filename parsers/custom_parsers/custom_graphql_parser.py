@@ -7,13 +7,13 @@ enum, or schema definitions from a GraphQL file.
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
-from parsers.query_patterns.graphql import GRAPHQL_PATTERNS, PatternCategory
+from parsers.types import FileType, PatternCategory
+from parsers.query_patterns.graphql import GRAPHQL_PATTERNS
 from parsers.models import GraphQLNode
 from utils.logger import log
 import re
 
-class GraphQLParser(BaseParser):
+class GraphqlParser(BaseParser):
     """Parser for GraphQL schema files."""
     
     def __init__(self, language_id: str = "graphql", file_type: Optional[FileType] = None):

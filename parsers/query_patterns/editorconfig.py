@@ -4,9 +4,9 @@ Query patterns for EditorConfig files aligned with PATTERN_CATEGORIES.
 These patterns target the custom AST produced by our custom editorconfig parser.
 """
 
-from parsers.file_classification import FileType
-from parsers.pattern_processor import QueryPattern, PatternCategory
-from typing import Dict, Any, Match
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 
 def extract_section(match: Match) -> Dict[str, Any]:
     """Extract section information."""

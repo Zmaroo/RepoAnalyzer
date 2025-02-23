@@ -1,7 +1,8 @@
 """Query patterns for Nim files."""
 
-from parsers.pattern_processor import QueryPattern, PatternCategory
-from typing import Dict, Any, Match
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 
 def extract_proc(match: Match) -> Dict[str, Any]:
     """Extract procedure information."""

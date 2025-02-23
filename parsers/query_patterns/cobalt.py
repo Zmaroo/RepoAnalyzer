@@ -1,7 +1,7 @@
 """Query patterns for the Cobalt programming language."""
 
-from parsers.pattern_processor import QueryPattern, PatternCategory
 from typing import Dict, Any, Match
+from parsers.types import QueryPattern, PatternCategory
 
 def extract_function(match: Match) -> Dict[str, Any]:
     """Extract function information."""

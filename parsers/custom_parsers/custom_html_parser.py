@@ -2,8 +2,8 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
-from parsers.query_patterns.html import HTML_PATTERNS, PatternCategory
+from parsers.types import FileType, PatternCategory
+from parsers.query_patterns.html import HTML_PATTERNS
 from parsers.models import HtmlNode
 from utils.logger import log
 from xml.etree.ElementTree import Element, fromstring

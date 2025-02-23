@@ -7,10 +7,9 @@ Comments (lines starting with #) are skipped (or can be used as documentation).
 
 from typing import Dict, List, Any, Optional, Tuple
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
-from parsers.pattern_processor import PatternCategory 
-from parsers.query_patterns.env import ENV_PATTERNS
 from parsers.models import EnvNode
+from parsers.types import FileType, PatternCategory
+from parsers.query_patterns.env import ENV_PATTERNS
 from utils.logger import log
 import re
 

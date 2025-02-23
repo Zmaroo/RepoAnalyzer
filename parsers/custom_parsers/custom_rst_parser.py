@@ -2,9 +2,9 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
-from parsers.query_patterns.rst import RST_PATTERNS, PatternCategory
 from parsers.models import RstNode
+from parsers.types import FileType, PatternCategory
+from parsers.query_patterns.rst import RST_PATTERNS
 from utils.logger import log
 
 class RstParser(BaseParser):

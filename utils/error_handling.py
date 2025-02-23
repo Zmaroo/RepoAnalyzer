@@ -56,17 +56,21 @@ async def AsyncErrorBoundary(operation: str, error_types: Tuple[Type[Exception],
         log(f"Error in {operation}: {str(e)}", level="error")
         raise
 
-def handle_async_errors(error_types: Tuple[Type[Exception], ...] = (Exception,)):
-    """Decorator for handling async function errors."""
+def handle_async_errors(error_types=Exception, default_return=None):
+    """Decorator for handling async function errors.
+    
+    Args:
+        error_types: Exception type or tuple of types to catch
+        default_return: Value to return on error (default: None)
+    """
     def decorator(func):
-        @wraps(func)
         async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
             except error_types as e:
                 from utils.logger import log
-                log(f"Error in {func.__name__}: {str(e)}", level="error")
-                raise
+                log(f"Error in {func.__name__}: {e}", level="error")
+                return default_return if default_return is not None else None
         return wrapper
     return decorator
 

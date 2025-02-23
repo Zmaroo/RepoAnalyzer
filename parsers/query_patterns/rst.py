@@ -1,7 +1,7 @@
 """Query patterns for reStructuredText files."""
 
-from parsers.pattern_processor import QueryPattern, PatternCategory
 from typing import Dict, Any, Match
+from parsers.types import QueryPattern, PatternCategory
 
 def extract_section(match: Match) -> Dict[str, Any]:
     """Extract section information."""

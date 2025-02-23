@@ -11,7 +11,7 @@ import logging
 from utils.logger import log, logger
 from db.psql import query
 from db.schema import create_all_tables
-from db.neo4j import run_query  # Import the Neo4j query function
+from db.neo4j_ops import run_query  # Import the Neo4j query function
 
 def setup_logging(debug=False):
     # Get the Neo4j logger and set it to use our logger's handler

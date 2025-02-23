@@ -4,9 +4,9 @@ Query patterns for .env files aligned with PATTERN_CATEGORIES.
 The parser produces an AST with a root node 'env_file' and children of type 'env_var'.
 """
 
-from parsers.file_classification import FileType
-from parsers.pattern_processor import QueryPattern, PatternCategory
-from typing import Dict, Any, Match
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 
 ENVIRONMENT_PATTERNS = {
     "syntax": {

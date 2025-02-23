@@ -8,9 +8,9 @@ key-value property lines beneath each section.
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
-from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
 from parsers.models import EditorconfigNode
+from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
+from parsers.types import FileType
 from utils.logger import log
 import re
 

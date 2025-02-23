@@ -1,7 +1,8 @@
 """Common types and enums for parsers."""
 
 from enum import Enum
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
+from dataclasses import dataclass, field
 
 class FileType(Enum):
     """File classification types."""
@@ -17,8 +18,74 @@ class FeatureCategory(Enum):
     DOCUMENTATION = "documentation"
     STRUCTURE = "structure"
 
+class PatternCategory(Enum):
+    """Categories for pattern matching."""
+    SYNTAX = "syntax"
+    SEMANTICS = "semantics"
+    DOCUMENTATION = "documentation"
+    STRUCTURE = "structure"
+
 class ParserType(Enum):
     """Parser implementation types."""
     TREE_SITTER = "tree_sitter"
     CUSTOM = "custom"
-    HYBRID = "hybrid" 
+    HYBRID = "hybrid"
+
+@dataclass
+class ParserResult:
+    """Standardized parser result."""
+    success: bool
+    ast: Optional[Dict[str, Any]] = None
+    features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    documentation: Dict[str, Any] = field(default_factory=dict)
+    complexity: Dict[str, Any] = field(default_factory=dict)
+    statistics: Dict[str, Any] = field(default_factory=dict)
+    errors: List[Dict[str, Any]] = field(default_factory=list)
+
+@dataclass
+class ParserConfig:
+    """Parser configuration."""
+    max_file_size: int = 1024 * 1024  # 1MB
+    timeout_ms: int = 5000
+    cache_results: bool = True
+    include_comments: bool = True
+
+@dataclass
+class ParsingStatistics:
+    """Parsing performance statistics."""
+    parse_time_ms: float = 0.0
+    feature_extraction_time_ms: float = 0.0
+    node_count: int = 0
+    error_count: int = 0
+
+@dataclass
+class Documentation:
+    """Documentation features."""
+    docstrings: List[Dict[str, Any]] = field(default_factory=list)
+    comments: List[Dict[str, Any]] = field(default_factory=list)
+    todos: List[Dict[str, Any]] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ComplexityMetrics:
+    """Code complexity metrics."""
+    cyclomatic: int = 0
+    cognitive: int = 0
+    halstead: Dict[str, float] = field(default_factory=dict)
+    maintainability_index: float = 0.0
+    lines_of_code: Dict[str, int] = field(default_factory=dict)
+
+@dataclass
+class ExtractedFeatures:
+    """Extracted feature container."""
+    features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    documentation: Documentation = field(default_factory=Documentation)
+    metrics: ComplexityMetrics = field(default_factory=ComplexityMetrics)
+
+@dataclass
+class QueryPattern:
+    """Pattern for querying code."""
+    pattern: str
+    extract: Callable
+    description: str
+    examples: List[str] = field(default_factory=list) 

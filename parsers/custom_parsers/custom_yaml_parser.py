@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
+from parsers.types import FileType, PatternCategory
 from parsers.query_patterns.yaml import YAML_PATTERNS, PatternCategory
 from parsers.models import YamlNode
 from utils.logger import log

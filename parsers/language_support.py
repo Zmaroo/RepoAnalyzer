@@ -9,18 +9,20 @@ from parsers.models import (
     FileClassification,
     LanguageFeatures,
     ParserType,
-    LANGUAGE_ALIASES,  # Move from language_mapping.py
     FileType,
-    FileMetadata
+    FileMetadata,
+    language_registry
 )
 from parsers.language_mapping import (
     TREE_SITTER_LANGUAGES,
     EXTENSION_TO_LANGUAGE,
-    CUSTOM_PARSER_LANGUAGES
+    CUSTOM_PARSER_LANGUAGES,
+    normalize_language_name
 )
 from utils.logger import log
 from dataclasses import dataclass
 import re
+from .language_mapping import normalize_language_name
 
 @dataclass
 class ParserAvailability:
@@ -29,17 +31,6 @@ class ParserAvailability:
     has_tree_sitter: bool
     preferred_type: ParserType
     file_type: FileType
-
-def normalize_language_name(language: str) -> str:
-    """Normalize a language name using LANGUAGE_ALIASES."""
-    if not language:
-        return "unknown"
-    try:
-        normalized = language.lower().replace('-', '_')
-        return LANGUAGE_ALIASES.get(normalized, normalized)
-    except Exception as e:
-        log(f"Error normalizing language name '{language}': {e}", level="error")
-        return "unknown"
 
 def get_parser_availability(language: str) -> ParserAvailability:
     """Get information about available parsers for a language."""
@@ -161,15 +152,6 @@ def get_language_by_extension(file_path: str) -> Optional[LanguageFeatures]:
     except Exception as e:
         log(f"Error getting language for path '{file_path}': {e}", level="error")
         return None
-
-def is_supported_language(language: str) -> bool:
-    """Check if a language is supported by either tree-sitter or custom parser."""
-    try:
-        normalized = normalize_language_name(language)
-        return normalized in TREE_SITTER_LANGUAGES or normalized in CUSTOM_PARSER_LANGUAGES
-    except Exception as e:
-        log(f"Error checking language support for '{language}': {e}", level="error")
-        return False
 
 def get_extensions_for_language(language: str) -> Set[str]:
     """Get all file extensions associated with a language."""

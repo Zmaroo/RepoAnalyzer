@@ -2,9 +2,9 @@
 Query patterns for YAML files aligned with standard PATTERN_CATEGORIES.
 """
 
-from typing import Dict, Any, Match
-from parsers.pattern_processor import QueryPattern, PatternCategory
-from parsers.file_classification import FileType
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 
 def extract_mapping(match: Match) -> Dict[str, Any]:
     """Extract mapping information."""

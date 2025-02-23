@@ -6,12 +6,7 @@ from utils.error_handling import (
     DatabaseError,
     PostgresError
 )
-from parsers.models import (  # Add imports
-    FileType,
-    FileClassification,
-    ParserResult,
-    ExtractedFeatures
-)
+
 import asyncio
 from db.transaction import transaction_scope
 from indexer.async_utils import handle_async_errors, AsyncErrorBoundary

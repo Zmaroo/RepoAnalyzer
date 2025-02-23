@@ -2,14 +2,13 @@
 
 from typing import Dict, Any, List, Optional, Union, Generator, Tuple
 from tree_sitter import Node, Query, QueryError, Parser, Language, TreeCursor
-from .types import FileType, FeatureCategory, ParserType
+from .types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics
 from parsers.models import (
-    Documentation, 
-    ComplexityMetrics, 
     ExtractedFeatures,
     QueryResult,
     FeatureExtractor,
     FileClassification,
+    language_registry,
 )
 from utils.logger import log
 from parsers.language_support import language_registry

@@ -2,10 +2,9 @@
 Query patterns for JSON files with enhanced documentation support.
 """
 
-from parsers.file_classification import FileType
-from parsers.query_patterns import PATTERN_CATEGORIES
-from parsers.pattern_processor import QueryPattern, PatternCategory
-from typing import Dict, Any, Match
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 
 def extract_object(node: Dict) -> Dict[str, Any]:
     """Extract object information."""

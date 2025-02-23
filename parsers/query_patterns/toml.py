@@ -1,7 +1,8 @@
 """Query patterns for TOML files."""
 
-from parsers.pattern_processor import QueryPattern, PatternCategory
-from typing import Dict, Any, Match
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 
 def extract_table(match: Match) -> Dict[str, Any]:
     """Extract table information."""

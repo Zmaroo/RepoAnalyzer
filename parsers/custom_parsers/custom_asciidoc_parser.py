@@ -2,7 +2,8 @@
 
 from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from parsers.base_parser import BaseParser
-from parsers.models import ParserResult, AsciidocNode, FileType
+from parsers.models import AsciidocNode
+from parsers.types import FileType
 from parsers.query_patterns.asciidoc import ASCIIDOC_PATTERNS
 from utils.logger import log
 import re

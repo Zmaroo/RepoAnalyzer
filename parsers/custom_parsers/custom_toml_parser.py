@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.models import FileType
+from parsers.types import FileType, PatternCategory
 from parsers.query_patterns.toml import TOML_PATTERNS, PatternCategory
 from parsers.models import TomlNode
 from utils.logger import log

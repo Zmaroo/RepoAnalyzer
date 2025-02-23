@@ -23,16 +23,14 @@ Flow:
 import json
 from typing import Dict, Optional
 from db.psql import query, execute
-from db.neo4j_ops import Neo4jTools, run_query
+from db.connection import driver
+from db.graph_sync import graph_sync
 from utils.logger import log
 from embedding.embedding_models import DocEmbedder
+from db.neo4j_ops import Neo4jTools, run_query
 from db.transaction import transaction_scope
-from parsers.models import (
-    FileType,
-    FileClassification,
-    ParserResult,
-    ExtractedFeatures
-)
+from parsers.types import ParserResult, ExtractedFeatures
+
 from utils.error_handling import (
     AsyncErrorBoundary,
     ProcessingError,
@@ -123,23 +121,28 @@ async def store_doc_in_postgres(doc_data: Dict) -> int:
     return doc_id
 
 async def store_doc_in_neo4j(doc_data: Dict) -> None:
-    """Store document data in Neo4j"""
-    cypher = """
-    MERGE (d:Documentation {repo_id: $repo_id, path: $path})
-    SET d += $properties
-    """
-    properties = {
-        'repo_id': doc_data['repo_id'],
-        'path': doc_data['file_path'],
-        'content': doc_data['content'],
-        'type': doc_data.get('doc_type', 'markdown'),
-        'version': doc_data.get('version', 1),
-        'cluster_id': doc_data.get('cluster_id'),
-        'metadata': doc_data.get('metadata', {})
-    }
-    run_query(cypher, {'repo_id': doc_data['repo_id'], 
-                      'path': doc_data['file_path'], 
-                      'properties': properties})
+    """Store document data in Neo4j."""
+    try:
+        cypher = """
+        MERGE (d:Documentation {repo_id: $repo_id, path: $path})
+        SET d += $properties
+        """
+        properties = {
+            'repo_id': doc_data['repo_id'],
+            'path': doc_data['file_path'],
+            'content': doc_data['content'],
+            'type': doc_data.get('doc_type', 'markdown'),
+            'version': doc_data.get('version', 1),
+            'cluster_id': doc_data.get('cluster_id'),
+            'metadata': doc_data.get('metadata', {})
+        }
+        await run_query(cypher, {
+            'repo_id': doc_data['repo_id'], 
+            'path': doc_data['file_path'], 
+            'properties': properties
+        })
+    except Exception as e:
+        log(f"Error storing document in Neo4j: {e}", level="error")
 
 @handle_async_errors(error_types=(PostgresError, Neo4jError, TransactionError))
 async def upsert_code_snippet(code_data: Dict) -> None:
@@ -165,46 +168,30 @@ async def upsert_code_snippet(code_data: Dict) -> None:
 
 async def upsert_doc(
     repo_id: int,
-    file_path: str,
+    file_path: str, 
     content: str,
     doc_type: str,
     metadata: Optional[Dict] = None,
     is_primary: bool = True
-) -> None:
-    """[6.5.3] Store documentation with transaction coordination."""
-    async with transaction_scope() as txn:
-        try:
-            async with AsyncErrorBoundary("doc embedding", error_types=(ProcessingError, DatabaseError)):
-                embedding = await doc_embedder.embed_async(content)
-                
-                # Add structured logging context
-                log("Generated document embedding", level="debug", context={
-                    "repo_id": repo_id,
-                    "file_path": file_path,
-                    "embedding_size": len(embedding) if embedding else 0
-                })
-                
-                sql = """
-                INSERT INTO repo_docs (repo_id, file_path, content, doc_type, metadata, embedding)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (repo_id, file_path) 
-                DO UPDATE SET
-                    content = EXCLUDED.content,
-                    doc_type = EXCLUDED.doc_type,
-                    metadata = EXCLUDED.metadata,
-                    embedding = EXCLUDED.embedding;
-                """
-                await execute(sql, (repo_id, file_path, content, doc_type, metadata, embedding))
-                
-                log("Stored document", level="info", context={
-                    "repo_id": repo_id,
-                    "file_path": file_path,
-                    "doc_type": doc_type
-                })
-                
-        except Exception as e:
-            log(f"Error in doc upsert: {e}", level="error")
-            raise DatabaseError(f"Failed to upsert doc {file_path}", e)
+) -> Optional[str]:
+    """High-level document upsert function."""
+    try:
+        doc_data = {
+            'repo_id': repo_id,
+            'file_path': file_path,
+            'content': content,
+            'doc_type': doc_type,
+            'metadata': metadata or {},
+            'is_primary': is_primary
+        }
+        return await neo4j.create_or_update_node(
+            labels=["Document"],
+            properties=doc_data,
+            key_fields=["repo_id", "file_path"]
+        )
+    except Exception as e:
+        log(f"Error upserting document: {e}", level="error")
+        return None
 
 async def upsert_repository(repo_data: Dict) -> int:
     """[6.5.4] Store repository with transaction coordination."""

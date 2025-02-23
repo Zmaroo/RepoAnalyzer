@@ -30,20 +30,16 @@ from .psql import (
 )
 # postgres upserts
 from .upsert_ops import (
-    upsert_document, 
+    upsert_doc,
     upsert_code_snippet
 )
 from .neo4j_ops import (
+    Neo4jTools,
     run_query,
     driver,
-    Neo4jTools,
 )
 from .graph_sync import graph_sync
-from parsers.models import (  # Add imports
-    FileType,
-    FileClassification,
-    ParserResult
-)
+
 
 
 __all__ = [
@@ -53,7 +49,7 @@ __all__ = [
     "close_db_pool",
     "get_connection",
     "release_connection",
-    "upsert_document",
+    "upsert_doc",
     "run_query",
     "driver",
     "Neo4jTools",

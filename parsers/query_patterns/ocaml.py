@@ -8,10 +8,10 @@ such as "let_binding", "type_definition", "module_declaration", "open_statement"
 downstream processing can store all key pieces of information.
 """
 
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 from .common import COMMON_PATTERNS
-from parsers.file_classification import FileType
-from parsers.pattern_processor import QueryPattern, PatternCategory
-from typing import Dict, Any, Match
 
 def extract_let_binding(match: Match) -> Dict[str, Any]:
     """Extract let binding information."""

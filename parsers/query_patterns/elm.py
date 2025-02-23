@@ -4,7 +4,7 @@ This module defines basic queries for capturing Elm constructs such as module de
 value declarations, type aliases, and union types.
 """
 
-from parsers.file_classification import FileType
+from parsers.types import FileType
 from .common import COMMON_PATTERNS
 
 ELM_PATTERNS = {
