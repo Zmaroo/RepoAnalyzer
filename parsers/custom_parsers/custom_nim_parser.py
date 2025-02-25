@@ -13,11 +13,8 @@ class NimParser(BaseParser):
     
     def __init__(self, language_id: str = "nim", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CODE)
-        self.patterns = {
-            name: re.compile(pattern.pattern)
-            for category in NIM_PATTERNS.values()
-            for name, pattern in category.items()
-        }
+        # Use the shared helper to compile regex patterns from NIM_PATTERNS.
+        self.patterns = self._compile_patterns(NIM_PATTERNS)
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -31,14 +28,9 @@ class NimParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> NimNode:
-        """Create a standardized Nim AST node."""
-        return NimNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized Nim AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return NimNode(**node_dict)
 
     def _process_parameters(self, params_str: str) -> List[Dict]:
         """Process procedure parameters into parameter nodes."""

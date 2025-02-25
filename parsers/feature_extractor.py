@@ -181,6 +181,12 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             log(f"Error extracting features: {e}", level="error")
             return ExtractedFeatures()
 
+    def _extract_documentation(self, features: Dict[str, Any]) -> str:
+        return features.get("documentation", "")
+    
+    def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> Dict[str, Any]:
+        return {}
+
 class CustomFeatureExtractor(BaseFeatureExtractor):
     """[3.2.2] Custom parser feature extraction."""
     

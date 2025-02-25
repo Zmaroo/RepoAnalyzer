@@ -34,6 +34,17 @@ class ProcessedPattern:
     extract: Callable = None
     definition: Optional[PatternDefinition] = None
 
+def compile_patterns(pattern_defs: Dict[str, Any]) -> Dict[str, Any]:
+    """Compile regex patterns from a pattern definitions dictionary."""
+    compiled = {}
+    for category, patterns in pattern_defs.items():
+        for name, pattern_obj in patterns.items():
+            try:
+                compiled[name] = re.compile(pattern_obj.pattern, re.DOTALL)
+            except Exception as e:
+                print(f"Error compiling pattern {name}: {e}")
+    return compiled
+
 class PatternProcessor:
     """Central pattern processing system."""
     

@@ -7,19 +7,15 @@ from parsers.query_patterns.yaml import YAML_PATTERNS, PatternCategory
 from parsers.models import YamlNode
 from utils.logger import log
 import yaml
-import re
 
 class YamlParser(BaseParser):
     """Parser for YAML files."""
     
     def __init__(self, language_id: str = "yaml", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.DATA)
-        self.patterns = {
-            name: re.compile(pattern.pattern)
-            for category in YAML_PATTERNS.values()
-            for name, pattern in category.items()
-        }
-
+        # Use the shared helper to compile YAML regex patterns.
+        self.patterns = self._compile_patterns(YAML_PATTERNS)
+    
     def initialize(self) -> bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -32,14 +28,9 @@ class YamlParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> YamlNode:
-        """Create a standardized YAML AST node."""
-        return YamlNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized YAML AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return YamlNode(**node_dict)
 
     def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> YamlNode:
         """Process a YAML value and build AST structure."""
@@ -60,7 +51,7 @@ class YamlParser(BaseParser):
                 )
                 child.key = key
                 
-                # Process semantic patterns
+                # Process semantic patterns.
                 for pattern_name in ['url', 'path', 'version']:
                     if pattern_match := self.patterns[pattern_name].match(str(val)):
                         child.metadata["semantics"] = YAML_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(pattern_match)
@@ -95,17 +86,17 @@ class YamlParser(BaseParser):
             
             current_comment_block = []
             
-            # First pass: collect comments and document structure
+            # First pass: collect comments and document structure.
             for i, line in enumerate(lines):
                 line_start = [i, 0]
                 line_end = [i, len(line)]
                 
-                # Process comments
+                # Process comments.
                 if comment_match := self.patterns['comment'].match(line):
                     current_comment_block.append(comment_match.group(1).strip())
                     continue
                 
-                # If we have a non-comment line and accumulated comments, process them
+                # If a non-comment line is encountered and there are accumulated comments, create a comment block.
                 if line.strip() and current_comment_block:
                     node = self._create_node(
                         "comment_block",
@@ -116,14 +107,14 @@ class YamlParser(BaseParser):
                     ast.children.append(node)
                     current_comment_block = []
 
-            # Second pass: parse YAML structure
+            # Second pass: parse YAML structure.
             try:
                 data = yaml.safe_load(source_code)
                 if data is not None:
                     root_node = self._process_value(data, [], [0, 0])
                     ast.children.append(root_node)
                     
-                    # Process documentation patterns
+                    # Process documentation patterns.
                     for pattern_name in ['description', 'metadata']:
                         if YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].pattern(root_node.__dict__):
                             ast.metadata["documentation"] = YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(root_node.__dict__)
@@ -132,7 +123,7 @@ class YamlParser(BaseParser):
                 log(f"Error parsing YAML structure: {e}", level="error")
                 ast.metadata["parse_error"] = str(e)
 
-            # Add any remaining comments at the end
+            # Add any remaining comments at the end.
             if current_comment_block:
                 ast.metadata["trailing_comments"] = current_comment_block
 

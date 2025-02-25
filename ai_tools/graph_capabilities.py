@@ -189,6 +189,28 @@ class GraphAnalysis:
             await run_query("CALL gds.graph.drop('similarity-graph')")
             return results
     
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
+    async def get_references(self, repo_id: int, file_path: str) -> list:
+        """Retrieve code references for a given file via Neo4j."""
+        async with AsyncErrorBoundary("reference retrieval"):
+            query = """
+            MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:RELATED_TO]->(m:Code)
+            RETURN m.file_path as file_path
+            """
+            results = await run_query(query, {"repo_id": repo_id, "file_path": file_path})
+            return results if results else []
+    
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
+    async def get_dependencies(self, repo_id: int, file_path: str, depth: int = 3) -> list:
+        """Retrieve code dependencies up to a specified depth using variable-length relationships."""
+        async with AsyncErrorBoundary("dependency retrieval"):
+            query = """
+            MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:DEPENDS_ON*1..$depth]->(dep:Code)
+            RETURN dep.file_path as file_path
+            """
+            results = await run_query(query, {"repo_id": repo_id, "file_path": file_path, "depth": depth})
+            return results if results else []
+    
     @handle_errors(error_types=ProcessingError)
     def close(self):
         """Closes Neo4j connections."""

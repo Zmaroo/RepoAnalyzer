@@ -15,10 +15,12 @@ class HtmlParser(BaseParser):
     
     def __init__(self, language_id: str = "html", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.MARKUP)
+        # Use the shared helper from BaseParser to compile patterns,
+        # then recompile each with the re.DOTALL flag.
+        base_patterns = self._compile_patterns(HTML_PATTERNS)
         self.patterns = {
             name: re.compile(pattern.pattern, re.DOTALL)
-            for category in HTML_PATTERNS.values()
-            for name, pattern in category.items()
+            for name, pattern in base_patterns.items()
         }
     
     def initialize(self) -> bool:
@@ -33,14 +35,9 @@ class HtmlParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> HtmlNode:
-        """Create a standardized HTML AST node."""
-        return HtmlNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized HTML AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return HtmlNode(**node_dict)
 
     def _process_element(self, element: Element, path: List[str], depth: int) -> HtmlNode:
         """Process an HTML element and its children."""
@@ -48,8 +45,8 @@ class HtmlParser(BaseParser):
         
         element_data = self._create_node(
             "element",
-            [0, 0],  # Will be updated later
-            [0, 0],  # Will be updated later
+            [0, 0],  # Positions will be updated later if needed.
+            [0, 0],
             tag=tag,
             path='/'.join(path + [tag]),
             depth=depth,
@@ -57,7 +54,7 @@ class HtmlParser(BaseParser):
             has_text=bool(element.text and element.text.strip())
         )
         
-        # Process attributes
+        # Process attributes.
         for name, value in element.attrib.items():
             attr_data = {
                 "name": name.lower(),
@@ -79,7 +76,7 @@ class HtmlParser(BaseParser):
                 )
                 element_data.children.append(semantic_node)
         
-        # Process children
+        # Process children.
         for child in element:
             child_data = self._process_element(child, path + [tag], depth + 1)
             element_data.children.append(child_data)
@@ -96,7 +93,7 @@ class HtmlParser(BaseParser):
                 [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
             
-            # Process comments and doctypes first
+            # Process comments and doctypes first.
             for pattern_name in ['comment', 'doctype']:
                 for match in self.patterns[pattern_name].finditer(source_code):
                     node = self._create_node(
@@ -107,7 +104,7 @@ class HtmlParser(BaseParser):
                     )
                     ast.children.append(node)
             
-            # Parse HTML structure
+            # Parse HTML structure.
             try:
                 root = fromstring(source_code)
                 root_node = self._process_element(root, [], 0)
@@ -116,7 +113,7 @@ class HtmlParser(BaseParser):
                 log(f"Error parsing HTML structure: {e}", level="error")
                 ast.metadata["parse_error"] = str(e)
             
-            # Process scripts and styles
+            # Process scripts and styles.
             for pattern_name in ['script', 'style']:
                 for match in self.patterns[pattern_name].finditer(source_code):
                     node = self._create_node(

@@ -8,18 +8,14 @@ from parsers.models import CobaltNode
 from parsers.query_patterns.cobalt import COBALT_PATTERNS
 from parsers.types import PatternCategory, FileType
 from utils.logger import log
-import re
 
 class CobaltParser(BaseParser):
     """Parser for the Cobalt programming language."""
     
     def __init__(self, language_id: str = "cobalt", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CODE)
-        self.patterns = {
-            name: re.compile(pattern.pattern)
-            for category in COBALT_PATTERNS.values()
-            for name, pattern in category.items()
-        }
+        # Use the shared helper from BaseParser to compile the regex patterns.
+        self.patterns = self._compile_patterns(COBALT_PATTERNS)
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -33,14 +29,9 @@ class CobaltParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> CobaltNode:
-        """Create a standardized Cobalt AST node."""
-        return CobaltNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized Cobalt AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return CobaltNode(**node_dict)
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse Cobalt content into AST structure."""
@@ -59,12 +50,12 @@ class CobaltParser(BaseParser):
                 line_start = [i, 0]
                 line_end = [i, len(line)]
                 
-                # Process docstrings
+                # Process docstrings.
                 if doc_match := self.patterns['docstring'].match(line):
                     current_doc.append(doc_match.group(1))
                     continue
                     
-                # Process regular comments
+                # Process regular comments.
                 if comment_match := self.patterns['comment'].match(line):
                     current_scope[-1].children.append(
                         self._create_node(
@@ -76,16 +67,16 @@ class CobaltParser(BaseParser):
                     )
                     continue
                 
-                # Handle scope changes
+                # Handle scope openings.
                 if line.strip().endswith("{"):
-                    # Process declarations that open new scopes
+                    # Look for declarations that open new scopes.
                     for pattern_name in ['function', 'class', 'namespace']:
                         if pattern_name in self.patterns and (match := self.patterns[pattern_name].match(line)):
                             node_data = COBALT_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
                             node = self._create_node(
                                 pattern_name,
                                 line_start,
-                                None,  # Will be set when scope closes
+                                None,  # End point to be set when scope closes.
                                 **node_data
                             )
                             if current_doc:
@@ -101,7 +92,7 @@ class CobaltParser(BaseParser):
                         current_scope.pop()
                     continue
                 
-                # Flush accumulated docstrings before declarations
+                # Flush accumulated docstrings before declarations.
                 if current_doc and not line.strip().startswith("///"):
                     current_scope[-1].children.append(
                         self._create_node(
@@ -113,7 +104,7 @@ class CobaltParser(BaseParser):
                     )
                     current_doc = []
                 
-                # Process other declarations
+                # Process other declarations.
                 for pattern_name, pattern in self.patterns.items():
                     if pattern_name in ['docstring', 'comment', 'function', 'class', 'namespace']:
                         continue

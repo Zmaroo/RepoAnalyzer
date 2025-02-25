@@ -13,15 +13,9 @@ class MarkdownParser(BaseParser):
     
     def __init__(self, language_id: str = "markdown", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.DOCUMENTATION)
-        self.patterns = {
-            'header': re.compile(r'^(#{1,6})\s+(.+)$'),
-            'list_item': re.compile(r'^(\s*)[*+-]\s+(.+)$'),
-            'numbered_list': re.compile(r'^(\s*)\d+\.\s+(.+)$'),
-            'code_block': re.compile(r'^```(\w*)$'),
-            'link': re.compile(r'\[([^\]]+)\]\(([^)]+)\)'),
-            'image': re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
-        }
-
+        # Use the shared helper from BaseParser to compile regex patterns from MARKDOWN_PATTERNS.
+        self.patterns = self._compile_patterns(MARKDOWN_PATTERNS)
+    
     def initialize(self) -> bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -34,14 +28,9 @@ class MarkdownParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> MarkdownNode:
-        """Create a standardized Markdown AST node."""
-        return MarkdownNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized Markdown AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return MarkdownNode(**node_dict)
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse Markdown content into AST structure."""
@@ -61,7 +50,7 @@ class MarkdownParser(BaseParser):
             for i, line in enumerate(lines):
                 line_start = [i, 0]
                 line_end = [i, len(line)]
-
+                
                 # Process headers
                 if not in_code_block and (header_match := self.patterns['header'].match(line)):
                     level, content = header_match.groups()
@@ -102,7 +91,7 @@ class MarkdownParser(BaseParser):
                     code_block_content.append(line)
                     continue
 
-                # Process lists
+                # Process list items
                 if list_match := self.patterns['list_item'].match(line):
                     indent, content = list_match.groups()
                     node = self._create_node(
@@ -116,7 +105,11 @@ class MarkdownParser(BaseParser):
                         current_section.children.append(node)
                     else:
                         ast.children.append(node)
+                    continue
 
+                # (Additional processing such as numbered lists, links or images
+                #  can be added here using their respective patterns.)
+            
             return ast.__dict__
             
         except Exception as e:

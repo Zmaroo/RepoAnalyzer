@@ -321,7 +321,7 @@ def normalize_language_name(language: str) -> str:
     if not language:
         return "unknown"
     try:
-        normalized = language.lower().replace('-', '_')
+        normalized = language.lower().strip()
         return LANGUAGE_ALIASES.get(normalized, normalized)
     except Exception as e:
         log(f"Error normalizing language name '{language}': {e}", level="error")

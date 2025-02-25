@@ -207,15 +207,20 @@ class AIAssistant:
 
     @handle_errors(error_types=ProcessingError)
     def _batch_quality_analysis(self, docs: List[Dict]) -> Dict[str, Any]:
-        """Analyze documentation quality."""
+        """Analyze documentation quality by computing various metrics."""
         with ErrorBoundary("quality analysis"):
             quality_metrics = {}
             
             for doc in docs:
+                lines = doc['content'].splitlines()
+                header_count = sum(1 for line in lines if line.strip().startswith("#"))
+                structure_score = (header_count / len(lines)) if lines else 0
+
                 metrics = {
                     "completeness": len(doc['content'].split()) / 100,  # Basic metric
-                    "has_examples": "```" in doc['content'],
-                    "has_sections": "#" in doc['content']
+                    "has_examples": 1.0 if "```" in doc['content'] else 0.0,
+                    "has_sections": 1.0 if "#" in doc['content'] else 0.0,
+                    "structure": structure_score  # Newly added structure metric
                 }
                 quality_metrics[doc['id']] = metrics
             

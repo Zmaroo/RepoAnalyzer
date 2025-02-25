@@ -12,12 +12,9 @@ class RstParser(BaseParser):
     
     def __init__(self, language_id: str = "rst", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.DOCUMENTATION)
-        self.patterns = {
-            name: pattern.pattern
-            for category in RST_PATTERNS.values()
-            for name, pattern in category.items()
-        }
-
+        # Compile regex patterns using the shared helper.
+        self.patterns = self._compile_patterns(RST_PATTERNS)
+    
     def initialize(self) -> bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -30,14 +27,9 @@ class RstParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> RstNode:
-        """Create a standardized RST AST node."""
-        return RstNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized RST AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return RstNode(**node_dict)
 
     def _get_section_level(self, char: str) -> int:
         """Determine section level based on underline character."""
@@ -57,7 +49,6 @@ class RstParser(BaseParser):
                 [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
 
-            current_section = None
             current_content = []
             section_stack = []
 
@@ -65,8 +56,8 @@ class RstParser(BaseParser):
                 line_start = [i, 0]
                 line_end = [i, len(line)]
                 
-                # Process sections
-                if self.patterns['section'].match(line) and current_content:
+                # Process section underlines when current content exists.
+                if self.patterns.get('section') and self.patterns['section'].match(line) and current_content:
                     section_title = current_content[-1]
                     section_level = self._get_section_level(line[0])
                     
@@ -90,16 +81,16 @@ class RstParser(BaseParser):
                     current_content = []
                     continue
 
-                # Process other patterns
+                # Process other patterns.
                 matched = False
                 for category in RST_PATTERNS.values():
-                    for pattern_name, pattern in category.items():
+                    for pattern_name, pattern_obj in category.items():
                         if match := self.patterns[pattern_name].match(line):
                             node = self._create_node(
                                 pattern_name,
                                 line_start,
                                 line_end,
-                                **pattern.extract(match)
+                                **pattern_obj.extract(match)
                             )
                             
                             if section_stack:

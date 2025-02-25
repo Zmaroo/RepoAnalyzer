@@ -1,6 +1,6 @@
 """Kotlin-specific Tree-sitter patterns."""
 
-from parsers.file_classification import FileType
+from parsers.types import FileType
 from .common import COMMON_PATTERNS
 
 KOTLIN_PATTERNS = {

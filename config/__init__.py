@@ -5,10 +5,7 @@ from .config import (
     Neo4jConfig,
     ParserConfig,
     RedisConfig,
-    postgres_config,
-    neo4j_config,
-    parser_config,
-    redis_config
+    FileConfig
 )
 
 __all__ = [
@@ -16,8 +13,5 @@ __all__ = [
     'Neo4jConfig',
     'ParserConfig',
     'RedisConfig',
-    'postgres_config',
-    'neo4j_config',
-    'parser_config',
-    'redis_config'
+    'FileConfig'
 ] 

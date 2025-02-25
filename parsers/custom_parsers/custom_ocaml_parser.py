@@ -36,33 +36,15 @@ def compute_offset(lines, line_no, col):
     """
     return sum(len(lines[i]) + 1 for i in range(line_no)) + col
 
-# Define regex patterns for .ml files.
-ML_PATTERNS = {
-    "let_binding": re.compile(r'^\s*(let(?:\s+rec)?\s+[a-zA-Z0-9_\'-]+)'),
-    "type_definition": re.compile(r'^\s*type\s+([a-zA-Z0-9_\'-]+)'),
-    "module_declaration": re.compile(r'^\s*module\s+([A-Z][a-zA-Z0-9_\'-]*)'),
-    "open_statement": re.compile(r'^\s*open\s+([A-Z][a-zA-Z0-9_.]*)'),
-    "exception_declaration": re.compile(r'^\s*exception\s+([A-Z][a-zA-Z0-9_\'-]*)')
-}
-
-# Define regex patterns for .mli files.
-MLI_PATTERNS = {
-    "val_declaration": re.compile(r'^\s*val\s+([a-zA-Z0-9_\'-]+)'),
-    "type_definition": re.compile(r'^\s*type\s+([a-zA-Z0-9_\'-]+)'),
-    "module_declaration": re.compile(r'^\s*module\s+([A-Z][a-zA-Z0-9_\'-]*)')
-}
-
 class OcamlParser(BaseParser):
     """Parser for OCaml files."""
     
     def __init__(self, language_id: str = "ocaml", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CODE)
         self.is_interface = language_id == "ocaml_interface"
-        self.patterns = {
-            name: re.compile(pattern.pattern)
-            for category in (OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS).values()
-            for name, pattern in category.items()
-        }
+        # Use the shared helper from BaseParser to compile regex patterns.
+        patterns_source = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
+        self.patterns = self._compile_patterns(patterns_source)
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -76,14 +58,9 @@ class OcamlParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> OcamlNode:
-        """Create a standardized OCaml AST node."""
-        return OcamlNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized OCaml AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return OcamlNode(**node_dict)
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse OCaml content into AST structure."""
@@ -95,6 +72,7 @@ class OcamlParser(BaseParser):
                 [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
 
+            # Use the original patterns dictionary for extraction.
             patterns = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
             current_doc = []
             

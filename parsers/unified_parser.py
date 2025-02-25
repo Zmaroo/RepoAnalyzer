@@ -65,20 +65,20 @@ class UnifiedParser:
             classification = FileClassification(
                 file_type=FileType.CODE,
                 language_id=language_features.canonical_name,
-                parser_type=language_features.parser_type
+                parser_type="tree_sitter"  # or "custom" per your logic.
             )
 
             # [2.1] Get Parser Instance
             # USES: [language_support.py] language_registry.get_parser() -> Optional[BaseParser]
             parser = language_registry.get_parser(classification)
             if not parser:
-                log(f"No parser available for {file_path}", level="debug")
+                log(f"No parser found for language: {classification.language_id}", level="error")
                 return None
 
             # [2.2] Parse Content
             # USES: [utils/encoding.py] encode_query_pattern() -> str
             # USES: [base_parser.py] BaseParser.parse() -> Optional[ParserResult]
-            parse_result = parser.parse(encode_query_pattern(content))
+            parse_result = parser.parse(content)
             if not parse_result or not parse_result.success:
                 return None
 

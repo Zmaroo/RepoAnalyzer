@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, PatternCategory
-from parsers.query_patterns.toml import TOML_PATTERNS, PatternCategory
+from parsers.query_patterns.toml import TOML_PATTERNS
 from parsers.models import TomlNode
 from utils.logger import log
 import tomli
@@ -13,12 +13,9 @@ class TomlParser(BaseParser):
     
     def __init__(self, language_id: str = "toml", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CONFIG)
-        self.patterns = {
-            name: pattern.pattern
-            for category in TOML_PATTERNS.values()
-            for name, pattern in category.items()
-        }
-
+        # Compile regex patterns using the shared helper.
+        self.patterns = self._compile_patterns(TOML_PATTERNS)
+    
     def initialize(self) -> bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -31,14 +28,9 @@ class TomlParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> TomlNode:
-        """Create a standardized TOML AST node."""
-        return TomlNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized TOML AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return TomlNode(**node_dict)
 
     def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> TomlNode:
         """Process a TOML value and extract its features."""
@@ -85,22 +77,22 @@ class TomlParser(BaseParser):
                 [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
 
-            # Process comments and structure
+            # Process comments and structure.
             current_comments = []
             for i, line in enumerate(lines):
                 line_start = [i, 0]
                 line_end = [i, len(line)]
                 
-                # Process patterns
+                # Process patterns.
                 matched = False
                 for category in TOML_PATTERNS.values():
-                    for pattern_name, pattern in category.items():
+                    for pattern_name, pattern_obj in category.items():
                         if match := self.patterns[pattern_name].match(line):
                             node = self._create_node(
                                 pattern_name,
                                 line_start,
                                 line_end,
-                                **pattern.extract(match)
+                                **pattern_obj.extract(match)
                             )
                             if current_comments:
                                 node.metadata["comments"] = current_comments
@@ -114,7 +106,7 @@ class TomlParser(BaseParser):
                 if not matched and line.strip():
                     current_comments.append(line)
 
-            # Parse TOML content
+            # Parse TOML content.
             try:
                 data = tomli.loads(source_code)
                 root_value = self._process_value(data, [], [0, 0])

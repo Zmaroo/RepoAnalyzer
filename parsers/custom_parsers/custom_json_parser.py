@@ -13,11 +13,8 @@ class JsonParser(BaseParser):
     
     def __init__(self, language_id: str = "json", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.DATA)
-        self.patterns = {
-            name: pattern.pattern
-            for category in JSON_PATTERNS.values()
-            for name, pattern in category.items()
-        }
+        # Compile regex patterns from JSON_PATTERNS using the shared helper.
+        self.patterns = self._compile_patterns(JSON_PATTERNS)
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -31,14 +28,9 @@ class JsonParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> JsonNode:
-        """Create a standardized JSON AST node."""
-        return JsonNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized JSON AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return JsonNode(**node_dict)
 
     def _process_node(self, value: Any, path: List[str], start_point: List[int]) -> JsonNode:
         """Process a JSON node and build AST structure."""
@@ -59,7 +51,7 @@ class JsonParser(BaseParser):
                 )
                 child.key = key
                 
-                # Process semantic patterns
+                # Process semantic patterns.
                 for pattern_name in ['variable', 'schema_type']:
                     if JSON_PATTERNS[PatternCategory.SEMANTICS][pattern_name].pattern(child.__dict__):
                         child.metadata["semantics"] = JSON_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(child.__dict__)
@@ -96,7 +88,7 @@ class JsonParser(BaseParser):
             root_node = self._process_node(data, [], [0, 0])
             ast.children.append(root_node)
             
-            # Process documentation patterns
+            # Process documentation patterns.
             for pattern_name in ['description', 'metadata']:
                 if JSON_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].pattern(root_node.__dict__):
                     ast.metadata["documentation"] = JSON_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(root_node.__dict__)

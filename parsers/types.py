@@ -9,7 +9,8 @@ class FileType(Enum):
     CODE = "code"
     DOC = "doc"
     CONFIG = "config"
-    UNKNOWN = "unknown"
+    DATA = "data"
+    MARKUP = "markup"
 
 class FeatureCategory(Enum):
     """Feature extraction categories."""
@@ -65,6 +66,7 @@ class Documentation:
     comments: List[Dict[str, Any]] = field(default_factory=list)
     todos: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    content: str = ""
 
 @dataclass
 class ComplexityMetrics:
@@ -88,4 +90,4 @@ class QueryPattern:
     pattern: str
     extract: Callable
     description: str
-    examples: List[str] = field(default_factory=list) 
+    examples: List[str] = field(default_factory=list)

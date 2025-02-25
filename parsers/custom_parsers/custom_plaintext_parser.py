@@ -12,11 +12,7 @@ class PlaintextParser(BaseParser):
     
     def __init__(self, language_id: str = "plaintext", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.DOCUMENTATION)
-        self.patterns = {
-            name: pattern.pattern
-            for category in PLAINTEXT_PATTERNS.values()
-            for name, pattern in category.items()
-        }
+        self.patterns = self._compile_patterns(PLAINTEXT_PATTERNS)
 
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -30,14 +26,9 @@ class PlaintextParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> PlaintextNode:
-        """Create a standardized plaintext AST node."""
-        return PlaintextNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized plaintext AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return PlaintextNode(**node_dict)
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse plaintext content into AST structure."""
@@ -55,8 +46,7 @@ class PlaintextParser(BaseParser):
                 line_start = [i, 0]
                 line_end = [i, len(line)]
                 
-                line = line.strip()
-                if not line:
+                if not line.strip():
                     if current_paragraph:
                         node = self._create_node(
                             "paragraph",
@@ -68,16 +58,15 @@ class PlaintextParser(BaseParser):
                         current_paragraph = []
                     continue
 
-                # Process patterns
                 matched = False
                 for category in PLAINTEXT_PATTERNS.values():
-                    for pattern_name, pattern in category.items():
-                        if match := pattern.pattern(line):
+                    for pattern_name, pattern_obj in category.items():
+                        if match := self.patterns[pattern_name].match(line):
                             node = self._create_node(
                                 pattern_name,
                                 line_start,
                                 line_end,
-                                **pattern.extract(match)
+                                **pattern_obj.extract(match)
                             )
                             ast.children.append(node)
                             matched = True
@@ -88,7 +77,6 @@ class PlaintextParser(BaseParser):
                 if not matched:
                     current_paragraph.append(line)
 
-            # Handle any remaining paragraph
             if current_paragraph:
                 node = self._create_node(
                     "paragraph",

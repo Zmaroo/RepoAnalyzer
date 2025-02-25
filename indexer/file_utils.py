@@ -1,54 +1,120 @@
 """File utility functions."""
 
 import os
-import fnmatch
+try:
+    import magic
+except AttributeError as e:
+    raise ImportError(
+        "Failed to load the 'magic' module because libmagic is missing or not linked correctly. "
+        "Please install libmagic. On macOS, you can run: brew install libmagic"
+    ) from e
+from pathlib import Path
 from typing import List, Set, Optional
 from utils.logger import log
-from parsers.models import FileType, FileClassification, FileConfig
+from parsers.models import FileType, FileClassification
+from parsers.types import ParserType
+from config import FileConfig
 
 # Global config instance
 file_config = FileConfig.create()
 
-def should_ignore(path: str) -> bool:
-    """Check if path should be ignored."""
-    path_parts = os.path.normpath(path).split(os.sep)
+def should_ignore(file_path: str) -> bool:
+    """Check if file should be ignored based on patterns."""
+    ignore_patterns = {
+        '.git',
+        '__pycache__',
+        'node_modules',
+        'venv',
+        '.env',
+        '.idea',
+        '.vscode'
+    }
     
-    # Check directory ignores
-    if any(part in file_config.ignored_dirs for part in path_parts):
-        return True
-        
-    # Check file ignores
-    filename = os.path.basename(path)
-    if any(fnmatch.fnmatch(filename, pattern) for pattern in file_config.ignored_files):
-        return True
-        
-    # Check patterns
-    return any(fnmatch.fnmatch(path, pattern) for pattern in file_config.ignored_patterns)
+    path_parts = Path(file_path).parts
+    return any(pattern in path_parts for pattern in ignore_patterns)
 
 def is_binary_file(file_path: str) -> bool:
-    """Check if file is binary based on extension."""
-    ext = os.path.splitext(file_path)[1].lower()
-    return ext in file_config.binary_extensions
+    """Check if file is binary using magic numbers."""
+    try:
+        mime = magic.from_file(file_path, mime=True)
+        return not mime.startswith(('text/', 'application/json', 'application/xml'))
+    except Exception as e:
+        log(f"Error checking if file is binary {file_path}: {e}", level="error")
+        return True
 
 def get_file_classification(file_path: str) -> Optional[FileClassification]:
-    """Get file classification."""
+    """
+    Get file classification based on extension and content.
+    Returns FileClassification or None if file should be ignored.
+    """
     try:
         if should_ignore(file_path):
             return None
             
         if is_binary_file(file_path):
-            return FileClassification(FileType.BINARY)
-            
-        # Rest of classification logic...
+            return FileClassification(
+                file_type=FileType.BINARY,
+                language_id="binary",
+                parser_type=ParserType.CUSTOM
+            )
+
+        extension = Path(file_path).suffix.lower()
         
+        # Code files
+        if extension in {'.py', '.js', '.java', '.cpp', '.c', '.h', '.rs', '.go', '.rb', '.php'}:
+            return FileClassification(
+                file_type=FileType.CODE,
+                language_id=extension[1:],  # Remove the dot
+                parser_type=ParserType.TREE_SITTER
+            )
+            
+        # Documentation files
+        if extension in {'.md', '.rst', '.txt', '.adoc', '.asciidoc'}:
+            doc_types = {
+                '.md': 'markdown',
+                '.rst': 'restructuredtext',
+                '.txt': 'plaintext',
+                '.adoc': 'asciidoc',
+                '.asciidoc': 'asciidoc'
+            }
+            return FileClassification(
+                file_type=FileType.DOC,
+                language_id=doc_types[extension],
+                parser_type=ParserType.CUSTOM
+            )
+            
+        # Configuration files
+        if extension in {'.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.env'}:
+            config_types = {
+                '.json': 'json',
+                '.yaml': 'yaml',
+                '.yml': 'yaml',
+                '.toml': 'toml',
+                '.ini': 'ini',
+                '.conf': 'ini',
+                '.env': 'env'
+            }
+            return FileClassification(
+                file_type=FileType.CONFIG,
+                language_id=config_types[extension],
+                parser_type=ParserType.CUSTOM
+            )
+
+        # Default to unknown for unrecognized files
+        return FileClassification(
+            file_type=FileType.UNKNOWN,
+            language_id="unknown",
+            parser_type=ParserType.CUSTOM
+        )
+            
     except Exception as e:
         log(f"Error classifying file {file_path}: {e}", level="error")
         return None
 
-def get_files(base_path: str, file_types: Set[FileType] = None) -> List[str]:
+def get_files(base_path: str, file_types: Set = None) -> List[str]:
     """Get all processable files in directory."""
     if file_types is None:
-        file_types = {FileType.CODE, FileType.DOC}
+        file_types = {"CODE", "DOC"}  # Adjust according to your FileType definitions
         
     files = []
     try:

@@ -11,18 +11,14 @@ from parsers.types import FileType, PatternCategory
 from parsers.query_patterns.graphql import GRAPHQL_PATTERNS
 from parsers.models import GraphQLNode
 from utils.logger import log
-import re
 
 class GraphqlParser(BaseParser):
     """Parser for GraphQL schema files."""
     
     def __init__(self, language_id: str = "graphql", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CODE)
-        self.patterns = {
-            name: re.compile(pattern.pattern)
-            for category in GRAPHQL_PATTERNS.values()
-            for name, pattern in category.items()
-        }
+        # Use the shared helper from BaseParser to compile the regex patterns.
+        self.patterns = self._compile_patterns(GRAPHQL_PATTERNS)
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -36,14 +32,9 @@ class GraphqlParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> GraphQLNode:
-        """Create a standardized GraphQL AST node."""
-        return GraphQLNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized GraphQL AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return GraphQLNode(**node_dict)
 
     def _process_arguments(self, args_str: str) -> List[Dict]:
         """Process field arguments into structured nodes."""
@@ -92,7 +83,7 @@ class GraphqlParser(BaseParser):
                 if not line:
                     continue
                 
-                # Process descriptions and comments
+                # Process descriptions and comments.
                 if desc_match := self.patterns['description'].match(line):
                     node = self._create_node(
                         "description",
@@ -114,7 +105,7 @@ class GraphqlParser(BaseParser):
                     ast.children.append(node)
                     continue
                 
-                # Process type definitions
+                # Process type definitions.
                 if type_match := self.patterns['type'].match(line):
                     node = self._create_node(
                         "type",
@@ -129,7 +120,7 @@ class GraphqlParser(BaseParser):
                     current_type = node
                     continue
                 
-                # Process interfaces
+                # Process interfaces.
                 if interface_match := self.patterns['interface'].match(line):
                     node = self._create_node(
                         "interface",
@@ -144,7 +135,7 @@ class GraphqlParser(BaseParser):
                     current_interface = node
                     continue
                 
-                # Process fields
+                # Process fields.
                 if field_match := self.patterns['field'].match(line):
                     if not (current_type or current_interface):
                         continue
@@ -166,7 +157,7 @@ class GraphqlParser(BaseParser):
                         current_interface.children.append(node)
                     continue
                 
-                # Process fragments
+                # Process fragments.
                 if fragment_match := self.patterns['fragment'].match(line):
                     node = self._create_node(
                         "fragment",

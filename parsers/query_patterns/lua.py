@@ -1,6 +1,6 @@
 """Lua-specific Tree-sitter patterns."""
 
-from parsers.file_classification import FileType
+from parsers.models import FileType, FileClassification
 from .common import COMMON_PATTERNS
 
 LUA_PATTERNS = {

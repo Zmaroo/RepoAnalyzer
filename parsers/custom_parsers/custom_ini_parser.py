@@ -13,11 +13,8 @@ class IniParser(BaseParser):
     
     def __init__(self, language_id: str = "ini", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CONFIG)
-        self.patterns = {
-            name: re.compile(pattern.pattern)
-            for category in INI_PATTERNS.values()
-            for name, pattern in category.items()
-        }
+        # Compile regex patterns from INI_PATTERNS using the shared helper.
+        self.patterns = self._compile_patterns(INI_PATTERNS)
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -31,14 +28,9 @@ class IniParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> IniNode:
-        """Create a standardized INI AST node."""
-        return IniNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized INI AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return IniNode(**node_dict)
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse INI content into AST structure."""
@@ -99,7 +91,7 @@ class IniParser(BaseParser):
                         node.metadata["comments"] = current_comment_block
                         current_comment_block = []
                     
-                    # Check for semantic patterns
+                    # Check for semantic patterns.
                     for pattern_name in ['environment', 'path']:
                         if semantic_match := self.patterns[pattern_name].match(line):
                             semantic_data = INI_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(semantic_match)
@@ -110,7 +102,7 @@ class IniParser(BaseParser):
                     else:
                         ast.children.append(node)
             
-            # Add any remaining comments
+            # Add any remaining comments.
             if current_comment_block:
                 ast.metadata["trailing_comments"] = current_comment_block
             
@@ -118,10 +110,10 @@ class IniParser(BaseParser):
             
         except Exception as e:
             log(f"Error parsing INI content: {e}", level="error")
-            return IniNode(
-                type="ini_file",
-                start_point=[0, 0],
-                end_point=[0, 0],
+            return self._create_node(
+                "ini_file",
+                [0, 0],
+                [0, 0],
                 error=str(e),
                 children=[]
             ).__dict__ 

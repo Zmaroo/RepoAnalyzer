@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List
 from .types import FileType, FeatureCategory, ParserType, ParserResult, ParserConfig, ParsingStatistics
 from dataclasses import dataclass, field
 from utils.logger import log
+import re
 
 @dataclass
 class BaseParser(ABC):
@@ -22,6 +23,29 @@ class BaseParser(ABC):
     config: ParserConfig = field(default_factory=lambda: ParserConfig())
     stats: ParsingStatistics = field(default_factory=lambda: ParsingStatistics())
     
+    def __post_init__(self):
+        self.language_id = self.language_id
+        self.file_type = self.file_type
+        self._initialized = False
+
+    def _create_node(self, node_type: str, start_point: List[int], end_point: List[int], **kwargs) -> Dict[str, Any]:
+        """Helper for creating a standardized AST node. (Subclasses can override if needed.)"""
+        return {
+            "type": node_type,
+            "start_point": start_point,
+            "end_point": end_point,
+            "children": [],
+            **kwargs
+        }
+
+    def _compile_patterns(self, patterns_dict: dict) -> dict:
+        """Helper to compile regex patterns from a definitions dictionary."""
+        compiled = {}
+        for category in patterns_dict.values():
+            for name, pattern_obj in category.items():
+                compiled[name] = re.compile(pattern_obj.pattern)
+        return compiled
+
     @abstractmethod
     def initialize(self) -> bool:
         """Initialize parser resources."""

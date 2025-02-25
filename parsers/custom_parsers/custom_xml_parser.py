@@ -13,12 +13,9 @@ class XmlParser(BaseParser):
     
     def __init__(self, language_id: str = "xml", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.MARKUP)
-        self.patterns = {
-            name: pattern.pattern
-            for category in XML_PATTERNS.values()
-            for name, pattern in category.items()
-        }
-
+        # Compile regex patterns using the shared helper.
+        self.patterns = self._compile_patterns(XML_PATTERNS)
+    
     def initialize(self) -> bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -31,14 +28,9 @@ class XmlParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> XmlNode:
-        """Create a standardized XML AST node."""
-        return XmlNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized XML AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return XmlNode(**node_dict)
 
     def _process_element(self, element: ET.Element, path: List[str], start_point: List[int]) -> XmlNode:
         """Process an XML element and extract its features."""
@@ -79,23 +71,23 @@ class XmlParser(BaseParser):
                 [len(lines) - 1, len(lines[-1]) if lines else 0]
             )
 
-            # Process patterns first
+            # Process patterns first using compiled regex objects.
             for i, line in enumerate(lines):
                 line_start = [i, 0]
                 line_end = [i, len(line)]
                 
                 for category in XML_PATTERNS.values():
-                    for pattern_name, pattern in category.items():
-                        if match := pattern.pattern(line):
+                    for pattern_name, pattern_obj in category.items():
+                        if match := self.patterns[pattern_name].match(line):
                             node = self._create_node(
                                 pattern_name,
                                 line_start,
                                 line_end,
-                                **pattern.extract(match)
+                                **pattern_obj.extract(match)
                             )
                             ast.children.append(node)
 
-            # Parse XML structure
+            # Parse XML structure.
             try:
                 root = ET.fromstring(source_code)
                 root_node = self._process_element(root, [], [0, 0])

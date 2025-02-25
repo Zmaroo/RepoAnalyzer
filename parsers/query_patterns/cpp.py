@@ -1,6 +1,6 @@
 """Query patterns for C++ files using native tree-sitter syntax."""
 
-from parsers.file_classification import FileType
+from parsers.models import FileType, FileClassification
 
 CPP_PATTERNS = {
     "syntax": {

@@ -166,48 +166,29 @@ def get_extensions_for_language(language: str) -> Set[str]:
         return set()
 
 class LanguageRegistry:
-    """Central registry for language support."""
+    """Registry for language parsers."""
     
     def __init__(self):
         self._parsers: Dict[str, BaseParser] = {}
-        
-    def get_parser(self, file_classification: FileClassification) -> Optional[BaseParser]:
-        """Get appropriate parser for language."""
+
+    def get_parser(self, classification: FileClassification) -> Optional[BaseParser]:
         try:
-            # [2.1.1] Normalize Language
-            # USES: [language_support.py] normalize_language_name() -> str
-            language_id = normalize_language_name(file_classification.language_id)
-            
-            # [2.1.2] Check Parser Cache
-            if language_id in self._parsers:
-                return self._parsers[language_id]
-            
-            # [2.1.3] Create Parser Instance
-            # USES: [tree_sitter_parser.py] TreeSitterParser
-            # USES: [custom_parsers/__init__.py] CUSTOM_PARSER_CLASSES
-            parser = None
-            if language_id in TREE_SITTER_LANGUAGES:
-                parser = TreeSitterParser(language_id, file_classification.file_type)
-            elif language_id in CUSTOM_PARSER_CLASSES:
-                parser_class = CUSTOM_PARSER_CLASSES[language_id]
-                parser = parser_class(language_id, file_classification.file_type)
-            
-            # [2.1.4] Initialize and Cache
-            # USES: [base_parser.py] BaseParser.initialize() -> bool
-            if parser and parser.initialize():
-                self._parsers[language_id] = parser
-                return parser
-                
-            return None
-            
+            language = classification.language_id
+            if language not in self._parsers:
+                if classification.parser_type == "tree_sitter":
+                    self._parsers[language] = TreeSitterParser(language, classification.file_type)
+                elif classification.parser_type == "custom":
+                    parser_cls = CUSTOM_PARSER_CLASSES.get(language)
+                    if parser_cls:
+                        self._parsers[language] = parser_cls(language, classification.file_type)
+            return self._parsers.get(language)
         except Exception as e:
-            log(f"Error getting parser: {e}", level="error")
+            log(f"Error getting parser for {classification.language_id}: {e}", level="error")
             return None
 
     def cleanup(self):
-        """Clean up all parser instances."""
-        for parser in self._parsers.values():
-            parser.cleanup()
+        for p in self._parsers.values():
+            p.cleanup()
         self._parsers.clear()
 
 # Global instance

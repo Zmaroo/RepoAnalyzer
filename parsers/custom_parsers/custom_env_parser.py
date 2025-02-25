@@ -18,11 +18,8 @@ class EnvParser(BaseParser):
     
     def __init__(self, language_id: str = "env", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CONFIG)
-        self.patterns = {
-            name: re.compile(pattern.pattern)
-            for category in ENV_PATTERNS.values()
-            for name, pattern in category.items()
-        }
+        # Use the shared helper to compile regex patterns.
+        self.patterns = self._compile_patterns(ENV_PATTERNS)
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -36,14 +33,9 @@ class EnvParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> EnvNode:
-        """Create a standardized ENV AST node."""
-        return EnvNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized ENV AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return EnvNode(**node_dict)
 
     def _process_value(self, value: str) -> Tuple[str, str]:
         """Process a value that might be quoted or multiline."""
@@ -62,7 +54,8 @@ class EnvParser(BaseParser):
             ast = self._create_node(
                 "env_file",
                 [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
+                [len(lines) - 1, len(lines[-1]) if lines else 0],
+                children=[]
             )
             
             for i, line in enumerate(lines):
@@ -125,10 +118,10 @@ class EnvParser(BaseParser):
             
         except Exception as e:
             log(f"Error parsing env content: {e}", level="error")
-            return EnvNode(
-                type="env_file",
-                start_point=[0, 0],
-                end_point=[0, 0],
+            return self._create_node(
+                "env_file",
+                [0, 0],
+                [0, 0],
                 error=str(e),
                 children=[]
             ).__dict__

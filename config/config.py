@@ -1,7 +1,7 @@
 """Configuration management with error handling."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 from utils.logger import log
 from utils.error_handling import handle_errors, ProcessingError, ErrorBoundary
@@ -43,11 +43,23 @@ class RedisConfig:
     db: int = int(os.getenv('REDIS_DB', '0'))
     password: str = os.getenv('REDIS_PASSWORD', None)
 
+# New FileConfig class for file-related settings.
+@dataclass
+class FileConfig:
+    """Configuration for file operations."""
+    # List of file patterns to ignore.
+    ignore_patterns: list = field(default_factory=lambda: ["*.tmp", "*.log"])
+
+    @classmethod
+    def create(cls):
+        return cls()
+
 # Create global configuration instances
 postgres_config = PostgresConfig()
 neo4j_config = Neo4jConfig()
 parser_config = ParserConfig()
 redis_config = RedisConfig()
+file_config = FileConfig.create()  # Global FileConfig instance
 
 @handle_errors(error_types=ProcessingError)
 def validate_configs() -> bool:

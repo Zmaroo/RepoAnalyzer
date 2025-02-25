@@ -12,18 +12,14 @@ from parsers.models import EditorconfigNode
 from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
 from parsers.types import FileType
 from utils.logger import log
-import re
 
 class EditorconfigParser(BaseParser):
     """Parser for EditorConfig files."""
     
     def __init__(self, language_id: str = "editorconfig", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CONFIG)
-        self.patterns = {
-            name: re.compile(pattern.pattern)
-            for category in EDITORCONFIG_PATTERNS.values()
-            for name, pattern in category.items()
-        }
+        # Use the shared helper from BaseParser to compile the regex patterns.
+        self.patterns = self._compile_patterns(EDITORCONFIG_PATTERNS)
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -37,14 +33,9 @@ class EditorconfigParser(BaseParser):
         end_point: List[int],
         **kwargs
     ) -> EditorconfigNode:
-        """Create a standardized EditorConfig AST node."""
-        return EditorconfigNode(
-            type=node_type,
-            start_point=start_point,
-            end_point=end_point,
-            children=[],
-            **kwargs
-        )
+        """Create a standardized EditorConfig AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return EditorconfigNode(**node_dict)
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse EditorConfig content into AST structure."""
@@ -66,7 +57,7 @@ class EditorconfigParser(BaseParser):
                 if not line.strip():
                     continue
                 
-                # Process comments
+                # Process comments.
                 if comment_match := self.patterns['comment'].match(line):
                     node = self._create_node(
                         "comment",
@@ -80,7 +71,7 @@ class EditorconfigParser(BaseParser):
                         ast.children.append(node)
                     continue
                 
-                # Process sections
+                # Process sections.
                 if section_match := self.patterns['section'].match(line):
                     current_section = self._create_node(
                         "section",
@@ -92,7 +83,7 @@ class EditorconfigParser(BaseParser):
                     ast.children.append(current_section)
                     continue
                 
-                # Process properties
+                # Process properties.
                 if current_section and (property_match := self.patterns['property'].match(line)):
                     node = self._create_node(
                         "property",
@@ -105,7 +96,7 @@ class EditorconfigParser(BaseParser):
                     current_section.children.append(node)
                     continue
                 
-                # Process semantic patterns
+                # Process semantic patterns.
                 for pattern_name, pattern in self.patterns.items():
                     if pattern_name in ['comment', 'section', 'property']:
                         continue
