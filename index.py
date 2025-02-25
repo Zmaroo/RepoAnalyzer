@@ -8,6 +8,7 @@ asyncio‑driven structure. It supports:
   - Cloning and indexing a reference repository via a GitHub URL (--clone-ref)
   - Documentation operations (e.g. sharing, searching)
   - Watch mode: files are monitored and changes are reindexed continuously
+  - Reference repository learning: learn patterns from reference repositories
 """
 
 import argparse
@@ -51,7 +52,11 @@ from semantic.search import (  # Updated import path
     search_engine
 )
 from ai_tools.graph_capabilities import graph_analysis  # Add graph analysis
+from ai_tools.ai_interface import AIAssistant  # Add AI Assistant
 from watcher.file_watcher import watch_directory
+
+# Create AI Assistant instance
+ai_assistant = AIAssistant()
 
 # ------------------------------------------------------------------
 # Asynchronous tasks delegating major responsibilities.
@@ -74,6 +79,24 @@ async def handle_file_change(file_path: str, repo_id: int):
     log(f"File changed: {file_path}", level="info")
     await process_repository_indexing(file_path, repo_id, single_file=True)
     await graph_analysis.analyze_code_structure(repo_id)
+
+async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int = None):
+    """
+    Learn patterns from a reference repository and optionally apply them to an active repo.
+    """
+    try:
+        # Learn from reference repository
+        learn_result = await ai_assistant.learn_from_reference_repo(reference_repo_id)
+        log(f"Learned patterns from reference repo: {learn_result}", level="info")
+        
+        # Apply patterns to active repository if specified
+        if active_repo_id:
+            apply_result = await ai_assistant.apply_reference_patterns(reference_repo_id, active_repo_id)
+            log(f"Applied patterns to active repo: {apply_result}", level="info")
+            return apply_result
+        return learn_result
+    except Exception as e:
+        log(f"Error in reference repository learning: {e}", level="error")
 
 # ------------------------------------------------------------------
 # Main async routine assembling tasks (indexing, sharing, searching).
@@ -98,10 +121,25 @@ async def main_async(args):
             'source_url': args.clone_ref
         })
         
+        # Store reference repository if provided
+        reference_repo_id = None
+        if args.learn_ref:
+            reference_repo = os.path.basename(os.path.abspath(args.learn_ref))
+            reference_repo_id = await upsert_repository({
+                'repo_name': reference_repo,
+                'repo_type': 'reference',
+                'active_repo_id': repo_id,
+                'source_url': args.learn_ref if '://' in args.learn_ref else None
+            })
+        
         # [0.3] Processing Tasks
         tasks = []
         # Core indexing using UnifiedIndexer [1.0]
         tasks.append(process_repository_indexing(repo_path, repo_id))
+        
+        # Index reference repository if provided
+        if args.learn_ref:
+            tasks.append(process_repository_indexing(args.learn_ref, reference_repo_id))
         
         # Documentation operations
         if args.share_docs:
@@ -114,6 +152,10 @@ async def main_async(args):
         # Run primary tasks concurrently and tolerate individual failures
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Reference repository learning
+        if reference_repo_id:
+            await learn_from_reference_repo(reference_repo_id, repo_id if args.apply_ref_patterns else None)
         
         # [0.4] Watch Mode
         if args.watch:
@@ -134,6 +176,7 @@ async def main_async(args):
         log(f"Unexpected error: {e}", level="error")
     finally:
         await close_db_pool()
+        ai_assistant.close()
         log("Cleanup complete.", level="info")
 
 def main():
@@ -152,6 +195,10 @@ def main():
                         help="Search for documentation by term")
     parser.add_argument("--watch", action="store_true",
                         help="Watch for file changes and continuously update graph projection")
+    parser.add_argument("--learn-ref", type=str,
+                        help="Learn patterns from a reference repository (path or URL)")
+    parser.add_argument("--apply-ref-patterns", action="store_true",
+                        help="Apply learned patterns from reference repo to the active repo")
     
     args = parser.parse_args()
     

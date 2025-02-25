@@ -24,9 +24,13 @@ from db.connection import driver
 from utils.cache import create_cache
 from utils.error_handling import DatabaseError, Neo4jError
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from db.neo4j_ops import run_query
 
 # Cache for graph states
 graph_cache = create_cache("graph_state", ttl=300)
+
+# Global projection cache
+_projections = {}
 
 class ProjectionError(DatabaseError):
     """Graph projection specific errors."""
@@ -171,4 +175,232 @@ async def graph_sync_from_file(file_path: str) -> bool:
 
 async def graph_sync_from_search(query: str) -> bool:
     # Implementation needed
-    return False  # Placeholder return, actual implementation needed 
+    return False  # Placeholder return, actual implementation needed
+
+@handle_async_errors(error_types=(Neo4jError, TransactionError))
+async def ensure_projection(repo_id: int) -> bool:
+    """[6.3.1] Ensures graph projection exists and is valid."""
+    async with AsyncErrorBoundary("graph projection"):
+        # Check if projection exists
+        graph_name = f"code-repo-{repo_id}"
+        if graph_name in _projections and _projections[graph_name]["valid"]:
+            log(f"Using cached graph projection: {graph_name}", level="debug")
+            return True
+        
+        # Create graph projection
+        try:
+            await create_repository_projection(repo_id)
+            _projections[graph_name] = {"valid": True}
+            return True
+        except Exception as e:
+            raise Neo4jError(f"Failed to create graph projection: {e}")
+
+@handle_async_errors(error_types=(Neo4jError, TransactionError))
+async def invalidate_projection(repo_id: int) -> None:
+    """[6.3.2] Invalidates an existing projection for re-creation."""
+    graph_name = f"code-repo-{repo_id}"
+    
+    if graph_name in _projections:
+        _projections[graph_name]["valid"] = False
+        log(f"Invalidated graph projection: {graph_name}", level="debug")
+    
+    # Try to drop the existing projection
+    try:
+        await run_query(
+            "CALL gds.graph.drop($graph_name, false)",
+            {"graph_name": graph_name}
+        )
+        log(f"Dropped graph projection: {graph_name}", level="debug")
+    except Exception as e:
+        log(f"Error dropping graph projection (may not exist): {e}", level="debug")
+
+@handle_async_errors(error_types=(Neo4jError, TransactionError))
+async def create_repository_projection(repo_id: int) -> None:
+    """[6.3.3] Creates a Neo4j in-memory graph projection for a repository."""
+    graph_name = f"code-repo-{repo_id}"
+    
+    # Check if we already have nodes for this repo
+    count_query = """
+    MATCH (n:Code {repo_id: $repo_id})
+    RETURN count(n) as count
+    """
+    result = await run_query(count_query, {"repo_id": repo_id})
+    node_count = result[0]["count"] if result else 0
+    
+    if node_count == 0:
+        log(f"No nodes found for repo {repo_id}, skipping projection", level="warn")
+        return
+    
+    # Create the graph projection
+    projection_query = """
+    CALL gds.graph.project.cypher(
+        $graph_name,
+        'MATCH (n:Code {repo_id: $repo_id}) RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
+        'MATCH (s:Code {repo_id: $repo_id})-[r:CALLS|IMPORTS|DEPENDS_ON|CONTAINS]->(t:Code {repo_id: $repo_id}) 
+         RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties',
+        {validateRelationships: false}
+    )
+    """
+    
+    await run_query(projection_query, {
+        "graph_name": graph_name,
+        "repo_id": repo_id
+    })
+    
+    log(f"Created graph projection: {graph_name}", level="info")
+
+@handle_async_errors(error_types=(Neo4jError, TransactionError))
+async def create_pattern_projection(repo_id: int) -> None:
+    """[6.3.5] Creates a Neo4j in-memory graph projection for patterns."""
+    graph_name = f"pattern-repo-{repo_id}"
+    
+    # Check if we already have pattern nodes for this repo
+    count_query = """
+    MATCH (p:Pattern {repo_id: $repo_id})
+    RETURN count(p) as count
+    """
+    result = await run_query(count_query, {"repo_id": repo_id})
+    pattern_count = result[0]["count"] if result else 0
+    
+    if pattern_count == 0:
+        log(f"No pattern nodes found for repo {repo_id}, skipping pattern projection", level="warn")
+        return
+    
+    # Create the pattern graph projection
+    projection_query = """
+    CALL gds.graph.project.cypher(
+        $graph_name,
+        'MATCH (n) WHERE (n:Pattern AND n.repo_id = $repo_id) OR (n:Code AND n.repo_id = $repo_id) OR (n:Repository AND n.id = $repo_id) 
+         RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
+        'MATCH (n:Pattern {repo_id: $repo_id})-[r:EXTRACTED_FROM]->(m:Code {repo_id: $repo_id}) 
+         RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
+         UNION
+         MATCH (n:Repository {id: $repo_id})-[r:REFERENCE_PATTERN|APPLIED_PATTERN]->(m:Pattern) 
+         RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties',
+        {validateRelationships: false}
+    )
+    """
+    
+    await run_query(projection_query, {
+        "graph_name": graph_name,
+        "repo_id": repo_id
+    })
+    
+    log(f"Created pattern graph projection: {graph_name}", level="info")
+
+@handle_async_errors(error_types=(Neo4jError, TransactionError))
+async def ensure_pattern_projection(repo_id: int) -> bool:
+    """[6.3.6] Ensures pattern graph projection exists and is valid."""
+    async with AsyncErrorBoundary("pattern graph projection"):
+        # Check if projection exists
+        graph_name = f"pattern-repo-{repo_id}"
+        if graph_name in _projections and _projections[graph_name]["valid"]:
+            log(f"Using cached pattern graph projection: {graph_name}", level="debug")
+            return True
+        
+        # Create graph projection
+        try:
+            await create_pattern_projection(repo_id)
+            _projections[graph_name] = {"valid": True}
+            return True
+        except Exception as e:
+            raise Neo4jError(f"Failed to create pattern graph projection: {e}")
+
+@handle_async_errors(error_types=(Neo4jError, TransactionError))
+async def invalidate_pattern_projection(repo_id: int) -> None:
+    """[6.3.7] Invalidates an existing pattern projection for re-creation."""
+    graph_name = f"pattern-repo-{repo_id}"
+    
+    if graph_name in _projections:
+        _projections[graph_name]["valid"] = False
+        log(f"Invalidated pattern graph projection: {graph_name}", level="debug")
+    
+    # Try to drop the existing projection
+    try:
+        await run_query(
+            "CALL gds.graph.drop($graph_name, false)",
+            {"graph_name": graph_name}
+        )
+        log(f"Dropped pattern graph projection: {graph_name}", level="debug")
+    except Exception as e:
+        log(f"Error dropping pattern graph projection (may not exist): {e}", level="debug")
+
+@handle_async_errors(error_types=(Neo4jError, TransactionError))
+async def create_repository_with_reference_projection(active_repo_id: int, reference_repo_id: int) -> None:
+    """[6.3.8] Creates a combined graph projection of active and reference repositories."""
+    graph_name = f"active-reference-{active_repo_id}-{reference_repo_id}"
+    
+    # Create the combined graph projection
+    projection_query = """
+    CALL gds.graph.project.cypher(
+        $graph_name,
+        'MATCH (n) WHERE (n:Code AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR 
+                         (n:Pattern AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id))
+         RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
+        'MATCH (s)-[r]->(t) 
+         WHERE (s:Code OR s:Pattern) AND (t:Code OR t:Pattern) AND 
+               (s.repo_id = $active_repo_id OR s.repo_id = $reference_repo_id) AND
+               (t.repo_id = $active_repo_id OR t.repo_id = $reference_repo_id)
+         RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties',
+        {validateRelationships: false}
+    )
+    """
+    
+    await run_query(projection_query, {
+        "graph_name": graph_name,
+        "active_repo_id": active_repo_id,
+        "reference_repo_id": reference_repo_id
+    })
+    
+    log(f"Created combined active-reference graph projection: {graph_name}", level="info")
+
+@handle_async_errors(error_types=(Neo4jError, TransactionError))
+async def compare_repository_structures(active_repo_id: int, reference_repo_id: int) -> dict:
+    """[6.3.9] Compares the structure of an active repository with a reference repository."""
+    # Create combined projection if needed
+    graph_name = f"active-reference-{active_repo_id}-{reference_repo_id}"
+    
+    try:
+        await create_repository_with_reference_projection(active_repo_id, reference_repo_id)
+    except Exception as e:
+        log(f"Error creating combined projection: {e}", level="error")
+        return {"error": str(e)}
+    
+    # Run similarity algorithm
+    similarity_query = """
+    CALL gds.nodeSimilarity.stream($graph_name, {
+        topK: 10,
+        similarityCutoff: 0.5
+    })
+    YIELD node1, node2, similarity
+    WITH gds.util.asNode(node1) AS n1, gds.util.asNode(node2) AS n2, similarity
+    WHERE n1.repo_id <> n2.repo_id  // Only compare nodes from different repos
+    RETURN n1.file_path AS active_file, 
+           n2.file_path AS reference_file, 
+           n1.language AS language,
+           similarity
+    ORDER BY similarity DESC
+    LIMIT 20
+    """
+    
+    similarity_results = await run_query(similarity_query, {"graph_name": graph_name})
+    
+    # Get structure statistics for each repo
+    active_stats_query = """
+    MATCH (c:Code {repo_id: $repo_id})
+    RETURN c.language AS language, count(*) AS file_count
+    ORDER BY file_count DESC
+    """
+    
+    active_stats = await run_query(active_stats_query, {"repo_id": active_repo_id})
+    reference_stats = await run_query(active_stats_query, {"repo_id": reference_repo_id})
+    
+    return {
+        "similarities": similarity_results,
+        "active_repo_stats": active_stats,
+        "reference_repo_stats": reference_stats,
+        "similarity_count": len(similarity_results)
+    }
+
+# Global export
+graph_sync = AsyncErrorBoundary("graph_sync", locals()) 

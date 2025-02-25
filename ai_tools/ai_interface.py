@@ -5,12 +5,14 @@ Flow:
    - Repository analysis
    - Code structure analysis
    - Documentation analysis
+   - Reference repository learning
 
 2. Integration Points:
    - GraphAnalysis [4.3]: Graph operations
    - CodeUnderstanding [4.2]: Code analysis
    - SearchEngine [5.0]: Search operations
    - DocEmbedder [3.2]: Document embeddings
+   - ReferenceRepositoryLearning [4.4]: Pattern learning
 
 3. Error Handling:
    - ProcessingError: AI operations
@@ -30,6 +32,7 @@ from semantic.search import (
 )
 from utils.logger import log
 from ai_tools.code_understanding import CodeUnderstanding
+from ai_tools.reference_repository_learning import reference_learning
 from typing import List, Dict, Optional, Any
 from embedding.embedding_models import DocEmbedder
 from sklearn.cluster import DBSCAN
@@ -61,6 +64,7 @@ class AIAssistant:
             self.graph_analysis = GraphAnalysis()
             self.code_understanding = CodeUnderstanding()
             self.doc_embedder = DocEmbedder()
+            self.reference_learning = reference_learning
             
             if not os.path.exists(parser_config.language_data_path):
                 raise ProcessingError(f"Invalid language data path")
@@ -306,13 +310,119 @@ class AIAssistant:
             
         return max_similarity
 
+    @handle_async_errors(error_types=ProcessingError)
+    async def learn_from_reference_repo(self, reference_repo_id: int) -> Dict[str, Any]:
+        """[4.1.11] Learn patterns from a reference repository."""
+        async with AsyncErrorBoundary("reference repository learning"):
+            return await self.reference_learning.learn_from_repository(reference_repo_id)
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def apply_reference_patterns(
+        self,
+        reference_repo_id: int,
+        target_repo_id: int
+    ) -> Dict[str, Any]:
+        """[4.1.12] Apply learned patterns from a reference repository to a target project."""
+        async with AsyncErrorBoundary("applying reference patterns"):
+            return await self.reference_learning.apply_patterns_to_project(
+                reference_repo_id, target_repo_id
+            )
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def analyze_repository_with_reference(
+        self,
+        repo_id: int,
+        reference_repo_id: int
+    ) -> Dict[str, Any]:
+        """[4.1.13] Analyze repository with reference to another one.
+        
+        This enhanced method uses graph-based repository comparison to identify structural
+        similarities, pattern matches, and areas for improvement based on the reference repository.
+        
+        Args:
+            repo_id: ID of the active repository to analyze
+            reference_repo_id: ID of the reference repository to compare against
+            
+        Returns:
+            Dict containing comprehensive analysis with repository comparison results
+        """
+        async with AsyncErrorBoundary("repository analysis with reference"):
+            # First analyze the repository
+            analysis_task = asyncio.create_task(self.analyze_repository(repo_id))
+            
+            # Learn from reference repository if needed
+            reference_status_task = asyncio.create_task(
+                self.reference_learning.learn_from_repository(reference_repo_id)
+            )
+            
+            # Compare repositories using graph projection capabilities
+            comparison_task = asyncio.create_task(
+                self.reference_learning.compare_with_reference_repository(
+                    active_repo_id=repo_id,
+                    reference_repo_id=reference_repo_id
+                )
+            )
+            
+            # Apply reference patterns (this will generate recommendations)
+            patterns_task = asyncio.create_task(
+                self.reference_learning.apply_patterns_to_project(
+                    reference_repo_id, repo_id
+                )
+            )
+            
+            # Wait for all tasks to complete
+            analysis, reference_status, comparison, patterns = await asyncio.gather(
+                analysis_task, reference_status_task, comparison_task, patterns_task
+            )
+            
+            # Extract the most similar files for detailed analysis
+            similar_files = []
+            if "similarities" in comparison:
+                for similarity in comparison["similarities"][:5]:  # Top 5 most similar
+                    similar_files.append({
+                        "active_file": similarity.get("active_file"),
+                        "reference_file": similarity.get("reference_file"),
+                        "language": similarity.get("language"),
+                        "similarity_score": similarity.get("similarity")
+                    })
+            
+            # Combine the results into a comprehensive analysis
+            combined_analysis = {
+                **analysis,
+                "reference_patterns": patterns,
+                "repository_comparison": {
+                    "similarity_score": comparison.get("similarity_count", 0) / 20 if comparison.get("similarity_count") else 0,
+                    "similar_files": similar_files,
+                    "active_repo_stats": comparison.get("active_repo_stats", []),
+                    "reference_repo_stats": comparison.get("reference_repo_stats", []),
+                    "pattern_counts": {
+                        "active": comparison.get("active_patterns_count", 0),
+                        "reference": comparison.get("reference_patterns_count", 0)
+                    }
+                },
+                "reference_repository": {
+                    "id": reference_repo_id,
+                    "patterns": {
+                        "code_patterns": reference_status.get("code_patterns", 0),
+                        "doc_patterns": reference_status.get("doc_patterns", 0),
+                        "architecture_patterns": reference_status.get("architecture_patterns", 0)
+                    }
+                }
+            }
+            
+            return combined_analysis
+
     @handle_errors(error_types=ProcessingError)
     def close(self) -> None:
-        """Clean up resources."""
-        with ErrorBoundary("AI Assistant cleanup"):
-            self.graph_analysis.close()
-            self.code_understanding.cleanup()
-            self.doc_embedder.cleanup()
+        """[4.1.10] Cleanup all resources."""
+        with ErrorBoundary("resource cleanup"):
+            try:
+                self.graph_analysis.cleanup()
+                self.code_understanding.cleanup()
+                self.reference_learning.cleanup()
+                log("All AI resources cleaned up.", level="debug")
+            except Exception as e:
+                raise ProcessingError(f"Error during AI resource cleanup: {e}")
 
     # Optional alias to match documentation
     async def find_similar_code(self, query: str, repo_id: Optional[int] = None, limit: int = 5) -> list:

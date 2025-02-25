@@ -10,6 +10,7 @@ This directory contains the core implementation of AI-powered code analysis tool
 - Combines graph analysis and semantic search
 - Documentation analysis and suggestions
 - Code structure analysis
+- Reference repository learning
 - Resource management and cleanup
 
 ### Code Understanding (`code_understanding.py`)
@@ -27,6 +28,15 @@ This directory contains the core implementation of AI-powered code analysis tool
 - Code flow tracing
 - Reference analysis
 - Graph-based metrics
+
+### Reference Repository Learning (`reference_repository_learning.py`)
+
+- Pattern extraction from reference repositories
+- Best practice identification
+- Documentation convention analysis
+- Architecture pattern recognition
+- Pattern-based recommendations
+- Cross-repository learning
 
 ## Configuration
 
@@ -49,28 +59,43 @@ All components implement consistent error handling:
 ```python
 from ai_tools.ai_interface import ai_assistant
 async def analyze_repo(repo_id: int):
-try:
-# Perform comprehensive analysis
-analysis = await ai_assistant.analyze_repository(repo_id)
-# Get specific file context
-context = await ai_assistant.get_code_context(
-repo_id=repo_id,
-file_path="src/main.py"
-)
-# Analyze documentation
-docs = ai_assistant.analyze_documentation(repo_id)
-return {
-"analysis": analysis,
-"context": context,
-"documentation": docs
-}
-finally:
-# Always cleanup resources
-ai_assistant.close()
-'''
-
+    try:
+        # Perform comprehensive analysis
+        analysis = await ai_assistant.analyze_repository(repo_id)
+        
+        # Get specific file context
+        context = await ai_assistant.get_code_context(
+            repo_id=repo_id,
+            file_path="src/main.py"
+        )
+        
+        # Analyze documentation
+        docs = ai_assistant.analyze_documentation(repo_id)
+        
+        # Learn from reference repository
+        reference_repo_id = 123  # ID of reference repo
+        patterns = await ai_assistant.learn_from_reference_repo(reference_repo_id)
+        
+        # Apply patterns to target repository
+        recommendations = await ai_assistant.apply_reference_patterns(
+            reference_repo_id,
+            repo_id
+        )
+        
+        return {
+            "analysis": analysis,
+            "context": context,
+            "documentation": docs,
+            "patterns": patterns,
+            "recommendations": recommendations
+        }
+    finally:
+        # Always cleanup resources
+        ai_assistant.close()
+```
 
 ## Dependencies
+
 - Neo4j for graph analysis
 - PostgreSQL for data storage
 - Redis for caching (optional)
@@ -78,6 +103,7 @@ ai_assistant.close()
 - Tree-sitter for parsing
 
 ## Error Types
+
 - `ProcessingError`: General processing errors
 - `DatabaseError`: Database-related errors
 - `ParserError`: Code parsing errors
