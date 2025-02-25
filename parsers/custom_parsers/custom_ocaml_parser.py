@@ -26,7 +26,7 @@ from parsers.base_parser import BaseParser
 from parsers.query_patterns.ocaml import OCAML_PATTERNS
 from parsers.query_patterns.ocaml_interface import OCAML_INTERFACE_PATTERNS
 from parsers.models import OcamlNode
-from parsers.types import FileType, PatternCategory
+from parsers.types import FileType, ParserType, PatternCategory
 from utils.logger import log
 
 def compute_offset(lines, line_no, col):
@@ -40,7 +40,7 @@ class OcamlParser(BaseParser):
     """Parser for OCaml files."""
     
     def __init__(self, language_id: str = "ocaml", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CODE)
+        super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         self.is_interface = language_id == "ocaml_interface"
         # Use the shared helper from BaseParser to compile regex patterns.
         patterns_source = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS

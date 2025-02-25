@@ -2,18 +2,11 @@
 
 from typing import Dict, Any, List, Optional, Union, Generator, Tuple
 from tree_sitter import Node, Query, QueryError, Parser, Language, TreeCursor
-from .types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics
-from parsers.models import (
-    ExtractedFeatures,
-    QueryResult,
-    FeatureExtractor,
-    FileClassification,
-    language_registry,
-)
-from utils.logger import log
+from .types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, ExtractedFeatures
+from parsers.models import QueryResult, FileClassification
 from parsers.language_support import language_registry
+from utils.logger import log
 from parsers.pattern_processor import PatternProcessor, PatternMatch, PatternCategory, pattern_processor
-from parsers.query_patterns import PATTERN_CATEGORIES
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from abc import ABC, abstractmethod
 
@@ -84,7 +77,7 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             query.set_timeout_micros(self.QUERY_TIMEOUT_MICROS)
             query.set_match_limit(self.QUERY_MATCH_LIMIT)
             
-            self._queries[category][name] = {
+            self._queries.setdefault(category, {})[name] = {
                 'query': query,
                 'extract': extractor
             }

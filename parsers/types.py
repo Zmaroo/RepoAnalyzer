@@ -31,6 +31,7 @@ class ParserType(Enum):
     TREE_SITTER = "tree_sitter"
     CUSTOM = "custom"
     HYBRID = "hybrid"
+    UNKNOWN = "unknown"
 
 @dataclass
 class ParserResult:
@@ -83,11 +84,3 @@ class ExtractedFeatures:
     features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     documentation: Documentation = field(default_factory=Documentation)
     metrics: ComplexityMetrics = field(default_factory=ComplexityMetrics)
-
-@dataclass
-class QueryPattern:
-    """Pattern for querying code."""
-    pattern: str
-    extract: Callable
-    description: str
-    examples: List[str] = field(default_factory=list)

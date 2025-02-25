@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.types import FileType, PatternCategory
+from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.html import HTML_PATTERNS
 from parsers.models import HtmlNode
 from utils.logger import log
@@ -14,7 +14,7 @@ class HtmlParser(BaseParser):
     """Parser for HTML files."""
     
     def __init__(self, language_id: str = "html", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.MARKUP)
+        super().__init__(language_id, file_type or FileType.MARKUP, parser_type=ParserType.CUSTOM)
         # Use the shared helper from BaseParser to compile patterns,
         # then recompile each with the re.DOTALL flag.
         base_patterns = self._compile_patterns(HTML_PATTERNS)

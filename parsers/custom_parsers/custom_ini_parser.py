@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.types import FileType, PatternCategory
+from parsers.types import FileType, ParserType, PatternCategory
 from parsers.models import IniNode
 from parsers.query_patterns.ini import INI_PATTERNS
 from utils.logger import log
@@ -12,7 +12,7 @@ class IniParser(BaseParser):
     """Parser for INI files."""
     
     def __init__(self, language_id: str = "ini", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CONFIG)
+        super().__init__(language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         # Compile regex patterns from INI_PATTERNS using the shared helper.
         self.patterns = self._compile_patterns(INI_PATTERNS)
     

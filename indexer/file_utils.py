@@ -11,7 +11,8 @@ except AttributeError as e:
 from pathlib import Path
 from typing import List, Set, Optional
 from utils.logger import log
-from parsers.models import FileType, FileClassification
+from parsers.types import FileType
+from parsers.models import FileClassification
 from parsers.types import ParserType
 from config import FileConfig
 

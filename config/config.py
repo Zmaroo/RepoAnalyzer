@@ -29,11 +29,12 @@ class Neo4jConfig:
 
 @dataclass
 class ParserConfig:
-    """Parser configuration."""
-    max_file_size: int = 1024 * 1024  # 1MB
-    timeout: int = 30  # seconds
-    cache_enabled: bool = True
-    language_data_path: str = os.getenv('PARSER_LANGUAGE_DATA', 'parsers/data')
+    """
+    Parser configuration.
+    Specify the location of language data and other parser-related settings.
+    """
+    language_data_path: str = os.getenv("LANGUAGE_DATA_PATH", "./languages")
+    # Other parser configuration settings can be added here.
 
 @dataclass
 class RedisConfig:
@@ -83,7 +84,7 @@ def validate_configs() -> bool:
             log("Invalid Neo4j configuration", level="error")
             return False
         
-        # Validate parser config
+        # Validate parser config: check that the language data path exists.
         if not os.path.exists(parser_config.language_data_path):
             log("Invalid parser language data path", level="error")
             return False

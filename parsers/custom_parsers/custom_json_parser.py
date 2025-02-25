@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
 from parsers.query_patterns.json import JSON_PATTERNS
-from parsers.types import PatternCategory, FileType
+from parsers.types import PatternCategory, FileType, ParserType
 from parsers.models import JsonNode
 from utils.logger import log
 import json
@@ -12,7 +12,7 @@ class JsonParser(BaseParser):
     """Parser for JSON files."""
     
     def __init__(self, language_id: str = "json", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DATA)
+        super().__init__(language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
         # Compile regex patterns from JSON_PATTERNS using the shared helper.
         self.patterns = self._compile_patterns(JSON_PATTERNS)
     

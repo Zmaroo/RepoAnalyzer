@@ -37,13 +37,14 @@ from utils.error_handling import (
     DatabaseError,
     ErrorBoundary
 )
+import asyncio
 
 class SearchEngine:
     """[5.1] Handles all search operations combining vector and graph-based search."""
     
     def __init__(self):
-        self.code_embedder = code_embedder  # Same embedder as FileProcessor
-        self.doc_embedder = doc_embedder    # Same embedder as FileProcessor
+        self.code_embedder = code_embedder
+        self.doc_embedder = doc_embedder
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def search_code(
@@ -53,19 +54,8 @@ class SearchEngine:
         limit: int = 5,
         include_similar: bool = True
     ) -> List[Dict]:
-        """[5.2] Search code using vector similarity and graph analysis.
-        
-        Flow:
-        1. Generate query embedding
-        2. Perform vector similarity search
-        3. Enhance results with graph analysis
-        4. Return ranked results
-        """
-        # Generate query embedding
         query_embedding = await self.code_embedder.embed_async(query_text)
         vector_literal = self._to_pgvector(query_embedding.tolist())
-        
-        # Perform vector search
         base_sql = """
         SELECT cs.id, cs.repo_id, cs.file_path, cs.ast,
                cs.embedding <=> $1::vector AS similarity
@@ -82,22 +72,24 @@ class SearchEngine:
         
         if not include_similar or not vector_results:
             return vector_results
-            
-        # Enhance results with graph analysis
-        enhanced_results = []
-        for result in vector_results:
-            similar_components = await graph_analysis.find_similar_components(
-                file_path=result['file_path'],
-                repo_id=result['repo_id'],
-                similarity_cutoff=0.8
+        
+        async def enhance_result(result: Dict) -> Dict:
+            similar_components, code_metrics = await asyncio.gather(
+                graph_analysis.find_similar_components(
+                    file_path=result['file_path'],
+                    repo_id=result['repo_id'],
+                    similarity_cutoff=0.8
+                ),
+                graph_analysis.get_code_metrics(
+                    repo_id=result['repo_id'],
+                    file_path=result['file_path']
+                )
             )
             result['similar_components'] = similar_components
-            result['code_metrics'] = await graph_analysis.get_code_metrics(
-                repo_id=result['repo_id'],
-                file_path=result['file_path']
-            )
-            enhanced_results.append(result)
-            
+            result['code_metrics'] = code_metrics
+            return result
+        
+        enhanced_results = await asyncio.gather(*(enhance_result(result) for result in vector_results))
         return enhanced_results
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
@@ -107,10 +99,8 @@ class SearchEngine:
         repo_id: Optional[int] = None,
         limit: int = 5
     ) -> List[Dict]:
-        """[5.3] Search documentation using vector similarity."""
         query_embedding = await self.doc_embedder.embed_async(query_text)
         vector_literal = self._to_pgvector(query_embedding.tolist())
-        
         base_sql = """
         SELECT rd.id, rd.file_path, rd.content, rd.doc_type,
                rd.embedding <=> $1::vector AS similarity
@@ -122,12 +112,10 @@ class SearchEngine:
             params.append(repo_id)
         base_sql += " ORDER BY similarity ASC LIMIT $3;"
         params.append(limit)
-        
         return await query(base_sql, tuple(params))
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_repo_docs(self, repo_id: int) -> List[Dict]:
-        """Get all documents for a repository."""
         sql = """
         SELECT rd.* FROM repo_docs rd
         JOIN repo_doc_relations rdr ON rd.id = rdr.doc_id
@@ -166,9 +154,9 @@ class SearchEngine:
         """
         return await query(sql, (new_content, doc_id))
     
-    def _to_pgvector(self, vector_list: list) -> str:
-        """[5.4] Convert vector to PGVector format."""
-        return "[" + ", ".join(map(str, vector_list)) + "]"
+    def _to_pgvector(self, embedding: list) -> str:
+        # Convert list to PostgreSQL vector literal; adjust implementation as needed.
+        return " ".join(map(str, embedding))
 
 # Global instance
 search_engine = SearchEngine()

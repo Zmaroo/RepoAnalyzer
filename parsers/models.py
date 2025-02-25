@@ -60,70 +60,7 @@ class QueryResult:
     captures: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-@dataclass
-class FeatureExtractor:
-    """Base class for feature extractors."""
-    language_id: str
-    parser_type: ParserType
-    patterns: Dict[str, Any] = field(default_factory=dict)
-    initialized: bool = False
-
-    def initialize(self) -> bool:
-        """Initialize extractor resources."""
-        self.initialized = True
-        return True
-
-    def cleanup(self):
-        """Clean up extractor resources."""
-        self.initialized = False
-
-# Pattern category mappings
-PATTERN_CATEGORIES = {
-    FeatureCategory.SYNTAX: {
-        FileType.CODE: [
-            "interface", "type_alias", "enum", "decorator",
-            "function", "class", "method", "constructor",
-            "struct", "union", "typedef"
-        ],
-        FileType.DOC: [
-            "section", "block", "element", "directive",
-            "macro", "attribute", "heading", "list", "table"
-        ]
-    },
-    FeatureCategory.SEMANTICS: {
-        FileType.CODE: [
-            "type_assertion", "type_predicate", "type_query",
-            "union_type", "intersection_type", "tuple_type",
-            "variable", "type", "expression", "parameter",
-            "return_type", "generic", "template", "operator"
-        ],
-        FileType.DOC: [
-            "link", "reference", "definition", "term",
-            "callout", "citation", "footnote", "glossary"
-        ]
-    },
-    FeatureCategory.DOCUMENTATION: {
-        FileType.CODE: [
-            "comment", "docstring", "javadoc", "xmldoc",
-            "todo", "fixme", "note", "warning"
-        ],
-        FileType.DOC: [
-            "metadata", "description", "admonition",
-            "annotation", "field", "example", "tip", "caution"
-        ]
-    },
-    FeatureCategory.STRUCTURE: {
-        FileType.CODE: [
-            "namespace", "import", "export", "package",
-            "using", "include", "require", "module_import"
-        ],
-        FileType.DOC: [
-            "hierarchy", "include", "anchor", "toc",
-            "cross_reference", "bibliography", "appendix"
-        ]
-    }
-}
-
+# AST Node definitions
 @dataclass
 class BaseNode:
     """Base class for all parser nodes."""
@@ -239,33 +176,56 @@ class YamlNode(BaseNode):
     path: Optional[str] = None
 
 @dataclass
-class LanguageRegistry:
-    """Registry for language parsers."""
-    _parsers: Dict[str, BaseParser] = field(default_factory=dict)
-    _initialized: bool = False
-
-    def get_parser(self, language_id: str) -> Optional[BaseParser]:
-        """Get parser for language."""
-        return self._parsers.get(language_id)
-
-    def register_parser(self, parser: BaseParser):
-        """Register a parser."""
-        self._parsers[parser.language_id] = parser
-
-    def cleanup(self):
-        """Clean up all parser instances."""
-        for parser in self._parsers.values():
-            parser.cleanup()
-        self._parsers.clear()
-
-# Global instance
-language_registry = LanguageRegistry()
-
-@dataclass
 class ProcessedPattern:
-    """Processed pattern result."""
+    """Processed pattern result (i.e. results from pattern processing)."""
     pattern_name: str
     matches: List[PatternMatch] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
+
+PATTERN_CATEGORIES = {
+    FeatureCategory.SYNTAX: {
+        FileType.CODE: [
+            "interface", "type_alias", "enum", "decorator",
+            "function", "class", "method", "constructor",
+            "struct", "union", "typedef"
+        ],
+        FileType.DOC: [
+            "section", "block", "element", "directive",
+            "macro", "attribute", "heading", "list", "table"
+        ]
+    },
+    FeatureCategory.SEMANTICS: {
+        FileType.CODE: [
+            "type_assertion", "type_predicate", "type_query",
+            "union_type", "intersection_type", "tuple_type",
+            "variable", "type", "expression", "parameter",
+            "return_type", "generic", "template", "operator"
+        ],
+        FileType.DOC: [
+            "link", "reference", "definition", "term",
+            "callout", "citation", "footnote", "glossary"
+        ]
+    },
+    FeatureCategory.DOCUMENTATION: {
+        FileType.CODE: [
+            "comment", "docstring", "javadoc", "xmldoc",
+            "todo", "fixme", "note", "warning"
+        ],
+        FileType.DOC: [
+            "metadata", "description", "admonition",
+            "annotation", "field", "example", "tip", "caution"
+        ]
+    },
+    FeatureCategory.STRUCTURE: {
+        FileType.CODE: [
+            "namespace", "import", "export", "package",
+            "using", "include", "require", "module_import"
+        ],
+        FileType.DOC: [
+            "hierarchy", "include", "anchor", "toc",
+            "cross_reference", "bibliography", "appendix"
+        ]
+    }
+}
 

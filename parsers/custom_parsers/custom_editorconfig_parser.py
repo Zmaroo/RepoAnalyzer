@@ -8,16 +8,16 @@ key-value property lines beneath each section.
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
+from parsers.types import FileType, ParserType
 from parsers.models import EditorconfigNode
 from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
-from parsers.types import FileType
 from utils.logger import log
 
 class EditorconfigParser(BaseParser):
     """Parser for EditorConfig files."""
     
     def __init__(self, language_id: str = "editorconfig", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CONFIG)
+        super().__init__(language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         # Use the shared helper from BaseParser to compile the regex patterns.
         self.patterns = self._compile_patterns(EDITORCONFIG_PATTERNS)
     

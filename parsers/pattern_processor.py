@@ -4,12 +4,8 @@ from typing import Dict, Any, List, Union, Callable, Optional
 from dataclasses import dataclass, field
 from parsers.language_mapping import TREE_SITTER_LANGUAGES, CUSTOM_PARSER_LANGUAGES, normalize_language_name
 import re
-from .types import ParserType
-from .models import (
-    PatternDefinition,
-    PatternMatch,
-    FileClassification
-)
+from parsers.types import ParserType
+from parsers.models import PatternDefinition, PatternMatch, FileClassification
 from utils.logger import log
 import os
 import pkgutil
@@ -27,11 +23,11 @@ COMMON_PATTERNS = {
 }
 
 @dataclass
-class ProcessedPattern:
-    """Holds both tree-sitter and regex versions of a pattern."""
+class CompiledPattern:
+    """Holds compiled versions (tree-sitter and regex) of a pattern."""
     tree_sitter: Optional[str] = None
     regex: Optional[Union[str, re.Pattern]] = None
-    extract: Callable = None
+    extract: Optional[Callable] = None
     definition: Optional[PatternDefinition] = None
 
 def compile_patterns(pattern_defs: Dict[str, Any]) -> Dict[str, Any]:
@@ -102,12 +98,12 @@ class PatternProcessor:
                    else self._regex_patterns)
         return patterns.get(classification.language_id, {})
         
-    def validate_pattern(self, pattern: ProcessedPattern, language: str) -> bool:
+    def validate_pattern(self, pattern: CompiledPattern, language: str) -> bool:
         """Validate pattern matches parser type."""
         is_tree_sitter = language in TREE_SITTER_LANGUAGES
         return is_tree_sitter == (pattern.definition.pattern_type == "tree-sitter")
 
-    def process_node(self, source_code: str, pattern: ProcessedPattern) -> List[PatternMatch]:
+    def process_node(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
         """Process a node using appropriate pattern type."""
         if pattern.tree_sitter:
             return self._process_tree_sitter_pattern(source_code, pattern)
@@ -115,7 +111,7 @@ class PatternProcessor:
             return self._process_regex_pattern(source_code, pattern)
         return []
 
-    def _process_regex_pattern(self, source_code: str, pattern: ProcessedPattern) -> List[PatternMatch]:
+    def _process_regex_pattern(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
         """Process using regex pattern."""
         matches = []
         for match in pattern.regex.finditer(source_code):
@@ -133,7 +129,7 @@ class PatternProcessor:
             matches.append(result)
         return matches
 
-    def _process_tree_sitter_pattern(self, source_code: str, pattern: ProcessedPattern) -> List[PatternMatch]:
+    def _process_tree_sitter_pattern(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
         """Process using tree-sitter pattern."""
         # Tree-sitter pattern processing moved from TreeSitterParser
         # This is handled in feature extraction now

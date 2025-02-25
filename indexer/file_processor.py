@@ -20,9 +20,7 @@ Flow:
 from typing import Optional, Dict
 from tree_sitter_language_pack import SupportedLanguage
 from indexer.file_utils import get_file_classification
-from parsers.types import (
-    FileType
-)
+from parsers.types import FileType
 from parsers.language_support import language_registry
 from parsers.unified_parser import unified_parser
 from db.upsert_ops import upsert_code_snippet, upsert_doc
@@ -61,6 +59,9 @@ class FileProcessor:
                 
                 # Process based on file type
                 classification = get_file_classification(file_path)
+                if not classification:
+                    return None
+                    
                 if classification.file_type == FileType.CODE:
                     await self._process_code_file(repo_id, rel_path, content)
                 else:

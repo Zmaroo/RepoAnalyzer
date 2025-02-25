@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
 from parsers.models import PlaintextNode
-from parsers.types import FileType, PatternCategory
+from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.plaintext import PLAINTEXT_PATTERNS
 from utils.logger import log
 
@@ -11,7 +11,7 @@ class PlaintextParser(BaseParser):
     """Parser for plaintext files."""
     
     def __init__(self, language_id: str = "plaintext", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DOCUMENTATION)
+        super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(PLAINTEXT_PATTERNS)
 
     def initialize(self) -> bool:

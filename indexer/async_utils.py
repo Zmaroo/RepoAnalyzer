@@ -4,8 +4,11 @@ from typing import List, Set, Optional, Callable, Awaitable, Any, Dict
 import aiofiles
 from utils.logger import log
 from indexer.file_processor import FileProcessor
-from parsers.models import (  # Add imports from models
+from parsers.types import (
     FileType,
+    # Other lightweight types (if needed)...
+)
+from parsers.models import (  # Domain-specific models
     FileClassification,
     ParserResult,
     ExtractedFeatures
@@ -30,7 +33,7 @@ Flow:
    - Resource management
 """
 
-def async_handle_errors(async_func):
+def async_handle_errors(async_func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
     """[3.1] Decorator for consistent async error handling."""
     async def wrapper(*args, **kwargs):
         try:
@@ -67,30 +70,12 @@ async def async_read_file(file_path: str, try_encodings: bool = True) -> Optiona
             return None
 
 @async_handle_errors
-async def async_read_text_file(file_path: str) -> Optional[str]:
-    """Read text file content asynchronously with encoding detection."""
-    try:
-        async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
-            return await f.read()
-    except UnicodeDecodeError:
-        # Try alternative encodings
-        encodings = ['latin-1', 'cp1252', 'iso-8859-1']
-        for encoding in encodings:
-            try:
-                async with aiofiles.open(file_path, 'r', encoding=encoding) as f:
-                    return await f.read()
-            except UnicodeDecodeError:
-                continue
-        log(f"Unable to decode file with any encoding: {file_path}", level="error")
-        return None
-
-@async_handle_errors
 async def async_process_index_file(
     file_path: str,
     base_path: str,
     repo_id: int,
     processor: FileProcessor,
-    file_type: FileType  # Updated to use FileType enum
+    file_type: FileType  # Now using FileType enum from parsers/types
 ) -> None:
     """Asynchronously process and index a file using FileProcessor"""
     try:
@@ -127,7 +112,7 @@ async def batch_process_files(
                     base_path=base_path,
                     repo_id=repo_id,
                     processor=processor,
-                    file_type="code"
+                    file_type=FileType.CODE  # Use the enum value instead of a string
                 )
                 for f in batch
             ]

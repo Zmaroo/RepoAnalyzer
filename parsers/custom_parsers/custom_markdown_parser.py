@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.types import FileType, PatternCategory
+from parsers.types import FileType, ParserType, PatternCategory
 from parsers.models import MarkdownNode
 from parsers.query_patterns.markdown import MARKDOWN_PATTERNS
 from utils.logger import log
@@ -12,7 +12,7 @@ class MarkdownParser(BaseParser):
     """Parser for Markdown files."""
     
     def __init__(self, language_id: str = "markdown", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DOCUMENTATION)
+        super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
         # Use the shared helper from BaseParser to compile regex patterns from MARKDOWN_PATTERNS.
         self.patterns = self._compile_patterns(MARKDOWN_PATTERNS)
     

@@ -5,14 +5,8 @@ import os
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import TreeSitterParser
 from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
-from parsers.models import (
-    FileClassification,
-    LanguageFeatures,
-    ParserType,
-    FileType,
-    FileMetadata,
-    language_registry
-)
+from parsers.models import FileClassification, LanguageFeatures, FileMetadata
+from parsers.types import ParserType, FileType
 from parsers.language_mapping import (
     TREE_SITTER_LANGUAGES,
     EXTENSION_TO_LANGUAGE,
@@ -22,7 +16,6 @@ from parsers.language_mapping import (
 from utils.logger import log
 from dataclasses import dataclass
 import re
-from .language_mapping import normalize_language_name
 
 @dataclass
 class ParserAvailability:
@@ -74,7 +67,6 @@ def is_documentation_code(file_path: str, content: Optional[str] = None) -> Tupl
     if not content:
         return False, ""
         
-    # Check for large module-level docstring
     module_docstring_match = re.match(
         r'^(\'\'\'|""")[\s\S]+?\1',
         content.strip()
@@ -82,8 +74,6 @@ def is_documentation_code(file_path: str, content: Optional[str] = None) -> Tupl
     
     if module_docstring_match:
         docstring = module_docstring_match.group(0)
-        
-        # Documentation indicators in docstring
         doc_indicators = {
             'example': r'example.*usage|usage.*example',
             'api_doc': r'api reference|available methods|public interface',
@@ -91,58 +81,36 @@ def is_documentation_code(file_path: str, content: Optional[str] = None) -> Tupl
             'schema': r'schema|structure|format|specification'
         }
         
-        # Check docstring content
         doc_type = None
         for dtype, pattern in doc_indicators.items():
             if re.search(pattern, docstring.lower()):
                 doc_type = dtype
                 break
                 
-        # If significant documentation found
         if doc_type:
-            # Calculate code/doc ratio
-            code_lines = len([l for l in content.splitlines() 
-                            if l.strip() and not l.strip().startswith(('#', '"', "'"))])
-            doc_lines = len([l for l in content.splitlines() 
-                           if l.strip() and (l.strip().startswith(('#', '"', "'")) or l in docstring)])
+            code_lines = len([l for l in content.splitlines() if l.strip() and not l.strip().startswith(('#', '"', "'"))])
+            doc_lines = len([l for l in content.splitlines() if l.strip() and (l.strip().startswith(('#', '"', "'")) or l in docstring)])
             
-            # If documentation is significant portion of file
-            if doc_lines > code_lines * 0.5:  # Configurable threshold
+            if doc_lines > code_lines * 0.5:
                 return True, doc_type
-    
     return False, ""
 
 def get_language_by_extension(file_path: str) -> Optional[LanguageFeatures]:
     """
     Get language features for a file extension or path.
     
-    The actual classification of content (code vs documentation) is handled by
-    PATTERN_CATEGORIES during parsing, which extracts both code and documentation
-    features from any file type. This function focuses on selecting the appropriate
-    parser to extract those features.
+    RETURNS: LanguageFeatures if a language is identified, else None.
     """
     try:
-        # [1.2.1] Extension Extraction
-        # USES: [os.path] splitext() -> Tuple[str, str]
         ext = os.path.splitext(file_path)[1].lstrip('.').lower()
-        
-        # [1.2.2] Language Lookup
-        # USES: [language_mapping.py] EXTENSION_TO_LANGUAGE -> Dict[str, str]
         language = EXTENSION_TO_LANGUAGE.get(ext)
         if language:
-            # [1.2.3] Name Normalization
-            # USES: [language_mapping.py] LANGUAGE_ALIASES -> Dict[str, str]
             normalized = normalize_language_name(language)
-            
-            # [1.2.4] Parser Type Resolution
-            # USES: [language_mapping.py] TREE_SITTER_LANGUAGES, CUSTOM_PARSER_LANGUAGES -> Set[str]
             parser_type = (
-                ParserType.CUSTOM if normalized in CUSTOM_PARSER_CLASSES
+                ParserType.CUSTOM if normalized in CUSTOM_PARSER_LANGUAGES
                 else ParserType.TREE_SITTER if normalized in TREE_SITTER_LANGUAGES
                 else ParserType.UNKNOWN
             )
-            
-            # RETURNS: [models.py] LanguageFeatures
             return LanguageFeatures(
                 canonical_name=normalized,
                 file_extensions={ext},
@@ -159,8 +127,7 @@ def get_extensions_for_language(language: str) -> Set[str]:
         if language == "*":
             return set(EXTENSION_TO_LANGUAGE.keys())
         normalized = normalize_language_name(language)
-        return {ext for ext, lang in EXTENSION_TO_LANGUAGE.items() 
-                if lang == normalized}
+        return {ext for ext, lang in EXTENSION_TO_LANGUAGE.items() if lang == normalized}
     except Exception as e:
         log(f"Error getting extensions for language '{language}': {e}", level="error")
         return set()
@@ -175,9 +142,9 @@ class LanguageRegistry:
         try:
             language = classification.language_id
             if language not in self._parsers:
-                if classification.parser_type == "tree_sitter":
+                if classification.parser_type == ParserType.TREE_SITTER:
                     self._parsers[language] = TreeSitterParser(language, classification.file_type)
-                elif classification.parser_type == "custom":
+                elif classification.parser_type == ParserType.CUSTOM:
                     parser_cls = CUSTOM_PARSER_CLASSES.get(language)
                     if parser_cls:
                         self._parsers[language] = parser_cls(language, classification.file_type)

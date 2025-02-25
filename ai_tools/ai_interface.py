@@ -18,17 +18,19 @@ Flow:
 """
 
 from ai_tools.graph_capabilities import GraphAnalysis
-from semantic.search import semantic_search, search_code, search_docs
-from utils.logger import log
-from ai_tools.code_understanding import CodeUnderstanding
-from semantic.search import search_available_docs, share_docs_with_repo
-from typing import List, Dict, Optional, Any
 from semantic.search import (
+    semantic_search,
+    search_code,
     get_repo_docs,
     create_doc_cluster,
     update_doc_version,
     search_docs,
+    search_available_docs,
+    share_docs_with_repo,
 )
+from utils.logger import log
+from ai_tools.code_understanding import CodeUnderstanding
+from typing import List, Dict, Optional, Any
 from embedding.embedding_models import DocEmbedder
 from sklearn.cluster import DBSCAN
 from difflib import SequenceMatcher
@@ -37,17 +39,18 @@ from utils.error_handling import (
     handle_errors,
     ProcessingError,
     AsyncErrorBoundary,
-    ErrorBoundary
+    ErrorBoundary,
 )
 from parsers.models import (
     FileType,
     FileClassification,
     ParserResult,
-    ExtractedFeatures
+    ExtractedFeatures,
 )
 import numpy as np
 import os
-from config import parser_config  # Add configuration import
+import asyncio
+from config import parser_config
 
 
 class AIAssistant:
@@ -65,12 +68,12 @@ class AIAssistant:
 
     @handle_async_errors(error_types=ProcessingError)
     async def analyze_repository(self, repo_id: int) -> Dict[str, Any]:
-        """[4.1.2] Perform comprehensive repository analysis."""
+        """[4.1.2] Perform comprehensive repository analysis concurrently."""
         async with AsyncErrorBoundary("repository analysis"):
-            structure = await self.analyze_code_structure(repo_id)
-            codebase = await self.code_understanding.analyze_codebase(repo_id)
-            docs = self.analyze_documentation(repo_id)
-            
+            structure_task = asyncio.create_task(self.analyze_code_structure(repo_id))
+            codebase_task = asyncio.create_task(self.code_understanding.analyze_codebase(repo_id))
+            docs_task = asyncio.create_task(self.analyze_documentation(repo_id))
+            structure, codebase, docs = await asyncio.gather(structure_task, codebase_task, docs_task)
             return {
                 "structure": structure,
                 "codebase": codebase,
@@ -99,11 +102,13 @@ class AIAssistant:
         repo_id: int,
         file_path: str
     ) -> Dict[str, Any]:
-        """Get comprehensive code context."""
+        """Get comprehensive code context concurrently."""
         async with AsyncErrorBoundary("code context retrieval"):
-            structure = await self.analyze_code_structure(repo_id, file_path)
-            references = await self.graph_analysis.get_references(repo_id, file_path)
-            context = await self.code_understanding.get_code_context(file_path, repo_id)
+            structure, references, context = await asyncio.gather(
+                self.analyze_code_structure(repo_id, file_path),
+                self.graph_analysis.get_references(repo_id, file_path),
+                self.code_understanding.get_code_context(file_path, repo_id)
+            )
             
             return {
                 "structure": structure,
@@ -125,20 +130,27 @@ class AIAssistant:
         try:
             return self.graph_analysis.trace_code_flow(entry_point, repo_id)
         except Exception as e:
-            log(f"Error tracing code flow from {entry_point}: {e}", level="error")
+            import traceback
+            log(f"Error tracing code flow from {entry_point}: {e}\n{traceback.format_exc()}", level="error")
             return []
 
-    def search_code_snippets(self, query: str, repo_id: int, limit: int = 3) -> list:
+    @handle_async_errors(error_types=ProcessingError)
+    async def search_code_snippets(self, query: str, repo_id: int, limit: int = 3) -> list:
         """Searches for code snippets matching the query using semantic search."""
         try:
-            return search_code(query, repo_id=repo_id, limit=limit)
+            return await search_code(query, repo_id=repo_id, limit=limit)
         except Exception as e:
             log(f"Error in semantic search for query '{query}': {e}", level="error")
             return []
 
-    def search_documentation(self, query: str, repo_id: int = None) -> list[dict]:
+    @handle_async_errors(error_types=ProcessingError)
+    async def search_documentation(self, query: str, repo_id: int = None) -> list:
         """Search across all available documentation."""
-        return search_docs(query, repo_id)
+        try:
+            return await search_docs(query, repo_id)
+        except Exception as e:
+            log(f"Error searching documentation for query '{query}': {e}", level="error")
+            return []
     
     def get_available_docs(self, search_term: str, repo_id: int = None) -> list[dict]:
         """Find documentation that could be linked to a project."""
@@ -148,11 +160,11 @@ class AIAssistant:
         """Share selected documentation with a target repository."""
         return share_docs_with_repo(doc_ids, target_repo_id)
 
-    @handle_errors(error_types=ProcessingError)
-    def analyze_documentation(self, repo_id: int) -> Dict[str, Any]:
-        """Analyze repository documentation."""
-        with ErrorBoundary("documentation analysis"):
-            docs = get_repo_docs(repo_id)
+    @handle_async_errors(error_types=ProcessingError)
+    async def analyze_documentation(self, repo_id: int) -> Dict[str, Any]:
+        """Analyze repository documentation asynchronously."""
+        async with AsyncErrorBoundary("documentation analysis"):
+            docs = await get_repo_docs(repo_id)
             
             return {
                 "total_docs": len(docs),
@@ -178,9 +190,7 @@ class AIAssistant:
             clusters = {}
             for i, label in enumerate(clustering.labels_):
                 if label >= 0:
-                    if label not in clusters:
-                        clusters[label] = []
-                    clusters[label].append({
+                    clusters.setdefault(label, []).append({
                         'id': docs[i]['id'],
                         'path': docs[i]['file_path']
                     })
@@ -199,9 +209,7 @@ class AIAssistant:
             
             for doc in docs:
                 doc_type = doc.get('doc_type', 'unknown')
-                if doc_type not in coverage["coverage_by_type"]:
-                    coverage["coverage_by_type"][doc_type] = 0
-                coverage["coverage_by_type"][doc_type] += 1
+                coverage["coverage_by_type"][doc_type] = coverage["coverage_by_type"].get(doc_type, 0) + 1
             
             return coverage
 
@@ -305,6 +313,10 @@ class AIAssistant:
             self.graph_analysis.close()
             self.code_understanding.cleanup()
             self.doc_embedder.cleanup()
+
+    # Optional alias to match documentation
+    async def find_similar_code(self, query: str, repo_id: Optional[int] = None, limit: int = 5) -> list:
+        return await self.search_code_snippets(query, repo_id, limit)
 
 # Global instance
 ai_assistant = AIAssistant()

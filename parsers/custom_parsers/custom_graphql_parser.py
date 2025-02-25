@@ -7,7 +7,7 @@ enum, or schema definitions from a GraphQL file.
 
 from typing import Dict, List, Any, Optional
 from parsers.base_parser import BaseParser
-from parsers.types import FileType, PatternCategory
+from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.graphql import GRAPHQL_PATTERNS
 from parsers.models import GraphQLNode
 from utils.logger import log
@@ -16,7 +16,7 @@ class GraphqlParser(BaseParser):
     """Parser for GraphQL schema files."""
     
     def __init__(self, language_id: str = "graphql", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CODE)
+        super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         # Use the shared helper from BaseParser to compile the regex patterns.
         self.patterns = self._compile_patterns(GRAPHQL_PATTERNS)
     

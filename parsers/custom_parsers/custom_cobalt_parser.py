@@ -6,14 +6,14 @@ from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from parsers.base_parser import BaseParser
 from parsers.models import CobaltNode
 from parsers.query_patterns.cobalt import COBALT_PATTERNS
-from parsers.types import PatternCategory, FileType
+from parsers.types import PatternCategory, FileType, ParserType
 from utils.logger import log
 
 class CobaltParser(BaseParser):
     """Parser for the Cobalt programming language."""
     
     def __init__(self, language_id: str = "cobalt", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CODE)
+        super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         # Use the shared helper from BaseParser to compile the regex patterns.
         self.patterns = self._compile_patterns(COBALT_PATTERNS)
     

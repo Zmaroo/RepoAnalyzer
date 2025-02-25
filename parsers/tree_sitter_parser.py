@@ -6,8 +6,8 @@ from utils.logger import log
 from parsers.base_parser import BaseParser
 from utils.error_handling import handle_errors, ProcessingError
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
-from parsers.models import PatternMatch, ProcessedPattern, FileType
-from parsers.types import FileType
+from parsers.models import PatternMatch, ProcessedPattern
+from parsers.types import FileType, ParserType
 
 class TreeSitterError(ProcessingError):
     """Tree-sitter specific errors."""
@@ -17,7 +17,7 @@ class TreeSitterParser(BaseParser):
     """Tree-sitter implementation of the base parser."""
     
     def __init__(self, language_id: str, file_type: FileType):
-        super().__init__(language_id, file_type)
+        super().__init__(language_id, file_type, parser_type=ParserType.TREE_SITTER)
         self._language = None
         
     def initialize(self) -> bool:
@@ -50,13 +50,12 @@ class TreeSitterParser(BaseParser):
         pattern: ProcessedPattern
     ) -> List[PatternMatch]:
         """Process tree-sitter specific patterns."""
-        if not pattern.tree_sitter or "root" not in ast:
+        if not pattern or "root" not in ast:
             return []
             
         try:
-            query = self._language.query(pattern.tree_sitter)
+            query = self._language.query(pattern.pattern_name)
             matches = []
-            
             for capture_name, node in query.captures(ast["root"]):
                 match = PatternMatch(
                     text=node.text.decode('utf8'),
@@ -68,9 +67,7 @@ class TreeSitterParser(BaseParser):
                     }
                 )
                 matches.append(match)
-                
             return matches
-            
         except Exception as e:
             log(f"Error processing pattern: {e}", level="error")
             return []
@@ -79,7 +76,6 @@ class TreeSitterParser(BaseParser):
         """Extract syntax errors from tree-sitter node."""
         if "root" not in ast:
             return []
-            
         return self._get_syntax_errors_recursive(ast["root"])
 
     def _get_syntax_errors_recursive(self, node) -> List[Dict[str, Any]]:
@@ -92,10 +88,8 @@ class TreeSitterParser(BaseParser):
                 'end': node.end_point,
                 'is_missing': node.is_missing
             })
-        
         for child in node.children:
             errors.extend(self._get_syntax_errors_recursive(child))
-            
         return errors
 
     def _convert_tree_to_dict(self, node) -> Dict[str, Any]:

@@ -1,19 +1,18 @@
 """Custom parser for Nim with enhanced documentation features."""
 
 from typing import Dict, List, Any, Optional
+import re
 from parsers.base_parser import BaseParser
 from parsers.models import NimNode
-from parsers.types import FileType, PatternCategory
+from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.nim import NIM_PATTERNS
 from utils.logger import log
-import re
 
 class NimParser(BaseParser):
     """Parser for Nim files."""
     
     def __init__(self, language_id: str = "nim", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CODE)
-        # Use the shared helper to compile regex patterns from NIM_PATTERNS.
+        super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(NIM_PATTERNS)
     
     def initialize(self) -> bool:

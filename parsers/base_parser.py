@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
 from .types import FileType, FeatureCategory, ParserType, ParserResult, ParserConfig, ParsingStatistics
 from dataclasses import dataclass, field
+from parsers.language_support import language_registry
 from utils.logger import log
 import re
 
@@ -18,15 +19,22 @@ class BaseParser(ABC):
     
     language_id: str
     file_type: FileType
-    parser_type: ParserType
+    parser_type: ParserType = ParserType.UNKNOWN  # Default value; subclasses must override
     _initialized: bool = False
     config: ParserConfig = field(default_factory=lambda: ParserConfig())
     stats: ParsingStatistics = field(default_factory=lambda: ParsingStatistics())
+    feature_extractor: Any = None  # Will hold an instance of a feature extractor
     
     def __post_init__(self):
-        self.language_id = self.language_id
-        self.file_type = self.file_type
         self._initialized = False
+        # Initialize feature extractor according to parser type.
+        from parsers.feature_extractor import TreeSitterFeatureExtractor, CustomFeatureExtractor
+        if self.parser_type == ParserType.TREE_SITTER:
+            self.feature_extractor = TreeSitterFeatureExtractor(self.language_id, self.file_type)
+        elif self.parser_type == ParserType.CUSTOM:
+            self.feature_extractor = CustomFeatureExtractor(self.language_id, self.file_type)
+        else:
+            self.feature_extractor = None
 
     def _create_node(self, node_type: str, start_point: List[int], end_point: List[int], **kwargs) -> Dict[str, Any]:
         """Helper for creating a standardized AST node. (Subclasses can override if needed.)"""
@@ -92,10 +100,10 @@ class BaseParser(ABC):
             return ParserResult(
                 success=True,
                 ast=ast,
-                features=features.model_dump(),
-                documentation=features.documentation.model_dump(),
-                complexity=features.metrics.model_dump(),
-                statistics=self.stats.model_dump(),
+                features=features.features,
+                documentation=features.documentation.__dict__,
+                complexity=features.metrics.__dict__,
+                statistics=self.stats.__dict__,
                 errors=errors
             )
         except Exception as e:
@@ -114,7 +122,7 @@ class BaseParser(ABC):
         source_code: str
     ) -> Dict[str, Any]:
         """Extract features for a specific category."""
-        patterns = self.pattern_processor.get_patterns_for_category(category)
+        patterns = self.feature_extractor._patterns  # Or use a proper getter if needed.
         
         if category == FeatureCategory.SYNTAX:
             return self._extract_syntax_features(ast, patterns)
