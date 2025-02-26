@@ -1,6 +1,209 @@
 """SQL-specific Tree-sitter patterns."""
 
+from parsers.types import FileType
 from .common import COMMON_PATTERNS
+
+SQL_PATTERNS_FOR_LEARNING = {
+    "query_patterns": {
+        "pattern": """
+        [
+            (select_statement
+                select_clause: (select_clause
+                    columns: [(column_reference) (alias) (wildcard)]+ @query.select.columns
+                    distinct: (distinct_clause)? @query.select.distinct) @query.select
+                from_clause: (from_clause
+                    tables: [(table_reference) (alias)]+ @query.from.tables) @query.from
+                where_clause: (where_clause
+                    condition: (_) @query.where.condition)? @query.where
+                group_by_clause: (group_by_clause)? @query.group
+                having_clause: (having_clause)? @query.having
+                order_by_clause: (order_by_clause)? @query.order
+                limit_clause: (limit_clause)? @query.limit) @query.statement,
+                
+            (join_clause
+                type: [(inner_join) (left_join) (right_join) (full_join)] @query.join.type
+                table: [(table_reference) (alias)] @query.join.table
+                condition: (_) @query.join.condition) @query.join,
+                
+            (subquery
+                select_statement: (select_statement) @query.subquery.select) @query.subquery,
+                
+            (common_table_expression
+                name: (identifier) @query.cte.name
+                select_statement: (select_statement) @query.cte.select) @query.cte
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "query_patterns",
+            "is_select": "query.statement" in node["captures"],
+            "is_join": "query.join" in node["captures"],
+            "is_subquery": "query.subquery" in node["captures"],
+            "is_cte": "query.cte" in node["captures"],
+            "has_where": "query.where" in node["captures"] and node["captures"].get("query.where", {}).get("text", "") != "",
+            "has_group_by": "query.group" in node["captures"] and node["captures"].get("query.group", {}).get("text", "") != "",
+            "has_having": "query.having" in node["captures"] and node["captures"].get("query.having", {}).get("text", "") != "",
+            "has_order_by": "query.order" in node["captures"] and node["captures"].get("query.order", {}).get("text", "") != "",
+            "has_limit": "query.limit" in node["captures"] and node["captures"].get("query.limit", {}).get("text", "") != "",
+            "join_type": node["captures"].get("query.join.type", {}).get("text", ""),
+            "cte_name": node["captures"].get("query.cte.name", {}).get("text", ""),
+            "query_type": (
+                "select" if "query.statement" in node["captures"] else
+                "join" if "query.join" in node["captures"] else
+                "subquery" if "query.subquery" in node["captures"] else
+                "cte" if "query.cte" in node["captures"] else
+                "unknown"
+            )
+        }
+    },
+    
+    "data_definition": {
+        "pattern": """
+        [
+            (create_table_statement
+                name: (identifier) @ddl.table.name
+                definition: (column_definition_list
+                    (column_definition
+                        name: (identifier) @ddl.table.column.name
+                        type: (_) @ddl.table.column.type)+ @ddl.table.columns) @ddl.table.definition) @ddl.table,
+                
+            (create_index_statement
+                name: (identifier) @ddl.index.name
+                table: (identifier) @ddl.index.table
+                columns: (column_list) @ddl.index.columns) @ddl.index,
+                
+            (create_view_statement
+                name: (identifier) @ddl.view.name
+                select_statement: (select_statement) @ddl.view.select) @ddl.view,
+                
+            (alter_table_statement
+                name: (identifier) @ddl.alter.table
+                action: [(add_column_clause) (drop_column_clause) (add_constraint_clause)] @ddl.alter.action) @ddl.alter
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "data_definition",
+            "is_create_table": "ddl.table" in node["captures"],
+            "is_create_index": "ddl.index" in node["captures"],
+            "is_create_view": "ddl.view" in node["captures"],
+            "is_alter_table": "ddl.alter" in node["captures"],
+            "object_name": (
+                node["captures"].get("ddl.table.name", {}).get("text", "") or
+                node["captures"].get("ddl.index.name", {}).get("text", "") or
+                node["captures"].get("ddl.view.name", {}).get("text", "") or
+                node["captures"].get("ddl.alter.table", {}).get("text", "")
+            ),
+            "column_count": len(node["captures"].get("ddl.table.column.name", [])) if "ddl.table.columns" in node["captures"] else 0,
+            "ddl_type": (
+                "create_table" if "ddl.table" in node["captures"] else
+                "create_index" if "ddl.index" in node["captures"] else
+                "create_view" if "ddl.view" in node["captures"] else
+                "alter_table" if "ddl.alter" in node["captures"] else
+                "unknown"
+            )
+        }
+    },
+    
+    "data_manipulation": {
+        "pattern": """
+        [
+            (insert_statement
+                table: (identifier) @dml.insert.table
+                columns: (column_list)? @dml.insert.columns
+                values: (_) @dml.insert.values) @dml.insert,
+                
+            (update_statement
+                table: (identifier) @dml.update.table
+                set_clause: (set_clause) @dml.update.set
+                where_clause: (where_clause)? @dml.update.where) @dml.update,
+                
+            (delete_statement
+                table: (identifier) @dml.delete.table
+                where_clause: (where_clause)? @dml.delete.where) @dml.delete,
+                
+            (merge_statement
+                target: (identifier) @dml.merge.target
+                source: (identifier) @dml.merge.source
+                condition: (_) @dml.merge.condition) @dml.merge
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "data_manipulation",
+            "is_insert": "dml.insert" in node["captures"],
+            "is_update": "dml.update" in node["captures"],
+            "is_delete": "dml.delete" in node["captures"],
+            "is_merge": "dml.merge" in node["captures"],
+            "table_name": (
+                node["captures"].get("dml.insert.table", {}).get("text", "") or
+                node["captures"].get("dml.update.table", {}).get("text", "") or
+                node["captures"].get("dml.delete.table", {}).get("text", "") or
+                node["captures"].get("dml.merge.target", {}).get("text", "")
+            ),
+            "has_where": (
+                ("dml.update" in node["captures"] and "dml.update.where" in node["captures"] and node["captures"].get("dml.update.where", {}).get("text", "") != "") or
+                ("dml.delete" in node["captures"] and "dml.delete.where" in node["captures"] and node["captures"].get("dml.delete.where", {}).get("text", "") != "")
+            ),
+            "dml_type": (
+                "insert" if "dml.insert" in node["captures"] else
+                "update" if "dml.update" in node["captures"] else
+                "delete" if "dml.delete" in node["captures"] else
+                "merge" if "dml.merge" in node["captures"] else
+                "unknown"
+            )
+        }
+    },
+    
+    "procedural_sql": {
+        "pattern": """
+        [
+            (create_function_statement
+                name: (identifier) @proc.function.name
+                parameters: (parameter_list) @proc.function.params
+                return_type: (_) @proc.function.return
+                body: (_) @proc.function.body) @proc.function,
+                
+            (create_procedure_statement
+                name: (identifier) @proc.procedure.name
+                parameters: (parameter_list) @proc.procedure.params
+                body: (_) @proc.procedure.body) @proc.procedure,
+                
+            (if_statement
+                condition: (_) @proc.if.condition
+                then_statement: (_) @proc.if.then
+                else_statement: (_)? @proc.if.else) @proc.if,
+                
+            (loop_statement
+                body: (_) @proc.loop.body) @proc.loop,
+                
+            (variable_declaration
+                name: (identifier) @proc.var.name
+                type: (_) @proc.var.type
+                default: (_)? @proc.var.default) @proc.var
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "procedural_sql",
+            "is_function": "proc.function" in node["captures"],
+            "is_procedure": "proc.procedure" in node["captures"],
+            "is_if": "proc.if" in node["captures"],
+            "is_loop": "proc.loop" in node["captures"],
+            "is_variable": "proc.var" in node["captures"],
+            "name": (
+                node["captures"].get("proc.function.name", {}).get("text", "") or
+                node["captures"].get("proc.procedure.name", {}).get("text", "") or
+                node["captures"].get("proc.var.name", {}).get("text", "")
+            ),
+            "has_else": "proc.if.else" in node["captures"] and node["captures"].get("proc.if.else", {}).get("text", "") != "",
+            "procedural_type": (
+                "function" if "proc.function" in node["captures"] else
+                "procedure" if "proc.procedure" in node["captures"] else
+                "if_statement" if "proc.if" in node["captures"] else
+                "loop" if "proc.loop" in node["captures"] else
+                "variable" if "proc.var" in node["captures"] else
+                "unknown"
+            )
+        }
+    }
+}
 
 SQL_PATTERNS = {
     **COMMON_PATTERNS,  # Keep as fallback for basic patterns
@@ -118,5 +321,7 @@ SQL_PATTERNS = {
                        node["captures"].get("documentation.line", {}).get("text", "")
             }
         }
-    }
+    },
+    
+    "REPOSITORY_LEARNING": SQL_PATTERNS_FOR_LEARNING
 } 

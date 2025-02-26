@@ -117,3 +117,60 @@ ASM_PATTERNS = {
         }
     }
 } 
+
+# Repository learning patterns for Assembly
+ASM_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (label
+                name: (word) @naming.label.name) @naming.label,
+                
+            (const
+                name: (word) @naming.const.name) @naming.const
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "name": node["node"].text.decode('utf8'),
+            "convention": "label" if "naming.label" in node["captures"] else "constant",
+            "is_uppercase": all(c.isupper() or not c.isalpha() for c in node["node"].text.decode('utf8'))
+        }
+    },
+    
+    "code_structure": {
+        "pattern": """
+        [
+            (program
+                [(const) @structure.const
+                 (instruction) @structure.instruction
+                 (label) @structure.label
+                 (meta) @structure.meta]) @structure.program
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "code_structure_pattern",
+            "has_constants": "structure.const" in node["captures"],
+            "has_labels": "structure.label" in node["captures"],
+            "has_metadata": "structure.meta" in node["captures"]
+        }
+    },
+    
+    "instructions": {
+        "pattern": """
+        [
+            (instruction
+                kind: (word) @instruction.kind) @instruction.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "instruction_pattern",
+            "instruction": node["captures"].get("instruction.kind", {}).get("text", "").lower(),
+            "is_jump": node["captures"].get("instruction.kind", {}).get("text", "").lower() in ["jmp", "je", "jne", "jz", "jnz", "call"],
+            "is_arithmetic": node["captures"].get("instruction.kind", {}).get("text", "").lower() in ["add", "sub", "mul", "div", "inc", "dec"]
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+ASM_PATTERNS['REPOSITORY_LEARNING'] = ASM_PATTERNS_FOR_LEARNING 

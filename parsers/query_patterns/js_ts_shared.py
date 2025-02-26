@@ -179,3 +179,82 @@ JS_TS_SHARED_PATTERNS = {
         }
     }
 }
+
+# Repository learning patterns for shared JS/TS
+JS_TS_SHARED_PATTERNS_FOR_LEARNING = {
+    "module_patterns": {
+        "pattern": """
+        [
+            (import_statement
+                source: (string) @module.import.source
+                clause: (_)? @module.import.clause) @module.import,
+                
+            (export_statement
+                declaration: (_)? @module.export.declaration) @module.export
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "module_pattern",
+            "is_import": "module.import" in node["captures"],
+            "is_export": "module.export" in node["captures"],
+            "source": node["captures"].get("module.import.source", {}).get("text", "").strip('"\''),
+            "has_default_export": node["captures"].get("module.export.declaration", {}).get("text", "").startswith("default ")
+        }
+    },
+    
+    "coding_style": {
+        "pattern": """
+        [
+            (arrow_function
+                parameters: (formal_parameters) @style.arrow.params
+                body: [(statement_block) (expression)] @style.arrow.body) @style.arrow,
+                
+            (ternary_expression
+                condition: (_) @style.ternary.condition
+                consequence: (_) @style.ternary.consequence
+                alternative: (_) @style.ternary.alternative) @style.ternary,
+                
+            (optional_chain) @style.optional_chain
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "coding_style_pattern",
+            "uses_arrow_function": "style.arrow" in node["captures"],
+            "uses_ternary": "style.ternary" in node["captures"],
+            "uses_optional_chaining": "style.optional_chain" in node["captures"],
+            "compact_arrow": ("style.arrow" in node["captures"] and 
+                             not node["captures"].get("style.arrow.body", {}).get("text", "").startswith("{"))
+        }
+    },
+    
+    "best_practices": {
+        "pattern": """
+        [
+            (variable_declaration
+                kind: (_) @best.var.kind) @best.var,
+                
+            (assignment_expression
+                left: (_) @best.assign.left
+                right: (_) @best.assign.right) @best.assign,
+                
+            (binary_expression
+                operator: (["===" "!=="]) @best.strict_equality) @best.strict_comparison,
+                
+            (comment
+                text: (_) @best.todo
+                (#match? @best.todo "\\bTODO\\b")) @best.todo_comment
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "best_practices_pattern",
+            "uses_const": node["captures"].get("best.var.kind", {}).get("text", "") == "const",
+            "uses_let": node["captures"].get("best.var.kind", {}).get("text", "") == "let",
+            "uses_var": node["captures"].get("best.var.kind", {}).get("text", "") == "var",
+            "uses_strict_equality": "best.strict_equality" in node["captures"],
+            "has_todo": "best.todo_comment" in node["captures"]
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+JS_TS_SHARED_PATTERNS['REPOSITORY_LEARNING'] = JS_TS_SHARED_PATTERNS_FOR_LEARNING

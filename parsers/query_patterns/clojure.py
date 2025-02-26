@@ -163,3 +163,83 @@ PATTERN_METADATA = {
         }
     }
 } 
+
+# Repository learning patterns for Clojure
+CLOJURE_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (sym_lit) @naming.symbol
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "name": node["node"].text.decode('utf8'),
+            "is_kebab_case": "-" in node["node"].text.decode('utf8') and not "_" in node["node"].text.decode('utf8'),
+            "is_snake_case": "_" in node["node"].text.decode('utf8') and not "-" in node["node"].text.decode('utf8'),
+            "is_camel_case": not ("-" in node["node"].text.decode('utf8') or "_" in node["node"].text.decode('utf8')) and 
+                           any(c.isupper() for c in node["node"].text.decode('utf8'))
+        }
+    },
+    
+    "function_style": {
+        "pattern": """
+        [
+            (list_lit
+                .
+                (sym_lit) @function.type
+                (#match? @function.type "^(defn|defn-|fn)$")
+                .
+                (sym_lit)? @function.name
+                .
+                (vec_lit) @function.params
+                .
+                (str_lit)? @function.docstring
+                .
+                (_)* @function.body) @function.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "function_style_pattern",
+            "has_docstring": "function.docstring" in node["captures"],
+            "param_count": len(node["captures"].get("function.params", {}).get("text", "").split()),
+            "is_anonymous": "fn" in node["captures"].get("function.type", {}).get("text", "") and 
+                          not node["captures"].get("function.name", {}).get("text", "")
+        }
+    },
+    
+    "code_structure": {
+        "pattern": """
+        [
+            (list_lit
+                .
+                (sym_lit) @structure.ns.keyword
+                (#eq? @structure.ns.keyword "ns")
+                .
+                (sym_lit) @structure.ns.name
+                .
+                [(list_lit
+                    .
+                    (kwd_lit) @structure.ns.require.keyword
+                    (#eq? @structure.ns.require.keyword ":require")
+                    .
+                    (_)* @structure.ns.require.specs) @structure.ns.require
+                 (list_lit
+                    .
+                    (kwd_lit) @structure.ns.import.keyword
+                    (#eq? @structure.ns.import.keyword ":import")
+                    .
+                    (_)* @structure.ns.import.specs) @structure.ns.import]*) @structure.ns.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "code_structure_pattern",
+            "has_requires": "structure.ns.require" in node["captures"],
+            "has_imports": "structure.ns.import" in node["captures"],
+            "namespace": node["captures"].get("structure.ns.name", {}).get("text", "")
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+CLOJURE_PATTERNS['REPOSITORY_LEARNING'] = CLOJURE_PATTERNS_FOR_LEARNING 

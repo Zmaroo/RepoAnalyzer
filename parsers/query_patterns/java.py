@@ -146,3 +146,110 @@ JAVA_PATTERNS = {
         ]
     """
 } 
+
+# Repository learning patterns for Java
+JAVA_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (class_declaration
+                name: (identifier) @naming.class.name) @naming.class,
+                
+            (interface_declaration
+                name: (identifier) @naming.interface.name) @naming.interface,
+                
+            (method_declaration
+                name: (identifier) @naming.method.name) @naming.method,
+                
+            (field_declaration
+                declarator: (variable_declarator
+                    name: (identifier) @naming.field.name)) @naming.field
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "entity_type": ("class" if "naming.class" in node["captures"] else
+                           "interface" if "naming.interface" in node["captures"] else
+                           "method" if "naming.method" in node["captures"] else
+                           "field"),
+            "name": (node["captures"].get("naming.class.name", {}).get("text", "") or
+                    node["captures"].get("naming.interface.name", {}).get("text", "") or
+                    node["captures"].get("naming.method.name", {}).get("text", "") or
+                    node["captures"].get("naming.field.name", {}).get("text", "")),
+            "is_pascal_case": not "_" in (node["captures"].get("naming.class.name", {}).get("text", "") or
+                                         node["captures"].get("naming.interface.name", {}).get("text", "")) and
+                             any(c.isupper() for c in (node["captures"].get("naming.class.name", {}).get("text", "") or
+                                                      node["captures"].get("naming.interface.name", {}).get("text", ""))) and
+                             (node["captures"].get("naming.class.name", {}).get("text", "") or
+                              node["captures"].get("naming.interface.name", {}).get("text", "")).strip() and
+                             (node["captures"].get("naming.class.name", {}).get("text", "") or
+                              node["captures"].get("naming.interface.name", {}).get("text", ""))[0].isupper(),
+            "is_camel_case": not "_" in (node["captures"].get("naming.method.name", {}).get("text", "") or
+                                       node["captures"].get("naming.field.name", {}).get("text", "")) and
+                           any(c.isupper() for c in (node["captures"].get("naming.method.name", {}).get("text", "") or
+                                                    node["captures"].get("naming.field.name", {}).get("text", ""))) and
+                           (node["captures"].get("naming.method.name", {}).get("text", "") or 
+                            node["captures"].get("naming.field.name", {}).get("text", ""))[0].islower()
+        }
+    },
+    
+    "exception_handling": {
+        "pattern": """
+        [
+            (try_statement
+                body: (block) @error.try.body
+                [(catch_clause
+                    exception_type: (_) @error.catch.type
+                    exception_name: (identifier) @error.catch.name
+                    body: (block) @error.catch.body) @error.catch
+                 (finally_clause
+                    body: (block) @error.finally.body) @error.finally]) @error.try,
+                    
+            (throw_statement
+                expression: (_) @error.throw.expr) @error.throw
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "exception_handling_pattern",
+            "has_catch": "error.catch" in node["captures"],
+            "has_finally": "error.finally" in node["captures"],
+            "is_throw": "error.throw" in node["captures"],
+            "exception_type": node["captures"].get("error.catch.type", {}).get("text", ""),
+            "exception_name": node["captures"].get("error.catch.name", {}).get("text", "")
+        }
+    },
+    
+    "api_design": {
+        "pattern": """
+        [
+            (class_declaration
+                modifiers: [(public_modifier) @api.public
+                            (final_modifier) @api.final
+                            (abstract_modifier) @api.abstract]) @api.class,
+                            
+            (method_declaration
+                modifiers: [(public_modifier) @api.method.public
+                            (private_modifier) @api.method.private
+                            (protected_modifier) @api.method.protected
+                            (static_modifier) @api.method.static
+                            (final_modifier) @api.method.final
+                            (abstract_modifier) @api.method.abstract]) @api.method,
+                            
+            (annotation
+                name: (identifier) @api.annotation.name
+                (#match? @api.annotation.name "^(Override|Deprecated|SuppressWarnings|FunctionalInterface)$")) @api.annotation
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "api_design_pattern",
+            "is_public_api": "api.public" in node["captures"] or "api.method.public" in node["captures"],
+            "is_private_impl": "api.method.private" in node["captures"],
+            "is_final": "api.final" in node["captures"] or "api.method.final" in node["captures"],
+            "is_abstract": "api.abstract" in node["captures"] or "api.method.abstract" in node["captures"],
+            "has_standard_annotation": "api.annotation" in node["captures"]
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+JAVA_PATTERNS['REPOSITORY_LEARNING'] = JAVA_PATTERNS_FOR_LEARNING 

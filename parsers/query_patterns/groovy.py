@@ -1,7 +1,119 @@
 """Query patterns for Groovy files."""
 
-from parsers.file_classification import FileType
+from parsers.types import FileType
 from .common import COMMON_PATTERNS
+
+GROOVY_PATTERNS_FOR_LEARNING = {
+    "build_system_patterns": {
+        "pattern": """
+        [
+            (class_declaration
+                body: (class_body 
+                    (method_declaration 
+                        name: (identifier) @build.gradle.task
+                        (#match? @build.gradle.task "^task|apply|dependencies|repositories")))) @build.gradle.class,
+            (method_call
+                name: (identifier) @build.method
+                (#match? @build.method "^apply|dependencies|repositories|plugins|task")) @build.call
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "build_system",
+            "is_gradle_task": "build.gradle.task" in node["captures"],
+            "is_gradle_method": "build.method" in node["captures"],
+            "method_name": (
+                node["captures"].get("build.gradle.task", {}).get("text", "") or
+                node["captures"].get("build.method", {}).get("text", "")
+            ),
+            "is_build_related": True
+        }
+    },
+    
+    "method_chaining": {
+        "pattern": """
+        (method_invocation_chain
+            receiver: (_) @chain.receiver
+            chain: (_)+ @chain.methods) @chain.expression
+        """,
+        "extract": lambda node: {
+            "pattern_type": "method_chaining",
+            "chain_length": len(node["captures"].get("chain.methods", {}).get("text", "").split(".")),
+            "uses_builder_pattern": any(
+                builder in (node["captures"].get("chain.methods", {}).get("text", "") or "")
+                for builder in ["build", "create", "with", "add"]
+            ),
+            "uses_stream_api": any(
+                stream in (node["captures"].get("chain.methods", {}).get("text", "") or "")
+                for stream in ["stream", "filter", "map", "collect", "forEach"]
+            )
+        }
+    },
+    
+    "closure_patterns": {
+        "pattern": """
+        [
+            (closure_expression
+                parameters: (parameter_list)? @closure.params
+                body: (block) @closure.body) @closure.def,
+                
+            (method_call
+                name: (identifier) @closure.method
+                arguments: (argument_list
+                    (closure_expression) @closure.arg)) @closure.with_arg
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "closure",
+            "has_parameters": "closure.params" in node["captures"] and node["captures"].get("closure.params", {}).get("text", ""),
+            "is_passed_as_argument": "closure.with_arg" in node["captures"],
+            "method_taking_closure": node["captures"].get("closure.method", {}).get("text", ""),
+            "closure_complexity": len((node["captures"].get("closure.body", {}).get("text", "") or "").split("\n"))
+        }
+    },
+    
+    "dsl_usage": {
+        "pattern": """
+        [
+            (method_call
+                name: (identifier) @dsl.method) @dsl.call,
+                
+            (block 
+                (expression_statement
+                    (method_call
+                        name: (identifier) @dsl.block.method
+                        arguments: (argument_list)? @dsl.block.args)) @dsl.block.stmt) @dsl.block
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "dsl_usage",
+            "is_likely_dsl": any(
+                dsl in (
+                    node["captures"].get("dsl.method", {}).get("text", "") or
+                    node["captures"].get("dsl.block.method", {}).get("text", "") or ""
+                )
+                for dsl in ["pipeline", "stage", "node", "steps", "sh", "script", "gradle", "task", "depends"]
+            ),
+            "method_name": (
+                node["captures"].get("dsl.method", {}).get("text", "") or
+                node["captures"].get("dsl.block.method", {}).get("text", "")
+            ),
+            "is_jenkins_pipeline": any(
+                jenkins in (
+                    node["captures"].get("dsl.method", {}).get("text", "") or
+                    node["captures"].get("dsl.block.method", {}).get("text", "") or ""
+                )
+                for jenkins in ["pipeline", "stage", "node", "steps", "sh", "script", "agent"]
+            ),
+            "is_gradle_script": any(
+                gradle in (
+                    node["captures"].get("dsl.method", {}).get("text", "") or
+                    node["captures"].get("dsl.block.method", {}).get("text", "") or ""
+                )
+                for gradle in ["apply", "dependencies", "repositories", "plugins", "task"]
+            )
+        }
+    }
+}
 
 GROOVY_PATTERNS = {
     **COMMON_PATTERNS,
@@ -101,5 +213,7 @@ GROOVY_PATTERNS = {
                 name: (_) @structure.import.name) @structure.import.def
             """
         }
-    }
+    },
+    
+    "REPOSITORY_LEARNING": GROOVY_PATTERNS_FOR_LEARNING
 } 

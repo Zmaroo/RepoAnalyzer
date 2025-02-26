@@ -2,7 +2,175 @@
 Query patterns for Perl files.
 """
 
+from parsers.types import FileType
 from .common import COMMON_PATTERNS
+
+PERL_PATTERNS_FOR_LEARNING = {
+    "idiomatic_perl": {
+        "pattern": """
+        [
+            (function_call
+                function: (bare_word) @idiom.func.name
+                (#match? @idiom.func.name "^(map|grep|split|join|keys|values|each|sort)$")
+                arguments: (argument_list) @idiom.func.args) @idiom.func,
+                
+            (list_expression 
+                items: (_) @idiom.list.items) @idiom.list,
+                
+            (hash_expression
+                pairs: (_) @idiom.hash.pairs) @idiom.hash,
+                
+            (regex
+                pattern: (_) @idiom.regex.pattern
+                modifiers: (_)? @idiom.regex.modifiers) @idiom.regex
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "idiomatic_perl",
+            "is_functional_call": "idiom.func" in node["captures"],
+            "is_list_expression": "idiom.list" in node["captures"],
+            "is_hash_expression": "idiom.hash" in node["captures"],
+            "is_regex": "idiom.regex" in node["captures"],
+            "function_name": node["captures"].get("idiom.func.name", {}).get("text", ""),
+            "uses_regex": "idiom.regex" in node["captures"],
+            "regex_modifiers": node["captures"].get("idiom.regex.modifiers", {}).get("text", ""),
+            "is_functional_style": "idiom.func" in node["captures"] and node["captures"].get("idiom.func.name", {}).get("text", "") in ["map", "grep", "sort"],
+            "idiom_type": (
+                "functional" if (
+                    "idiom.func" in node["captures"] and 
+                    node["captures"].get("idiom.func.name", {}).get("text", "") in ["map", "grep", "sort"]
+                ) else
+                "data_structure" if (
+                    "idiom.list" in node["captures"] or "idiom.hash" in node["captures"]
+                ) else
+                "text_processing" if (
+                    "idiom.regex" in node["captures"] or
+                    ("idiom.func" in node["captures"] and node["captures"].get("idiom.func.name", {}).get("text", "") in ["split", "join"])
+                ) else
+                "other"
+            )
+        }
+    },
+    
+    "oop_paradigms": {
+        "pattern": """
+        [
+            (use_statement
+                module: (bare_word) @oop.module
+                (#match? @oop.module "^(Moose|Moo|Mouse|Class::Accessor|Object::Tiny)$")) @oop.use,
+                
+            (function_call
+                function: (bare_word) @oop.func.name
+                (#match? @oop.func.name "^(has|extends|with|method|before|after|around|override)$")
+                arguments: (argument_list) @oop.func.args) @oop.func,
+                
+            (package_statement
+                name: (package_qualified_word) @oop.pkg.name) @oop.pkg,
+                
+            (method_call
+                invocant: (_) @oop.method.invocant
+                method: (_) @oop.method.name
+                arguments: (argument_list)? @oop.method.args) @oop.method
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "oop_paradigms",
+            "is_class_definition": "oop.use" in node["captures"],
+            "is_attribute_definition": "oop.func" in node["captures"] and node["captures"].get("oop.func.name", {}).get("text", "") == "has",
+            "is_inheritance": "oop.func" in node["captures"] and node["captures"].get("oop.func.name", {}).get("text", "") == "extends",
+            "is_role_consumption": "oop.func" in node["captures"] and node["captures"].get("oop.func.name", {}).get("text", "") == "with",
+            "is_method_call": "oop.method" in node["captures"],
+            "package_name": node["captures"].get("oop.pkg.name", {}).get("text", ""),
+            "object_framework": node["captures"].get("oop.module", {}).get("text", ""),
+            "method_name": node["captures"].get("oop.method.name", {}).get("text", ""),
+            "uses_method_modifiers": "oop.func" in node["captures"] and node["captures"].get("oop.func.name", {}).get("text", "") in ["before", "after", "around", "override"]
+        }
+    },
+    
+    "data_structure_usage": {
+        "pattern": """
+        [
+            (array
+                sigil: "@" @data.array.sigil
+                name: (_) @data.array.name) @data.array,
+                
+            (array_element
+                array: (_) @data.array_elem.array
+                index: (_) @data.array_elem.index) @data.array_elem,
+                
+            (hash
+                sigil: "%" @data.hash.sigil
+                name: (_) @data.hash.name) @data.hash,
+                
+            (hash_element
+                hash: (_) @data.hash_elem.hash
+                key: (_) @data.hash_elem.key) @data.hash_elem,
+                
+            (dereference_expression
+                argument: (_) @data.deref.arg) @data.deref
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "data_structure_usage",
+            "is_array": "data.array" in node["captures"],
+            "is_array_element": "data.array_elem" in node["captures"],
+            "is_hash": "data.hash" in node["captures"],
+            "is_hash_element": "data.hash_elem" in node["captures"],
+            "is_dereference": "data.deref" in node["captures"],
+            "array_name": node["captures"].get("data.array.name", {}).get("text", ""),
+            "hash_name": node["captures"].get("data.hash.name", {}).get("text", ""),
+            "uses_array_indexing": "data.array_elem" in node["captures"],
+            "uses_hash_keys": "data.hash_elem" in node["captures"],
+            "uses_complex_references": "data.deref" in node["captures"],
+            "data_structure_type": (
+                "array" if "data.array" in node["captures"] or "data.array_elem" in node["captures"] else
+                "hash" if "data.hash" in node["captures"] or "data.hash_elem" in node["captures"] else
+                "reference" if "data.deref" in node["captures"] else
+                "other"
+            )
+        }
+    },
+    
+    "error_handling": {
+        "pattern": """
+        [
+            (function_call
+                function: (bare_word) @error.func.name
+                (#match? @error.func.name "^(die|croak|confess|warn|carp|cluck)$")
+                arguments: (argument_list) @error.func.args) @error.func,
+                
+            (binary_expression
+                operator: "or" @error.or.op
+                right: (function_call
+                    function: (bare_word) @error.or.func
+                    (#match? @error.or.func "^(die|croak|confess)$"))) @error.or,
+                
+            (eval_expression
+                block: (block) @error.eval.block) @error.eval,
+                
+            (use_statement
+                module: (bare_word) @error.module
+                (#match? @error.module "^(Try::Tiny|TryCatch)$")) @error.try
+        ]
+        """,
+        "extract": lambda node: {
+            "pattern_type": "error_handling",
+            "is_error_function": "error.func" in node["captures"],
+            "is_or_die_pattern": "error.or" in node["captures"],
+            "is_eval_block": "error.eval" in node["captures"],
+            "is_try_module": "error.try" in node["captures"],
+            "error_function": node["captures"].get("error.func.name", {}).get("text", ""),
+            "uses_stacktrace": "error.func" in node["captures"] and node["captures"].get("error.func.name", {}).get("text", "") in ["confess", "cluck"],
+            "error_handling_style": (
+                "exception" if "error.func" in node["captures"] else
+                "short_circuit" if "error.or" in node["captures"] else
+                "try_catch" if "error.try" in node["captures"] else
+                "eval" if "error.eval" in node["captures"] else
+                "unknown"
+            )
+        }
+    }
+}
 
 PERL_PATTERNS = {
     **COMMON_PATTERNS,  # Keep as fallback for basic patterns
@@ -251,10 +419,11 @@ PERL_PATTERNS = {
             "pattern": """
             [
                 (comment) @documentation.comment,
-                (pod_statement
-                    content: (_)* @documentation.pod.content) @documentation.pod
+                (pod_statement) @documentation.pod
             ]
             """
         }
-    }
+    },
+    
+    "REPOSITORY_LEARNING": PERL_PATTERNS_FOR_LEARNING
 } 

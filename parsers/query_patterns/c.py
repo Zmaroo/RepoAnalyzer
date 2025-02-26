@@ -118,3 +118,94 @@ C_PATTERNS = {
         }
     }
 } 
+
+# Repository learning patterns for C
+C_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (function_definition
+                declarator: (function_declarator
+                    declarator: (_) @naming.function.name)) @naming.function,
+                    
+            (struct_specifier
+                name: (type_identifier) @naming.struct.name) @naming.struct,
+                
+            (enum_specifier
+                name: (type_identifier) @naming.enum.name) @naming.enum,
+                
+            (declaration
+                type: (_) @naming.variable.type
+                declarator: (init_declarator
+                    declarator: (identifier) @naming.variable.name)) @naming.variable
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "entity_type": ("function" if "naming.function.name" in node["captures"] else
+                            "struct" if "naming.struct.name" in node["captures"] else
+                            "enum" if "naming.enum.name" in node["captures"] else
+                            "variable"),
+            "name": (node["captures"].get("naming.function.name", {}).get("text", "") or
+                     node["captures"].get("naming.struct.name", {}).get("text", "") or
+                     node["captures"].get("naming.enum.name", {}).get("text", "") or
+                     node["captures"].get("naming.variable.name", {}).get("text", "")),
+            "is_snake_case": "_" in (node["captures"].get("naming.function.name", {}).get("text", "") or 
+                                      node["captures"].get("naming.variable.name", {}).get("text", "")),
+            "is_camel_case": not "_" in (node["captures"].get("naming.function.name", {}).get("text", "") or 
+                                          node["captures"].get("naming.variable.name", {}).get("text", ""))
+        }
+    },
+    
+    "error_handling": {
+        "pattern": """
+        [
+            (if_statement
+                condition: (parenthesized_expression
+                    (binary_expression
+                        left: (_) @error.check.left
+                        operator: (_) @error.check.op
+                        right: (_) @error.check.right)) @error.check.condition
+                consequence: (_) @error.check.consequence) @error.check,
+                
+            (call_expression
+                function: (identifier) @error.handle.func
+                (#match? @error.handle.func "^(exit|abort|perror|fprintf|NULL)$")
+                arguments: (_) @error.handle.args) @error.handle
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "error_handling_pattern",
+            "is_null_check": "error.check" in node["captures"] and 
+                           (node["captures"].get("error.check.op", {}).get("text", "") == "==" or 
+                            node["captures"].get("error.check.op", {}).get("text", "") == "!=") and
+                           ("NULL" in node["captures"].get("error.check.left", {}).get("text", "") or
+                            "NULL" in node["captures"].get("error.check.right", {}).get("text", "")),
+            "is_error_val": "error.check" in node["captures"] and 
+                          any(val in (node["captures"].get("error.check.left", {}).get("text", "") or 
+                                     node["captures"].get("error.check.right", {}).get("text", ""))
+                              for val in ["-1", "NULL", "0", "EOF"]),
+            "error_handler": node["captures"].get("error.handle.func", {}).get("text", "")
+        }
+    },
+    
+    "include_patterns": {
+        "pattern": """
+        [
+            (preproc_include
+                path: [(system_lib_string) @include.system
+                       (string_literal) @include.local]) @include
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "include_pattern",
+            "is_system": "include.system" in node["captures"],
+            "is_local": "include.local" in node["captures"],
+            "path": (node["captures"].get("include.system", {}).get("text", "") or
+                    node["captures"].get("include.local", {}).get("text", "")).strip('"<>')
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+C_PATTERNS['REPOSITORY_LEARNING'] = C_PATTERNS_FOR_LEARNING 

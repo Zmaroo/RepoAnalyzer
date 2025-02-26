@@ -127,3 +127,71 @@ BASH_PATTERNS = {
         }
     }
 } 
+
+# Repository learning patterns for Bash
+BASH_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (function_definition
+                name: (word) @naming.function.name) @naming.function,
+                
+            (variable_assignment
+                name: (_) @naming.variable.name) @naming.variable
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "name": node["node"].text.decode('utf8'),
+            "convention": "function" if "naming.function" in node["captures"] else "variable",
+            "is_snake_case": "_" in node["node"].text.decode('utf8') and not any(c.isupper() for c in node["node"].text.decode('utf8')),
+            "is_screaming_snake": all(c.isupper() or not c.isalpha() for c in node["node"].text.decode('utf8'))
+        }
+    },
+    
+    "error_handling": {
+        "pattern": """
+        [
+            (command
+                name: (command_name) @error.cmd.name
+                (#eq? @error.cmd.name "trap")) @error.trap,
+                
+            (binary_expression
+                left: (_) @error.check.left
+                operator: (_) @error.check.op
+                (#eq? @error.check.op "||")
+                right: (_) @error.check.right) @error.check
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "error_handling_pattern",
+            "is_trap": "error.trap" in node["captures"],
+            "is_error_check": "error.check" in node["captures"],
+            "trap_command": node["node"].text.decode('utf8') if "error.trap" in node["captures"] else ""
+        }
+    },
+    
+    "code_structure": {
+        "pattern": """
+        [
+            (shebang) @structure.shebang,
+            
+            (function_definition) @structure.function,
+            
+            (case_statement) @structure.case,
+            
+            (if_statement) @structure.if
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "code_structure_pattern",
+            "has_shebang": "structure.shebang" in node["captures"],
+            "has_functions": "structure.function" in node["captures"],
+            "has_case": "structure.case" in node["captures"],
+            "has_conditionals": "structure.if" in node["captures"]
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+BASH_PATTERNS['REPOSITORY_LEARNING'] = BASH_PATTERNS_FOR_LEARNING 

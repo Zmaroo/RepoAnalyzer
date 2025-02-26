@@ -124,3 +124,83 @@ CMAKE_PATTERNS = {
         }
     }
 } 
+
+# Repository learning patterns for CMake
+CMAKE_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (function_def
+                (function_command
+                    (argument_list) @naming.function.args)) @naming.function,
+                    
+            (normal_command
+                (identifier) @naming.command.name) @naming.command,
+                
+            (variable_ref
+                [(normal_var
+                    (variable) @naming.var.name) @naming.var
+                 (cache_var 
+                    (variable) @naming.cache.name) @naming.cache]) @naming.variable
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "entity_type": ("function" if "naming.function" in node["captures"] else
+                           "command" if "naming.command" in node["captures"] else
+                           "variable"),
+            "name": (node["captures"].get("naming.function.args", {}).get("text", "") or
+                    node["captures"].get("naming.command.name", {}).get("text", "") or
+                    node["captures"].get("naming.var.name", {}).get("text", "") or
+                    node["captures"].get("naming.cache.name", {}).get("text", "")),
+            "is_uppercase": all(c.isupper() or not c.isalpha() for c in 
+                              (node["captures"].get("naming.var.name", {}).get("text", "") or 
+                               node["captures"].get("naming.cache.name", {}).get("text", "") or "")),
+            "is_snake_case": "_" in (node["captures"].get("naming.function.args", {}).get("text", "") or
+                                    node["captures"].get("naming.command.name", {}).get("text", "") or "")
+        }
+    },
+    
+    "command_usage": {
+        "pattern": """
+        [
+            (normal_command
+                (identifier) @command.name
+                (argument_list) @command.args) @command.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "command_usage_pattern",
+            "command": node["captures"].get("command.name", {}).get("text", "").lower(),
+            "is_project_command": node["captures"].get("command.name", {}).get("text", "").lower() == "project",
+            "is_find_package": node["captures"].get("command.name", {}).get("text", "").lower() == "find_package",
+            "is_add_executable": node["captures"].get("command.name", {}).get("text", "").lower() == "add_executable",
+            "is_add_library": node["captures"].get("command.name", {}).get("text", "").lower() == "add_library",
+            "args_count": len(node["captures"].get("command.args", {}).get("text", "").split())
+        }
+    },
+    
+    "code_structure": {
+        "pattern": """
+        [
+            (normal_command
+                (identifier) @structure.command.name
+                (#match? @structure.command.name "^(project|add_executable|add_library|add_subdirectory)$")) @structure.project.command,
+                
+            (normal_command
+                (identifier) @structure.test.command
+                (#match? @structure.test.command "^(add_test|enable_testing)$")) @structure.test.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "code_structure_pattern",
+            "command": node["captures"].get("structure.command.name", {}).get("text", "") or
+                      node["captures"].get("structure.test.command", {}).get("text", ""),
+            "has_testing": "structure.test.def" in node["captures"],
+            "is_project_structure": "structure.project.command" in node["captures"]
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+CMAKE_PATTERNS['REPOSITORY_LEARNING'] = CMAKE_PATTERNS_FOR_LEARNING 

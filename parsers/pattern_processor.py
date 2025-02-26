@@ -131,9 +131,51 @@ class PatternProcessor:
 
     def _process_tree_sitter_pattern(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
         """Process using tree-sitter pattern."""
-        # Tree-sitter pattern processing moved from TreeSitterParser
-        # This is handled in feature extraction now
-        return []
+        try:
+            # Get the tree-sitter parser for this language
+            from tree_sitter_language_pack import get_parser
+            from parsers.models import PatternMatch
+            
+            parser = get_parser(pattern.language_id)
+            if not parser:
+                return []
+                
+            # Parse the source code
+            tree = parser.parse(bytes(source_code, "utf8"))
+            if not tree:
+                return []
+                
+            # Execute the tree-sitter query
+            query = parser.language.query(pattern.tree_sitter)
+            
+            matches = []
+            for match in query.matches(tree.root_node):
+                captures = {capture.name: capture.node for capture in match.captures}
+                
+                # Create a pattern match result
+                result = PatternMatch(
+                    text=match.pattern_node.text.decode('utf8'),
+                    start=match.pattern_node.start_point,
+                    end=match.pattern_node.end_point,
+                    metadata={"captures": captures}
+                )
+                
+                # Apply custom extraction if available
+                if pattern.extract:
+                    try:
+                        extracted = pattern.extract(result)
+                        if extracted:
+                            result.metadata.update(extracted)
+                    except Exception as e:
+                        log(f"Error in pattern extraction: {e}", level="error")
+                
+                matches.append(result)
+                
+            return matches
+            
+        except Exception as e:
+            log(f"Error processing tree-sitter pattern: {e}", level="error")
+            return []
         
     def extract_repository_patterns(self, file_path: str, source_code: str, language: str) -> List[Dict[str, Any]]:
         """

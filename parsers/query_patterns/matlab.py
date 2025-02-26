@@ -2,7 +2,7 @@
 Query patterns for MATLAB files.
 """
 
-from parsers.file_classification import FileType
+from parsers.types import FileType
 from .common import COMMON_PATTERNS
 
 MATLAB_PATTERNS = {

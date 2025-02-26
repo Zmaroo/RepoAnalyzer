@@ -24,7 +24,7 @@ from parsers.types import FileType, FeatureCategory, ParserType, ParserResult
 from parsers.models import FileClassification, PATTERN_CATEGORIES
 from dataclasses import asdict
 
-from parsers.language_support import language_registry, get_language_by_extension
+from parsers.language_support import language_registry, get_language_by_extension, get_parser_availability
 from utils.error_handling import handle_async_errors, ParsingError
 from utils.encoding import encode_query_pattern
 from utils.logger import log
@@ -46,10 +46,13 @@ class UnifiedParser:
             if not language_features:
                 return None
 
+            # Determine appropriate parser type based on language capabilities
+            parser_availability = get_parser_availability(language_features.canonical_name)
+            
             classification = FileClassification(
-                file_type=FileType.CODE,
+                file_type=parser_availability.file_type,
                 language_id=language_features.canonical_name,
-                parser_type=ParserType.TREE_SITTER  # or ParserType.CUSTOM per your logic.
+                parser_type=parser_availability.preferred_type
             )
 
             parser = language_registry.get_parser(classification)

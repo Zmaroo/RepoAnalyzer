@@ -107,7 +107,7 @@ PATTERN_RELATIONSHIPS = {
     }
 }
 
-# Add patterns for repository learning
+# Enhanced patterns for repository learning
 EDITORCONFIG_PATTERNS_FOR_LEARNING = {
     "configuration_patterns": {
         "indentation_config": QueryPattern(
@@ -131,6 +131,29 @@ EDITORCONFIG_PATTERNS_FOR_LEARNING = {
             },
             description="Matches charset configuration",
             examples=["[*.txt]\ncharset = utf-8"]
+        ),
+        "insert_final_newline": QueryPattern(
+            pattern=r'(?s)\[(.*?)\].*?insert_final_newline\s*=\s*(true|false)',
+            extract=lambda m: {
+                "type": "newline_config",
+                "glob": m.group(1),
+                "insert_final_newline": m.group(2).lower() == "true",
+                "follows_best_practice": m.group(2).lower() == "true"
+            },
+            description="Matches final newline configuration",
+            examples=["[*]\ninsert_final_newline = true"]
+        ),
+        "max_line_length": QueryPattern(
+            pattern=r'(?s)\[(.*?)\].*?max_line_length\s*=\s*(\d+|off)',
+            extract=lambda m: {
+                "type": "line_length_config",
+                "glob": m.group(1),
+                "max_length": m.group(2),
+                "has_limit": m.group(2).lower() != "off",
+                "is_standard_value": m.group(2) in ["80", "88", "100", "120"]
+            },
+            description="Matches line length configuration",
+            examples=["[*.py]\nmax_line_length = 88"]
         )
     },
     "language_specific_patterns": {
@@ -155,6 +178,39 @@ EDITORCONFIG_PATTERNS_FOR_LEARNING = {
             },
             description="Matches JavaScript/TypeScript configuration",
             examples=["[*.js]\nindent_size = 2"]
+        ),
+        "web_config": QueryPattern(
+            pattern=r'(?s)\[\*\.(?:html|css|htm)\](.*?)(?=\[|$)',
+            extract=lambda m: {
+                "type": "language_config_pattern",
+                "language": "web",
+                "content": m.group(1),
+                "has_language_config": True
+            },
+            description="Matches web files configuration",
+            examples=["[*.html]\nindent_size = 2"]
+        ),
+        "markup_config": QueryPattern(
+            pattern=r'(?s)\[\*\.(?:md|markdown|rst|xml|json|yaml|yml|toml)\](.*?)(?=\[|$)',
+            extract=lambda m: {
+                "type": "language_config_pattern",
+                "language": "markup",
+                "content": m.group(1),
+                "has_language_config": True
+            },
+            description="Matches markup files configuration",
+            examples=["[*.md]\ntrim_trailing_whitespace = false"]
+        ),
+        "system_config": QueryPattern(
+            pattern=r'(?s)\[(?:Makefile|makefile|*.mk)\](.*?)(?=\[|$)',
+            extract=lambda m: {
+                "type": "language_config_pattern",
+                "language": "makefile",
+                "content": m.group(1),
+                "forces_tabs": "indent_style = tab" in m.group(1)
+            },
+            description="Matches Makefile configuration",
+            examples=["[Makefile]\nindent_style = tab"]
         )
     },
     "best_practices": {
@@ -178,6 +234,50 @@ EDITORCONFIG_PATTERNS_FOR_LEARNING = {
             },
             description="Matches trailing whitespace configuration",
             examples=["trim_trailing_whitespace = true"]
+        ),
+        "quote_type": QueryPattern(
+            pattern=r'quote_type\s*=\s*(single|double|auto)',
+            extract=lambda m: {
+                "type": "quote_pattern",
+                "quote_type": m.group(1),
+                "is_consistent": m.group(1) in ["single", "double"]
+            },
+            description="Matches quote type configuration",
+            examples=["quote_type = single"]
+        )
+    },
+    "section_patterns": {
+        "wildcard_section": QueryPattern(
+            pattern=r'\[\*\](.*?)(?=\[|$)',
+            extract=lambda m: {
+                "type": "wildcard_section_pattern",
+                "content": m.group(1),
+                "has_universal_settings": len(m.group(1).strip()) > 0
+            },
+            description="Matches wildcard section that applies to all files",
+            examples=["[*]\nindent_style = space"]
+        ),
+        "complex_glob_section": QueryPattern(
+            pattern=r'\[\*\.(?:\{[^}]+\}|\*|[\w.]+(?:,[\w.]+)+)\](.*?)(?=\[|$)',
+            extract=lambda m: {
+                "type": "complex_glob_pattern",
+                "glob": m.group(0).split(']')[0] + ']',
+                "content": m.group(1),
+                "uses_braces": '{' in m.group(0).split(']')[0]
+            },
+            description="Matches sections with complex glob patterns",
+            examples=["[*.{js,py}]\ncharset = utf-8"]
+        ),
+        "nested_glob_section": QueryPattern(
+            pattern=r'\[(?:\*\*/|\*\*/)[\w*./]+\](.*?)(?=\[|$)',
+            extract=lambda m: {
+                "type": "nested_glob_pattern",
+                "glob": m.group(0).split(']')[0] + ']',
+                "content": m.group(1),
+                "uses_double_star": '**' in m.group(0).split(']')[0]
+            },
+            description="Matches sections with nested directory patterns",
+            examples=["[**/node_modules/**]\nindent_size = 2"]
         )
     }
 }
@@ -224,6 +324,18 @@ def extract_editorconfig_patterns_for_learning(content: str) -> List[Dict[str, A
                 "content": match.group(0),
                 "metadata": pattern_data,
                 "confidence": 0.75
+            })
+    
+    # Process section patterns
+    for pattern_name, pattern in EDITORCONFIG_PATTERNS_FOR_LEARNING["section_patterns"].items():
+        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+            pattern_data = pattern.extract(match)
+            patterns.append({
+                "name": pattern_name,
+                "type": pattern_data.get("type", "section_pattern"),
+                "content": match.group(0),
+                "metadata": pattern_data,
+                "confidence": 0.8
             })
             
     return patterns 

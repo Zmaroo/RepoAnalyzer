@@ -174,11 +174,124 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             log(f"Error extracting features: {e}", level="error")
             return ExtractedFeatures()
 
-    def _extract_documentation(self, features: Dict[str, Any]) -> str:
-        return features.get("documentation", "")
+    def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
+        """Extract documentation features from parsed content.
+        
+        This extracts docstrings, comments, TODOs, and other documentation elements
+        from the parsed features.
+        """
+        doc_features = features.get(PatternCategory.DOCUMENTATION.value, {})
+        
+        # Initialize Documentation object
+        documentation = Documentation()
+        
+        # Extract docstrings
+        if 'docstring' in doc_features:
+            documentation.docstrings = doc_features['docstring']
+            
+            # Combine docstring content
+            for doc in documentation.docstrings:
+                if 'text' in doc:
+                    documentation.content += doc['text'] + "\n"
+        
+        # Extract comments
+        if 'comment' in doc_features:
+            documentation.comments = doc_features['comment']
+        
+        # Extract TODOs
+        for comment_type in ['todo', 'fixme', 'note', 'warning']:
+            if comment_type in doc_features:
+                documentation.todos.extend(doc_features[comment_type])
+        
+        # Extract metadata (author, version, etc.)
+        if 'metadata' in doc_features:
+            documentation.metadata = {
+                item.get('key', ''): item.get('value', '')
+                for item in doc_features.get('metadata', [])
+                if 'key' in item and 'value' in item
+            }
+            
+        return documentation
     
-    def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> Dict[str, Any]:
-        return {}
+    def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
+        """Calculate code complexity metrics based on extracted features.
+        
+        This includes:
+        - Cyclomatic complexity
+        - Cognitive complexity
+        - Lines of code metrics
+        - Basic Halstead metrics
+        """
+        metrics = ComplexityMetrics()
+        
+        # Count lines of code
+        lines = source_code.splitlines()
+        metrics.lines_of_code = {
+            'total': len(lines),
+            'code': len([l for l in lines if l.strip() and not l.strip().startswith(('#', '//', '/*', '*', '"""', "'''"))]),
+            'comment': len([l for l in lines if l.strip() and l.strip().startswith(('#', '//', '/*', '*', '"""', "'''"))]),
+            'blank': len([l for l in lines if not l.strip()])
+        }
+        
+        # Extract syntax features for complexity calculation
+        syntax_features = features.get(PatternCategory.SYNTAX.value, {})
+        
+        # Calculate cyclomatic complexity (based on branches)
+        branch_types = ['if', 'for', 'while', 'case', 'catch', 'switch']
+        branch_count = 0
+        
+        for branch_type in branch_types:
+            if branch_type in syntax_features:
+                branch_count += len(syntax_features[branch_type])
+                
+        # Basic cyclomatic complexity: branches + 1
+        metrics.cyclomatic = branch_count + 1
+        
+        # Estimate cognitive complexity (nesting levels * branches)
+        nesting_level = 0
+        for branch_match in syntax_features.get('if', []) + syntax_features.get('for', []) + syntax_features.get('while', []):
+            if 'nesting_level' in branch_match:
+                nesting_level = max(nesting_level, branch_match['nesting_level'])
+        
+        metrics.cognitive = branch_count * (nesting_level + 1)
+        
+        # Basic Halstead metrics
+        halstead = {
+            'n1': 0,  # unique operators
+            'n2': 0,  # unique operands
+            'N1': 0,  # total operators
+            'N2': 0,  # total operands
+        }
+        
+        # Extract operators and operands if available
+        if 'operator' in syntax_features:
+            operator_texts = set()
+            for op in syntax_features['operator']:
+                if 'text' in op:
+                    operator_texts.add(op['text'])
+                    halstead['N1'] += 1
+            halstead['n1'] = len(operator_texts)
+            
+        # If we have at least some values, calculate derived metrics
+        if halstead['n1'] > 0 and halstead['n2'] > 0:
+            vocabulary = halstead['n1'] + halstead['n2']
+            length = halstead['N1'] + halstead['N2']
+            volume = length * (vocabulary.bit_length() if vocabulary > 0 else 0)
+            halstead['volume'] = volume
+            
+        metrics.halstead = halstead
+        
+        # Maintainability index (simple estimate)
+        if metrics.cyclomatic > 0:
+            # Basic MI formula: 171 - 5.2 * ln(volume) - 0.23 * cyclomatic - 16.2 * ln(loc)
+            code_lines = metrics.lines_of_code['code']
+            if code_lines > 0 and 'volume' in halstead:
+                import math
+                metrics.maintainability_index = max(0, min(100, 171 - 5.2 * math.log(halstead['volume']) - 
+                                                          0.23 * metrics.cyclomatic - 
+                                                          16.2 * math.log(code_lines)))
+        
+        return metrics
 
 class CustomFeatureExtractor(BaseFeatureExtractor):
     """[3.2.2] Custom parser feature extraction."""
@@ -195,14 +308,18 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
         """
         try:
             # [3.2.2.1] Initialize Feature Categories
-            features = {category: {} for category in PatternCategory}
+            features = {category.value: {} for category in PatternCategory}
             
             # [3.2.2.2] Process each category
-            for category, patterns in self._patterns.items():
+            for category_enum in PatternCategory:
+                category = category_enum.value
+                if category not in self._patterns:
+                    continue
+                    
                 category_features = {}
                 
                 # [3.2.2.3] Process each regex pattern
-                for pattern_name, pattern in patterns.items():
+                for pattern_name, pattern in self._patterns[category].items():
                     if pattern.regex:
                         matches = []
                         for match in pattern.regex.finditer(source_code):
@@ -216,7 +333,12 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
                             
                             # [3.2.2.4] Apply custom extractor if available
                             if pattern.extract:
-                                result.update(pattern.extract(result))
+                                try:
+                                    extracted = pattern.extract(result)
+                                    if extracted:
+                                        result.update(extracted)
+                                except Exception as e:
+                                    log(f"Error in pattern extraction: {e}", level="error")
                                 
                             matches.append(result)
                             
@@ -224,15 +346,132 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
                             category_features[pattern_name] = matches
                 
                 features[category] = category_features
+            
+            # Extract AST nodes if available
+            if ast and 'nodes' in ast:
+                self._process_ast_nodes(ast['nodes'], features)
                 
             # [3.2.2.5] Return standardized features
             # RETURNS: [models.py] ExtractedFeatures
+            documentation = self._extract_documentation(features)
+            metrics = self._calculate_metrics(features, source_code)
+            
             return ExtractedFeatures(
                 features=features,
-                documentation=self._extract_documentation(features),
-                metrics=self._calculate_metrics(features, source_code)
+                documentation=documentation,
+                metrics=metrics
             )
             
         except Exception as e:
             log(f"Error extracting features: {e}", level="error")
             return ExtractedFeatures()
+            
+    def _process_ast_nodes(self, nodes: List[Dict[str, Any]], features: Dict[str, Dict[str, Any]]) -> None:
+        """Process AST nodes from a custom parser and add them to features."""
+        if not nodes:
+            return
+            
+        # Map node types to feature categories
+        for node in nodes:
+            node_type = node.get('type')
+            if not node_type:
+                continue
+                
+            # Determine which category this node belongs to
+            category = self._get_category_for_node_type(node_type)
+            if not category:
+                continue
+                
+            # Add node to appropriate category
+            if node_type not in features[category]:
+                features[category][node_type] = []
+                
+            features[category][node_type].append(node)
+    
+    def _get_category_for_node_type(self, node_type: str) -> Optional[str]:
+        """Map a node type to a feature category."""
+        from parsers.models import PATTERN_CATEGORIES
+        
+        # Check each category's patterns
+        for category in PatternCategory:
+            category_value = category.value
+            for file_type in PATTERN_CATEGORIES.get(category, {}):
+                if node_type in PATTERN_CATEGORIES[category][file_type]:
+                    return category_value
+        
+        # Default categorization based on node type
+        if node_type in ['comment', 'docstring', 'javadoc']:
+            return PatternCategory.DOCUMENTATION.value
+        elif node_type in ['import', 'include', 'namespace', 'module']:
+            return PatternCategory.STRUCTURE.value
+        elif node_type in ['function', 'class', 'method', 'constructor']:
+            return PatternCategory.SYNTAX.value
+        elif node_type in ['type', 'variable', 'parameter']:
+            return PatternCategory.SEMANTICS.value
+            
+        return None
+            
+    def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
+        """Extract documentation features from parsed content."""
+        # Reuse same logic as TreeSitterFeatureExtractor
+        doc_features = features.get(PatternCategory.DOCUMENTATION.value, {})
+        
+        # Initialize Documentation object
+        documentation = Documentation()
+        
+        # Extract docstrings
+        if 'docstring' in doc_features:
+            documentation.docstrings = doc_features['docstring']
+            
+            # Combine docstring content
+            for doc in documentation.docstrings:
+                if 'text' in doc:
+                    documentation.content += doc['text'] + "\n"
+        
+        # Extract comments
+        if 'comment' in doc_features:
+            documentation.comments = doc_features['comment']
+        
+        # Extract TODOs
+        for comment_type in ['todo', 'fixme', 'note', 'warning']:
+            if comment_type in doc_features:
+                documentation.todos.extend(doc_features[comment_type])
+        
+        # Extract metadata (author, version, etc.)
+        if 'metadata' in doc_features:
+            documentation.metadata = {
+                item.get('key', ''): item.get('value', '')
+                for item in doc_features.get('metadata', [])
+                if 'key' in item and 'value' in item
+            }
+            
+        return documentation
+    
+    def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
+        """Calculate code complexity metrics based on extracted features."""
+        # Reuse same logic as TreeSitterFeatureExtractor
+        metrics = ComplexityMetrics()
+        
+        # Count lines of code
+        lines = source_code.splitlines()
+        metrics.lines_of_code = {
+            'total': len(lines),
+            'code': len([l for l in lines if l.strip() and not l.strip().startswith(('#', '//', '/*', '*', '"""', "'''"))]),
+            'comment': len([l for l in lines if l.strip() and l.strip().startswith(('#', '//', '/*', '*', '"""', "'''"))]),
+            'blank': len([l for l in lines if not l.strip()])
+        }
+        
+        # Basic complexity metrics for custom parsers
+        # (more limited than tree-sitter but still useful)
+        syntax_features = features.get(PatternCategory.SYNTAX.value, {})
+        
+        # Count branches
+        branch_count = 0
+        for branch_type in ['if', 'for', 'while', 'case', 'switch']:
+            if branch_type in syntax_features:
+                branch_count += len(syntax_features[branch_type])
+        
+        metrics.cyclomatic = branch_count + 1
+        metrics.cognitive = branch_count
+        
+        return metrics

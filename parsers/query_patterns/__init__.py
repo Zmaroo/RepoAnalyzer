@@ -11,6 +11,9 @@ import logging
 
 __all__ = ["pattern_processor", "QueryPattern", "PatternCategory"]
 
+# Global variable to store modules with patterns
+modules_with_patterns = []
+
 # Function to register patterns for repository learning
 def register_repository_learning_patterns():
     """
@@ -25,40 +28,67 @@ def register_repository_learning_patterns():
     """
     log("Registering repository learning patterns", level="debug")
     
-    # Import query pattern modules that have repository learning patterns
-    from parsers.query_patterns import markdown, asciidoc, cobalt, editorconfig, env, graphql, html, json, ini, rst, plaintext, xml, toml, yaml
-    
     # Define the base set of modules
-    modules_with_patterns = [markdown, asciidoc, cobalt, editorconfig, env, graphql, html, json, ini, rst, plaintext, xml, toml, yaml]
+    global modules_with_patterns
+    modules_with_patterns = []
     
-    # Try to import other pattern modules for repository learning
+    # Import query pattern modules that have repository learning patterns
     try:
-        from parsers.query_patterns import python
-        modules_with_patterns.append(python)
-    except ImportError:
-        pass
-        
+        # Document/config format parsers
+        from parsers.query_patterns import (
+            markdown, asciidoc, cobalt, editorconfig, env, 
+            graphql, html, json, ini, rst, plaintext, 
+            xml, toml, yaml
+        )
+        modules_with_patterns.extend([markdown, asciidoc, cobalt, editorconfig, env, 
+                                     graphql, html, json, ini, rst, plaintext, 
+                                     xml, toml, yaml])
+        log("Loaded document and config format parser patterns", level="debug")
+    except ImportError as e:
+        log(f"Error loading document format patterns: {e}", level="error")
+    
+    # Try to import programming language pattern modules
     try:
-        from parsers.query_patterns import javascript
-        modules_with_patterns.append(javascript)
-    except ImportError:
-        pass
-        
+        # Programming languages with tree-sitter support
+        from parsers.query_patterns import (
+            python, javascript, typescript, java, cpp, csharp,
+            go, rust, kotlin, swift, ruby, scala
+        )
+        modules_with_patterns.extend([python, javascript, typescript, java, cpp, csharp,
+                                     go, rust, kotlin, swift, ruby, scala])
+        log("Loaded programming language parser patterns", level="debug")
+    except ImportError as e:
+        # Continue even if some patterns aren't available
+        log(f"Some programming language patterns couldn't be loaded: {e}", level="debug")
+    
+    # Specialized languages
     try:
-        from parsers.query_patterns import java
-        modules_with_patterns.append(java)
-    except ImportError:
-        pass
+        from parsers.query_patterns import (
+            sql, bash, css, dockerfile, lua, make
+        )
+        modules_with_patterns.extend([sql, bash, css, dockerfile, lua, make])
+        log("Loaded specialized language parser patterns", level="debug")
+    except ImportError as e:
+        log(f"Some specialized language patterns couldn't be loaded: {e}", level="debug")
     
     # Count registered patterns
     pattern_count = 0
+    repo_learning_count = 0
+    
     for module in modules_with_patterns:
-        if hasattr(module, 'REPOSITORY_LEARNING') or any('REPOSITORY_LEARNING' in getattr(module, pat, {}) for pat in ['PATTERNS', module.__name__.upper() + '_PATTERNS']):
+        # Check if the module has patterns 
+        if hasattr(module, 'PATTERNS'):
             pattern_count += 1
+            
+        # Check for repository learning patterns specifically
+        if hasattr(module, 'REPOSITORY_LEARNING') or any('REPOSITORY_LEARNING' in getattr(module, pat, {}) 
+                                                       for pat in ['PATTERNS', module.__name__.upper() + '_PATTERNS']):
+            repo_learning_count += 1
     
-    log(f"Registered {pattern_count} repository learning pattern modules", level="debug")
+    log(f"Registered {pattern_count} pattern modules with {repo_learning_count} repository learning pattern modules", level="debug")
     
-    return pattern_count
+    # Register modules globally for external access
+    return repo_learning_count
 
 # Register patterns on module import
 register_repository_learning_patterns()

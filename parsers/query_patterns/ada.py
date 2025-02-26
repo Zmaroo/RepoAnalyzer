@@ -118,3 +118,58 @@ ADA_PATTERNS = {
         }
     }
 } 
+
+# Repository learning patterns for Ada
+ADA_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (identifier) @naming.identifier
+            (#match? @naming.identifier "^[A-Z][a-z0-9_]*$")
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "name": node["node"].text.decode('utf8'),
+            "convention": "mixed_case",
+            "follows_convention": True
+        }
+    },
+    
+    "error_handling": {
+        "pattern": """
+        [
+            (exception_handler
+                (exception_choice) @error.exception
+                (handled_sequence_of_statements) @error.handler) @error.handler.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "error_handling_pattern",
+            "exception": node["captures"].get("error.exception", {}).get("text", ""),
+            "has_handler": True
+        }
+    },
+    
+    "code_structure": {
+        "pattern": """
+        [
+            (package_declaration
+                name: (identifier) @structure.package.name
+                body: (package_specification) @structure.package.spec) @structure.package,
+                
+            (subprogram_body
+                [(procedure_specification) (function_specification)] @structure.subprogram.spec
+                body: (handled_sequence_of_statements) @structure.subprogram.body) @structure.subprogram
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "code_structure_pattern",
+            "structure_type": "package" if "structure.package" in node["captures"] else "subprogram",
+            "name": node["captures"].get("structure.package.name", {}).get("text", "")
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+ADA_PATTERNS['REPOSITORY_LEARNING'] = ADA_PATTERNS_FOR_LEARNING 

@@ -79,3 +79,59 @@ BIBTEX_PATTERNS = {
         }
     }
 } 
+
+# Repository learning patterns for BibTeX
+BIBTEX_PATTERNS_FOR_LEARNING = {
+    "entry_type_patterns": {
+        "pattern": """
+        [
+            (entry
+                ty: (entry_type) @entry.type) @entry.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "entry_type_pattern",
+            "entry_type": node["captures"].get("entry.type", {}).get("text", "").lower(),
+            "is_article": node["captures"].get("entry.type", {}).get("text", "").lower() == "article",
+            "is_book": node["captures"].get("entry.type", {}).get("text", "").lower() == "book",
+            "is_conference": node["captures"].get("entry.type", {}).get("text", "").lower() in ["inproceedings", "conference", "proceedings"]
+        }
+    },
+    
+    "citation_key_patterns": {
+        "pattern": """
+        [
+            (entry
+                key: [(key_brace) (key_paren)] @citation.key) @citation.entry
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "citation_key_pattern",
+            "key": node["captures"].get("citation.key", {}).get("text", ""),
+            "has_year": any(y in node["captures"].get("citation.key", {}).get("text", "") for y in 
+                          ["19", "20", "21", "22", "23"]),
+            "has_author": any(node["captures"].get("citation.key", {}).get("text", "").lower().startswith(prefix) 
+                            for prefix in ["auth", "smith", "jones", "wang", "zhang", "lee"])
+        }
+    },
+    
+    "field_usage_patterns": {
+        "pattern": """
+        [
+            (field
+                name: (identifier) @field.name) @field.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "field_usage_pattern",
+            "field": node["captures"].get("field.name", {}).get("text", "").lower(),
+            "is_required": node["captures"].get("field.name", {}).get("text", "").lower() in 
+                          ["author", "title", "journal", "year", "booktitle", "editor", "publisher"],
+            "is_optional": node["captures"].get("field.name", {}).get("text", "").lower() in 
+                          ["volume", "number", "pages", "month", "note", "abstract", "keywords"]
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+BIBTEX_PATTERNS['REPOSITORY_LEARNING'] = BIBTEX_PATTERNS_FOR_LEARNING 

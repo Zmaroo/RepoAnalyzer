@@ -128,3 +128,122 @@ CSHARP_PATTERNS = {
         ]
     """
 } 
+
+# Repository learning patterns for C#
+CSHARP_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (class_declaration
+                name: (identifier) @naming.class.name) @naming.class,
+                
+            (interface_declaration
+                name: (identifier) @naming.interface.name) @naming.interface,
+                
+            (method_declaration
+                name: (identifier) @naming.method.name) @naming.method,
+                
+            (variable_declaration
+                (variable_declarator
+                    name: (identifier) @naming.variable.name)) @naming.variable,
+                    
+            (property_declaration
+                name: (identifier) @naming.property.name) @naming.property
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "entity_type": ("class" if "naming.class.name" in node["captures"] else
+                          "interface" if "naming.interface.name" in node["captures"] else
+                          "method" if "naming.method.name" in node["captures"] else
+                          "property" if "naming.property.name" in node["captures"] else
+                          "variable"),
+            "name": (node["captures"].get("naming.class.name", {}).get("text", "") or 
+                   node["captures"].get("naming.interface.name", {}).get("text", "") or
+                   node["captures"].get("naming.method.name", {}).get("text", "") or
+                   node["captures"].get("naming.property.name", {}).get("text", "") or
+                   node["captures"].get("naming.variable.name", {}).get("text", "")),
+            "is_pascal_case": not "_" in (node["captures"].get("naming.class.name", {}).get("text", "") or
+                                        node["captures"].get("naming.interface.name", {}).get("text", "") or
+                                        node["captures"].get("naming.property.name", {}).get("text", "") or
+                                        node["captures"].get("naming.method.name", {}).get("text", "")) and
+                             (node["captures"].get("naming.class.name", {}).get("text", "") or
+                              node["captures"].get("naming.interface.name", {}).get("text", "") or
+                              node["captures"].get("naming.property.name", {}).get("text", "") or
+                              node["captures"].get("naming.method.name", {}).get("text", ""))[0:1].isupper(),
+            "is_camel_case": not "_" in (node["captures"].get("naming.variable.name", {}).get("text", "")) and
+                           (node["captures"].get("naming.variable.name", {}).get("text", "")).strip() and
+                           (node["captures"].get("naming.variable.name", {}).get("text", ""))[0:1].islower(),
+            "interface_starts_with_i": node["captures"].get("naming.interface.name", {}).get("text", "").startswith("I") and
+                                     len(node["captures"].get("naming.interface.name", {}).get("text", "")) > 1 and
+                                     node["captures"].get("naming.interface.name", {}).get("text", "")[1].isupper()
+        }
+    },
+    
+    "linq_usage": {
+        "pattern": """
+        [
+            (query_expression
+                clauses: [(from_clause) (where_clause)? (select_clause)]+ @linq.basic.clauses) @linq.basic,
+                
+            (query_expression
+                clauses: [(group_clause) (join_clause) (orderby_clause)]+ @linq.advanced.clauses) @linq.advanced
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "linq_usage_pattern",
+            "uses_basic_linq": "linq.basic" in node["captures"],
+            "uses_advanced_linq": "linq.advanced" in node["captures"],
+            "has_where": "where_clause" in node["captures"].get("linq.basic.clauses", {}).get("text", ""),
+            "has_group": "linq.advanced" in node["captures"] and "group_clause" in node["captures"].get("linq.advanced.clauses", {}).get("text", ""),
+            "has_join": "linq.advanced" in node["captures"] and "join_clause" in node["captures"].get("linq.advanced.clauses", {}).get("text", "")
+        }
+    },
+    
+    "async_await_patterns": {
+        "pattern": """
+        [
+            (method_declaration
+                modifiers: (modifier_list
+                    (async_keyword) @async.method.keyword) @async.method.modifiers
+                name: (identifier) @async.method.name) @async.method,
+                
+            (await_expression
+                expression: (_) @async.await.expression) @async.await
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "async_await_pattern",
+            "is_async_method": "async.method" in node["captures"],
+            "uses_await": "async.await" in node["captures"],
+            "method_name": node["captures"].get("async.method.name", {}).get("text", ""),
+            "method_name_ends_with_async": node["captures"].get("async.method.name", {}).get("text", "").lower().endswith("async")
+        }
+    },
+    
+    "code_organization": {
+        "pattern": """
+        [
+            (attribute_list
+                (attribute
+                    name: (identifier) @organization.attribute.name)) @organization.attribute,
+                    
+            (using_directive
+                static_keyword: (static_keyword)? @organization.using.static
+                name: (qualified_name) @organization.using.name) @organization.using,
+                
+            (namespace_declaration
+                name: (qualified_name) @organization.namespace.name) @organization.namespace
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "code_organization_pattern",
+            "uses_attributes": "organization.attribute" in node["captures"],
+            "uses_static_imports": "organization.using.static" in node["captures"],
+            "namespace_style": "dot_separated" if "." in node["captures"].get("organization.namespace.name", {}).get("text", "") else "single_level"
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+CSHARP_PATTERNS['REPOSITORY_LEARNING'] = CSHARP_PATTERNS_FOR_LEARNING 

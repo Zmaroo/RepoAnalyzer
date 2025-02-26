@@ -131,3 +131,112 @@ CPP_PATTERNS = {
         }
     }
 } 
+
+# Repository learning patterns for C++
+CPP_PATTERNS_FOR_LEARNING = {
+    "naming_conventions": {
+        "pattern": """
+        [
+            (function_definition
+                declarator: (function_declarator
+                    declarator: (_) @naming.function.name)) @naming.function,
+                    
+            (class_specifier
+                name: (type_identifier) @naming.class.name) @naming.class,
+                
+            (namespace_definition
+                name: (identifier) @naming.namespace.name) @naming.namespace,
+                
+            (declaration
+                type: (_) @naming.variable.type
+                declarator: (identifier) @naming.variable.name) @naming.variable
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "naming_convention_pattern",
+            "entity_type": ("function" if "naming.function.name" in node["captures"] else
+                           "class" if "naming.class.name" in node["captures"] else
+                           "namespace" if "naming.namespace.name" in node["captures"] else
+                           "variable"),
+            "name": (node["captures"].get("naming.function.name", {}).get("text", "") or
+                    node["captures"].get("naming.class.name", {}).get("text", "") or
+                    node["captures"].get("naming.namespace.name", {}).get("text", "") or
+                    node["captures"].get("naming.variable.name", {}).get("text", "")),
+            "is_camel_case": not "_" in (node["captures"].get("naming.function.name", {}).get("text", "") or 
+                                       node["captures"].get("naming.variable.name", {}).get("text", "")),
+            "is_pascal_case": not "_" in (node["captures"].get("naming.class.name", {}).get("text", "")) and
+                             (node["captures"].get("naming.class.name", {}).get("text", "").strip() and
+                              node["captures"].get("naming.class.name", {}).get("text", "")[0].isupper()),
+            "is_snake_case": "_" in (node["captures"].get("naming.function.name", {}).get("text", "") or 
+                                   node["captures"].get("naming.variable.name", {}).get("text", ""))
+        }
+    },
+    
+    "template_usage": {
+        "pattern": """
+        [
+            (template_declaration
+                parameters: (template_parameter_list) @template.params
+                declaration: (_) @template.declaration) @template.def
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "template_usage_pattern",
+            "parameter_count": len(node["captures"].get("template.params", {}).get("text", "").split(",")),
+            "is_class_template": "class" in node["captures"].get("template.declaration", {}).get("text", ""),
+            "is_function_template": "(" in node["captures"].get("template.declaration", {}).get("text", "")
+        }
+    },
+    
+    "error_handling": {
+        "pattern": """
+        [
+            (try_statement
+                body: (compound_statement) @error.try.body
+                [(catch_clause
+                    type: (_) @error.catch.type
+                    name: (identifier)? @error.catch.name
+                    body: (compound_statement) @error.catch.body) @error.catch]) @error.try,
+                    
+            (throw_expression
+                value: (_)? @error.throw.value) @error.throw
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "error_handling_pattern",
+            "has_try_catch": "error.try" in node["captures"],
+            "has_catch": "error.catch" in node["captures"],
+            "is_throw": "error.throw" in node["captures"],
+            "exception_type": node["captures"].get("error.catch.type", {}).get("text", "")
+        }
+    },
+    
+    "memory_management": {
+        "pattern": """
+        [
+            (call_expression
+                function: (identifier) @memory.allocator
+                (#match? @memory.allocator "^(new|malloc|calloc|realloc)$")
+                arguments: (_)? @memory.alloc.args) @memory.allocation,
+                
+            (call_expression
+                function: (identifier) @memory.deallocator
+                (#match? @memory.deallocator "^(delete|free)$")
+                arguments: (_)? @memory.dealloc.args) @memory.deallocation,
+                
+            (destructor_name) @memory.destructor
+        ]
+        """,
+        "extract": lambda node: {
+            "type": "memory_management_pattern",
+            "is_allocation": "memory.allocation" in node["captures"],
+            "is_deallocation": "memory.deallocation" in node["captures"],
+            "has_destructor": "memory.destructor" in node["captures"],
+            "allocator": node["captures"].get("memory.allocator", {}).get("text", ""),
+            "deallocator": node["captures"].get("memory.deallocator", {}).get("text", "")
+        }
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+CPP_PATTERNS['REPOSITORY_LEARNING'] = CPP_PATTERNS_FOR_LEARNING 
