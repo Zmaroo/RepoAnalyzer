@@ -154,6 +154,68 @@ class SearchEngine:
         """
         return await query(sql, (new_content, doc_id))
     
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
+    async def search_patterns(
+        self,
+        query_text: str,
+        repo_id: Optional[int] = None,
+        pattern_type: Optional[str] = None,
+        limit: int = 10
+    ) -> List[Dict]:
+        """Search for learned patterns matching the query."""
+        query_embedding = await self.code_embedder.embed_async(query_text)
+        vector_literal = self._to_pgvector(query_embedding.tolist())
+        
+        base_sql = """
+        SELECT cp.id, cp.pattern_type, cp.content, cp.confidence,
+               cp.repo_id, cp.language, cp.example_usage,
+               cp.embedding <=> $1::vector AS similarity
+        FROM code_patterns cp
+        """
+        params = [vector_literal]
+        conditions = []
+        
+        if repo_id is not None:
+            conditions.append("cp.repo_id = $2")
+            params.append(repo_id)
+        
+        if pattern_type is not None:
+            conditions.append(f"cp.pattern_type = ${len(params) + 1}")
+            params.append(pattern_type)
+        
+        if conditions:
+            base_sql += " WHERE " + " AND ".join(conditions)
+        
+        base_sql += " ORDER BY similarity ASC LIMIT $" + str(len(params) + 1)
+        params.append(limit)
+        
+        return await query(base_sql, tuple(params))
+    
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
+    async def get_repository_patterns(
+        self,
+        repo_id: int,
+        pattern_type: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict]:
+        """Get patterns from a specific reference repository."""
+        sql = """
+        SELECT cp.id, cp.pattern_type, cp.content, cp.confidence,
+               cp.language, cp.example_usage
+        FROM code_patterns cp
+        WHERE cp.repo_id = $1
+        """
+        params = [repo_id]
+        
+        if pattern_type is not None:
+            sql += " AND cp.pattern_type = $2"
+            params.append(pattern_type)
+        
+        sql += " ORDER BY cp.confidence DESC LIMIT $" + str(len(params) + 1)
+        params.append(limit)
+        
+        return await query(sql, tuple(params))
+    
     def _to_pgvector(self, embedding: list) -> str:
         # Convert list to PostgreSQL vector literal; adjust implementation as needed.
         return " ".join(map(str, embedding))

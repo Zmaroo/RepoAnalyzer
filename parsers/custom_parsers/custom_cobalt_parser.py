@@ -4,7 +4,7 @@ Custom parser for the Cobalt programming language.
 
 from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from parsers.base_parser import BaseParser
-from parsers.models import CobaltNode
+from parsers.models import CobaltNode, PatternType
 from parsers.query_patterns.cobalt import COBALT_PATTERNS
 from parsers.types import PatternCategory, FileType, ParserType
 from utils.logger import log
@@ -134,4 +134,172 @@ class CobaltParser(BaseParser):
                 end_point=[0, 0],
                 error=str(e),
                 children=[]
-            ).__dict__ 
+            ).__dict__
+            
+    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+        """
+        Extract code patterns from Cobalt files for repository learning.
+        
+        Args:
+            source_code: The content of the Cobalt file
+            
+        Returns:
+            List of extracted patterns with metadata
+        """
+        patterns = []
+        
+        try:
+            # Parse the source first to get a structured representation
+            ast_dict = self._parse_source(source_code)
+            
+            # Extract function patterns
+            functions = self._extract_function_patterns(ast_dict)
+            for function in functions:
+                patterns.append({
+                    'name': f'code_function_{function["name"]}',
+                    'content': function["content"],
+                    'pattern_type': PatternType.CODE_STRUCTURE,
+                    'language': self.language_id,
+                    'confidence': 0.8,
+                    'metadata': {
+                        'type': 'function',
+                        'name': function["name"],
+                        'parameters': function.get("parameters", [])
+                    }
+                })
+            
+            # Extract class patterns
+            classes = self._extract_class_patterns(ast_dict)
+            for class_pattern in classes:
+                patterns.append({
+                    'name': f'code_class_{class_pattern["name"]}',
+                    'content': class_pattern["content"],
+                    'pattern_type': PatternType.CODE_STRUCTURE,
+                    'language': self.language_id,
+                    'confidence': 0.85,
+                    'metadata': {
+                        'type': 'class',
+                        'name': class_pattern["name"],
+                        'methods': class_pattern.get("methods", [])
+                    }
+                })
+                
+            # Extract error handling patterns
+            error_patterns = self._extract_error_handling_patterns(ast_dict)
+            for error_pattern in error_patterns:
+                patterns.append({
+                    'name': f'error_handling_{error_pattern["type"]}',
+                    'content': error_pattern["content"],
+                    'pattern_type': PatternType.ERROR_HANDLING,
+                    'language': self.language_id,
+                    'confidence': 0.75,
+                    'metadata': {
+                        'type': 'error_handling',
+                        'error_type': error_pattern["type"]
+                    }
+                })
+                
+            # Extract naming convention patterns
+            naming_patterns = self._extract_naming_patterns(ast_dict)
+            for naming_pattern in naming_patterns:
+                patterns.append({
+                    'name': f'naming_convention_{naming_pattern["category"]}',
+                    'content': naming_pattern["examples"],
+                    'pattern_type': PatternType.CODE_NAMING,
+                    'language': self.language_id,
+                    'confidence': 0.7,
+                    'metadata': {
+                        'type': 'naming_convention',
+                        'category': naming_pattern["category"],
+                        'pattern': naming_pattern["pattern"]
+                    }
+                })
+                
+        except Exception as e:
+            log(f"Error extracting Cobalt patterns: {e}", level="error")
+            
+        return patterns
+        
+    def _extract_function_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract function patterns from the AST."""
+        functions = []
+        
+        def process_node(node):
+            if isinstance(node, dict) and node.get('type') == 'function':
+                functions.append({
+                    'name': node.get('name', ''),
+                    'content': str(node),  # Simplified - could extract actual content
+                    'parameters': node.get('parameters', []),
+                    'start_point': node.get('start_point', [0, 0]),
+                    'end_point': node.get('end_point', [0, 0])
+                })
+            
+            for child in node.get('children', []):
+                process_node(child)
+                
+        process_node(ast)
+        return functions
+        
+    def _extract_class_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract class patterns from the AST."""
+        classes = []
+        
+        def process_node(node):
+            if isinstance(node, dict) and node.get('type') == 'class':
+                # Extract methods within the class
+                methods = []
+                for child in node.get('children', []):
+                    if child.get('type') == 'function':
+                        methods.append({
+                            'name': child.get('name', ''),
+                            'parameters': child.get('parameters', [])
+                        })
+                
+                classes.append({
+                    'name': node.get('name', ''),
+                    'content': str(node),  # Simplified - could extract actual content
+                    'methods': methods,
+                    'start_point': node.get('start_point', [0, 0]),
+                    'end_point': node.get('end_point', [0, 0])
+                })
+            
+            for child in node.get('children', []):
+                process_node(child)
+                
+        process_node(ast)
+        return classes
+        
+    def _extract_error_handling_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract error handling patterns from the AST."""
+        error_patterns = []
+        
+        # In a real implementation, this would scan the AST for try/catch blocks or similar
+        # This is a placeholder implementation
+        error_patterns.append({
+            'type': 'try_catch',
+            'content': 'try { ... } catch (Error e) { ... }',  # Placeholder
+            'start_point': [0, 0],
+            'end_point': [0, 0]
+        })
+                
+        return error_patterns
+        
+    def _extract_naming_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract naming convention patterns from the AST."""
+        naming_patterns = []
+        
+        # This would analyze function and variable names to detect patterns
+        # For now, we'll use a simplified implementation
+        naming_patterns.append({
+            'category': 'function',
+            'pattern': r'[a-z][a-zA-Z0-9]*',  # camelCase
+            'examples': 'doSomething, calculateTotal'
+        })
+        
+        naming_patterns.append({
+            'category': 'class',
+            'pattern': r'[A-Z][a-zA-Z0-9]*',  # PascalCase
+            'examples': 'UserAccount, DataProcessor'
+        })
+                
+        return naming_patterns 

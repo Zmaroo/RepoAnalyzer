@@ -1069,6 +1069,112 @@ class ReferenceRepositoryLearning:
             "status": "success"
         }
 
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
+    async def update_patterns_for_file(self, repo_id: int, file_path: str) -> Dict[str, Any]:
+        """[4.4.9] Update patterns for a specific file in a repository.
+        
+        This method is called when a file is changed and patterns need to be updated.
+        It extracts patterns from the changed file and updates the database.
+        
+        Args:
+            repo_id: Repository ID
+            file_path: Path to the file that changed (relative to repo root)
+            
+        Returns:
+            Dict with update results
+        """
+        try:
+            # Get file content and language
+            file_query = """
+                SELECT file_content, language 
+                FROM file_metadata 
+                WHERE repo_id = $repo_id AND file_path = $file_path
+            """
+            file_result = await query(file_query, {"repo_id": repo_id, "file_path": file_path})
+            
+            if not file_result:
+                return {"status": "error", "message": f"File not found: {file_path}"}
+            
+            file_content = file_result[0]["file_content"]
+            language = file_result[0]["language"]
+            
+            # Delete existing patterns for this file
+            delete_query = """
+                DELETE FROM code_patterns
+                WHERE repo_id = $repo_id AND file_path = $file_path
+            """
+            await query(delete_query, {"repo_id": repo_id, "file_path": file_path})
+            
+            # Extract patterns using pattern processor
+            from parsers.pattern_processor import pattern_processor
+            
+            patterns = pattern_processor.extract_repository_patterns(file_path, file_content, language)
+            
+            # Store patterns
+            new_patterns = []
+            for pattern in patterns:
+                # Create embedding for the pattern
+                pattern_text = pattern.get("content", "")
+                if pattern_text:
+                    try:
+                        embedding = self.embedder.embed(pattern_text)
+                        embedding_list = embedding.tolist() if hasattr(embedding, 'tolist') else None
+                    except Exception as e:
+                        log(f"Error creating embedding for pattern: {e}", level="error")
+                        embedding_list = None
+                        
+                    # Store pattern in database
+                    pattern_query = """
+                        INSERT INTO code_patterns (
+                            repo_id, file_path, pattern_type, content, 
+                            language, confidence, example_usage, embedding
+                        ) VALUES (
+                            $repo_id, $file_path, $pattern_type, $content,
+                            $language, $confidence, $example_usage, $embedding
+                        )
+                        RETURNING id
+                    """
+                    
+                    pattern_id = await query(pattern_query, {
+                        "repo_id": repo_id,
+                        "file_path": file_path,
+                        "pattern_type": pattern.get("pattern_type", "code_structure"),
+                        "content": pattern_text,
+                        "language": language,
+                        "confidence": pattern.get("confidence", 0.7),
+                        "example_usage": pattern.get("content", ""),
+                        "embedding": embedding_list
+                    })
+                    
+                    if pattern_id:
+                        # Also store in Neo4j
+                        await self.neo4j_tools.store_pattern_node({
+                            "pattern_id": pattern_id[0]["id"],
+                            "repo_id": repo_id,
+                            "file_path": file_path,
+                            "pattern_type": pattern.get("pattern_type", "code_structure"),
+                            "language": language,
+                            "confidence": pattern.get("confidence", 0.7)
+                        })
+                        
+                        new_patterns.append(pattern_id[0]["id"])
+            
+            # Update graph projection if patterns were added
+            if new_patterns:
+                await graph_sync.invalidate_pattern_projection(repo_id)
+                await graph_sync.ensure_pattern_projection(repo_id)
+            
+            return {
+                "status": "success",
+                "file_path": file_path,
+                "patterns_updated": len(new_patterns),
+                "pattern_ids": new_patterns
+            }
+            
+        except Exception as e:
+            log(f"Error updating patterns for file {file_path}: {e}", level="error")
+            return {"status": "error", "message": str(e)}
+
 
 # Create a singleton instance
 reference_learning = ReferenceRepositoryLearning() 

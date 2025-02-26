@@ -3,6 +3,7 @@
 from typing import Dict, Any, List, Match
 from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
+import re
 
 def extract_header(match: Match) -> Dict[str, Any]:
     """Extract header information."""
@@ -120,4 +121,108 @@ ASCIIDOC_PATTERNS = {
             examples=["image::file.png[]", "link::https://example.com[]"]
         )
     }
-} 
+}
+
+# Add patterns for repository learning
+ASCIIDOC_PATTERNS_FOR_LEARNING = {
+    "documentation_structure": {
+        "document_structure": QueryPattern(
+            pattern=r'(?s)^=\s+(.+?)\n\n(.*?)(?:==|$)',
+            extract=lambda m: {
+                "type": "document_structure_pattern",
+                "title": m.group(1),
+                "intro": m.group(2),
+                "is_standard_format": True
+            },
+            description="Matches typical AsciiDoc document structure with title and intro",
+            examples=["= Title\n\nIntroduction text\n== First Section"]
+        ),
+        "api_documentation": QueryPattern(
+            pattern=r'(?s)==+ API\s*\n(.+?)(?:==|\Z)',
+            extract=lambda m: {
+                "type": "api_doc_pattern",
+                "content": m.group(1),
+                "has_api_section": True
+            },
+            description="Matches API documentation sections",
+            examples=["== API\nFunction details here\n== Other"]
+        ),
+        "code_example": QueryPattern(
+            pattern=r'\[source,([^\]]+)\]\s*\n----\s*\n(.*?)----',
+            extract=lambda m: {
+                "type": "code_example_pattern",
+                "language": m.group(1),
+                "code": m.group(2),
+                "has_example": True
+            },
+            description="Matches source code examples",
+            examples=["[source,python]\n----\nprint('Hello')\n----"]
+        )
+    },
+    "best_practices": {
+        "admonition_usage": QueryPattern(
+            pattern=r'(NOTE|TIP|IMPORTANT|WARNING|CAUTION):\s+(.+)',
+            extract=lambda m: {
+                "type": "admonition_pattern",
+                "admonition_type": m.group(1),
+                "content": m.group(2),
+                "has_admonition": True
+            },
+            description="Matches admonition usage patterns",
+            examples=["NOTE: Important information"]
+        ),
+        "includes_pattern": QueryPattern(
+            pattern=r'include::([^[\]]+)(?:\[(.*?)\])?',
+            extract=lambda m: {
+                "type": "include_pattern",
+                "path": m.group(1),
+                "options": m.group(2) if m.group(2) else "",
+                "has_includes": True
+            },
+            description="Matches include directives pattern",
+            examples=["include::common.adoc[]"]
+        )
+    }
+}
+
+# Add the repository learning patterns to the main patterns
+ASCIIDOC_PATTERNS['REPOSITORY_LEARNING'] = ASCIIDOC_PATTERNS_FOR_LEARNING
+
+# Function to extract patterns for repository learning
+def extract_asciidoc_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from AsciiDoc content for repository learning."""
+    patterns = []
+    
+    # Process documentation structure patterns
+    for pattern_name, pattern in ASCIIDOC_PATTERNS_FOR_LEARNING["documentation_structure"].items():
+        if hasattr(pattern.pattern, "__call__"):
+            # Skip AST-based patterns
+            continue
+            
+        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+            pattern_data = pattern.extract(match)
+            patterns.append({
+                "name": pattern_name,
+                "type": pattern_data.get("type", "documentation_structure"),
+                "content": match.group(0),
+                "metadata": pattern_data,
+                "confidence": 0.8
+            })
+    
+    # Process best practices patterns
+    for pattern_name, pattern in ASCIIDOC_PATTERNS_FOR_LEARNING["best_practices"].items():
+        if hasattr(pattern.pattern, "__call__"):
+            # Skip AST-based patterns
+            continue
+            
+        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+            pattern_data = pattern.extract(match)
+            patterns.append({
+                "name": pattern_name,
+                "type": pattern_data.get("type", "best_practice"),
+                "content": match.group(0),
+                "metadata": pattern_data,
+                "confidence": 0.75
+            })
+            
+    return patterns 

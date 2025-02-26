@@ -163,7 +163,7 @@ DOC_PATTERN_RULES = {
         "list_pattern": r"^\s*[-*+]\s+(.+)$"
     },
     "rst": {
-        "heading_pattern": r"^[=\-`~:#'"^_*+<>]{3,}\s*$",
+        "heading_pattern": r"^[=\-`~:#'\"^_*+<>]{3,}\s*$",
         "code_block_pattern": r"::\n\n[\s\S]*?(?=\S)",
         "link_pattern": r"`([^`]+)`_",
         "list_pattern": r"^\s*[-*+]\s+(.+)$"

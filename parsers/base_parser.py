@@ -1,12 +1,14 @@
 """Base parser interface and implementations."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union, Type, Callable
 from .types import FileType, FeatureCategory, ParserType, ParserResult, ParserConfig, ParsingStatistics
 from dataclasses import dataclass, field
 from parsers.language_support import language_registry
 from utils.logger import log
 import re
+from parsers.types import PatternCategory, QueryPattern
+from parsers.models import PatternType
 
 @dataclass
 class BaseParser(ABC):
@@ -133,4 +135,56 @@ class BaseParser(ABC):
         elif category == FeatureCategory.STRUCTURE:
             return self._extract_structure_features(ast, patterns)
         
-        return {} 
+        return {}
+
+    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+        """
+        Extract patterns from source code for repository learning.
+        
+        This base implementation provides a general pattern extraction capability
+        that custom parsers can override with more specific implementations.
+        
+        Args:
+            source_code: The source code content to extract patterns from
+            
+        Returns:
+            A list of extracted patterns with metadata
+        """
+        patterns = []
+        
+        try:
+            # Parse the source first
+            ast = self.parse(source_code)
+            
+            # Use the language-specific pattern processor if available
+            from parsers.pattern_processor import pattern_processor
+            if hasattr(pattern_processor, 'extract_repository_patterns'):
+                language_patterns = pattern_processor.extract_repository_patterns(
+                    file_path="",  # Not needed for pattern extraction
+                    source_code=source_code,
+                    language=self.language_id
+                )
+                patterns.extend(language_patterns)
+                
+            # Add file type specific patterns
+            if self.file_type == FileType.CODE:
+                # Add code-specific pattern extraction
+                code_patterns = self._extract_code_patterns(ast, source_code)
+                patterns.extend(code_patterns)
+            elif self.file_type == FileType.DOCUMENTATION:
+                # Add documentation-specific pattern extraction
+                doc_patterns = self._extract_doc_patterns(ast, source_code)
+                patterns.extend(doc_patterns)
+                
+        except Exception as e:
+            log(f"Error extracting patterns from {self.language_id}: {e}", level="error")
+            
+        return patterns
+        
+    def _extract_code_patterns(self, ast: Dict[str, Any], source_code: str) -> List[Dict[str, Any]]:
+        """Extract code patterns from AST. Override in subclasses for language-specific behavior."""
+        return []
+        
+    def _extract_doc_patterns(self, ast: Dict[str, Any], source_code: str) -> List[Dict[str, Any]]:
+        """Extract documentation patterns from AST. Override in subclasses for language-specific behavior."""
+        return [] 

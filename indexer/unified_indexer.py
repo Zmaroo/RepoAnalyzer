@@ -80,7 +80,7 @@ class ProcessingCoordinator:
         """Cleanup all processing resources."""
         self.file_processor.clear_cache()
 
-async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: str = "active") -> None:
+async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: str = "active", single_file: bool = False) -> None:
     """[1.3] Central repository indexing pipeline.
     
     This function discovers processable files under `repo_path`, processes them
@@ -90,15 +90,33 @@ async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: s
     coordinator = ProcessingCoordinator()
     try:
         log(f"Starting indexing for repository {repo_id} at {repo_path}")
-        files = get_files(repo_path)
+        
+        if single_file and os.path.isfile(repo_path):
+            files = [repo_path]
+        else:
+            files = get_files(repo_path)
+            
         tasks = []
         for file in files:
             if is_processable_file(file):
                 tasks.append(coordinator.process_file(file, repo_id, repo_path))
         if tasks:
             await asyncio.gather(*tasks)
-        # Update the graph projection (this example assumes a synchronous call)
+            
+        # Update the graph projection
         auto_reinvoke_projection_once()
+        
+        # Extract patterns if this is a reference repository
+        if repo_type == "reference" and not single_file:
+            try:
+                # Import here to avoid circular imports
+                from ai_tools.reference_repository_learning import ReferenceRepositoryLearning
+                ref_repo_learning = ReferenceRepositoryLearning()
+                log(f"Extracting patterns from reference repository {repo_id}", level="info")
+                await ref_repo_learning.learn_from_repository(repo_id)
+            except Exception as e:
+                log(f"Error extracting patterns from reference repository: {e}", level="error")
+                
     except Exception as e:
         log(f"Error indexing repository {repo_id}: {e}", level="error")
     finally:

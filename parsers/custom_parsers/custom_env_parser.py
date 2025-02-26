@@ -8,7 +8,7 @@ Comments (lines starting with #) are skipped (or can be used as documentation).
 from typing import Dict, List, Any, Optional, Tuple
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
-from parsers.models import EnvNode
+from parsers.models import EnvNode, PatternType
 from parsers.query_patterns.env import ENV_PATTERNS
 from utils.logger import log
 import re
@@ -125,3 +125,184 @@ class EnvParser(BaseParser):
                 error=str(e),
                 children=[]
             ).__dict__
+            
+    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+        """
+        Extract environment variable patterns from .env files for repository learning.
+        
+        Args:
+            source_code: The content of the .env file
+            
+        Returns:
+            List of extracted patterns with metadata
+        """
+        patterns = []
+        
+        try:
+            # Parse the source first to get a structured representation
+            ast_dict = self._parse_source(source_code)
+            
+            # Extract variable patterns
+            variables = self._extract_variable_patterns(ast_dict)
+            for variable in variables:
+                patterns.append({
+                    'name': f'env_variable_{variable["name"]}',
+                    'content': f'{variable["name"]}={variable["value"]}',
+                    'pattern_type': PatternType.CODE_STRUCTURE,
+                    'language': self.language_id,
+                    'confidence': 0.85,
+                    'metadata': {
+                        'type': 'env_variable',
+                        'name': variable["name"],
+                        'value_type': variable["value_type"],
+                        'is_export': variable.get("is_export", False)
+                    }
+                })
+            
+            # Extract naming convention patterns
+            naming_patterns = self._extract_naming_patterns(ast_dict)
+            for naming in naming_patterns:
+                patterns.append({
+                    'name': f'env_naming_{naming["pattern"]}',
+                    'content': naming["examples"],
+                    'pattern_type': PatternType.CODE_NAMING,
+                    'language': self.language_id,
+                    'confidence': 0.8,
+                    'metadata': {
+                        'type': 'naming_convention',
+                        'pattern': naming["pattern"],
+                        'examples': naming["examples"].split(', ')
+                    }
+                })
+                
+            # Extract common env configurations
+            config_patterns = self._extract_config_patterns(ast_dict)
+            for config in config_patterns:
+                patterns.append({
+                    'name': f'env_config_{config["category"]}',
+                    'content': config["content"],
+                    'pattern_type': PatternType.CODE_STRUCTURE,
+                    'language': self.language_id,
+                    'confidence': 0.9,
+                    'metadata': {
+                        'type': 'env_config',
+                        'category': config["category"],
+                        'variables': config["variables"]
+                    }
+                })
+                
+        except Exception as e:
+            log(f"Error extracting env patterns: {e}", level="error")
+            
+        return patterns
+        
+    def _extract_variable_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract variable patterns from the AST."""
+        variables = []
+        
+        def process_node(node):
+            if isinstance(node, dict):
+                if node.get('type') in ('variable', 'export'):
+                    variables.append({
+                        'name': node.get('name', ''),
+                        'value': node.get('value', ''),
+                        'value_type': node.get('value_type', 'raw'),
+                        'is_export': node.get('type') == 'export'
+                    })
+            
+            if isinstance(node, dict):
+                for child in node.get('children', []):
+                    process_node(child)
+                
+        process_node(ast)
+        return variables
+        
+    def _extract_naming_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract naming convention patterns from the AST."""
+        # Count how many variables follow specific naming conventions
+        snake_case = []
+        screaming_snake_case = []
+        
+        def process_node(node):
+            if isinstance(node, dict) and node.get('type') in ('variable', 'export'):
+                name = node.get('name', '')
+                if re.match(r'^[a-z][a-z0-9_]*$', name):
+                    snake_case.append(name)
+                elif re.match(r'^[A-Z][A-Z0-9_]*$', name):
+                    screaming_snake_case.append(name)
+            
+            if isinstance(node, dict):
+                for child in node.get('children', []):
+                    process_node(child)
+                
+        process_node(ast)
+        
+        patterns = []
+        # Add patterns only if we have enough examples
+        if len(snake_case) >= 2:
+            patterns.append({
+                'pattern': 'snake_case',
+                'examples': ', '.join(snake_case[:3])
+            })
+            
+        if len(screaming_snake_case) >= 2:
+            patterns.append({
+                'pattern': 'SCREAMING_SNAKE_CASE',
+                'examples': ', '.join(screaming_snake_case[:3])
+            })
+            
+        return patterns
+        
+    def _extract_config_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract common configuration patterns from the AST."""
+        # Look for common groups of environment variables
+        database_vars = []
+        api_vars = []
+        auth_vars = []
+        
+        def process_node(node):
+            if isinstance(node, dict) and node.get('type') in ('variable', 'export'):
+                name = node.get('name', '')
+                
+                # Check for database variables
+                if any(keyword in name.upper() for keyword in ['DB', 'DATABASE', 'SQL', 'POSTGRES', 'MONGO']):
+                    database_vars.append({'name': name, 'value': node.get('value', '')})
+                    
+                # Check for API variables
+                elif any(keyword in name.upper() for keyword in ['API', 'ENDPOINT', 'URL', 'HOST']):
+                    api_vars.append({'name': name, 'value': node.get('value', '')})
+                    
+                # Check for auth variables
+                elif any(keyword in name.upper() for keyword in ['AUTH', 'TOKEN', 'SECRET', 'KEY', 'PASSWORD']):
+                    auth_vars.append({'name': name, 'value': node.get('value', '')})
+            
+            if isinstance(node, dict):
+                for child in node.get('children', []):
+                    process_node(child)
+                
+        process_node(ast)
+        
+        patterns = []
+        # Add patterns only if we have enough related variables
+        if len(database_vars) >= 2:
+            patterns.append({
+                'category': 'database',
+                'content': ', '.join(v['name'] for v in database_vars),
+                'variables': database_vars
+            })
+            
+        if len(api_vars) >= 2:
+            patterns.append({
+                'category': 'api',
+                'content': ', '.join(v['name'] for v in api_vars),
+                'variables': api_vars
+            })
+            
+        if len(auth_vars) >= 2:
+            patterns.append({
+                'category': 'authentication',
+                'content': ', '.join(v['name'] for v in auth_vars),
+                'variables': auth_vars
+            })
+            
+        return patterns

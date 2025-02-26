@@ -412,6 +412,62 @@ class AIAssistant:
             
             return combined_analysis
 
+    @handle_async_errors(error_types=ProcessingError)
+    async def search_patterns(
+        self, 
+        query_text: str, 
+        repo_id: Optional[int] = None,
+        pattern_type: Optional[str] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """[4.1.14] Search for code patterns matching the query."""
+        async with AsyncErrorBoundary("pattern search"):
+            from semantic.search import search_engine
+            return await search_engine.search_patterns(
+                query_text=query_text,
+                repo_id=repo_id,
+                pattern_type=pattern_type,
+                limit=limit
+            )
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def get_repository_patterns(
+        self,
+        repo_id: int,
+        pattern_type: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """[4.1.15] Get patterns extracted from a specific repository."""
+        async with AsyncErrorBoundary("get repository patterns"):
+            from semantic.search import search_engine
+            return await search_engine.get_repository_patterns(
+                repo_id=repo_id,
+                pattern_type=pattern_type,
+                limit=limit
+            )
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def deep_learn_from_multiple_repositories(
+        self,
+        repo_ids: List[int]
+    ) -> Dict[str, Any]:
+        """[4.1.16] Deep learn from multiple reference repositories."""
+        async with AsyncErrorBoundary("deep learning from multiple repositories"):
+            return await self.reference_learning.deep_learn_from_multiple_repositories(repo_ids)
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def apply_cross_repository_patterns(
+        self,
+        target_repo_id: int,
+        reference_repo_ids: List[int]
+    ) -> Dict[str, Any]:
+        """[4.1.17] Apply patterns learned from multiple reference repositories to a target project."""
+        async with AsyncErrorBoundary("applying cross-repository patterns"):
+            return await self.reference_learning.apply_cross_repository_patterns(
+                target_repo_id=target_repo_id,
+                repo_ids=reference_repo_ids
+            )
+    
     @handle_errors(error_types=ProcessingError)
     def close(self) -> None:
         """[4.1.10] Cleanup all resources."""

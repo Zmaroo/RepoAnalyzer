@@ -5,6 +5,7 @@ Query patterns for Markdown files with enhanced documentation support.
 from typing import Dict, Any, List, Match
 from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
+import re
 
 def extract_header(match: Match) -> Dict[str, Any]:
     """Extract header information."""
@@ -253,3 +254,132 @@ def extract_markdown_blockquotes(ast: dict) -> list:
     """Extract all blockquotes with enhanced metadata."""
     features = extract_markdown_features(ast)
     return features["documentation"]["blockquotes"]
+
+# Add new pattern category for repository learning patterns
+MARKDOWN_PATTERNS_FOR_LEARNING = {
+    "documentation_structure": {
+        "typical_readme": QueryPattern(
+            pattern=r'(?s)^# (.+?)\n\n(.*?)\n## (.+)',
+            extract=lambda m: {
+                "type": "readme_pattern",
+                "title": m.group(1),
+                "intro": m.group(2),
+                "first_section": m.group(3),
+                "is_standard_format": True
+            },
+            description="Matches typical README structure with title, intro, and sections",
+            examples=["# Project\n\nDescription\n## Installation"]
+        ),
+        "api_documentation": QueryPattern(
+            pattern=r'(?s)## API\s*\n(.+?)(?:\n##|\Z)',
+            extract=lambda m: {
+                "type": "api_doc_pattern",
+                "content": m.group(1),
+                "has_api_section": True
+            },
+            description="Matches API documentation sections",
+            examples=["## API\nFunction details here\n## Other"]
+        ),
+        "code_example": QueryPattern(
+            pattern=r'```(\w+)\n(.*?)```',
+            extract=lambda m: {
+                "type": "code_example_pattern",
+                "language": m.group(1),
+                "code": m.group(2),
+                "has_example": True
+            },
+            description="Matches code examples with language specifications",
+            examples=["```python\nprint('Hello')\n```"]
+        ),
+        "usage_example": QueryPattern(
+            pattern=r'(?s)## (Usage|Examples?)\s*\n(.+?)(?:\n##|\Z)',
+            extract=lambda m: {
+                "type": "usage_example_pattern",
+                "section_title": m.group(1),
+                "content": m.group(2),
+                "has_usage_section": True
+            },
+            description="Matches usage example sections",
+            examples=["## Usage\nHow to use this library\n## API"]
+        )
+    },
+    "best_practices": {
+        "badges": QueryPattern(
+            pattern=r'(!\[.+?\]\(.+?\))\s*',
+            extract=lambda m: {
+                "type": "badges_pattern",
+                "badge": m.group(1),
+                "has_badges": True
+            },
+            description="Matches status badges in documentation",
+            examples=["![Build Status](https://travis-ci.org/user/repo.svg)"]
+        ),
+        "table_of_contents": QueryPattern(
+            pattern=r'(?s)## Table of Contents\s*\n(.+?)(?:\n##|\Z)',
+            extract=lambda m: {
+                "type": "toc_pattern",
+                "content": m.group(1),
+                "has_toc": True
+            },
+            description="Matches table of contents sections",
+            examples=["## Table of Contents\n* [Installation](#installation)"]
+        ),
+        "contribution_guidelines": QueryPattern(
+            pattern=r'(?s)## Contribut(ing|ion)\s*\n(.+?)(?:\n##|\Z)',
+            extract=lambda m: {
+                "type": "contribution_pattern",
+                "content": m.group(2),
+                "has_contribution_guide": True
+            },
+            description="Matches contribution guideline sections",
+            examples=["## Contributing\nHow to contribute\n## License"]
+        )
+    }
+}
+
+# Update the MARKDOWN_PATTERNS dictionary
+MARKDOWN_PATTERNS = {
+    # ... existing patterns ...
+}
+
+# Add the repository learning patterns to the main patterns
+MARKDOWN_PATTERNS['REPOSITORY_LEARNING'] = MARKDOWN_PATTERNS_FOR_LEARNING
+
+# Extend extract_markdown_features to include pattern extraction for learning
+def extract_markdown_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from markdown content for repository learning."""
+    patterns = []
+    
+    # Process documentation structure patterns
+    for pattern_name, pattern in MARKDOWN_PATTERNS_FOR_LEARNING["documentation_structure"].items():
+        if hasattr(pattern.pattern, "__call__"):
+            # Skip AST-based patterns, we need regex for now
+            continue
+            
+        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+            pattern_data = pattern.extract(match)
+            patterns.append({
+                "name": pattern_name,
+                "type": pattern_data.get("type", "documentation_structure"),
+                "content": match.group(0),
+                "metadata": pattern_data,
+                "confidence": 0.8
+            })
+    
+    # Process best practices patterns
+    for pattern_name, pattern in MARKDOWN_PATTERNS_FOR_LEARNING["best_practices"].items():
+        if hasattr(pattern.pattern, "__call__"):
+            # Skip AST-based patterns, we need regex for now
+            continue
+            
+        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+            pattern_data = pattern.extract(match)
+            patterns.append({
+                "name": pattern_name,
+                "type": pattern_data.get("type", "best_practice"),
+                "content": match.group(0),
+                "metadata": pattern_data,
+                "confidence": 0.75
+            })
+            
+    return patterns

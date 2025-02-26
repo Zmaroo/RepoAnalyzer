@@ -85,8 +85,13 @@ async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int 
     Learn patterns from a reference repository and optionally apply them to an active repo.
     """
     try:
-        # Learn from reference repository
-        learn_result = await ai_assistant.learn_from_reference_repo(reference_repo_id)
+        # Add support for deep learning from multiple repositories
+        if isinstance(reference_repo_id, list):
+            learn_result = await ai_assistant.deep_learn_from_multiple_repositories(reference_repo_id)
+        else:
+            # Learn from single reference repository
+            learn_result = await ai_assistant.learn_from_reference_repo(reference_repo_id)
+        
         log(f"Learned patterns from reference repo: {learn_result}", level="info")
         
         # Apply patterns to active repository if specified
@@ -123,6 +128,9 @@ async def main_async(args):
         
         # Store reference repository if provided
         reference_repo_id = None
+        reference_repo_ids = []
+        
+        # Handle single reference repository
         if args.learn_ref:
             reference_repo = os.path.basename(os.path.abspath(args.learn_ref))
             reference_repo_id = await upsert_repository({
@@ -131,6 +139,26 @@ async def main_async(args):
                 'active_repo_id': repo_id,
                 'source_url': args.learn_ref if '://' in args.learn_ref else None
             })
+            reference_repo_ids.append(reference_repo_id)
+        
+        # Handle multiple reference repositories
+        if args.multi_ref:
+            multi_refs = args.multi_ref.split(',')
+            for ref in multi_refs:
+                ref = ref.strip()
+                # Check if it's a repository ID
+                if ref.isdigit():
+                    reference_repo_ids.append(int(ref))
+                else:
+                    # It's a path or URL
+                    ref_name = os.path.basename(os.path.abspath(ref))
+                    ref_id = await upsert_repository({
+                        'repo_name': ref_name,
+                        'repo_type': 'reference',
+                        'active_repo_id': repo_id,
+                        'source_url': ref if '://' in ref else None
+                    })
+                    reference_repo_ids.append(ref_id)
         
         # [0.3] Processing Tasks
         tasks = []
@@ -140,6 +168,14 @@ async def main_async(args):
         # Index reference repository if provided
         if args.learn_ref:
             tasks.append(process_repository_indexing(args.learn_ref, reference_repo_id))
+        
+        # Index multiple reference repositories
+        if args.multi_ref:
+            multi_refs = args.multi_ref.split(',')
+            for i, ref in enumerate(multi_refs):
+                ref = ref.strip()
+                if not ref.isdigit():  # Only process paths, not repository IDs
+                    tasks.append(process_repository_indexing(ref, reference_repo_ids[i]))
         
         # Documentation operations
         if args.share_docs:
@@ -154,8 +190,20 @@ async def main_async(args):
             await asyncio.gather(*tasks, return_exceptions=True)
         
         # Reference repository learning
-        if reference_repo_id:
-            await learn_from_reference_repo(reference_repo_id, repo_id if args.apply_ref_patterns else None)
+        if args.deep_learning and len(reference_repo_ids) >= 2:
+            # Deep learning from multiple reference repositories
+            log(f"Starting deep learning from {len(reference_repo_ids)} reference repositories", level="info")
+            deep_learning_result = await ai_assistant.deep_learn_from_multiple_repositories(reference_repo_ids)
+            
+            if args.apply_ref_patterns:
+                # Apply patterns from all reference repositories to the active repo
+                await ai_assistant.apply_cross_repository_patterns(repo_id, reference_repo_ids)
+                
+            log(f"Deep learning complete: {deep_learning_result}", level="info")
+        elif reference_repo_id or reference_repo_ids:
+            # Regular learning from a single reference repository
+            repo_to_learn = reference_repo_id or reference_repo_ids[0]
+            await learn_from_reference_repo(repo_to_learn, repo_id if args.apply_ref_patterns else None)
         
         # [0.4] Watch Mode
         if args.watch:
@@ -197,8 +245,12 @@ def main():
                         help="Watch for file changes and continuously update graph projection")
     parser.add_argument("--learn-ref", type=str,
                         help="Learn patterns from a reference repository (path or URL)")
+    parser.add_argument("--multi-ref", type=str, 
+                        help="Learn from multiple reference repositories (comma-separated paths or repository IDs)")
     parser.add_argument("--apply-ref-patterns", action="store_true",
                         help="Apply learned patterns from reference repo to the active repo")
+    parser.add_argument("--deep-learning", action="store_true",
+                        help="Use deep learning across multiple repositories (requires --multi-ref)")
     
     args = parser.parse_args()
     

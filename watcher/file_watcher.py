@@ -46,6 +46,65 @@ async def watch_directory(directory: str, repo_id: int, on_change):
         observer.stop()
         observer.join()
 
+def is_pattern_relevant_file(file_path: str) -> bool:
+    """
+    Determine if a file is relevant for pattern extraction.
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        bool: True if the file is relevant for pattern extraction
+    """
+    # Get file extension
+    _, ext = os.path.splitext(file_path)
+    
+    # Code files are relevant for pattern extraction
+    code_extensions = {'.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.go', '.rb', '.php'}
+    return ext.lower() in code_extensions
+
+async def handle_file_change(file_path: str, repo_id: int):
+    """
+    Handle file changes by reprocessing the file and updating patterns.
+    
+    Args:
+        file_path: Path to the file that changed
+        repo_id: Repository ID
+    """
+    log(f"File changed: {file_path}", level="info")
+    
+    # Process the changed file
+    from indexer.unified_indexer import process_repository_indexing
+    await process_repository_indexing(file_path, repo_id, single_file=True)
+    
+    # Update repository patterns if the file is relevant
+    if is_pattern_relevant_file(file_path):
+        try:
+            # Import here to avoid circular imports
+            from ai_tools.reference_repository_learning import ReferenceRepositoryLearning
+            from db.psql import query
+            
+            # Get the repository type
+            repo_result = await query("SELECT repo_type FROM repositories WHERE id = %s", (repo_id,))
+            
+            # Only update patterns for reference repositories
+            if repo_result and repo_result[0]['repo_type'] == 'reference':
+                ref_repo_learning = ReferenceRepositoryLearning()
+                log(f"Updating patterns for file: {file_path}", level="info")
+                
+                # Get relative path for the file
+                base_path = os.path.dirname(os.path.dirname(file_path))
+                rel_path = get_relative_path(file_path, base_path)
+                
+                # Update patterns for the specific file
+                await ref_repo_learning.update_patterns_for_file(repo_id, rel_path)
+        except Exception as e:
+            log(f"Error updating patterns for file {file_path}: {e}", level="error")
+    
+    # Update graph analysis
+    from ai_tools.graph_capabilities import graph_analysis
+    await graph_analysis.analyze_code_structure(repo_id)
+
 def start_file_watcher(path: str = ".") -> None:
     """Start the file watcher in the current directory."""
     async def async_main():

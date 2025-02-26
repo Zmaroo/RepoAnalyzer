@@ -3,8 +3,9 @@
 from typing import Dict, Any, List, Optional, Set, Union, Callable
 from dataclasses import dataclass, field
 from parsers.types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics
-from enum import Enum
+from enum import Enum, auto
 from parsers.base_parser import BaseParser
+import re
 
 @dataclass
 class FileMetadata:
@@ -183,6 +184,13 @@ class ProcessedPattern:
     metadata: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
 
+class PatternType(Enum):
+    CODE_STRUCTURE = "code_structure"
+    CODE_NAMING = "code_naming"
+    ERROR_HANDLING = "error_handling"
+    DOCUMENTATION_STRUCTURE = "documentation_structure"
+    ARCHITECTURE = "architecture"
+
 PATTERN_CATEGORIES = {
     FeatureCategory.SYNTAX: {
         FileType.CODE: [
@@ -225,6 +233,21 @@ PATTERN_CATEGORIES = {
         FileType.DOC: [
             "hierarchy", "include", "anchor", "toc",
             "cross_reference", "bibliography", "appendix"
+        ]
+    },
+    FeatureCategory.CODE_PATTERN: {
+        FileType.CODE: [
+            "code_structure", "code_naming", "error_handling",
+            "function_pattern", "class_pattern", "variable_pattern",
+            "import_pattern", "algorithm_pattern", "api_usage"
+        ],
+        FileType.DOC: [
+            "documentation_structure", "api_documentation", 
+            "example_usage", "best_practice", "tutorial_pattern"
+        ],
+        FileType.CONFIG: [
+            "configuration_pattern", "environment_setup", 
+            "dependency_management", "build_pattern"
         ]
     }
 }
