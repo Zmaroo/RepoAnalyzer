@@ -17,9 +17,11 @@ class FileMetadata:
 @dataclass
 class FileClassification:
     """File classification result."""
-    file_type: FileType
-    language_id: str
-    parser_type: ParserType
+    file_type: FileType = FileType.CODE
+    language_id: str = "unknown"
+    parser_type: ParserType = ParserType.CUSTOM
+    file_path: Optional[str] = None
+    is_binary: bool = False
 
 @dataclass
 class LanguageFeatures:

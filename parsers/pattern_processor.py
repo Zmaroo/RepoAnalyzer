@@ -8,7 +8,6 @@ from parsers.types import ParserType
 from parsers.models import PatternDefinition, PatternMatch, FileClassification
 from utils.logger import log
 import os
-import pkgutil
 import importlib
 from parsers.language_mapping import is_supported_language
 
@@ -38,62 +37,93 @@ def compile_patterns(pattern_defs: Dict[str, Any]) -> Dict[str, Any]:
             try:
                 compiled[name] = re.compile(pattern_obj.pattern, re.DOTALL)
             except Exception as e:
-                print(f"Error compiling pattern {name}: {e}")
+                log(f"Error compiling pattern {name}: {e}", level="error")
     return compiled
 
 class PatternProcessor:
     """Central pattern processing system."""
     
     def __init__(self):
-        self._patterns = self._load_all_patterns()
-        self._tree_sitter_patterns = {}
-        self._regex_patterns = {}
+        """
+        Initialize the pattern processor with dictionaries for both tree-sitter
+        and custom regex patterns. Patterns are loaded on demand.
+        """
+        # Initialize dictionaries for all supported languages first
+        self._tree_sitter_patterns = {lang: {} for lang in TREE_SITTER_LANGUAGES}
+        self._regex_patterns = {lang: {} for lang in CUSTOM_PARSER_LANGUAGES}
+        
+        # Used to track which language patterns have been loaded
+        self._loaded_languages = set()
+        
+    def _ensure_patterns_loaded(self, language: str):
+        """
+        Ensure patterns for the specified language are loaded.
+        Uses lazy loading to improve performance.
+        
+        Args:
+            language: The language to load patterns for
+        """
+        normalized_lang = normalize_language_name(language)
+        
+        # Skip if already loaded
+        if normalized_lang in self._loaded_languages:
+            return
+            
+        # Load the patterns based on parser type
+        try:
+            if normalized_lang in TREE_SITTER_LANGUAGES:
+                self._load_tree_sitter_patterns(normalized_lang)
+            elif normalized_lang in CUSTOM_PARSER_LANGUAGES:
+                self._load_custom_patterns(normalized_lang)
+                
+            # Mark as loaded even if there were no patterns
+            self._loaded_languages.add(normalized_lang)
+        except Exception as e:
+            log(f"Error loading patterns for {language}: {e}", level="error")
     
-    def _load_all_patterns(self) -> dict:
-        """Load all patterns from query_patterns directory."""
-        patterns = {}
-        package_dir = os.path.dirname(__file__)
-        pattern_dir = os.path.join(package_dir, "query_patterns")
+    def _load_tree_sitter_patterns(self, language: str):
+        """
+        Load tree-sitter specific patterns for a language.
         
-        for module_info in pkgutil.iter_modules([pattern_dir]):
-            module_name = module_info.name
-            if module_name == '__init__':
-                continue
-                
-            try:
-                module = importlib.import_module(f"parsers.query_patterns.{module_name}")
-                key = normalize_language_name(module_name.lower())
-                
-                if is_supported_language(key):
-                    # Load patterns based on parser type
-                    if key in TREE_SITTER_LANGUAGES:
-                        self._load_tree_sitter_patterns(module, key)
-                    elif key in CUSTOM_PARSER_LANGUAGES:
-                        self._load_custom_patterns(module, key)
-                    
-            except Exception as e:
-                log(f"Failed to load patterns for {module_name}: {e}", level="error")
-                
-        return patterns
+        Args:
+            language: The language to load patterns for
+        """
+        from parsers.query_patterns import get_patterns_for_language
         
-    def _load_tree_sitter_patterns(self, module: Any, language: str):
-        """Load tree-sitter specific patterns."""
-        for attr in dir(module):
-            if attr.endswith('_PATTERNS'):
-                patterns = getattr(module, attr)
-                if isinstance(patterns, dict):
-                    self._tree_sitter_patterns[language] = patterns
+        patterns = get_patterns_for_language(language)
+        if patterns:
+            self._tree_sitter_patterns[language] = patterns
+            log(f"Loaded {len(patterns)} tree-sitter patterns for {language}", level="debug")
                     
-    def _load_custom_patterns(self, module: Any, language: str):
-        """Load custom parser patterns."""
-        for attr in dir(module):
-            if attr.endswith('_PATTERNS'):
-                patterns = getattr(module, attr)
-                if isinstance(patterns, dict):
-                    self._regex_patterns[language] = patterns
+    def _load_custom_patterns(self, language: str):
+        """
+        Load custom parser patterns for a language.
+        
+        Args:
+            language: The language to load patterns for
+        """
+        from parsers.query_patterns import get_patterns_for_language
+        
+        patterns = get_patterns_for_language(language)
+        if patterns:
+            self._regex_patterns[language] = patterns
+            log(f"Loaded {len(patterns)} regex patterns for {language}", level="debug")
 
     def get_patterns_for_file(self, classification: FileClassification) -> dict:
-        """Get patterns based on parser type and language."""
+        """
+        Get patterns based on parser type and language.
+        Ensures patterns are loaded before returning them.
+        
+        Args:
+            classification: File classification containing language and parser type
+            
+        Returns:
+            Dictionary of patterns for the specified language
+        """
+        # Make sure patterns are loaded for this language
+        self._ensure_patterns_loaded(classification.language_id)
+        
+        # Return the appropriate pattern set
         patterns = (self._tree_sitter_patterns if classification.parser_type == ParserType.TREE_SITTER 
                    else self._regex_patterns)
         return patterns.get(classification.language_id, {})
@@ -189,6 +219,9 @@ class PatternProcessor:
         Returns:
             List of extracted patterns with metadata
         """
+        # Ensure patterns are loaded for this language
+        self._ensure_patterns_loaded(language)
+        
         patterns = []
         
         # Get language-specific rules

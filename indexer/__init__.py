@@ -8,6 +8,10 @@ from .unified_indexer import (
 )
 from .async_utils import async_read_file, async_handle_errors, batch_process_files
 
+# Initialize pattern system when indexer is imported
+from parsers.query_patterns import initialize_pattern_system
+initialize_pattern_system()
+
 __all__ = [
     "clone_and_index_repo",
     "get_or_create_repo",

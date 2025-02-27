@@ -20,9 +20,10 @@ Flow:
 from typing import Optional, Dict
 from tree_sitter_language_pack import SupportedLanguage
 from indexer.file_utils import get_file_classification
-from parsers.types import FileType
+from parsers.types import FileType, ParserType
 from parsers.language_support import language_registry
 from parsers.unified_parser import unified_parser
+from parsers.pattern_processor import pattern_processor
 from db.upsert_ops import upsert_code_snippet, upsert_doc
 from indexer.file_utils import get_relative_path, is_processable_file
 from utils.logger import log
@@ -43,6 +44,7 @@ class FileProcessor:
     
     def __init__(self):
         self._language_registry = language_registry  # USES: parsers/language_support.py
+        self._pattern_processor = pattern_processor  # Use the global pattern processor instance
         self._loop = get_loop()  # Get managed event loop
         self._semaphore = asyncio.Semaphore(10)  # Limit concurrent file operations
     
@@ -63,47 +65,61 @@ class FileProcessor:
                     return None
                     
                 if classification.file_type == FileType.CODE:
-                    await self._process_code_file(repo_id, rel_path, content)
+                    await self._process_code_file(repo_id, rel_path, content, classification)
+                elif classification.file_type == FileType.DOC:
+                    await self._process_doc_file(repo_id, rel_path, content, classification)
                 else:
-                    await self._process_doc_file(repo_id, rel_path, content)
+                    log(f"Skipping file {rel_path} with type {classification.file_type}", level="debug")
                     
             except Exception as e:
                 log(f"Error in file processor: {e}", level="error")
                 return None
     
-    async def _process_code_file(self, repo_id: int, rel_path: str, content: str) -> None:
+    async def _process_code_file(self, repo_id: int, rel_path: str, content: str, classification) -> None:
         """[2.3] Process and store code file with embeddings."""
-        # Parse file
-        parse_result = await unified_parser.parse_file(rel_path, content)
-        if not parse_result:
-            return
+        try:
+            # Parse file
+            parse_result = await unified_parser.parse_file(rel_path, content, classification)
+            if not parse_result:
+                log(f"Failed to parse file: {rel_path}", level="warning")
+                return
+                
+            # Get patterns for the file if needed for feature extraction
+            patterns = self._pattern_processor.get_patterns_for_file(classification)
             
-        # Generate embedding
-        embedding = await code_embedder.embed_async(content)
-        
-        # Store with embedding
-        await upsert_code_snippet({
-            'repo_id': repo_id,
-            'file_path': rel_path,
-            'content': content,
-            'language': parse_result.language,
-            'ast': parse_result.ast,
-            'enriched_features': parse_result.features,
-            'embedding': embedding.tolist() if embedding is not None else None
-        })
+            # Generate embedding
+            embedding = await code_embedder.embed_async(content)
+            
+            # Store with embedding
+            await upsert_code_snippet({
+                'repo_id': repo_id,
+                'file_path': rel_path,
+                'content': content,
+                'language': classification.language_id,
+                'ast': parse_result.ast,
+                'enriched_features': parse_result.features,
+                'embedding': embedding.tolist() if embedding is not None else None
+            })
+        except Exception as e:
+            log(f"Error processing code file {rel_path}: {e}", level="error")
     
-    async def _process_doc_file(self, repo_id: int, rel_path: str, content: str) -> None:
+    async def _process_doc_file(self, repo_id: int, rel_path: str, content: str, classification) -> None:
         """[2.4] Process and store documentation file with embeddings."""
-        # Generate embedding
-        embedding = await doc_embedder.embed_async(content)
-        
-        await upsert_doc(
-            repo_id=repo_id,
-            file_path=rel_path,
-            content=content,
-            doc_type='markdown' if rel_path.endswith('.md') else 'text',
-            embedding=embedding.tolist() if embedding is not None else None
-        )
+        try:
+            # Generate embedding
+            embedding = await doc_embedder.embed_async(content)
+            
+            doc_type = classification.language_id
+            
+            await upsert_doc(
+                repo_id=repo_id,
+                file_path=rel_path,
+                content=content,
+                doc_type=doc_type,
+                embedding=embedding.tolist() if embedding is not None else None
+            )
+        except Exception as e:
+            log(f"Error processing doc file {rel_path}: {e}", level="error")
 
     def clear_cache(self):
         """Clear all caches"""

@@ -15,6 +15,8 @@ from parsers.types import FileType
 from parsers.models import FileClassification
 from parsers.types import ParserType
 from config import FileConfig
+# Import the new file classification module
+from parsers.file_classification import classify_file as parsers_classify_file
 
 # Global config instance
 file_config = FileConfig.create()
@@ -47,66 +49,27 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
     """
     Get file classification based on extension and content.
     Returns FileClassification or None if file should be ignored.
+    
+    This function now delegates to the centralized file classification system
+    in parsers.file_classification.
     """
     try:
         if should_ignore(file_path):
             return None
             
-        if is_binary_file(file_path):
+        # Use the parsers' classify_file function but handle binary detection here
+        # since we have magic library available for more accurate detection
+        is_binary = is_binary_file(file_path)
+        if is_binary:
             return FileClassification(
-                file_type=FileType.BINARY,
+                file_path=file_path,
                 language_id="binary",
-                parser_type=ParserType.CUSTOM
-            )
-
-        extension = Path(file_path).suffix.lower()
-        
-        # Code files
-        if extension in {'.py', '.js', '.java', '.cpp', '.c', '.h', '.rs', '.go', '.rb', '.php'}:
-            return FileClassification(
-                file_type=FileType.CODE,
-                language_id=extension[1:],  # Remove the dot
-                parser_type=ParserType.TREE_SITTER
+                parser_type=ParserType.CUSTOM,
+                is_binary=True
             )
             
-        # Documentation files
-        if extension in {'.md', '.rst', '.txt', '.adoc', '.asciidoc'}:
-            doc_types = {
-                '.md': 'markdown',
-                '.rst': 'restructuredtext',
-                '.txt': 'plaintext',
-                '.adoc': 'asciidoc',
-                '.asciidoc': 'asciidoc'
-            }
-            return FileClassification(
-                file_type=FileType.DOC,
-                language_id=doc_types[extension],
-                parser_type=ParserType.CUSTOM
-            )
-            
-        # Configuration files
-        if extension in {'.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.env'}:
-            config_types = {
-                '.json': 'json',
-                '.yaml': 'yaml',
-                '.yml': 'yaml',
-                '.toml': 'toml',
-                '.ini': 'ini',
-                '.conf': 'ini',
-                '.env': 'env'
-            }
-            return FileClassification(
-                file_type=FileType.CONFIG,
-                language_id=config_types[extension],
-                parser_type=ParserType.CUSTOM
-            )
-
-        # Default to unknown for unrecognized files
-        return FileClassification(
-            file_type=FileType.UNKNOWN,
-            language_id="unknown",
-            parser_type=ParserType.CUSTOM
-        )
+        # For text files, use the comprehensive classifier
+        return parsers_classify_file(file_path)
             
     except Exception as e:
         log(f"Error classifying file {file_path}: {e}", level="error")
@@ -115,7 +78,7 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
 def get_files(base_path: str, file_types: Set = None) -> List[str]:
     """Get all processable files in directory."""
     if file_types is None:
-        file_types = {"CODE", "DOC"}  # Adjust according to your FileType definitions
+        file_types = {FileType.CODE, FileType.DOC}  # Use enum values
         
     files = []
     try:

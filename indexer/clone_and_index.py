@@ -8,7 +8,8 @@ from utils.logger import log
 from db.upsert_ops import upsert_repository
 from indexer.unified_indexer import process_repository_indexing
 from parsers.types import FileType
-from parsers.models import FileClassification  # Domain-specific models remain here
+from parsers.models import FileClassification
+from parsers.file_classification import classify_file
 import asyncio
 from contextlib import asynccontextmanager
 from config import postgres_config, neo4j_config

@@ -24,13 +24,17 @@ from typing import Optional, Dict, List
 from utils.logger import log
 from indexer.async_utils import async_read_file
 from indexer.file_utils import get_files, get_relative_path, is_processable_file
-from parsers.types import ParserResult  # Lightweight DTO type
+from parsers.types import ParserResult, FileType  # Lightweight DTO type
 from parsers.models import FileClassification, ExtractedFeatures  # Domain models
 from parsers.language_support import language_registry
+from parsers.query_patterns import initialize_pattern_system
 from db.neo4j_ops import auto_reinvoke_projection_once
 from db.upsert_ops import get_or_create_repo
 from indexer.file_processor import FileProcessor
 from semantic.search import search_code
+
+# Ensure pattern system is initialized
+initialize_pattern_system()
 
 class ProcessingCoordinator:
     """[1.1] Central coordinator for file processing.
@@ -96,7 +100,8 @@ async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: s
         if single_file and os.path.isfile(repo_path):
             files = [repo_path]
         else:
-            files = get_files(repo_path)
+            # Get processable files with FileType enum values
+            files = get_files(repo_path, {FileType.CODE, FileType.DOC})
         
         # Process files in batches to avoid overwhelming system resources
         batch_size = 20  # Adjust based on your system's capability
