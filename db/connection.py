@@ -1,10 +1,10 @@
 """Database connection management."""
 
 from neo4j import GraphDatabase
-from config import neo4j_config
+from config import Neo4jConfig
 
 # Create the Neo4j driver instance
 driver = GraphDatabase.driver(
-    neo4j_config.uri,
-    auth=(neo4j_config.user, neo4j_config.password)
+    Neo4jConfig.uri,
+    auth=(Neo4jConfig.user, Neo4jConfig.password)
 ) 

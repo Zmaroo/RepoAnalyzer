@@ -13,6 +13,7 @@ from parsers.models import (  # Domain-specific models
     ParserResult,
     ExtractedFeatures
 )
+from functools import wraps
 
 """[3.0] Asynchronous utilities for file processing.
 
@@ -35,11 +36,37 @@ Flow:
 
 def async_handle_errors(async_func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
     """[3.1] Decorator for consistent async error handling."""
+    import inspect
+    from typing import get_type_hints, List, Dict
+    
+    @wraps(async_func)
     async def wrapper(*args, **kwargs):
         try:
             return await async_func(*args, **kwargs)
         except Exception as e:
             log(f"Async error in function '{async_func.__name__}': {e}", level="error")
+            
+            # Try to determine appropriate return type based on function annotation
+            try:
+                return_type_hints = get_type_hints(async_func)
+                if 'return' in return_type_hints:
+                    return_hint = return_type_hints['return']
+                    # Handle various common return types
+                    origin = getattr(return_hint, '__origin__', None)
+                    if origin is list or (hasattr(return_hint, '_name') and return_hint._name == 'List'):
+                        return []
+                    elif origin is dict or (hasattr(return_hint, '_name') and return_hint._name == 'Dict'):
+                        return {}
+                    elif return_hint is bool or return_hint == bool:
+                        return False
+                    elif inspect.isclass(return_hint) and issubclass(return_hint, (list, List)):
+                        return []
+                    elif inspect.isclass(return_hint) and issubclass(return_hint, (dict, Dict)):
+                        return {}
+            except Exception as type_error:
+                log(f"Error determining return type for {async_func.__name__}: {type_error}", level="debug")
+            
+            # Default fallback
             return None
     return wrapper
 
@@ -91,35 +118,66 @@ async def batch_process_files(
     batch_size: int = 10,
     progress_callback: Optional[Callable[[int, int], None]] = None
 ) -> None:
-    """[3.3] Enhanced batch processing with progress tracking.
+    """[3.3] Enhanced batch processing with progress tracking and error resilience.
     
     Flow:
     1. Initialize processor
     2. Process files in batches
     3. Track progress
     4. Clean up resources
+    5. Handle task errors without stopping the entire batch
     """
     processor = FileProcessor()
     total_files = len(files)
     processed = 0
+    errors = 0
     
     try:
         for i in range(0, total_files, batch_size):
             batch = files[i:i + batch_size]
-            tasks = [
-                async_process_index_file(
-                    file_path=f,
-                    base_path=base_path,
-                    repo_id=repo_id,
-                    processor=processor,
-                    file_type=FileType.CODE  # Use the enum value instead of a string
+            tasks = []
+            
+            # Create tasks for each file in the batch
+            for f in batch:
+                task = asyncio.create_task(
+                    async_process_index_file(
+                        file_path=f,
+                        base_path=base_path,
+                        repo_id=repo_id,
+                        processor=processor,
+                        file_type=FileType.CODE  # Use the enum value instead of a string
+                    )
                 )
-                for f in batch
-            ]
-            await asyncio.gather(*tasks)
+                tasks.append(task)
+            
+            # Wait for all tasks in this batch, handling errors for individual tasks
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Track errors but continue processing
+            for result in results:
+                if isinstance(result, Exception):
+                    log(f"Error in batch processing: {result}", level="error")
+                    errors += 1
             
             processed += len(batch)
             if progress_callback:
                 progress_callback(processed, total_files)
+            
+            # Give other tasks a chance to run and avoid CPU hogging
+            await asyncio.sleep(0)
+            
+        log(f"Batch processing completed: {processed} files processed, {errors} errors", 
+            level="info" if errors == 0 else "warning")
+            
+    except asyncio.CancelledError:
+        log("Batch processing cancelled", level="warning")
+        # Cancel any remaining tasks
+        for task in asyncio.all_tasks():
+            if task != asyncio.current_task():
+                task.cancel()
+        raise
+    except Exception as e:
+        log(f"Unexpected error in batch processing: {e}", level="error")
+        raise
     finally:
         processor.clear_cache() 

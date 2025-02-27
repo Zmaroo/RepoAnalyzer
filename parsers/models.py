@@ -2,9 +2,8 @@
 
 from typing import Dict, Any, List, Optional, Set, Union, Callable
 from dataclasses import dataclass, field
-from parsers.types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics
+from parsers.types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, PatternCategory, PatternDefinition, QueryPattern
 from enum import Enum, auto
-from parsers.base_parser import BaseParser
 import re
 
 @dataclass
@@ -36,22 +35,6 @@ class PatternMatch:
     start: Union[int, tuple]
     end: Union[int, tuple]
     metadata: Dict[str, Any] = field(default_factory=dict)
-
-@dataclass
-class PatternDefinition:
-    """Definition of a pattern to be matched."""
-    pattern: str
-    extract: Optional[Callable] = None
-    description: Optional[str] = None
-    examples: List[str] = field(default_factory=list)
-    category: Optional[str] = None
-
-@dataclass
-class QueryPattern:
-    """Pattern for querying code."""
-    name: str
-    definition: PatternDefinition
-    language_id: Optional[str] = None
 
 @dataclass
 class QueryResult:
@@ -235,7 +218,7 @@ PATTERN_CATEGORIES = {
             "cross_reference", "bibliography", "appendix"
         ]
     },
-    FeatureCategory.CODE_PATTERN: {
+    PatternCategory.CODE: {
         FileType.CODE: [
             "code_structure", "code_naming", "error_handling",
             "function_pattern", "class_pattern", "variable_pattern",

@@ -3,7 +3,7 @@ import asyncio
 import logging
 from psycopg2.extras import RealDictCursor, Json
 from psycopg2 import pool
-from config import postgres_config
+from config import PostgresConfig
 from utils.logger import log
 from utils.error_handling import (
     handle_async_errors,
@@ -17,11 +17,11 @@ import os
 
 # Define your PostgreSQL configuration using environment variables or hardcoded values.
 DATABASE_CONFIG = {
-    "user": postgres_config.user,
-    "password": postgres_config.password,
-    "database": postgres_config.database,
-    "host": postgres_config.host,
-    "port": postgres_config.port,
+    "user": PostgresConfig.user,
+    "password": PostgresConfig.password,
+    "database": PostgresConfig.database,
+    "host": PostgresConfig.host,
+    "port": PostgresConfig.port,
 }
 
 _pool = None
@@ -37,11 +37,11 @@ async def init_db_pool() -> None:
     try:
         async with AsyncErrorBoundary("db pool initialization", error_types=ConnectionError):
             _pool = await asyncpg.create_pool(
-                user=postgres_config.user,
-                password=postgres_config.password,
-                database=postgres_config.database,
-                host=postgres_config.host,
-                port=postgres_config.port,
+                user=PostgresConfig.user,
+                password=PostgresConfig.password,
+                database=PostgresConfig.database,
+                host=PostgresConfig.host,
+                port=PostgresConfig.port,
                 min_size=5,
                 max_size=20
             )
@@ -51,8 +51,8 @@ async def init_db_pool() -> None:
                 await conn.execute('SELECT 1')
                 
             log("Database pool initialized", level="info", context={
-                "host": postgres_config.host,
-                "database": postgres_config.database,
+                "host": PostgresConfig.host,
+                "database": PostgresConfig.database,
                 "pool_size": _pool.get_size()
             })
             

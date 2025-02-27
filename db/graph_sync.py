@@ -1,5 +1,13 @@
 """[6.3] Graph synchronization and projection coordination.
 
+This module provides functionality for managing Neo4j graph projections, 
+which are in-memory subgraphs optimized for graph algorithms. 
+
+Asynchronous Architecture:
+-------------------------
+All operations in this module are asynchronous and should be awaited.
+The module uses asyncio for coordination and locking to ensure thread safety.
+
 Flow:
 1. Projection Management:
    - Create/update graph projections
@@ -15,6 +23,23 @@ Flow:
    - Lock-based synchronization
    - Cache-based state tracking
    - Error handling and recovery
+
+Usage Examples:
+-------------
+# Creating a projection for a repository
+await graph_sync.ensure_projection(repo_id)
+
+# Invalidating a projection after major changes
+await graph_sync.invalidate_projection(repo_id)
+
+# Queueing an update with debouncing (useful for file changes)
+await graph_sync.queue_projection_update(repo_id)
+
+# Auto-reinvoking projection for all repositories
+await auto_reinvoke_projection_once()
+
+# Auto-reinvoking projection for a specific repository
+await auto_reinvoke_projection_once(repo_id)
 """
 
 import asyncio
@@ -22,7 +47,7 @@ from typing import Optional, Set, Dict, Any, List
 from utils.logger import log
 from db.connection import driver
 from utils.cache import create_cache
-from utils.error_handling import DatabaseError, Neo4jError
+from utils.error_handling import DatabaseError, Neo4jError, TransactionError
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
 from db.neo4j_ops import run_query
 
@@ -37,7 +62,16 @@ class ProjectionError(DatabaseError):
     pass
 
 class GraphSyncCoordinator:
-    """[6.3.1] Coordinates graph operations and projections."""
+    """[6.3.1] Coordinates graph operations and projections.
+    
+    This class is responsible for managing Neo4j graph projections:
+    - Creating and updating projections 
+    - Tracking projection state in cache
+    - Handling concurrent updates with locking
+    - Providing debounced updates for file changes
+    
+    All methods are asynchronous and should be awaited.
+    """
     
     def __init__(self):
         self._lock = asyncio.Lock()
@@ -45,28 +79,52 @@ class GraphSyncCoordinator:
         self._pending_updates: Dict[int, asyncio.Event] = {}
         self._update_task = None
         
-    @handle_async_errors(error_types=(ProjectionError, Neo4jError))
     async def ensure_projection(self, repo_id: int) -> bool:
-        """[6.3.2] Ensures graph projection exists and is up to date."""
+        """[6.3.2] Ensures graph projection exists and is up to date.
+        
+        This method checks if a projection exists for the specified repository,
+        creates it if missing, and validates its state. It uses a cache to 
+        avoid unnecessary database operations.
+        
+        Args:
+            repo_id: Repository ID to ensure projection for
+            
+        Returns:
+            bool: True if projection exists or was successfully created
+            
+        Raises:
+            ProjectionError: If projection creation fails
+            
+        Example:
+            ```python
+            # Ensure projection exists for repository 123
+            success = await graph_sync.ensure_projection(123)
+            if success:
+                # Projection is ready for use
+                pass
+            ```
+        """
         projection_name = f"code-repo-{repo_id}"
         
         async with self._lock:
             try:
-                async with AsyncErrorBoundary("graph projection", error_types=(ProjectionError, Neo4jError)):
-                    # Check if projection exists and is valid
-                    if await self._is_projection_valid(projection_name):
-                        return True
-                    
-                    # Create or update projection
-                    await self._create_projection(repo_id, projection_name)
-                    self._active_projections.add(projection_name)
-                    
-                    log("Graph projection ensured", level="debug", context={
-                        "repo_id": repo_id,
-                        "projection": projection_name
-                    })
+                # Check if projection exists and is valid
+                if await self._is_projection_valid(projection_name):
                     return True
-                    
+                
+                # Create or update projection
+                await self._create_projection(repo_id, projection_name)
+                self._active_projections.add(projection_name)
+                
+                log("Graph projection ensured", level="debug", context={
+                    "repo_id": repo_id,
+                    "projection": projection_name
+                })
+                return True
+                
+            except Neo4jError as e:
+                log(f"Error in graph projection: {str(e)}", level="error")
+                raise ProjectionError(f"Failed to ensure projection for repo {repo_id}: {str(e)}")
             except Exception as e:
                 log("Failed to ensure graph projection", level="error", context={
                     "repo_id": repo_id,
@@ -76,7 +134,23 @@ class GraphSyncCoordinator:
                 raise ProjectionError(f"Failed to ensure projection for repo {repo_id}: {str(e)}")
     
     async def invalidate_projection(self, repo_id: int) -> None:
-        """[6.3.3] Invalidates existing projection for repository."""
+        """[6.3.3] Invalidates existing projection for repository.
+        
+        This method drops the in-memory projection for the specified repository
+        and clears associated cache entries. This is useful when the underlying
+        graph structure has changed significantly.
+        
+        Args:
+            repo_id: Repository ID to invalidate projection for
+            
+        Example:
+            ```python
+            # After major changes to the repository structure
+            await graph_sync.invalidate_projection(123)
+            # Later, re-create the projection when needed
+            await graph_sync.ensure_projection(123)
+            ```
+        """
         projection_name = f"code-repo-{repo_id}"
         
         async with self._lock:
@@ -99,8 +173,8 @@ class GraphSyncCoordinator:
             CALL gds.graph.exists($projection)
             YIELD exists
             """
-            response = await driver.run(query, {"projection": projection_name})
-            exists = response[0].get("exists", False)
+            response = await run_query(query, {"projection": projection_name})
+            exists = response[0].get("exists", False) if response else False
             
             if exists:
                 await graph_cache.set_async(f"projection:{projection_name}", True)
@@ -125,7 +199,7 @@ class GraphSyncCoordinator:
         )
         """
         try:
-            await driver.run(projection_query, {"repo_id": repo_id})
+            await run_query(projection_query, {"repo_id": repo_id})
             await graph_cache.set_async(f"projection:{projection_name}", True)
             log(f"Created graph projection: {projection_name}", level="info")
         except Exception as e:
@@ -136,14 +210,30 @@ class GraphSyncCoordinator:
         """Drops existing graph projection."""
         try:
             query = "CALL gds.graph.drop($projection)"
-            await driver.run(query, {"projection": projection_name})
+            await run_query(query, {"projection": projection_name})
             await graph_cache.clear_pattern_async(f"projection:{projection_name}")
             log(f"Dropped graph projection: {projection_name}", level="info")
         except Exception as e:
             log(f"Error dropping projection: {e}", level="error")
 
     async def queue_projection_update(self, repo_id: int) -> None:
-        """[6.3.4] Queue projection update with debouncing."""
+        """[6.3.4] Queue projection update with debouncing.
+        
+        This method is useful for handling frequent updates (e.g., file changes)
+        by using a debounce pattern to avoid excessive projection recreation.
+        
+        Args:
+            repo_id: Repository ID to queue update for
+            
+        Example:
+            ```python
+            # When files have changed
+            for file_change in file_changes:
+                await process_file(file_change)
+                # Queue update instead of immediate projection recreation
+                await graph_sync.queue_projection_update(repo_id)
+            ```
+        """
         if repo_id not in self._pending_updates:
             self._pending_updates[repo_id] = asyncio.Event()
         
@@ -159,15 +249,87 @@ class GraphSyncCoordinator:
                 event.set()
             self._pending_updates.clear()
 
-# Global instance
+# Create a singleton instance of GraphSyncCoordinator
 graph_sync = GraphSyncCoordinator()
 
-async def graph_sync(nodes: List[Dict[str, Any]], relationships: List[Dict[str, Any]]) -> bool:
-    """Synchronize graph with provided nodes and relationships."""
-    async with driver.session() as session:
-        # Implement using direct session operations instead of run_query
-        # ... implementation ...
-        return True  # Placeholder return, actual implementation needed
+async def sync_graph(nodes: List[Dict[str, Any]], relationships: List[Dict[str, Any]]) -> bool:
+    """[6.3.7] Synchronize graph with provided nodes and relationships.
+    
+    This function is used to update the graph with new nodes and relationships.
+    It's a lower-level function compared to the GraphSyncCoordinator methods.
+    
+    Args:
+        nodes: List of node dictionaries with properties
+        relationships: List of relationship dictionaries with properties
+        
+    Returns:
+        bool: True if synchronization was successful
+        
+    Example:
+        ```python
+        nodes = [
+            {"id": "n1", "labels": ["Person"], "properties": {"name": "Alice"}},
+            {"id": "n2", "labels": ["Person"], "properties": {"name": "Bob"}}
+        ]
+        relationships = [
+            {"id": "r1", "type": "KNOWS", "start_node": "n1", "end_node": "n2", 
+             "properties": {"since": 2020}}
+        ]
+        success = await sync_graph(nodes, relationships)
+        ```
+    """
+    try:
+        # Get a driver session and run transaction manually
+        session = driver.session()
+        tx = await session.begin_transaction()
+        
+        try:
+            # Create nodes
+            for node in nodes:
+                labels = ":".join(node.get("labels", []))
+                properties = node.get("properties", {})
+                node_id = node.get("id")
+                
+                # Create node with properties
+                query = f"CREATE (n:{labels} {{id: $id}}) SET n += $properties RETURN n"
+                await tx.run(query, {"id": node_id, "properties": properties})
+            
+            # Create relationships
+            for rel in relationships:
+                rel_type = rel.get("type")
+                start_node = rel.get("start_node")
+                end_node = rel.get("end_node")
+                properties = rel.get("properties", {})
+                
+                # Create relationship with properties
+                query = """
+                MATCH (a), (b) 
+                WHERE a.id = $start_id AND b.id = $end_id
+                CREATE (a)-[r:`{rel_type}` {{id: $id}}]->(b)
+                SET r += $properties
+                RETURN r
+                """.replace("{rel_type}", rel_type)
+                
+                await tx.run(query, {
+                    "start_id": start_node,
+                    "end_id": end_node,
+                    "id": rel.get("id"),
+                    "properties": properties
+                })
+            
+            # Commit the transaction
+            await tx.commit()
+            await session.close()
+            return True
+        except Exception as e:
+            # Rollback the transaction in case of error
+            await tx.rollback()
+            await session.close()
+            log(f"Error in graph synchronization: {str(e)}", level="error")
+            return False
+    except Exception as e:
+        log(f"Error in graph synchronization session: {str(e)}", level="error")
+        return False
 
 async def graph_sync_from_file(file_path: str) -> bool:
     # Implementation needed
@@ -402,5 +564,6 @@ async def compare_repository_structures(active_repo_id: int, reference_repo_id: 
         "similarity_count": len(similarity_results)
     }
 
-# Global export
-graph_sync = AsyncErrorBoundary("graph_sync", locals()) 
+# Export with boundary protection
+# Wrap the existing global instance with error boundary
+# graph_sync = AsyncErrorBoundary("graph_sync_coordinator", graph_sync) 

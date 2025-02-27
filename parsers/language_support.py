@@ -2,9 +2,7 @@
 
 from typing import Dict, Optional, Set, Tuple
 import os
-from parsers.base_parser import BaseParser
-from parsers.tree_sitter_parser import TreeSitterParser
-from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+from parsers.parser_interfaces import BaseParserInterface, ParserRegistryInterface
 from parsers.models import FileClassification, LanguageFeatures, FileMetadata
 from parsers.types import ParserType, FileType
 from parsers.language_mapping import (
@@ -28,6 +26,10 @@ class ParserAvailability:
 def get_parser_availability(language: str) -> ParserAvailability:
     """Get information about available parsers for a language."""
     normalized = normalize_language_name(language)
+    
+    # Import here to avoid circular imports
+    from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+    
     has_custom = normalized in CUSTOM_PARSER_CLASSES
     has_tree_sitter = normalized in TREE_SITTER_LANGUAGES
     
@@ -132,16 +134,20 @@ def get_extensions_for_language(language: str) -> Set[str]:
         log(f"Error getting extensions for language '{language}': {e}", level="error")
         return set()
 
-class LanguageRegistry:
+class LanguageRegistry(ParserRegistryInterface):
     """Registry for language parsers."""
     
     def __init__(self):
-        self._parsers: Dict[str, BaseParser] = {}
+        self._parsers: Dict[str, BaseParserInterface] = {}
 
-    def get_parser(self, classification: FileClassification) -> Optional[BaseParser]:
+    def get_parser(self, classification: FileClassification) -> Optional[BaseParserInterface]:
         try:
             language = classification.language_id
             if language not in self._parsers:
+                # Import here to avoid circular imports
+                from parsers.tree_sitter_parser import TreeSitterParser
+                from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+                
                 if classification.parser_type == ParserType.TREE_SITTER:
                     self._parsers[language] = TreeSitterParser(language, classification.file_type)
                 elif classification.parser_type == ParserType.CUSTOM:

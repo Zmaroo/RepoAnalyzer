@@ -88,6 +88,8 @@ async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: s
     cleanup.
     """
     coordinator = ProcessingCoordinator()
+    tasks = set()
+    
     try:
         log(f"Starting indexing for repository {repo_id} at {repo_path}")
         
@@ -95,16 +97,37 @@ async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: s
             files = [repo_path]
         else:
             files = get_files(repo_path)
+        
+        # Process files in batches to avoid overwhelming system resources
+        batch_size = 20  # Adjust based on your system's capability
+        for i in range(0, len(files), batch_size):
+            batch = files[i:i + batch_size]
+            batch_tasks = []
             
-        tasks = []
-        for file in files:
-            if is_processable_file(file):
-                tasks.append(coordinator.process_file(file, repo_id, repo_path))
-        if tasks:
-            await asyncio.gather(*tasks)
+            for file in batch:
+                if is_processable_file(file):
+                    task = asyncio.create_task(coordinator.process_file(file, repo_id, repo_path))
+                    batch_tasks.append(task)
+                    tasks.add(task)
+                    task.add_done_callback(lambda t: tasks.remove(t) if t in tasks else None)
+            
+            if batch_tasks:
+                # Wait for this batch to complete before starting the next
+                results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                # Check for errors but continue processing
+                for result in results:
+                    if isinstance(result, Exception):
+                        log(f"Error processing file batch: {result}", level="error")
+            
+            # Give other tasks a chance to run
+            await asyncio.sleep(0)
             
         # Update the graph projection
-        auto_reinvoke_projection_once()
+        try:
+            projection_result = await auto_reinvoke_projection_once(repo_id)
+            log(f"Graph projection update result: {projection_result}", level="info")
+        except Exception as e:
+            log(f"Error updating graph projection: {e}", level="error")
         
         # Extract patterns if this is a reference repository
         if repo_type == "reference" and not single_file:
@@ -117,6 +140,16 @@ async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: s
             except Exception as e:
                 log(f"Error extracting patterns from reference repository: {e}", level="error")
                 
+    except asyncio.CancelledError:
+        log(f"Repository indexing cancelled for {repo_id}", level="warning")
+        # Cancel all tracked tasks
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        # Wait for tasks to complete with timeout
+        if tasks:
+            await asyncio.wait(tasks, timeout=5)
+        raise
     except Exception as e:
         log(f"Error indexing repository {repo_id}: {e}", level="error")
     finally:

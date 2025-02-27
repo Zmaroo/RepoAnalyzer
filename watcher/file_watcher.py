@@ -18,10 +18,21 @@ from db.neo4j_ops import auto_reinvoke_projection_once
 class AsyncFileChangeHandler(FileSystemEventHandler):
     def __init__(self, on_change):
         self.on_change = on_change
+        self._tasks = set()
 
     def on_modified(self, event):
         if not event.is_directory:
-            asyncio.create_task(self.on_change(event.src_path))
+            # Create a task but also track it to prevent it from being garbage collected
+            task = asyncio.create_task(self._handle_change(event.src_path))
+            self._tasks.add(task)
+            task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
+    
+    async def _handle_change(self, file_path):
+        """Handle file change in a properly tracked async task."""
+        try:
+            await self.on_change(file_path)
+        except Exception as e:
+            log(f"Error handling file change for {file_path}: {e}", level="error")
 
 async def watch_directory(directory: str, repo_id: int, on_change):
     """
@@ -42,6 +53,14 @@ async def watch_directory(directory: str, repo_id: int, on_change):
             await asyncio.sleep(1)
     except asyncio.CancelledError:
         log("File watcher cancelled.", level="warning")
+        # Cancel all pending tasks
+        for task in asyncio.all_tasks():
+            if task != asyncio.current_task():
+                task.cancel()
+        # Wait for tasks to complete with timeout
+        pending = asyncio.all_tasks() - {asyncio.current_task()}
+        if pending:
+            await asyncio.wait(pending, timeout=5)
     finally:
         observer.stop()
         observer.join()

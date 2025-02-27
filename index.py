@@ -78,6 +78,7 @@ async def process_share_docs(share_docs_arg: str):
 async def handle_file_change(file_path: str, repo_id: int):
     log(f"File changed: {file_path}", level="info")
     await process_repository_indexing(file_path, repo_id, single_file=True)
+    await auto_reinvoke_projection_once(repo_id)
     await graph_analysis.analyze_code_structure(repo_id)
 
 async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int = None):
@@ -215,7 +216,7 @@ async def main_async(args):
         else:
             # One-time graph analysis
             log("Invoking graph projection once after indexing.", level="info")
-            auto_reinvoke_projection_once()
+            await auto_reinvoke_projection_once(repo_id)
             await graph_analysis.analyze_code_structure(repo_id)
     except asyncio.CancelledError:
         log("Indexing was cancelled.", level="info")

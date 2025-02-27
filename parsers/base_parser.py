@@ -1,31 +1,22 @@
-"""Base parser interface and implementations."""
+"""Base parser implementation."""
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Optional, Dict, Any, List, Union, Type, Callable
 from .types import FileType, FeatureCategory, ParserType, ParserResult, ParserConfig, ParsingStatistics
-from dataclasses import dataclass, field
-from parsers.language_support import language_registry
-from utils.logger import log
+from dataclasses import field
 import re
-from parsers.types import PatternCategory, QueryPattern
-from parsers.models import PatternType
+from parsers.types import PatternCategory
+from parsers.models import PatternType, QueryPattern
+from utils.logger import log
+from .parser_interfaces import BaseParserInterface
 
-@dataclass
-class BaseParser(ABC):
-    """Abstract base class for all parsers.
+class BaseParser(BaseParserInterface):
+    """Base implementation for parsers.
     
     Implementations:
     - TreeSitterParser: For languages with tree-sitter support
     - Language-specific parsers (NimParser, PlaintextParser, etc.): For custom parsing
     """
-    
-    language_id: str
-    file_type: FileType
-    parser_type: ParserType = ParserType.UNKNOWN  # Default value; subclasses must override
-    _initialized: bool = False
-    config: ParserConfig = field(default_factory=lambda: ParserConfig())
-    stats: ParsingStatistics = field(default_factory=lambda: ParsingStatistics())
-    feature_extractor: Any = None  # Will hold an instance of a feature extractor
     
     def __post_init__(self):
         self._initialized = False
@@ -55,17 +46,7 @@ class BaseParser(ABC):
             for name, pattern_obj in category.items():
                 compiled[name] = re.compile(pattern_obj.pattern)
         return compiled
-
-    @abstractmethod
-    def initialize(self) -> bool:
-        """Initialize parser resources."""
-        pass
     
-    @abstractmethod
-    def _parse_source(self, source_code: str) -> Optional[Dict[str, Any]]:
-        """Parse source code into AST."""
-        pass
-
     def _get_syntax_errors(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Get syntax errors from AST.
         

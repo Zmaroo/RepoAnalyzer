@@ -1,7 +1,7 @@
 """Common types and enums for parsers."""
 
 from enum import Enum
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Union
 from dataclasses import dataclass, field
 
 class FileType(Enum):
@@ -25,6 +25,8 @@ class PatternCategory(Enum):
     SEMANTICS = "semantics"
     DOCUMENTATION = "documentation"
     STRUCTURE = "structure"
+    CODE = "code"
+    LEARNING = "learning"
 
 class ParserType(Enum):
     """Parser implementation types."""
@@ -84,3 +86,33 @@ class ExtractedFeatures:
     features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     documentation: Documentation = field(default_factory=Documentation)
     metrics: ComplexityMetrics = field(default_factory=ComplexityMetrics)
+
+@dataclass
+class PatternDefinition:
+    """Definition of a pattern to be matched."""
+    pattern: str
+    extract: Optional[Callable] = None
+    description: Optional[str] = None
+    examples: List[str] = field(default_factory=list)
+    category: Optional[str] = None
+
+@dataclass
+class QueryPattern:
+    """Pattern for querying code."""
+    pattern: str
+    extract: Optional[Callable] = None
+    description: Optional[str] = None
+    examples: List[str] = field(default_factory=list)
+    category: Optional[str] = None
+    language_id: Optional[str] = None
+    name: Optional[str] = None
+    definition: Optional[PatternDefinition] = None
+
+@dataclass
+class PatternInfo:
+    """Additional metadata for query patterns."""
+    pattern: str
+    extract: Optional[Callable] = None
+    description: Optional[str] = None
+    examples: List[str] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)

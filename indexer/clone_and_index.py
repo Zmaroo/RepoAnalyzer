@@ -48,18 +48,22 @@ async def get_or_create_repo(
 async def clone_repository(repo_url: str, target_dir: str) -> bool:
     """Clone a git repository to target directory."""
     try:
-        result = subprocess.run(
-            ['git', 'clone', '--depth', '1', repo_url, target_dir],
-            capture_output=True,
-            text=True,
-            check=True
+        # Run git clone in a way that doesn't block the event loop
+        proc = await asyncio.create_subprocess_exec(
+            'git', 'clone', '--depth', '1', repo_url, target_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
+        
+        stdout, stderr = await proc.communicate()
+        
+        if proc.returncode != 0:
+            log(f"Git clone failed: {stderr.decode()}", level="error")
+            return False
+            
         log(f"Successfully cloned {repo_url}", level="info")
         return True
         
-    except subprocess.CalledProcessError as e:
-        log(f"Git clone failed: {e.stderr}", level="error")
-        return False
     except Exception as e:
         log(f"Error cloning repository: {e}", level="error")
         return False
