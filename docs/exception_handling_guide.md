@@ -43,7 +43,7 @@ The RepoAnalyzer application follows these core principles for exception handlin
 
 RepoAnalyzer defines a hierarchy of exception types to categorize errors appropriately:
 
-```
+``` plaintext
 Exception
 ├── ProcessingError
 │   └── ParsingError
@@ -120,6 +120,7 @@ async with AsyncErrorBoundary("database operation", error_types=(Neo4jError,)):
 - Log detailed error information including query parameters (sanitized)
 
 Example:
+
 ```python
 @handle_async_errors(error_types=(Neo4jError, TransactionError))
 async def update_node(node_id, properties):
@@ -134,6 +135,7 @@ async def update_node(node_id, properties):
 - Be explicit about file encoding and format expectations
 
 Example:
+
 ```python
 @handle_errors(error_types=(ProcessingError, IOError))
 def process_file(file_path):
@@ -148,6 +150,7 @@ def process_file(file_path):
 - Always validate model inputs and outputs
 
 Example:
+
 ```python
 @handle_async_errors(error_types=ProcessingError)
 async def generate_embedding(text):
@@ -168,6 +171,7 @@ python scripts/run_exception_audit.py --verbose
 ```
 
 This tool:
+
 - Tracks error occurrences across the codebase
 - Identifies areas with high error rates
 - Suggests improvements for error handling
@@ -250,4 +254,4 @@ class DataProcessor:
 
 ## Conclusion
 
-Following these guidelines ensures that RepoAnalyzer handles errors consistently, making the system more reliable and easier to debug. Use the provided tools and patterns, and run the exception audit regularly to monitor and improve error handling across the codebase. 
+Following these guidelines ensures that RepoAnalyzer handles errors consistently, making the system more reliable and easier to debug. Use the provided tools and patterns, and run the exception audit regularly to monitor and improve error handling across the codebase.

@@ -23,17 +23,20 @@ A robust code analysis tool for extracting patterns, understanding code structur
 ### Installation
 
 1. Clone the repository
+
    ```bash
    git clone https://github.com/your-org/RepoAnalyzer.git
    cd RepoAnalyzer
    ```
 
 2. Install dependencies
+
    ```bash
    pip install -r requirements.txt
    ```
 
 3. Configure database connections
+
    ```bash
    # Create configuration file from template
    cp config/config.example.json config/config.json
@@ -110,4 +113,4 @@ Contributions are welcome! Please check the [contributing guidelines](CONTRIBUTI
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.

@@ -42,10 +42,11 @@ class UnifiedParser:
     async def parse_file(self, file_path: str, content: str) -> Optional[ParserResult]:
         """Parse file content using appropriate parser."""
         try:
-            cache_key = f"parse:{file_path}:{hash(content)}"
-            cached = await parser_cache.get_async(cache_key)
-            if cached:
-                return ParserResult(**cached)
+            # Check if the complete parsed result is already cached
+            parse_cache_key = f"parse:{file_path}:{hash(content)}"
+            cached_result = await parser_cache.get_async(parse_cache_key)
+            if cached_result:
+                return ParserResult(**cached_result)
             
             # Use the improved language detection with confidence score
             language_id, confidence = detect_language(file_path, content)
@@ -67,6 +68,8 @@ class UnifiedParser:
                 log(f"No parser found for language: {classification.language_id}", level="error")
                 return None
 
+            # Check if just the AST is already cached (implemented in tree_sitter_parser.py)
+            # The parse method will automatically use the AST cache if available
             parse_result = parser.parse(content)
             if not parse_result or not parse_result.success:
                 return None
@@ -94,8 +97,9 @@ class UnifiedParser:
                 statistics=parse_result.statistics
             )
 
+            # Cache the complete parsed result
             cached_result = asdict(result)
-            await parser_cache.set_async(cache_key, cached_result)
+            await parser_cache.set_async(parse_cache_key, cached_result)
             return result
 
         except Exception as e:

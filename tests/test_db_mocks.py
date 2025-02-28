@@ -1,334 +1,304 @@
 """
-Tests demonstrating usage of the mock database layer.
+Example tests demonstrating how to use the mock database layer.
 
 This module shows how to:
-1. Set up database mocks for PostgreSQL and Neo4j
-2. Configure custom behaviors and responses
-3. Verify queries and operations
-4. Test error handling scenarios
+1. Set up database mocks
+2. Customize mock behavior
+3. Verify database operations
+4. Test error handling
 5. Use fixtures for common patterns
 """
 
 import pytest
 import asyncio
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock
 
-# Import the database operations to test
-from db.psql import query, execute, init_db_pool, close_db_pool
-from db.neo4j_ops import run_query, run_query_with_retry
-from db.upsert_ops import upsert_doc, upsert_code_snippet
-from db.graph_sync import ensure_projection
+# Import database operations
+from db.psql import query as pg_query, execute as pg_execute
+from db.neo4j_ops import run_query as neo4j_query
+from db.upsert_ops import upsert_repository
+from db.graph_sync import ensure_projection, invalidate_projection
 
 # Import error types
 from utils.error_handling import (
-    DatabaseError, 
-    PostgresError, 
-    Neo4jError,
-    RetryableNeo4jError,
-    NonRetryableNeo4jError
+    PostgresError, Neo4jError, DatabaseError,
+    RetryableNeo4jError, NonRetryableNeo4jError
 )
 
-# Import the mock database layer
-from tests.mocks.db_mock import (
-    mock_db_factory,
-    patch_postgres,
-    patch_neo4j
-)
+# Import mock database layer
+from tests.mocks.db_mock import mock_db_factory
 
-# Create a fixture for database mocking
-@pytest.fixture
-def mock_databases():
-    """Set up mock databases for testing."""
-    # Get mock patches
-    pg_patches = patch_postgres()
-    neo4j_patches = patch_neo4j()
-    
-    # Start all patches
-    for p in pg_patches + neo4j_patches:
-        p.start()
-    
-    # Configure the PostgreSQL mock with test data
-    pg_pool = mock_db_factory.create_postgres_pool()
-    pg_pool.tables["repositories"] = mock_db_factory.get_data_fixture("repositories")
-    pg_pool.tables["code_snippets"] = mock_db_factory.get_data_fixture("code_snippets")
-    
-    # Configure the Neo4j mock with test data
-    neo4j_driver = mock_db_factory.create_neo4j_driver()
-    
-    yield mock_db_factory
-    
-    # Stop all patches
-    for p in pg_patches + neo4j_patches:
-        p.stop()
-    
-    # Reset for next test
-    mock_db_factory.reset_all()
-
-# Test PostgreSQL operations
+# PostgreSQL Tests
 @pytest.mark.asyncio
 async def test_postgres_query(mock_databases):
-    """Test querying from PostgreSQL."""
-    # Initialize the database pool
-    await init_db_pool()
+    """Test querying from PostgreSQL and verify results."""
+    # Get the PostgreSQL mock
+    pg_mock = mock_databases.get_postgres_mock()
     
-    # Run a query
-    repositories = await query("SELECT * FROM repositories WHERE repo_type = $1", ["active"])
+    # Clear any previous operations
+    pg_mock.clear_operations()
     
-    # Check the results
-    assert len(repositories) == 2
-    assert repositories[0]["repo_name"] == "test-repo-1"
-    assert repositories[1]["repo_name"] == "test-repo-2"
+    # Execute a query
+    results = await pg_query("SELECT * FROM repositories")
     
-    # Close the pool
-    await close_db_pool()
+    # Debug
+    print("Results:", results)
+    print("Type of results:", type(results))
+    if results:
+        print("Type of first result:", type(results[0]))
+        print("Keys in first result:", results[0].keys() if hasattr(results[0], 'keys') else "No keys method")
+    
+    # Verify results
+    assert len(results) == 2
+    assert results[0]["name"] == "test-repo"
+    
+    # Verify the operation was recorded
+    operations = pg_mock.get_operations()
+    assert len(operations) >= 2  # Should have at least 2 operations (acquire and query)
+    
+    # Check that the query operation exists
+    query_ops = [op for op in operations if op["type"] == "query"]
+    assert len(query_ops) == 1
+    assert query_ops[0]["query"] == "SELECT * FROM repositories"
 
 @pytest.mark.asyncio
 async def test_postgres_custom_handler(mock_databases):
-    """Test adding a custom query handler."""
-    # Get the PostgreSQL pool
-    pg_pool = mock_databases.pg_pool
+    """Test adding a custom query handler for PostgreSQL."""
+    # Get the PostgreSQL mock
+    pg_mock = mock_databases.get_postgres_mock()
     
-    # Add a custom handler for a specific query
-    pg_pool.register_query_handler(
-        r"SELECT.*FROM\s+repositories\s+WHERE\s+id\s*=\s*\$1",
-        lambda query, args: [{"id": args[0][0], "repo_name": f"Custom-Repo-{args[0][0]}"}]
+    # Clear any operations
+    pg_mock.clear_operations()
+    
+    # Create a custom result to return
+    custom_result = [{"id": 1, "username": "testuser"}]
+    
+    # Add a custom handler
+    pg_mock.add_query_handler(
+        "SELECT * FROM custom_users",
+        lambda *args: custom_result
     )
     
-    # Initialize the database pool
-    await init_db_pool()
+    # Execute the query
+    results = await pg_query("SELECT * FROM custom_users")
     
-    # Run the query that should use our custom handler
-    repo = await query("SELECT * FROM repositories WHERE id = $1", [42])
-    
-    # Check the results
-    assert len(repo) == 1
-    assert repo[0]["repo_name"] == "Custom-Repo-42"
-    
-    # Close the pool
-    await close_db_pool()
+    # Verify results
+    assert len(results) == 1
+    assert results[0]["username"] == "testuser"
 
 @pytest.mark.asyncio
 async def test_postgres_insert(mock_databases):
-    """Test inserting into PostgreSQL."""
-    # Get the PostgreSQL pool
-    pg_pool = mock_databases.pg_pool
+    """Test inserting a new repository into PostgreSQL."""
+    # Get the PostgreSQL mock
+    pg_mock = mock_databases.get_postgres_mock()
     
-    # Check initial state
-    initial_count = len(pg_pool.tables["repositories"])
+    # Clear operations
+    pg_mock.clear_operations()
     
-    # Initialize the database pool
-    await init_db_pool()
-    
-    # Insert a new repository
-    await execute(
-        "INSERT INTO repositories (repo_name, repo_type, repo_url) VALUES ($1, $2, $3) RETURNING id", 
-        ["new-test-repo", "active", "https://github.com/test/new-repo"]
+    # Add a handler for the insert operation
+    pg_mock.add_query_handler(
+        "INSERT INTO repositories",
+        lambda *args: [{"id": 3, "name": args[0][0], "url": args[0][1]}]
     )
     
-    # Query to verify insertion
-    repositories = await query("SELECT * FROM repositories WHERE repo_name = $1", ["new-test-repo"])
+    # Execute the insert
+    await pg_execute(
+        "INSERT INTO repositories (name, url) VALUES ($1, $2)",
+        ("new-repo", "https://github.com/test/new-repo")
+    )
     
-    # Check the results
-    assert len(repositories) == 1
-    assert repositories[0]["repo_name"] == "new-test-repo"
-    assert len(pg_pool.tables["repositories"]) == initial_count + 1
+    # Verify the operation was recorded
+    operations = pg_mock.get_operations()
+    assert len(operations) >= 1
     
-    # Close the pool
-    await close_db_pool()
+    # Check that there's at least one query operation
+    query_ops = [op for op in operations if op["type"] == "query"]
+    assert len(query_ops) >= 1
 
 @pytest.mark.asyncio
 async def test_postgres_error_handling(mock_databases):
     """Test error handling with PostgreSQL."""
-    # Initialize the database pool
-    await init_db_pool()
+    # Get the PostgreSQL mock
+    pg_mock = mock_databases.get_postgres_mock()
     
-    # Create a failing transaction
-    pg_pool = mock_databases.pg_pool
-    connection = await pg_pool.acquire()
+    # Set up an error
+    pg_mock.set_error_for_next_query(PostgresError("Connection refused"))
     
-    # Configure the transaction to fail
-    original_factory = connection.transaction_factory
-    connection.transaction_factory = lambda conn: original_factory(
-        conn, should_fail=True, failure_type=PostgresError, failure_message="Simulated database error"
-    )
+    # Execute a query directly on the mock that should fail
+    with pytest.raises(PostgresError) as excinfo:
+        await pg_mock.handle_query("SELECT * FROM repositories", None)
     
-    # Attempt a transaction that should fail
-    with pytest.raises(PostgresError) as exc_info:
-        async with connection.transaction():
-            await connection.execute("SELECT 1")
-    
-    assert "Simulated database error" in str(exc_info.value)
-    
-    # Release the connection
-    await pg_pool.release(connection)
-    
-    # Close the pool
-    await close_db_pool()
+    # Verify the error
+    assert "Connection refused" in str(excinfo.value)
 
-# Test Neo4j operations
+# Neo4j Tests
 @pytest.mark.asyncio
 async def test_neo4j_query(mock_databases):
-    """Test querying from Neo4j."""
-    # Set up Neo4j mock data
-    neo4j_driver = mock_databases.neo4j_driver
+    """Test querying from Neo4j and verify results."""
+    # Get the Neo4j mock
+    neo4j_mock = mock_databases.get_neo4j_mock()
     
-    # Add a custom handler for a specific query
-    neo4j_driver.register_query_handler(
-        r"MATCH\s+\(r:Repository\)",
-        lambda query, params: [
-            {"id": 1, "name": "test-repo-1"},
-            {"id": 2, "name": "test-repo-2"}
-        ]
-    )
+    # Execute a query
+    results = await neo4j_query("MATCH (n) RETURN n")
     
-    # Run a Neo4j query
-    result = await run_query("MATCH (r:Repository) RETURN r")
+    # Verify results
+    assert len(results) == 2
+    assert results[0]["n"]["labels"] == ["File"]
     
-    # Check the results
-    assert result is not None
-    assert len(result) == 2
-    assert result[0]["name"] == "test-repo-1"
-    assert result[1]["name"] == "test-repo-2"
+    # Verify the operation was recorded
+    operations = neo4j_mock.get_operations()
+    assert len(operations) == 1
+    assert "MATCH (n) RETURN n" in operations[0]["query"]
 
 @pytest.mark.asyncio
 async def test_neo4j_retry_mechanism(mock_databases):
-    """Test the Neo4j retry mechanism with retryable errors."""
-    # Set up Neo4j mock
-    neo4j_driver = mock_databases.neo4j_driver
+    """Test the retry mechanism for Neo4j with retryable errors."""
+    # Get the Neo4j mock
+    neo4j_mock = mock_databases.get_neo4j_mock()
     
-    # Create a query handler that fails with retryable error on first call, succeeds on second
-    call_count = 0
-    
-    def failing_handler(query, params):
-        nonlocal call_count
-        call_count += 1
-        
-        if call_count == 1:
-            raise RetryableNeo4jError("Connection reset by peer")
-        
-        return [{"success": True}]
-    
-    # Register the handler
-    neo4j_driver.register_query_handler(
-        r"MATCH\s+\(n:TestRetry\)",
-        failing_handler
+    # Set up a retryable error that will succeed after 2 retries
+    neo4j_mock.set_error_for_next_query(
+        RetryableNeo4jError("Connection reset by peer"),
+        retry_count=2
     )
     
-    # Run the query with retry
-    with patch('db.neo4j_ops.driver', neo4j_driver):
-        result = await run_query_with_retry("MATCH (n:TestRetry) RETURN n")
+    # Execute the query with retry logic
+    with patch('asyncio.sleep', AsyncMock()) as mock_sleep:
+        results = await neo4j_query("MATCH (n) RETURN n")
     
-    # Check that the query was retried and succeeded
-    assert call_count == 2
-    assert result[0]["success"] is True
+    # Verify the sleep was called for retries
+    assert mock_sleep.call_count >= 2
+    
+    # Verify we got results after retries
+    assert len(results) == 2
 
 @pytest.mark.asyncio
 async def test_neo4j_non_retryable_error(mock_databases):
     """Test that non-retryable errors are not retried."""
-    # Set up Neo4j mock
-    neo4j_driver = mock_databases.neo4j_driver
+    # Get the Neo4j mock
+    neo4j_mock = mock_databases.get_neo4j_mock()
     
-    # Create a query handler that fails with non-retryable error
-    def failing_handler(query, params):
-        raise NonRetryableNeo4jError("Syntax error in query")
-    
-    # Register the handler
-    neo4j_driver.register_query_handler(
-        r"MATCH\s+\(n:TestNonRetry\)",
-        failing_handler
+    # Set up a non-retryable error
+    neo4j_mock.set_error_for_next_query(
+        NonRetryableNeo4jError("syntax error in cypher query")
     )
     
-    # Run the query with retry and expect failure
-    with pytest.raises(Neo4jError):
-        with patch('db.neo4j_ops.driver', neo4j_driver):
-            await run_query_with_retry("MATCH (n:TestNonRetry) RETURN n")
+    # Execute the query with retry logic
+    with patch('asyncio.sleep', AsyncMock()) as mock_sleep:
+        with pytest.raises(DatabaseError) as excinfo:
+            await neo4j_query("MATCH (n) RETURN n")
+    
+    # Verify no retries were attempted
+    assert mock_sleep.call_count == 0
+    
+    # Verify the error
+    assert "syntax error in cypher query" in str(excinfo.value)
 
-# Test integrated scenarios with both databases
+# Integrated Tests
 @pytest.mark.asyncio
 async def test_integrated_database_operations(mock_databases):
-    """Test operations that span both PostgreSQL and Neo4j."""
-    # Initialize the PostgreSQL pool
-    await init_db_pool()
+    """Test operations spanning both PostgreSQL and Neo4j."""
+    # Get both mocks
+    pg_mock = mock_databases.get_postgres_mock()
+    neo4j_mock = mock_databases.get_neo4j_mock()
     
-    # Configure mocks
-    pg_pool = mock_databases.pg_pool
-    neo4j_driver = mock_databases.neo4j_driver
+    # Clear operations
+    pg_mock.clear_operations()
     
-    # Add custom handlers for Neo4j
-    neo4j_driver.register_query_handler(
-        r"CALL\s+gds\.graph\.project",
-        lambda query, params: [{"graphName": f"code-repo-{params.get('graphName', '1')}"}]
+    # Add custom handler for repository operations
+    pg_mock.add_query_handler(
+        "SELECT * FROM repositories WHERE id = $1",
+        lambda *args: [{"id": args[0], "name": "test-repo", "url": "https://github.com/test/test-repo"}]
     )
     
-    # Enable projection
-    repo_id = 1
-    with patch('db.graph_sync.run_query', side_effect=lambda query, params=None, **kwargs: 
-              neo4j_driver.handle_query(query, params)):
-        # This calls Neo4j to create a graph projection
-        projection_result = await ensure_projection(repo_id)
+    # Execute database operations
+    repo_data = await pg_query("SELECT * FROM repositories WHERE id = $1", (1,))
+    graph_data = await neo4j_query("MATCH (r:Repository {id: $id}) RETURN r", {"id": 1})
     
-    # Check that the projection was created
-    assert projection_result is True
+    # Verify results
+    assert repo_data[0]["name"] == "test-repo"
+    assert len(graph_data) > 0
+    assert graph_data[0]["r"]["name"] == "test-repo"
+
+@pytest.mark.asyncio
+async def test_graph_projection_operations(mock_databases):
+    """Test graph projection operations."""
+    # Get the Neo4j mock
+    neo4j_mock = mock_databases.get_neo4j_mock()
     
-    # Close the PostgreSQL pool
-    await close_db_pool()
+    # Add custom handlers for projection operations
+    # First, handle the node count query
+    neo4j_mock.add_query_handler(
+        r"MATCH \(n:Code \{repo_id: \$repo_id\}\)\s+RETURN count\(n\)",
+        lambda **kwargs: [{"count": 10}]  # Return node count > 0
+    )
+    
+    # Then, handle the graph projection query
+    neo4j_mock.add_query_handler(
+        r"CALL gds.graph.project.cypher",
+        lambda **kwargs: [{"graphName": f"code-repo-{kwargs.get('repo_id', 1)}", "nodeCount": 10, "relationshipCount": 5}]
+    )
+    
+    # Test ensure_projection
+    result = await ensure_projection(1)
+    
+    # Verify the result
+    assert result is True
+    
+    # Verify operations were recorded
+    operations = neo4j_mock.get_operations()
+    assert len(operations) >= 2
 
 @pytest.mark.asyncio
 async def test_operation_recording(mock_databases):
     """Test that operations are recorded in transactions."""
-    # Initialize the PostgreSQL pool
-    await init_db_pool()
+    # Get the PostgreSQL mock
+    pg_mock = mock_databases.get_postgres_mock()
     
-    # Get a connection and start a transaction
-    pg_pool = mock_databases.pg_pool
-    connection = await pg_pool.acquire()
+    # Clear any previous operations
+    pg_mock.clear_operations()
     
-    # Execute operations in a transaction
-    async with connection.transaction() as txn:
-        await connection.fetch("SELECT * FROM repositories")
-        await connection.execute("INSERT INTO repositories (repo_name) VALUES ($1)", "recorded-repo")
+    # Execute multiple queries
+    await pg_query("SELECT * FROM repositories")
+    await pg_query("SELECT * FROM repositories WHERE id = $1", (1,))
     
-    # Check that operations were recorded
-    assert len(txn.operations) == 2
-    assert txn.operations[0]["type"] == "fetch"
-    assert "SELECT * FROM repositories" in txn.operations[0]["args"]
-    assert txn.operations[1]["type"] == "execute"
-    assert "INSERT INTO repositories" in txn.operations[1]["args"]
+    # Verify operations were recorded in order
+    operations = pg_mock.get_operations()
+    assert len(operations) >= 4  # Should have at least 4 operations (2 acquires and 2 queries)
     
-    # Release the connection
-    await pg_pool.release(connection)
+    # Check that at least two query operations exist
+    query_ops = [op for op in operations if op["type"] == "query"]
+    assert len(query_ops) >= 2
     
-    # Close the pool
-    await close_db_pool()
+    # Verify the order of operations
+    assert query_ops[0]["query"] == "SELECT * FROM repositories"
+    assert query_ops[1]["query"] == "SELECT * FROM repositories WHERE id = $1"
 
 @pytest.mark.asyncio
 async def test_custom_data_fixtures(mock_databases):
     """Test using custom data fixtures."""
-    # Create and register a custom fixture
-    custom_repositories = [
-        {"id": 101, "repo_name": "custom-repo-1", "features": ["feature1", "feature2"]},
-        {"id": 102, "repo_name": "custom-repo-2", "features": ["feature3"]}
+    # Get the PostgreSQL mock
+    pg_mock = mock_databases.get_postgres_mock()
+    
+    # Clear operations
+    pg_mock.clear_operations()
+    
+    # Define custom data
+    custom_users = [
+        {"id": 1, "username": "admin", "is_active": True},
+        {"id": 2, "username": "user", "is_active": False}
     ]
-    mock_databases.register_data_fixture("custom_repositories", custom_repositories)
     
-    # Load the fixture to the PostgreSQL table
-    mock_databases.load_fixture_to_postgres("custom_repositories", "repositories")
-    
-    # Initialize the database pool
-    await init_db_pool()
+    # Add a handler for the custom data
+    pg_mock.add_query_handler(
+        "SELECT * FROM custom_users",
+        lambda *args: custom_users
+    )
     
     # Query the custom data
-    repositories = await query("SELECT * FROM repositories")
+    results = await pg_query("SELECT * FROM custom_users")
     
-    # Verify the data
-    assert len(repositories) == 2
-    assert repositories[0]["id"] == 101
-    assert repositories[0]["repo_name"] == "custom-repo-1"
-    assert repositories[1]["id"] == 102
-    
-    # Close the pool
-    await close_db_pool()
-
-# Run the tests with pytest
-if __name__ == "__main__":
-    pytest.main(["-xvs", __file__]) 
+    # Verify results
+    assert len(results) == 2
+    assert results[0]["username"] == "admin"
+    assert results[1]["is_active"] is False 

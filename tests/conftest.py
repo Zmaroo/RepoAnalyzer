@@ -1,95 +1,97 @@
+"""
+Test configuration and fixtures for the RepoAnalyzer project.
+
+This module provides common fixtures and configuration for tests.
+"""
+
 import sys
 import os
 import pytest
 import logging
 import faulthandler
 from unittest.mock import patch
-
-# Import the mock database layer
-from tests.mocks.db_mock import (
-    mock_db_factory,
-    patch_postgres,
-    patch_neo4j
-)
+import pytest_asyncio
 
 # Enable faulthandler for better error reporting
 faulthandler.enable()
 
-# Determine the repository root (assumes tests/ is in the repository root)
+# Add repository root to path
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
-# Insert the repository root at the beginning of sys.path if it's not already there
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-@pytest.fixture(autouse=True)
-def setup_logging():
-    # Configure logging for tests
-    logging.getLogger().setLevel(logging.DEBUG)
-    return None
+# Import mock database layer
+from tests.mocks.db_mock import mock_db_factory, patch_postgres, patch_neo4j, reset_mock_factory
 
-@pytest.fixture
-def mock_databases():
-    """Set up mock databases for testing.
+@pytest.fixture(scope="session", autouse=True)
+def setup_logging():
+    """Configure logging for tests."""
+    logging.basicConfig(level=logging.DEBUG)
+    yield
+    logging.basicConfig(level=logging.INFO)
+
+@pytest_asyncio.fixture
+async def mock_databases():
+    """Set up mock implementations of PostgreSQL and Neo4j databases.
     
-    This fixture provides mock implementations of both PostgreSQL and Neo4j databases
-    for consistent and reliable test execution without requiring actual database connections.
+    This fixture provides mock implementations of the database layer for testing.
+    It patches the database connection functions and provides access to the mocks
+    for configuring custom behaviors and verifying operations.
     
-    Usage:
-        def test_something(mock_databases):
-            # Access the factory to customize behavior
-            pg_pool = mock_databases.pg_pool
-            neo4j_driver = mock_databases.neo4j_driver
+    Example:
+        ```python
+        @pytest.mark.asyncio
+        async def test_database_operations(mock_databases):
+            # Get the PostgreSQL mock
+            pg_mock = mock_databases.get_postgres_mock()
             
-            # Your test code here
-            ...
+            # Configure custom behavior
+            pg_mock.add_query_handler(
+                "SELECT * FROM users",
+                lambda *args: [{"id": 1, "username": "testuser"}]
+            )
+            
+            # Run code that uses the database
+            result = await my_function()
+            
+            # Verify operations
+            operations = pg_mock.get_operations()
+            assert len(operations) == 1
+        ```
     
     Returns:
-        The mock_db_factory instance with initialized database mocks.
+        MockDatabaseFactory: Factory for accessing the database mocks
     """
-    # Get mock patches
-    pg_patches = patch_postgres()
+    # Start patches
+    postgres_patches = patch_postgres()
     neo4j_patches = patch_neo4j()
     
     # Start all patches
-    for p in pg_patches + neo4j_patches:
+    for p in postgres_patches:
         p.start()
     
-    # Configure the PostgreSQL mock with default test data
-    pg_pool = mock_db_factory.create_postgres_pool()
-    pg_pool.tables["repositories"] = mock_db_factory.get_data_fixture("repositories")
-    pg_pool.tables["code_snippets"] = mock_db_factory.get_data_fixture("code_snippets")
+    for p in neo4j_patches:
+        p.start()
     
-    # Configure the Neo4j mock
-    neo4j_driver = mock_db_factory.create_neo4j_driver()
-    
+    # Yield the mock factory for test use
     yield mock_db_factory
     
-    # Stop all patches
-    for p in pg_patches + neo4j_patches:
+    # Stop all patches and reset the factory
+    for p in postgres_patches:
         p.stop()
     
-    # Reset for next test
+    for p in neo4j_patches:
+        p.stop()
+    
+    # Reset the factory for the next test
     mock_db_factory.reset_all()
 
-@pytest.fixture
-def postgres_mock(mock_databases):
-    """Access only the PostgreSQL mock from the mock_databases fixture.
-    
-    This is a convenience fixture for tests that only need PostgreSQL mocking.
-    
-    Returns:
-        The MockPostgresPool instance.
-    """
-    return mock_databases.pg_pool
+@pytest_asyncio.fixture
+async def postgres_mock(mock_databases):
+    """Convenience fixture to access the PostgreSQL mock directly."""
+    return mock_databases.get_postgres_mock()
 
-@pytest.fixture
-def neo4j_mock(mock_databases):
-    """Access only the Neo4j mock from the mock_databases fixture.
-    
-    This is a convenience fixture for tests that only need Neo4j mocking.
-    
-    Returns:
-        The MockNeo4jDriver instance.
-    """
-    return mock_databases.neo4j_driver 
+@pytest_asyncio.fixture
+async def neo4j_mock(mock_databases):
+    """Convenience fixture to access the Neo4j mock directly."""
+    return mock_databases.get_neo4j_mock() 

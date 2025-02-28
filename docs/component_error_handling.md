@@ -287,4 +287,4 @@ Remember to run the exception pattern analyzer regularly to identify areas that 
 
 ```bash
 ./scripts/analyze_exception_patterns.py --verbose
-``` 
+```

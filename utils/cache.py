@@ -5,7 +5,7 @@ import json
 import asyncio
 import time
 import random
-from typing import Any, Optional, Set, Dict, List, Tuple, Callable, Awaitable
+from typing import Any, Optional, Set, Dict, List, Tuple, Callable, Awaitable, TypedDict
 from datetime import datetime, timedelta
 from utils.logger import log
 from config import RedisConfig  # If we add Redis config later
@@ -16,6 +16,14 @@ try:
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
+
+# Define TypedDict for metric data
+class MetricData(TypedDict, total=False):
+    hits: int
+    misses: int
+    sets: int
+    evictions: int
+    hit_rate: float
 
 # Cache metrics collector for the entire application
 class CacheMetrics:
@@ -66,7 +74,7 @@ class CacheMetrics:
         
         return hits / total
     
-    def get_metrics(self, cache_name: Optional[str] = None) -> Dict:
+    def get_metrics(self, cache_name: Optional[str] = None) -> Dict[str, MetricData]:
         """Get metrics for a specific cache or all caches."""
         if cache_name:
             metrics = self._metrics.get(cache_name, {}).copy()
@@ -79,7 +87,7 @@ class CacheMetrics:
             return metrics
         
         # Return all metrics with hit rates
-        result = {}
+        result: Dict[str, MetricData] = {}
         for name, data in self._metrics.items():
             result[name] = data.copy()
             total_ops = data.get("hits", 0) + data.get("misses", 0)
@@ -462,4 +470,23 @@ parser_cache = create_cache("parser", ttl=3600)
 embedding_cache = create_cache("embedding", ttl=7200)
 query_cache = create_cache("query", ttl=1800)
 # Add a general cache instance for modules that need a default cache
-cache = create_cache("general", ttl=3600) 
+cache = create_cache("general", ttl=3600)
+
+# Global cache instances with appropriate TTLs
+repository_cache = UnifiedCache("repositories", ttl=3600)  # 1 hour
+search_cache = UnifiedCache("search", ttl=300)  # 5 minutes
+embedding_cache = UnifiedCache("embeddings", ttl=86400)  # 24 hours
+pattern_cache = UnifiedCache("patterns", ttl=3600)  # 1 hour 
+parser_cache = UnifiedCache("parsers", ttl=1800)  # 30 minutes
+graph_cache = UnifiedCache("graph", ttl=3600)  # 1 hour
+ast_cache = UnifiedCache("ast", ttl=7200)  # 2 hours
+
+# Register caches with coordinator
+cache_coordinator = CacheCoordinator()
+cache_coordinator.register_cache("repositories", repository_cache)
+cache_coordinator.register_cache("search", search_cache)
+cache_coordinator.register_cache("embeddings", embedding_cache)
+cache_coordinator.register_cache("patterns", pattern_cache)
+cache_coordinator.register_cache("parsers", parser_cache)
+cache_coordinator.register_cache("graph", graph_cache)
+cache_coordinator.register_cache("ast", ast_cache) 

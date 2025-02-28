@@ -34,7 +34,12 @@ class IniParser(BaseParser):
         return IniNode(**node_dict)
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse INI content into AST structure."""
+        """Parse INI content into AST structure.
+        
+        This method supports AST caching through the BaseParser.parse() method.
+        Cache checks are handled at the BaseParser level, so this method is only called
+        on cache misses or when we need to generate a fresh AST.
+        """
         try:
             lines = source_code.splitlines()
             ast = self._create_node(

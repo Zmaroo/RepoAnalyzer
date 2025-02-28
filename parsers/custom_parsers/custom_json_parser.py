@@ -118,11 +118,14 @@ class JsonParser(BaseParser):
             )
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse JSON content into AST structure."""
+        """Parse JSON content into AST structure with caching support."""
         lines = source_code.splitlines()
         line_count = len(lines)
         
         try:
+            # Note: We don't need to check cache here as BaseParser.parse() already does this
+            # This method will only be called for cache misses
+            
             data = json.loads(source_code)
             ast = self._process_json_value(data, "")
             

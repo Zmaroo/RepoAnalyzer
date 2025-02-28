@@ -1,14 +1,18 @@
 """Feature extraction implementations."""
 
-from typing import Dict, Any, List, Optional, Union, Generator, Tuple
+from typing import Dict, Any, List, Optional, Union, Generator, Tuple, Callable, TypeVar, cast, Awaitable
 from tree_sitter import Node, Query, QueryError, Parser, Language, TreeCursor
-from .types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, ExtractedFeatures
+from .types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, ExtractedFeatures, PatternCategory
 from parsers.models import QueryResult, FileClassification
 from parsers.language_support import language_registry
 from utils.logger import log
-from parsers.pattern_processor import PatternProcessor, PatternMatch, PatternCategory, pattern_processor
+from parsers.pattern_processor import PatternProcessor, PatternMatch, pattern_processor
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from abc import ABC, abstractmethod
+
+# Define a type for extractor functions
+# Support both sync and async extractors
+ExtractorFn = Union[Callable[[Any], Dict[str, Any]], Callable[[Any], Awaitable[Dict[str, Any]]]]
 
 class BaseFeatureExtractor(ABC):
     """[3.2.0] Abstract base class for feature extraction."""
@@ -38,6 +42,10 @@ class BaseFeatureExtractor(ABC):
 class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     """[3.2.1] Tree-sitter specific feature extraction."""
     
+    # Constants for query execution limits
+    QUERY_TIMEOUT_MICROS = 5000000  # 5 seconds
+    QUERY_MATCH_LIMIT = 10000
+    
     def __init__(self, language_id: str, file_type: FileType):
         super().__init__(language_id, file_type)
         # [3.2.1.1] Initialize Tree-sitter Components
@@ -60,17 +68,21 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             if category_name in self._patterns:
                 for pattern in self._patterns[category_name].values():
                     if pattern_processor.validate_pattern(pattern, self.language_id):
-                        self._compile_pattern(category_name, pattern)
+                        self._compile_pattern(pattern, category_name, "")
     
-    def _compile_pattern(self, category: str, name: str, pattern_def: Union[str, Dict]):
-        """Compile a pattern definition into a Tree-sitter query."""
+    def _compile_pattern(self, pattern_def: Union[str, Dict[str, Any]], category: str, name: str) -> None:
+        """Compile a Tree-sitter query pattern and store in queries dict."""
         try:
             if isinstance(pattern_def, str):
                 query_str = pattern_def
-                extractor = None
+                extractor_func: Optional[ExtractorFn] = None
             else:
                 query_str = pattern_def['pattern']
-                extractor = pattern_def.get('extract')
+                # Get the extractor function from pattern definition
+                extractor_func = pattern_def.get('extract')
+                if extractor_func is not None and not callable(extractor_func):
+                    log(f"Warning: Non-callable extractor for pattern {name}. Got {type(extractor_func)}", level="warning")
+                    extractor_func = None
             
             # Create and configure query
             query = self._language.query(query_str)
@@ -79,7 +91,7 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             
             self._queries.setdefault(category, {})[name] = {
                 'query': query,
-                'extract': extractor
+                'extract': extractor_func
             }
             
         except Exception as e:
@@ -124,13 +136,22 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
         """[3.2.1.2] Extract features from Tree-sitter AST."""
         try:
-            # [3.2.1.3] Parse Tree and Extract Features
-            tree = self._parser.parse(bytes(source_code, "utf8"))
-            if not tree:
-                raise ValueError("Failed to parse source code")
+            # Check if we have a valid AST with a tree structure
+            tree = None
+            root_node = None
+            
+            if ast and "root" in ast:
+                # If we have a complete AST with root node (directly from parser)
+                root_node = ast["root"]
+            else:
+                # If we don't have a root node or need to create a new tree
+                # [3.2.1.3] Parse Tree and Extract Features
+                tree = self._parser.parse(bytes(source_code, "utf8"))
+                if not tree:
+                    raise ValueError("Failed to parse source code")
+                root_node = tree.root_node
                 
             features = {category: {} for category in PatternCategory}
-            root_node = tree.root_node
             
             # [3.2.1.4] Process Patterns by Category
             # USES: [pattern_processor.py] QueryResult
@@ -138,7 +159,7 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                 category_features = {}
                 for pattern_name, pattern_info in patterns.items():
                     query = pattern_info['query']
-                    extractor = pattern_info['extract']
+                    extractor_func: Optional[ExtractorFn] = pattern_info['extract']
                     matches = []
                     
                     # Process matches
@@ -149,8 +170,17 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                                 node=match.pattern_node,
                                 captures={c.name: c.node for c in match.captures}
                             )
-                            if extractor:
-                                result.metadata = extractor(result)
+                            if extractor_func:
+                                # Handle both sync and async extractors
+                                metadata = extractor_func(result)
+                                if hasattr(metadata, '__await__'):
+                                    # This is an async function, but we're in a sync context
+                                    # Let's handle this gracefully by logging an error
+                                    log(f"Warning: Async extractor used in sync context for pattern {pattern_name}", level="warning")
+                                    # We can't await here, so just set empty metadata
+                                    result.metadata = {}
+                                else:
+                                    result.metadata = metadata
                             processed = self._process_query_result(result)
                             if processed:
                                 matches.append(processed)
@@ -214,84 +244,36 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
         return documentation
     
     def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
-        """Calculate code complexity metrics based on extracted features.
-        
-        This includes:
-        - Cyclomatic complexity
-        - Cognitive complexity
-        - Lines of code metrics
-        - Basic Halstead metrics
-        """
+        """Calculate complexity metrics from extracted features."""
         metrics = ComplexityMetrics()
         
-        # Count lines of code
-        lines = source_code.splitlines()
-        metrics.lines_of_code = {
-            'total': len(lines),
-            'code': len([l for l in lines if l.strip() and not l.strip().startswith(('#', '//', '/*', '*', '"""', "'''"))]),
-            'comment': len([l for l in lines if l.strip() and l.strip().startswith(('#', '//', '/*', '*', '"""', "'''"))]),
-            'blank': len([l for l in lines if not l.strip()])
-        }
+        # Calculate basic complexity metrics
+        metrics.loc = len(source_code.splitlines())
+        metrics.cyclomatic_complexity = self._calculate_cyclomatic_complexity(features)
         
-        # Extract syntax features for complexity calculation
-        syntax_features = features.get(PatternCategory.SYNTAX.value, {})
-        
-        # Calculate cyclomatic complexity (based on branches)
-        branch_types = ['if', 'for', 'while', 'case', 'catch', 'switch']
-        branch_count = 0
-        
-        for branch_type in branch_types:
-            if branch_type in syntax_features:
-                branch_count += len(syntax_features[branch_type])
-                
-        # Basic cyclomatic complexity: branches + 1
-        metrics.cyclomatic = branch_count + 1
-        
-        # Estimate cognitive complexity (nesting levels * branches)
-        nesting_level = 0
-        for branch_match in syntax_features.get('if', []) + syntax_features.get('for', []) + syntax_features.get('while', []):
-            if 'nesting_level' in branch_match:
-                nesting_level = max(nesting_level, branch_match['nesting_level'])
-        
-        metrics.cognitive = branch_count * (nesting_level + 1)
-        
-        # Basic Halstead metrics
-        halstead = {
-            'n1': 0,  # unique operators
-            'n2': 0,  # unique operands
-            'N1': 0,  # total operators
-            'N2': 0,  # total operands
-        }
-        
-        # Extract operators and operands if available
-        if 'operator' in syntax_features:
-            operator_texts = set()
-            for op in syntax_features['operator']:
-                if 'text' in op:
-                    operator_texts.add(op['text'])
-                    halstead['N1'] += 1
-            halstead['n1'] = len(operator_texts)
-            
-        # If we have at least some values, calculate derived metrics
-        if halstead['n1'] > 0 and halstead['n2'] > 0:
-            vocabulary = halstead['n1'] + halstead['n2']
-            length = halstead['N1'] + halstead['N2']
-            volume = length * (vocabulary.bit_length() if vocabulary > 0 else 0)
-            halstead['volume'] = volume
-            
-        metrics.halstead = halstead
-        
-        # Maintainability index (simple estimate)
-        if metrics.cyclomatic > 0:
-            # Basic MI formula: 171 - 5.2 * ln(volume) - 0.23 * cyclomatic - 16.2 * ln(loc)
-            code_lines = metrics.lines_of_code['code']
-            if code_lines > 0 and 'volume' in halstead:
-                import math
-                metrics.maintainability_index = max(0, min(100, 171 - 5.2 * math.log(halstead['volume']) - 
-                                                          0.23 * metrics.cyclomatic - 
-                                                          16.2 * math.log(code_lines)))
+        # Calculate maintainability metrics
+        metrics.halstead_metrics = self._calculate_halstead_metrics(features)
+        metrics.maintainability_index = self._calculate_maintainability_index(metrics)
         
         return metrics
+
+    def _register_language_patterns(self) -> None:
+        """Register pattern queries for the current language."""
+        if self.language_id in self._patterns:
+            for category_name, patterns in self._patterns[self.language_id].items():
+                # Register each pattern in the cache
+                for pattern_name, pattern in patterns.items():
+                    if hasattr(pattern, 'pattern_type') and pattern.pattern_type == ParserType.TREE_SITTER.value:
+                        pattern_def = getattr(pattern, 'definition', pattern)
+                        self._compile_pattern(pattern_def, category_name, pattern_name)
+                        
+        # Register common patterns
+        if 'common' in self._patterns:
+            for category_name, patterns in self._patterns['common'].items():
+                for pattern_name, pattern in patterns.items():
+                    if hasattr(pattern, 'pattern_type') and pattern.pattern_type == ParserType.TREE_SITTER.value:
+                        pattern_def = getattr(pattern, 'definition', pattern)
+                        self._compile_pattern(pattern_def, category_name, pattern_name)
 
 class CustomFeatureExtractor(BaseFeatureExtractor):
     """[3.2.2] Custom parser feature extraction."""
@@ -307,6 +289,11 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
         - Pattern matches
         """
         try:
+            # Check if we have a valid AST structure
+            if not ast:
+                log(f"No AST provided for feature extraction", level="debug")
+                ast = {}  # Initialize empty AST to continue with regex-based extraction
+            
             # [3.2.2.1] Initialize Feature Categories
             features = {category.value: {} for category in PatternCategory}
             

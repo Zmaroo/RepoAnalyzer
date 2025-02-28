@@ -169,11 +169,38 @@ class PatternProcessor:
             parser = get_parser(pattern.language_id)
             if not parser:
                 return []
+            
+            # Check if we already have a cached AST
+            from utils.cache import ast_cache
+            import hashlib
+            import asyncio
+            
+            # Create a unique cache key based on language and source code hash
+            source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
+            cache_key = f"ast:{pattern.language_id}:{source_hash}"
+            
+            # Try to get from cache
+            cached_ast = asyncio.run(ast_cache.get_async(cache_key))
+            if cached_ast and "tree" in cached_ast:
+                log(f"Using cached AST for pattern processing", level="debug")
                 
-            # Parse the source code
-            tree = parser.parse(bytes(source_code, "utf8"))
-            if not tree:
-                return []
+                # For pattern processing, we need the root node
+                # Parse the source code to get the tree with root node
+                tree = parser.parse(bytes(source_code, "utf8"))
+                if not tree:
+                    return []
+            else:
+                # Parse the source code if not in cache
+                tree = parser.parse(bytes(source_code, "utf8"))
+                if not tree:
+                    return []
+                
+                # Cache the AST for future use
+                cache_data = {
+                    "tree": self._convert_tree_to_dict(tree.root_node)
+                }
+                asyncio.run(ast_cache.set_async(cache_key, cache_data))
+                log(f"AST cached for pattern processing", level="debug")
                 
             # Execute the tree-sitter query
             query = parser.language.query(pattern.tree_sitter)
@@ -207,6 +234,19 @@ class PatternProcessor:
             log(f"Error processing tree-sitter pattern: {e}", level="error")
             return []
         
+    def _convert_tree_to_dict(self, node) -> Dict[str, Any]:
+        """Convert tree-sitter node to dict."""
+        if not node:
+            return {}
+        
+        return {
+            'type': node.type,
+            'start': node.start_point,
+            'end': node.end_point,
+            'text': node.text.decode('utf8') if len(node.children) == 0 else None,
+            'children': [self._convert_tree_to_dict(child) for child in node.children] if node.children else []
+        }
+
     def extract_repository_patterns(self, file_path: str, source_code: str, language: str) -> List[Dict[str, Any]]:
         """
         Extract potential patterns from a file for repository learning.

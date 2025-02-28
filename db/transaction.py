@@ -10,6 +10,17 @@ from utils.cache import cache_coordinator
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
 from utils.error_handling import PostgresError, Neo4jError, TransactionError, CacheError
 
+async def get_connection():
+    """
+    Get a database connection for use in transactions.
+    This function is primarily used for direct connection access
+    and is also a target for mocking in tests.
+    
+    Returns:
+        A database connection from the pool.
+    """
+    return await _pool.acquire()
+
 class TransactionCoordinator:
     """Coordinates transactions across different databases and caches."""
     
@@ -43,7 +54,7 @@ class TransactionCoordinator:
     async def _start_postgres(self):
         """Start PostgreSQL transaction."""
         if not self.pg_conn:
-            self.pg_conn = await _pool.acquire()
+            self.pg_conn = await get_connection()
             self.pg_transaction = self.pg_conn.transaction()
             await self.pg_transaction.start()
             

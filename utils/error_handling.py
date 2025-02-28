@@ -1,6 +1,6 @@
 """Error handling utilities."""
 
-from typing import Type, Tuple, Callable, Any, Dict, List, Optional, Set
+from typing import Type, Tuple, Callable, Any, Dict, List, Optional, Set, Union
 from functools import wraps
 from contextlib import contextmanager, asynccontextmanager
 import inspect
@@ -32,6 +32,22 @@ class Neo4jError(DatabaseError):
     """Neo4j specific errors."""
     pass
 
+class RetryableError(DatabaseError):
+    """Base class for errors that can be retried."""
+    pass
+
+class NonRetryableError(DatabaseError):
+    """Base class for errors that should not be retried."""
+    pass
+
+class RetryableNeo4jError(RetryableError, Neo4jError):
+    """Neo4j error that can be retried (e.g., temporary network issues)."""
+    pass
+
+class NonRetryableNeo4jError(NonRetryableError, Neo4jError):
+    """Neo4j error that should not be retried (e.g., syntax errors)."""
+    pass
+
 class TransactionError(DatabaseError):
     """Transaction coordination errors."""
     pass
@@ -49,6 +65,10 @@ ERROR_CATEGORIES = {
     Neo4jError: "database",
     TransactionError: "database",
     CacheError: "cache",
+    RetryableError: "database",
+    NonRetryableError: "database",
+    RetryableNeo4jError: "database",
+    NonRetryableNeo4jError: "database",
     Exception: "general"
 }
 
@@ -237,7 +257,7 @@ class ErrorAudit:
     _all_functions: Set[str] = set()
     
     @classmethod
-    def record_error(cls, error: Exception, location: str, handled_types: Tuple[Type[Exception], ...] = (Exception,)):
+    def record_error(cls, error: Exception, location: str, handled_types: Union[Type[Exception], Tuple[Type[Exception], ...]] = (Exception,)):
         """
         Record an error occurrence for auditing.
         
@@ -257,6 +277,10 @@ class ErrorAudit:
                 if isinstance(error, error_cls):
                     category = cat
                     break
+            
+            # Convert single exception type to a tuple for consistent handling
+            if not isinstance(handled_types, tuple):
+                handled_types = (handled_types,)
             
             # Record the error with context
             cls._errors[error_type].append({

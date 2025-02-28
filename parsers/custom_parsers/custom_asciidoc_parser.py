@@ -37,7 +37,12 @@ class AsciidocParser(BaseParser):
         return AsciidocNode(**node_dict)
 
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse AsciiDoc source code and produce an AST."""
+        """Parse AsciiDoc source code and produce an AST.
+        
+        This method supports AST caching through the BaseParser.parse() method.
+        Cache checks are handled at the BaseParser level, so this method is only called
+        on cache misses or when we need to generate a fresh AST.
+        """
         try:
             ast = self._create_node("asciidoc_document", [0, 0], [0, 0], children=[])
             # Your custom parsing logic here...
