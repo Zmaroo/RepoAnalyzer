@@ -12,7 +12,7 @@ from parsers.models import FileClassification
 from parsers.file_classification import classify_file
 import asyncio
 from contextlib import asynccontextmanager
-from config import postgres_config, neo4j_config
+from config import PostgresConfig, Neo4jConfig
 
 @asynccontextmanager
 async def repository_transaction():

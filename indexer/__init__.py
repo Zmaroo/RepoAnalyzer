@@ -6,7 +6,9 @@ from .unified_indexer import (
     index_active_project_sync,
     process_repository_indexing
 )
-from .async_utils import async_read_file, async_handle_errors, batch_process_files
+# Import from common instead of async_utils to avoid circular dependencies
+from .common import async_read_file, async_handle_errors
+from .async_utils import batch_process_files
 
 # Initialize pattern system when indexer is imported
 from parsers.query_patterns import initialize_pattern_system

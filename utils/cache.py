@@ -460,4 +460,6 @@ def create_cache(name: str, ttl: int = 3600, adaptive_ttl: bool = True) -> Unifi
 # Create default caches
 parser_cache = create_cache("parser", ttl=3600)
 embedding_cache = create_cache("embedding", ttl=7200)
-query_cache = create_cache("query", ttl=1800) 
+query_cache = create_cache("query", ttl=1800)
+# Add a general cache instance for modules that need a default cache
+cache = create_cache("general", ttl=3600) 

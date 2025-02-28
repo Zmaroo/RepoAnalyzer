@@ -24,12 +24,12 @@ from typing import Optional, Dict, List
 from utils.logger import log
 from indexer.async_utils import async_read_file
 from indexer.file_utils import get_files, get_relative_path, is_processable_file
-from parsers.types import ParserResult, FileType  # Lightweight DTO type
-from parsers.models import FileClassification, ExtractedFeatures  # Domain models
+from parsers.types import ParserResult, FileType, ExtractedFeatures  # Lightweight DTO type
+from parsers.models import FileClassification  # Domain models
 from parsers.language_support import language_registry
 from parsers.query_patterns import initialize_pattern_system
 from db.neo4j_ops import auto_reinvoke_projection_once
-from db.upsert_ops import get_or_create_repo
+from db.upsert_ops import upsert_code_snippet
 from indexer.file_processor import FileProcessor
 from semantic.search import search_code
 
@@ -161,14 +161,13 @@ async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: s
         coordinator.cleanup()
 
 async def index_active_project() -> None:
-    """
-    Index the active project using the current working directory.
-    
-    This function determines the repository path and name, retrieves or creates a
-    unique repository record, and then invokes the main indexing pipeline.
-    """
+    """[2.5] Index the currently active project (working directory)."""
     repo_path = os.getcwd()
     repo_name = os.path.basename(os.path.abspath(repo_path))
+    
+    # Import locally to avoid circular imports
+    from indexer.clone_and_index import get_or_create_repo
+    
     # Example: Obtain (or create) a repository record.
     repo_id = await get_or_create_repo(repo_name, repo_type="active")
     log(f"Active project repo: {repo_name} (id: {repo_id}) at {repo_path}")

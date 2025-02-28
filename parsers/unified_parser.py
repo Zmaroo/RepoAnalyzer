@@ -24,7 +24,12 @@ from parsers.types import FileType, FeatureCategory, ParserType, ParserResult
 from parsers.models import FileClassification, PATTERN_CATEGORIES
 from dataclasses import asdict
 
-from parsers.language_support import language_registry, get_language_by_extension, get_parser_availability
+from parsers.language_support import language_registry
+from parsers.language_mapping import (
+    detect_language, 
+    get_parser_info_for_language, 
+    get_complete_language_info
+)
 from utils.error_handling import handle_async_errors, ParsingError
 from utils.encoding import encode_query_pattern
 from utils.logger import log
@@ -42,17 +47,19 @@ class UnifiedParser:
             if cached:
                 return ParserResult(**cached)
             
-            language_features = get_language_by_extension(file_path)
-            if not language_features:
-                return None
-
-            # Determine appropriate parser type based on language capabilities
-            parser_availability = get_parser_availability(language_features.canonical_name)
+            # Use the improved language detection with confidence score
+            language_id, confidence = detect_language(file_path, content)
+            if confidence < 0.6:
+                log(f"Low confidence ({confidence:.2f}) language detection for {file_path}", level="warning")
             
+            # Get comprehensive language and parser information
+            language_info = get_complete_language_info(language_id)
+            
+            # Create classification using the parser info
             classification = FileClassification(
-                file_type=parser_availability.file_type,
-                language_id=language_features.canonical_name,
-                parser_type=parser_availability.preferred_type
+                file_type=language_info["file_type"],
+                language_id=language_info["canonical_name"],
+                parser_type=language_info["parser_type"]
             )
 
             parser = language_registry.get_parser(classification)

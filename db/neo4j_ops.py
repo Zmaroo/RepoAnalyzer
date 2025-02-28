@@ -6,6 +6,13 @@ import time
 import random
 from db.connection import driver
 from db.transaction import transaction_scope
+from db.retry_utils import (
+    with_retry, 
+    RetryableNeo4jError, 
+    NonRetryableNeo4jError,
+    default_retry_manager,
+    is_retryable_error
+)
 from config import Neo4jConfig
 from utils.logger import log
 from utils.error_handling import (
@@ -114,24 +121,35 @@ async def _get_appropriate_graph_sync(repo_id=None):
 # You can add a logging statement to confirm the connection
 log(f"Connected to Neo4j Desktop at {Neo4jConfig.uri} using database '{Neo4jConfig.database}'", level="info")
 
-class RetryableNeo4jError(Neo4jError):
-    """Error that can be retried, like connection issues or deadlocks."""
-    pass
-
-class NonRetryableNeo4jError(Neo4jError):
-    """Error that should not be retried, like constraint violations or syntax errors."""
-    pass
-
-# Add this unified class for database operations before the GraphProjectionManager class
+# Update the database operation manager to use our new retry utilities
 class DatabaseOperationManager:
     """Unified manager for Neo4j database operations to prevent duplication in error handling and retry logic."""
     
     def __init__(self, max_retries=3, retry_delay=1):
-        self.max_retries = max_retries
-        self.retry_delay = retry_delay
+        """
+        Initialize the database operation manager.
+        
+        Note: This class now uses the retry_utils.DatabaseRetryManager under the hood.
+        It's maintained for backward compatibility.
+        
+        Args:
+            max_retries: Maximum number of retry attempts
+            retry_delay: Base delay in seconds between retries
+        """
+        # Create a retry manager with the specified config
+        from db.retry_utils import DatabaseRetryManager, RetryConfig
+        self.retry_manager = DatabaseRetryManager(
+            config=RetryConfig(
+                max_retries=max_retries,
+                base_delay=retry_delay
+            )
+        )
     
     async def execute_with_retry(self, operation_func, *args, **kwargs):
-        """Execute a database operation with retry logic.
+        """
+        Execute a database operation with retry logic.
+        
+        This function now delegates to the retry_utils.DatabaseRetryManager.
         
         Args:
             operation_func: Function to execute
@@ -144,23 +162,7 @@ class DatabaseOperationManager:
         Raises:
             DatabaseError: If all retries fail
         """
-        retries = 0
-        last_exception = None
-        
-        while retries < self.max_retries:
-            try:
-                result = await operation_func(*args, **kwargs)
-                return result
-            except (Neo4jError, ConnectionError, OSError) as e:
-                last_exception = e
-                retries += 1
-                log(f"Database operation failed (attempt {retries}/{self.max_retries}): {str(e)}", level="warn")
-                
-                if retries < self.max_retries:
-                    await asyncio.sleep(self.retry_delay * (2 ** (retries - 1)))  # Exponential backoff
-                
-        log(f"All retries failed for database operation: {last_exception}", level="error")
-        raise DatabaseError(f"Failed after {self.max_retries} attempts: {last_exception}")
+        return await self.retry_manager.execute_with_retry(operation_func, *args, **kwargs)
     
     async def run_query_with_retry(self, query, params=None):
         """Run a Cypher query with retry logic.
@@ -195,7 +197,6 @@ class DatabaseOperationManager:
 # Instantiate the database operation manager
 db_manager = DatabaseOperationManager()
 
-# Replace the existing run_query_with_retry function with the new one using the manager
 async def run_query_with_retry(query, params=None):
     """Run a Cypher query with retry logic using the database operation manager.
     
@@ -211,9 +212,26 @@ async def run_query_with_retry(query, params=None):
     """
     return await db_manager.run_query_with_retry(query, params)
 
-# For backward compatibility
+# Update the run_query function to properly classify errors
+@with_retry()
 async def run_query(query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """Run a Neo4j query and return results. Uses the database operation manager for resilience."""
+    """
+    Run a Neo4j query and return results.
+    
+    This function is now decorated with the retry decorator from retry_utils,
+    which provides automatic retry with exponential backoff for retryable errors.
+    
+    Args:
+        query: Cypher query string
+        params: Parameters for the query
+        
+    Returns:
+        List of dictionary results
+        
+    Raises:
+        RetryableNeo4jError: For retryable errors (will trigger retry)
+        NonRetryableNeo4jError: For non-retryable errors (will not trigger retry)
+    """
     # Create session without using async context manager
     try:
         session = driver.session()
@@ -227,13 +245,13 @@ async def run_query(query: str, params: Optional[Dict[str, Any]] = None) -> List
     except Exception as e:
         error_msg = str(e).lower()
         
-        # Check if this is a non-retryable error
-        if "syntax error" in error_msg or "constraint" in error_msg:
-            log(f"Non-retryable error: {error_msg}", level="error")
+        # Use the error classification from retry_utils
+        if not is_retryable_error(e):
+            log(f"Non-retryable query error: {error_msg}", level="error")
             raise NonRetryableNeo4jError(f"Non-retryable error: {error_msg}")
             
-        log(f"Query error: {error_msg}", level="error")
-        raise Neo4jError(f"Query error: {error_msg}")
+        log(f"Retryable query error: {error_msg}", level="error")
+        raise RetryableNeo4jError(f"Retryable error: {error_msg}")
 
 class Neo4jTools:
     """[6.2.1] Neo4j database operations coordinator."""
@@ -244,65 +262,38 @@ class Neo4jTools:
             self.driver = driver
         logging.info("Neo4j driver initialized with URI: %s and Database: %s", config.uri, config.database)
 
-    @handle_async_errors(error_types=(Neo4jError, TransactionError))
-    async def store_code_node(self, code_data: dict, max_retries: int = 3) -> None:
-        """[6.2.2] Store code node with transaction coordination and retry logic."""
-        attempt = 0
-        last_error = None
+    @with_retry(max_retries=3)
+    async def store_code_node(self, code_data: dict) -> None:
+        """
+        [6.2.2] Store code node with transaction coordination.
         
-        while attempt <= max_retries:
-            try:
-                async with AsyncErrorBoundary("Neo4j node storage", error_types=(Neo4jError, TransactionError)):
-                    async with transaction_scope() as txn:
-                        query = """
-                        MERGE (n:Code {repo_id: $repo_id, file_path: $file_path})
-                        SET n += $properties
-                        """
-                        await txn.neo4j_transaction.run(query, {
-                            "repo_id": code_data["repo_id"],
-                            "file_path": code_data["file_path"],
-                            "properties": code_data
-                        })
-                        
-                        log("Stored code node", level="debug", context={
-                            "operation": "store_code_node",
-                            "repo_id": code_data["repo_id"],
-                            "file_path": code_data["file_path"]
-                        })
-                        
-                        # Successfully stored node, return
-                        return
-                        
-            except Exception as e:
-                last_error = e
-                error_msg = str(e).lower()
-                
-                # Check if this is a retryable error
-                is_retryable = any(term in error_msg for term in [
-                    'connection', 'timeout', 'deadlock', 'lock', 'unavailable', 
-                    'temporary', 'overloaded', 'too busy'
-                ])
-                
-                if not is_retryable or attempt >= max_retries:
-                    log(f"Failed to store code node after {attempt+1} attempts: {e}", 
-                        level="error", context={
-                            "repo_id": code_data.get("repo_id"),
-                            "file_path": code_data.get("file_path")
-                        })
-                    raise Neo4jError(f"Failed to store code node: {str(e)}")
-                
-                # Calculate backoff delay with jitter
-                delay = min(1.0 * (2 ** attempt) + (0.1 * random.random()), 8.0)
-                
-                log(f"Neo4j store operation failed (attempt {attempt+1}/{max_retries+1}): {e}. Retrying in {delay:.2f}s", 
-                    level="warning")
-                
-                await asyncio.sleep(delay)
-                attempt += 1
+        This method is now decorated with @with_retry, providing automatic
+        retry with exponential backoff for retryable errors.
         
-        # We should never reach here due to the exception in the loop, but just in case
-        raise Neo4jError(f"Failed to store code node after {max_retries} retries: {last_error}")
-    
+        Args:
+            code_data: Dictionary containing code node data
+            
+        Raises:
+            DatabaseError: If all retries fail or a non-retryable error occurs
+        """
+        async with AsyncErrorBoundary("Neo4j node storage", error_types=(Neo4jError, TransactionError)):
+            async with transaction_scope() as txn:
+                query = """
+                MERGE (n:Code {repo_id: $repo_id, file_path: $file_path})
+                SET n += $properties
+                """
+                await txn.neo4j_transaction.run(query, {
+                    "repo_id": code_data["repo_id"],
+                    "file_path": code_data["file_path"],
+                    "properties": code_data
+                })
+                
+                log("Stored code node", level="debug", context={
+                    "operation": "store_code_node",
+                    "repo_id": code_data["repo_id"],
+                    "file_path": code_data["file_path"]
+                })
+
     @handle_async_errors(error_types=DatabaseError)
     async def update_code_relationships(self, repo_id: int, relationships: list) -> None:
         """Update code relationships with graph synchronization."""

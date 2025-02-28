@@ -36,15 +36,14 @@ from utils.error_handling import (
 from parsers.models import (
     FileType,
     FileClassification,
-    ParserResult
 )
 from parsers.types import (
     Documentation,
     ComplexityMetrics,
-    ExtractedFeatures
+    ExtractedFeatures,
+    ParserResult
 )
 from ai_tools.code_understanding import CodeUnderstanding
-from semantic.search import search_code
 import os
 from db.graph_sync import graph_sync
 

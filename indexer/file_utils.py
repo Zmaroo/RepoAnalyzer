@@ -14,15 +14,24 @@ from utils.logger import log
 from parsers.types import FileType
 from parsers.models import FileClassification
 from parsers.types import ParserType
+from parsers.language_mapping import is_binary_extension, BINARY_EXTENSIONS
 from config import FileConfig
-# Import the new file classification module
+# Import the file classification module
 from parsers.file_classification import classify_file as parsers_classify_file
 
 # Global config instance
 file_config = FileConfig.create()
 
 def should_ignore(file_path: str) -> bool:
-    """Check if file should be ignored based on patterns."""
+    """
+    Check if file should be ignored based on patterns.
+    
+    Args:
+        file_path: The path to check
+        
+    Returns:
+        True if the file should be ignored, False otherwise
+    """
     ignore_patterns = {
         '.git',
         '__pycache__',
@@ -37,8 +46,22 @@ def should_ignore(file_path: str) -> bool:
     return any(pattern in path_parts for pattern in ignore_patterns)
 
 def is_binary_file(file_path: str) -> bool:
-    """Check if file is binary using magic numbers."""
+    """
+    Check if file is binary using magic numbers.
+    
+    Args:
+        file_path: The path to check
+        
+    Returns:
+        True if the file is binary, False otherwise
+    """
     try:
+        # Check extension first for efficiency
+        _, ext = os.path.splitext(file_path)
+        if is_binary_extension(ext):
+            return True
+        
+        # Use libmagic for more accurate detection
         mime = magic.from_file(file_path, mime=True)
         return not mime.startswith(('text/', 'application/json', 'application/xml'))
     except Exception as e:
@@ -50,8 +73,14 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
     Get file classification based on extension and content.
     Returns FileClassification or None if file should be ignored.
     
-    This function now delegates to the centralized file classification system
+    This function delegates to the centralized file classification system
     in parsers.file_classification.
+    
+    Args:
+        file_path: The path to classify
+        
+    Returns:
+        FileClassification object or None if file should be ignored
     """
     try:
         if should_ignore(file_path):
@@ -65,6 +94,7 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
                 file_path=file_path,
                 language_id="binary",
                 parser_type=ParserType.CUSTOM,
+                file_type=FileType.DATA,
                 is_binary=True
             )
             
@@ -76,7 +106,16 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
         return None
 
 def get_files(base_path: str, file_types: Set = None) -> List[str]:
-    """Get all processable files in directory."""
+    """
+    Get all processable files in directory.
+    
+    Args:
+        base_path: The root directory to search
+        file_types: Optional set of FileType values to include
+        
+    Returns:
+        List of file paths
+    """
     if file_types is None:
         file_types = {FileType.CODE, FileType.DOC}  # Use enum values
         
@@ -101,7 +140,16 @@ def get_files(base_path: str, file_types: Set = None) -> List[str]:
         return []
 
 def get_relative_path(file_path: str, base_path: str) -> str:
-    """Get relative path from base_path."""
+    """
+    Get relative path from base_path.
+    
+    Args:
+        file_path: The absolute file path
+        base_path: The base directory path
+        
+    Returns:
+        Relative path string
+    """
     try:
         return os.path.relpath(file_path, base_path)
     except Exception as e:
@@ -109,7 +157,15 @@ def get_relative_path(file_path: str, base_path: str) -> str:
         return file_path
 
 def is_processable_file(file_path: str) -> bool:
-    """Check if file can be processed."""
+    """
+    Check if file can be processed.
+    
+    Args:
+        file_path: The file path to check
+        
+    Returns:
+        True if file can be processed, False otherwise
+    """
     try:
         classification = get_file_classification(file_path)
         return (classification is not None and 

@@ -52,4 +52,4 @@ Some issues still remain to be addressed in the future:
 1. Address the circular import issues in the indexer module
 2. Create more comprehensive test suites
 3. Document the integration for future developers
-4. Continue implementing improvements from the roadmap 
+4. Continue implementing improvements from the roadmap

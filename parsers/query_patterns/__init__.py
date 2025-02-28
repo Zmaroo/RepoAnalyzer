@@ -17,6 +17,12 @@ _pattern_registry: Dict[str, Dict[str, Any]] = {}
 # Flag to track initialization
 _initialized = False
 
+# Initialize logger
+logger = logging.getLogger(__name__)
+
+# Import core pattern validation functionality
+from parsers.pattern_validator import validate_all_patterns, report_validation_results
+
 def _normalize_language_name(name: str) -> str:
     """Normalize language name to handle special cases."""
     name = name.lower().replace('-', '_')
@@ -139,3 +145,72 @@ __all__ = [
     'get_patterns_for_language',
     'list_available_languages',
 ]
+
+# Language pattern registries
+_pattern_registries = {}
+
+def get_patterns_for_language(language_id: str) -> Dict[str, Any]:
+    """
+    Get patterns for the specified language, loading them if necessary.
+    
+    Args:
+        language_id: The language identifier to get patterns for
+        
+    Returns:
+        Dictionary of patterns for the language, or empty dict if not supported
+    """
+    if language_id in _pattern_registries:
+        return _pattern_registries[language_id]
+        
+    # Try to load patterns from the appropriate module
+    try:
+        module_name = f"parsers.query_patterns.{language_id}"
+        module = importlib.import_module(module_name)
+        patterns = getattr(module, "PATTERNS", {})
+        
+        # Validate patterns before registering
+        validation_results = validate_all_patterns({language_id: patterns})
+        if validation_results:
+            validation_report = report_validation_results(validation_results)
+            logger.warning(f"Pattern validation found issues:\n{validation_report}")
+        
+        _pattern_registries[language_id] = patterns
+        logger.debug(f"Loaded {len(patterns)} patterns for language {language_id}")
+        return patterns
+    except (ImportError, AttributeError) as e:
+        logger.debug(f"No patterns available for language {language_id}: {str(e)}")
+        _pattern_registries[language_id] = {}
+        return {}
+
+def get_all_available_patterns() -> Dict[str, Dict[str, Any]]:
+    """
+    Return a dictionary of all available patterns for all languages.
+    
+    Returns:
+        Dictionary mapping language IDs to their pattern dictionaries
+    """
+    # Currently loaded patterns
+    patterns = {}
+    
+    # Add any patterns that were already loaded
+    for language_id, pattern_registry in _pattern_registries.items():
+        patterns[language_id] = pattern_registry
+        
+    return patterns
+
+def clear_pattern_cache():
+    """Clear the pattern registry cache."""
+    global _pattern_registries
+    _pattern_registries = {}
+    logger.debug("Pattern registry cache cleared")
+
+def validate_loaded_patterns() -> str:
+    """
+    Validate all currently loaded patterns and return a report.
+    
+    Returns:
+        String containing the validation report
+    """
+    patterns_by_language = get_all_available_patterns()
+    validation_results = validate_all_patterns(patterns_by_language)
+    return report_validation_results(validation_results)

@@ -28,13 +28,15 @@ from utils.error_handling import (
     ErrorBoundary,
     AsyncErrorBoundary
 )
-from parsers.models import (
+from parsers.types import (
     FileType,
-    FileClassification,
     ParserResult,
     ExtractedFeatures
 )
-from config import neo4j_config
+from parsers.models import (
+    FileClassification
+)
+from config import Neo4jConfig
 
 class GraphAnalysis:
     """[4.3.1] Graph-based code analysis capabilities using GDS."""
@@ -45,18 +47,22 @@ class GraphAnalysis:
             self.projections = Neo4jProjections()
             
             # Validate Neo4j configuration and plugins
-            self._validate_plugins()
+            # Skip validation during initialization to avoid sync/async issues
+            # We'll validate when methods are actually called
+            pass
     
-    def _validate_plugins(self):
+    async def _validate_plugins(self):
         """Validate that required plugins are installed."""
         plugins_query = "CALL dbms.procedures()"
-        results = self.neo4j.run_sync(plugins_query)
+        results = await run_query(plugins_query)
         procedures = [r["name"] for r in results]
         
         required = ["gds.", "apoc."]
         missing = [p for p in required if not any(proc.startswith(p) for proc in procedures)]
         if missing:
-            raise ProcessingError(f"Missing required Neo4j plugins: {', '.join(missing)}")
+            log(f"Missing required Neo4j plugins: {', '.join(missing)}", level="warning")
+            return False
+        return True
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_code_metrics(

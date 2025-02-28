@@ -26,10 +26,9 @@ from embedding.embedding_models import code_embedder, doc_embedder
 from ai_tools.graph_capabilities import graph_analysis
 from parsers.models import (
     FileType,
-    FileClassification,
-    ParserResult,
-    ExtractedFeatures
+    FileClassification
 )
+from parsers.types import ParserResult, ExtractedFeatures
 from utils.error_handling import (
     handle_async_errors,
     handle_errors,

@@ -5,6 +5,7 @@ Flow:
    - PostgreSQL: Code, docs, embeddings storage
    - Neo4j: Graph relationships and analysis
    - Transaction coordination across DBs
+   - Retry mechanisms for handling transient failures
 
 2. Integration Points:
    - FileProcessor [2.0] -> upsert_ops.py: Store processed files
@@ -18,6 +19,7 @@ Flow:
    - transaction.py [6.4]: Multi-DB transaction management
    - upsert_ops.py [6.5]: Unified data storage operations
    - schema.py [6.6]: Database schema management
+   - retry_utils.py [6.7]: Database retry mechanisms with exponential backoff
 """
 
 from .psql import (
@@ -36,13 +38,24 @@ from .upsert_ops import (
 from .neo4j_ops import (
     Neo4jTools,
     run_query,
+    run_query_with_retry,
     driver,
 )
 from .graph_sync import graph_sync
-
+from .retry_utils import (
+    with_retry,
+    RetryableError,
+    NonRetryableError,
+    RetryableNeo4jError,
+    NonRetryableNeo4jError,
+    RetryConfig,
+    DatabaseRetryManager,
+    default_retry_manager
+)
 
 
 __all__ = [
+    # PostgreSQL operations
     "query",
     "execute",
     "init_db_pool",
@@ -50,9 +63,23 @@ __all__ = [
     "get_connection",
     "release_connection",
     "upsert_doc",
+    "upsert_code_snippet",
+    
+    # Neo4j operations
     "run_query",
+    "run_query_with_retry",
     "driver",
     "Neo4jTools",
     "graph_sync",
     "search_docs_common",
+    
+    # Retry utilities
+    "with_retry",
+    "RetryableError",
+    "NonRetryableError",
+    "RetryableNeo4jError",
+    "NonRetryableNeo4jError",
+    "RetryConfig",
+    "DatabaseRetryManager",
+    "default_retry_manager"
 ] 
