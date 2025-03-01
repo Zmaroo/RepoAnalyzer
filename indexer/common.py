@@ -8,45 +8,17 @@ import asyncio
 import aiofiles
 from typing import List, Set, Optional, Callable, Awaitable, Any, Dict
 from utils.logger import log
+from utils.error_handling import handle_async_errors
 from functools import wraps
 
+# Deprecated: Use handle_async_errors from utils.error_handling instead
+# Keeping this for backward compatibility but marking as deprecated
 def async_handle_errors(async_func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
-    """[3.1] Decorator for consistent async error handling."""
-    import inspect
-    from typing import get_type_hints, List, Dict
-    
-    @wraps(async_func)
-    async def wrapper(*args, **kwargs):
-        try:
-            return await async_func(*args, **kwargs)
-        except Exception as e:
-            log(f"Async error in function '{async_func.__name__}': {e}", level="error")
-            
-            # Try to determine appropriate return type based on function annotation
-            try:
-                return_type_hints = get_type_hints(async_func)
-                if 'return' in return_type_hints:
-                    return_hint = return_type_hints['return']
-                    # Handle various common return types
-                    origin = getattr(return_hint, '__origin__', None)
-                    if origin is list or (hasattr(return_hint, '_name') and return_hint._name == 'List'):
-                        return []
-                    elif origin is dict or (hasattr(return_hint, '_name') and return_hint._name == 'Dict'):
-                        return {}
-                    elif return_hint is bool or return_hint == bool:
-                        return False
-                    elif inspect.isclass(return_hint) and issubclass(return_hint, (list, List)):
-                        return []
-                    elif inspect.isclass(return_hint) and issubclass(return_hint, (dict, Dict)):
-                        return {}
-            except Exception as type_error:
-                log(f"Error determining return type for {async_func.__name__}: {type_error}", level="debug")
-            
-            # Default fallback
-            return None
-    return wrapper
+    """[DEPRECATED] Use handle_async_errors from utils.error_handling instead."""
+    from utils.error_handling import handle_async_errors
+    return handle_async_errors()(async_func)
 
-@async_handle_errors
+@handle_async_errors
 async def async_read_file(file_path: str, try_encodings: bool = True) -> Optional[str]:
     """[3.2] Unified file reading with encoding detection.
     

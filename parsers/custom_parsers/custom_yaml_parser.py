@@ -1,12 +1,18 @@
-"""Custom parser for YAML with enhanced documentation features."""
+"""
+Custom YAML parser.
 
-from typing import Dict, List, Any, Optional
+This parser processes YAML files using the pyyaml library, extracting
+structured data and patterns.
+"""
+
+from typing import Dict, List, Any, Optional, Tuple
 import yaml
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.yaml import YAML_PATTERNS
 from parsers.models import YamlNode, PatternType
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 from collections import Counter
 import re
 
@@ -59,6 +65,7 @@ class YamlParser(BaseParser):
             node.value = value
         return node
     
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse YAML content into AST structure.
         
@@ -66,51 +73,52 @@ class YamlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "document", [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
-            current_comment_block = []
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
-                if comment_match := self.patterns['comment'].match(line):
-                    current_comment_block.append(comment_match.group(1).strip())
-                    continue
-                if line.strip() and current_comment_block:
-                    node = self._create_node(
-                        "comment_block", [i - len(current_comment_block), 0],
-                        [i - 1, len(current_comment_block[-1])],
-                        content="\n".join(current_comment_block)
-                    )
-                    ast.children.append(node)
-                    current_comment_block = []
+        with ErrorBoundary("yaml file parsing"):
             try:
-                data = yaml.safe_load(source_code)
-                if data is not None:
-                    root_node = self._process_value(data, [], [0, 0])
-                    ast.children.append(root_node)
-                    for pattern_name in ['description', 'metadata']:
-                        if YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].pattern(root_node.__dict__):
-                            ast.metadata["documentation"] = YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(root_node.__dict__)
-            except yaml.YAMLError as e:
-                log(f"Error parsing YAML structure: {e}", level="error")
-                ast.metadata["parse_error"] = str(e)
-            if current_comment_block:
-                ast.metadata["trailing_comments"] = current_comment_block
-            return ast.__dict__
-        except Exception as e:
-            log(f"Error parsing YAML content: {e}", level="error")
-            return YamlNode(
-                type="document", start_point=[0, 0], end_point=[0, 0],
-                error=str(e), children=[]
-            ).__dict__
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "document", [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
+                current_comment_block = []
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
+                    if comment_match := self.patterns['comment'].match(line):
+                        current_comment_block.append(comment_match.group(1).strip())
+                        continue
+                    if line.strip() and current_comment_block:
+                        node = self._create_node(
+                            "comment_block", [i - len(current_comment_block), 0],
+                            [i - 1, len(current_comment_block[-1])],
+                            content="\n".join(current_comment_block)
+                        )
+                        ast.children.append(node)
+                        current_comment_block = []
+                try:
+                    data = yaml.safe_load(source_code)
+                    if data is not None:
+                        root_node = self._process_value(data, [], [0, 0])
+                        ast.children.append(root_node)
+                        for pattern_name in ['description', 'metadata']:
+                            if YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].pattern(root_node.__dict__):
+                                ast.metadata["documentation"] = YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(root_node.__dict__)
+                except yaml.YAMLError as e:
+                    log(f"Error parsing YAML structure: {e}", level="error")
+                    ast.metadata["parse_error"] = str(e)
+                if current_comment_block:
+                    ast.metadata["trailing_comments"] = current_comment_block
+                return ast.__dict__
+            except (ValueError, KeyError, TypeError) as e:  # Use specific error types instead of broad Exception
+                log(f"Error parsing YAML content: {e}", level="error")
+                return YamlNode(
+                    type="document", start_point=[0, 0], end_point=[0, 0],
+                    error=str(e), children=[]
+                ).__dict__
             
+    @handle_errors(error_types=(ParsingError, ProcessingError))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """
-        Extract patterns from YAML files for repository learning.
+        """Extract patterns from YAML files for repository learning.
         
         Args:
             source_code: The content of the YAML file
@@ -118,83 +126,96 @@ class YamlParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
-        patterns = []
-        
-        try:
-            # Parse the source first to get a structured representation
-            ast = self._parse_source(source_code)
-            
-            # Extract mapping patterns
-            mapping_patterns = self._extract_mapping_patterns(ast)
-            for mapping in mapping_patterns:
-                patterns.append({
-                    'name': f'yaml_mapping_{mapping["path"]}',
-                    'content': mapping["content"],
-                    'pattern_type': PatternType.STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'mapping',
-                        'path': mapping["path"],
-                        'key_count': mapping["key_count"]
-                    }
-                })
-            
-            # Extract sequence patterns
-            sequence_patterns = self._extract_sequence_patterns(ast)
-            for sequence in sequence_patterns:
-                patterns.append({
-                    'name': f'yaml_sequence_{sequence["path"]}',
-                    'content': sequence["content"],
-                    'pattern_type': PatternType.STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'sequence',
-                        'path': sequence["path"],
-                        'item_count': sequence["item_count"]
-                    }
-                })
+        with ErrorBoundary("yaml pattern extraction"):
+            try:
+                patterns = []
                 
-            # Extract anchor and alias patterns
-            reference_patterns = self._extract_reference_patterns(ast)
-            for ref in reference_patterns:
-                patterns.append({
-                    'name': f'yaml_reference_{ref["type"]}_{ref["name"]}',
-                    'content': ref["content"],
-                    'pattern_type': PatternType.REFERENCE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': ref["type"],
-                        'name': ref["name"]
-                    }
-                })
+                # Parse the source first to get a structured representation
+                ast = self._parse_source(source_code)
                 
-            # Extract comment patterns
-            comment_patterns = self._extract_comment_patterns(ast)
-            for comment in comment_patterns:
-                patterns.append({
-                    'name': f'yaml_comment_{comment["type"]}',
-                    'content': comment["content"],
-                    'pattern_type': PatternType.DOCUMENTATION,
-                    'language': self.language_id,
-                    'confidence': 0.75,
-                    'metadata': {
-                        'type': comment["type"],
-                        'line_count': comment["line_count"]
-                    }
-                })
+                # Extract mapping patterns
+                mapping_patterns = self._extract_mapping_patterns(ast)
+                for mapping in mapping_patterns:
+                    patterns.append({
+                        'name': f'yaml_mapping_{mapping["type"]}',
+                        'content': mapping["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'mapping',
+                            'key_pattern': mapping["key_pattern"],
+                            'value_type': mapping["value_type"]
+                        }
+                    })
                 
-            # Extract naming convention patterns
-            naming_patterns = self._extract_naming_patterns(source_code)
-            for pattern in naming_patterns:
-                patterns.append(pattern)
+                # Extract sequence patterns
+                sequence_patterns = self._extract_sequence_patterns(ast)
+                for sequence in sequence_patterns:
+                    patterns.append({
+                        'name': f'yaml_sequence_{sequence["type"]}',
+                        'content': sequence["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.75,
+                        'metadata': {
+                            'type': 'sequence',
+                            'item_type': sequence["item_type"],
+                            'length': sequence["length"]
+                        }
+                    })
                 
-        except Exception as e:
-            log(f"Error extracting YAML patterns: {e}", level="error")
-            
-        return patterns
+                # Extract reference patterns (anchors and aliases)
+                reference_patterns = self._extract_reference_patterns(ast)
+                for reference in reference_patterns:
+                    patterns.append({
+                        'name': f'yaml_reference_{reference["type"]}',
+                        'content': reference["content"],
+                        'pattern_type': PatternType.CODE_REFERENCE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': reference["type"],
+                            'name': reference["name"]
+                        }
+                    })
+                
+                # Extract comment patterns
+                comment_patterns = self._extract_comment_patterns(ast)
+                for comment in comment_patterns:
+                    patterns.append({
+                        'name': f'yaml_comment_{comment["type"]}',
+                        'content': comment["content"],
+                        'pattern_type': PatternType.DOCUMENTATION,
+                        'language': self.language_id,
+                        'confidence': 0.7,
+                        'metadata': {
+                            'type': 'comment',
+                            'style': comment["type"]
+                        }
+                    })
+                
+                # Extract naming patterns
+                naming_patterns = self._extract_naming_patterns(source_code)
+                for naming in naming_patterns:
+                    patterns.append({
+                        'name': f'yaml_naming_{naming["type"]}',
+                        'content': naming["content"],
+                        'pattern_type': PatternType.CODE_NAMING,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'naming',
+                            'convention': naming["type"],
+                            'examples': naming["examples"]
+                        }
+                    })
+                
+                return patterns
+                
+            except (ValueError, KeyError, TypeError, yaml.YAMLError) as e:  # Use specific error types instead of broad Exception
+                log(f"Error extracting patterns from YAML file: {str(e)}", level="error")
+                return []
         
     def _extract_mapping_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract mapping patterns from the AST."""

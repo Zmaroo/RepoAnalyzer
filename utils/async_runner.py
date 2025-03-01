@@ -3,6 +3,8 @@ import threading
 import concurrent.futures
 from typing import TypeVar, Awaitable, Set, Any
 
+from utils.logger import log
+
 T = TypeVar('T')
 _global_loop = None
 _pending_tasks: Set[asyncio.Task] = set()
@@ -75,5 +77,5 @@ def cleanup_tasks():
         try:
             future = asyncio.gather(*_pending_tasks, return_exceptions=True)
             _global_loop.call_soon_threadsafe(lambda: asyncio.ensure_future(future))
-        except Exception:
-            pass 
+        except Exception as e:
+            log(f"Error during task cleanup: {e}", level="error") 

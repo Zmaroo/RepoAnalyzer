@@ -6,6 +6,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.models import JsonNode, PatternType
 from parsers.query_patterns.json import JSON_PATTERNS
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 import json
 import re
 from collections import Counter
@@ -117,36 +118,38 @@ class JsonParser(BaseParser):
                 value_type=type(value).__name__
             )
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse JSON content into AST structure with caching support."""
         lines = source_code.splitlines()
         line_count = len(lines)
         
-        try:
-            # Note: We don't need to check cache here as BaseParser.parse() already does this
-            # This method will only be called for cache misses
-            
-            data = json.loads(source_code)
-            ast = self._process_json_value(data, "")
-            
-            # Set document root position
-            ast.start_point = [0, 0]
-            ast.end_point = [line_count - 1, len(lines[-1]) if lines else 0]
-            
-            # Analyze structure
-            self._analyze_structure(ast)
-            
-            return ast.__dict__
-            
-        except json.JSONDecodeError as e:
-            log(f"Error parsing JSON: {e}", level="error")
-            return self._create_node(
-                "document",
-                [0, 0],
-                [line_count - 1, len(lines[-1]) if lines else 0],
-                error=str(e),
-                children=[]
-            ).__dict__
+        with ErrorBoundary(error_types=(ParsingError,), context="JSON parsing"):
+            try:
+                # Note: We don't need to check cache here as BaseParser.parse() already does this
+                # This method will only be called for cache misses
+                
+                data = json.loads(source_code)
+                ast = self._process_json_value(data, "")
+                
+                # Set document root position
+                ast.start_point = [0, 0]
+                ast.end_point = [line_count - 1, len(lines[-1]) if lines else 0]
+                
+                # Analyze structure
+                self._analyze_structure(ast)
+                
+                return ast.__dict__
+                
+            except json.JSONDecodeError as e:
+                log(f"Error parsing JSON: {e}", level="error")
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [line_count - 1, len(lines[-1]) if lines else 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
             
     def _analyze_structure(self, node: JsonNode) -> None:
         """Analyze JSON structure for insights."""
@@ -210,6 +213,7 @@ class JsonParser(BaseParser):
             
         return conventions
 
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract JSON patterns from the source code for repository learning.
@@ -222,30 +226,31 @@ class JsonParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            ast = JsonNode(**ast_dict)
-            
-            # Extract structure patterns
-            structure_patterns = self._extract_structure_patterns(ast)
-            patterns.extend(structure_patterns)
-            
-            # Extract naming convention patterns
-            naming_patterns = self._extract_naming_convention_patterns(ast)
-            patterns.extend(naming_patterns)
-            
-            # Extract schema patterns
-            schema_patterns = self._extract_schema_patterns(ast)
-            patterns.extend(schema_patterns)
-            
-            # Extract common field patterns
-            field_patterns = self._extract_common_field_patterns(ast)
-            patterns.extend(field_patterns)
-            
-        except Exception as e:
-            log(f"Error extracting JSON patterns: {e}", level="error")
-            
+        with ErrorBoundary(error_types=(ProcessingError,), context="JSON pattern extraction"):
+            try:
+                # Parse the source first to get a structured representation
+                ast_dict = self._parse_source(source_code)
+                ast = JsonNode(**ast_dict)
+                
+                # Extract structure patterns
+                structure_patterns = self._extract_structure_patterns(ast)
+                patterns.extend(structure_patterns)
+                
+                # Extract naming convention patterns
+                naming_patterns = self._extract_naming_convention_patterns(ast)
+                patterns.extend(naming_patterns)
+                
+                # Extract schema patterns
+                schema_patterns = self._extract_schema_patterns(ast)
+                patterns.extend(schema_patterns)
+                
+                # Extract common field patterns
+                field_patterns = self._extract_common_field_patterns(ast)
+                patterns.extend(field_patterns)
+                
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting JSON patterns: {e}", level="error")
+                
         return patterns
         
     def _extract_structure_patterns(self, ast: JsonNode) -> List[Dict[str, Any]]:

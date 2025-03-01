@@ -31,7 +31,8 @@ from utils.error_handling import (
     ProcessingError,
     DatabaseError,
     ErrorBoundary,
-    AsyncErrorBoundary
+    AsyncErrorBoundary,
+    TransactionError
 )
 from parsers.models import (
     FileType,
@@ -46,6 +47,7 @@ from parsers.types import (
 from ai_tools.code_understanding import CodeUnderstanding
 import os
 from db.graph_sync import graph_sync
+from neo4j.exceptions import Neo4jError
 
 
 class ReferenceRepositoryLearning:
@@ -127,12 +129,26 @@ class ReferenceRepositoryLearning:
                 if common_nodes:
                     # Create embedding for this pattern
                     pattern_text = file["file_content"][:1000]  # First 1000 chars as sample
-                    try:
+                    from utils.error_handling import ErrorBoundary
+                    
+                    # Default value in case of error
+                    embedding_list = None
+                    
+                    # Define a function to create embedding with specific error handling
+                    def create_embedding():
+                        nonlocal embedding_list
                         embedding = self.embedder.embed(pattern_text)
                         embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else None
-                    except Exception as e:
-                        log(f"Error creating embedding for pattern: {e}", level="error")
-                        embedding_list = None
+                    
+                    # Use ErrorBoundary with specific error types
+                    try:
+                        with ErrorBoundary("pattern embedding", 
+                                        error_types=(ValueError, ImportError, ProcessingError)):
+                            create_embedding()
+                    except Exception:
+                        # Error has been logged by ErrorBoundary
+                        # embedding_list remains None
+                        pass
                         
                     pattern = {
                         "file_path": file["file_path"],
@@ -778,13 +794,19 @@ class ReferenceRepositoryLearning:
         across multiple reference repositories, identifying common patterns that appear in high-quality
         repositories and can be considered industry best practices.
         """
+        from utils.error_handling import AsyncErrorBoundary
+        
         if len(repo_ids) < 2:
             raise ValueError("At least two repositories are required for cross-repository learning")
         
         # Process each repository individually first
         learning_results = []
         for repo_id in repo_ids:
-            try:
+            # Define operation for learning from a single repository
+            async with AsyncErrorBoundary(
+                f"learning_from_repository_{repo_id}", 
+                error_types=(ProcessingError, DatabaseError, Neo4jError, ValueError)
+            ):
                 # Learn from individual repository first
                 result = await self.learn_from_repository(repo_id)
                 learning_results.append(result)
@@ -792,14 +814,16 @@ class ReferenceRepositoryLearning:
                 # Ensure both code and pattern projections
                 await graph_sync.ensure_projection(repo_id)
                 await graph_sync.ensure_pattern_projection(repo_id)
-            except Exception as e:
-                log(f"Error learning from repository {repo_id}: {e}", level="error")
         
         # Create cross-repository comparisons
         comparison_matrix = []
         for i, repo_id1 in enumerate(repo_ids):
             for repo_id2 in repo_ids[i+1:]:
-                try:
+                # Define operation for comparing repositories
+                async with AsyncErrorBoundary(
+                    f"comparing_repositories_{repo_id1}_{repo_id2}",
+                    error_types=(Neo4jError, TransactionError, DatabaseError, ProcessingError)
+                ):
                     # Compare each pair of repositories
                     comparison = await graph_sync.compare_repository_structures(
                         active_repo_id=repo_id1,
@@ -811,8 +835,6 @@ class ReferenceRepositoryLearning:
                         "similarity_count": comparison.get("similarity_count", 0),
                         "similarities": comparison.get("similarities", [])
                     })
-                except Exception as e:
-                    log(f"Error comparing repositories {repo_id1} and {repo_id2}: {e}", level="error")
         
         # Extract common patterns across repositories
         common_patterns = await self._identify_common_patterns_across_repos(repo_ids)
@@ -1072,17 +1094,28 @@ class ReferenceRepositoryLearning:
     async def update_patterns_for_file(self, repo_id: int, file_path: str) -> Dict[str, Any]:
         """[4.4.9] Update patterns for a specific file in a repository.
         
-        This method is called when a file is changed and patterns need to be updated.
-        It extracts patterns from the changed file and updates the database.
+        This method extracts patterns from a single file and updates them in the database,
+        useful for incremental updates without reprocessing the entire repository.
         
         Args:
             repo_id: Repository ID
-            file_path: Path to the file that changed (relative to repo root)
+            file_path: Path to the file to update
             
         Returns:
             Dict with update results
         """
-        try:
+        from utils.error_handling import AsyncErrorBoundary, ErrorBoundary
+        from parsers.pattern_processor import pattern_processor
+        
+        # Define a helper function for embedding creation
+        def create_embedding(pattern_text):
+            with ErrorBoundary("pattern_embedding"):
+                embedding = self.embedder.embed(pattern_text)
+                return embedding.tolist() if hasattr(embedding, 'tolist') else None
+            return None  # Return None if ErrorBoundary catches an exception
+        
+        # Use AsyncErrorBoundary for the main operation
+        async with AsyncErrorBoundary("update_file_patterns", error_types=(Exception,)):
             # Get file content and language
             file_query = """
                 SELECT file_content, language 
@@ -1105,8 +1138,6 @@ class ReferenceRepositoryLearning:
             await query(delete_query, {"repo_id": repo_id, "file_path": file_path})
             
             # Extract patterns using pattern processor
-            from parsers.pattern_processor import pattern_processor
-            
             patterns = pattern_processor.extract_repository_patterns(file_path, file_content, language)
             
             # Store patterns
@@ -1115,13 +1146,9 @@ class ReferenceRepositoryLearning:
                 # Create embedding for the pattern
                 pattern_text = pattern.get("content", "")
                 if pattern_text:
-                    try:
-                        embedding = self.embedder.embed(pattern_text)
-                        embedding_list = embedding.tolist() if hasattr(embedding, 'tolist') else None
-                    except Exception as e:
-                        log(f"Error creating embedding for pattern: {e}", level="error")
-                        embedding_list = None
-                        
+                    # Use the helper function with ErrorBoundary
+                    embedding_list = create_embedding(pattern_text)
+                    
                     # Store pattern in database
                     pattern_query = """
                         INSERT INTO code_patterns (
@@ -1169,10 +1196,9 @@ class ReferenceRepositoryLearning:
                 "patterns_updated": len(new_patterns),
                 "pattern_ids": new_patterns
             }
-            
-        except Exception as e:
-            log(f"Error updating patterns for file {file_path}: {e}", level="error")
-            return {"status": "error", "message": str(e)}
+        
+        # If AsyncErrorBoundary catches an exception, we'll return an error status
+        return {"status": "error", "message": "Failed to update patterns for file"}
 
 
 # Create a singleton instance

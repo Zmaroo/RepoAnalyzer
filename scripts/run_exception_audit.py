@@ -49,7 +49,7 @@ def parse_args():
     )
     return parser.parse_args()
 
-def print_report_summary(report):
+def print_report_summary(report, output_path=None):
     """Print a human-readable summary of the audit report."""
     stats = report["statistics"]
     recommendations = report["recommendations"]
@@ -102,7 +102,8 @@ def print_report_summary(report):
             print()
     
     print(f"\nTotal recommendations: {len(recommendations)}")
-    print("\nFull report saved to: {output_path}")
+    if output_path:
+        print(f"\nFull report saved to: {output_path}")
     print("="*80 + "\n")
 
 async def main():
@@ -111,8 +112,39 @@ async def main():
     
     log(f"Starting exception handling audit of {args.dir}", level="info")
     
-    # Run the audit
-    report = await run_exception_audit(args.dir)
+    try:
+        # Analyze the codebase directly using ErrorAudit class methods
+        log("Starting exception handling audit...", level="info")
+        
+        # Analyze the codebase for error handling patterns
+        ErrorAudit.analyze_codebase(args.dir)
+        
+        # Generate the report
+        report = ErrorAudit.get_error_report()
+        recommendations = ErrorAudit.get_standardization_recommendations()
+        
+        # Save the report to a file (this is an async method)
+        await ErrorAudit.save_report()
+        
+        # Log a summary
+        log(
+            f"Exception audit complete: found {report.get('total_errors', 0)} errors "
+            f"across {report.get('unique_error_types', 0)} types with "
+            f"{len(recommendations)} recommendations",
+            level="info"
+        )
+        
+        result = {
+            "statistics": report,
+            "recommendations": recommendations
+        }
+    except Exception as e:
+        log(f"Error running exception audit: {e}", level="error")
+        result = {
+            "statistics": {},
+            "recommendations": [],
+            "error": str(e)
+        }
     
     # Save the report
     output_path = args.output
@@ -128,15 +160,15 @@ async def main():
     # Save report to file
     with open(output_path, 'w') as f:
         if args.format == "json":
-            json.dump(report, f, indent=2)
+            json.dump(result, f, indent=2)
         else:
             # Simple text format
             f.write(f"EXCEPTION HANDLING AUDIT REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            f.write(f"Total errors tracked: {report['statistics'].get('total_errors', 0)}\n")
-            f.write(f"Unique error types: {report['statistics'].get('unique_error_types', 0)}\n\n")
+            f.write(f"Total errors tracked: {result['statistics'].get('total_errors', 0)}\n")
+            f.write(f"Unique error types: {result['statistics'].get('unique_error_types', 0)}\n\n")
             
             f.write("RECOMMENDATIONS:\n")
-            for i, rec in enumerate(report['recommendations'], 1):
+            for i, rec in enumerate(result['recommendations'], 1):
                 f.write(f"{i}. {rec['location']}\n")
                 f.write(f"   Issue: {rec['issue']}\n")
                 f.write(f"   Recommendation: {rec['recommendation']}\n")
@@ -146,7 +178,7 @@ async def main():
     
     # Print summary to console
     if args.verbose or args.format == "text":
-        print_report_summary(report)
+        print_report_summary(result, output_path)
     else:
         print(f"Exception audit complete. Report saved to: {output_path}")
 

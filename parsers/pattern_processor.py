@@ -4,12 +4,22 @@ from typing import Dict, Any, List, Union, Callable, Optional
 from dataclasses import dataclass, field
 from parsers.language_mapping import TREE_SITTER_LANGUAGES, CUSTOM_PARSER_LANGUAGES, normalize_language_name
 import re
+import time
 from parsers.types import ParserType
-from parsers.models import PatternDefinition, PatternMatch, FileClassification
+from parsers.models import PatternDefinition, PatternMatch, FileClassification, PatternType
 from utils.logger import log
 import os
 import importlib
 from parsers.language_mapping import is_supported_language
+from utils.error_handling import ErrorBoundary
+
+# Try to import pattern statistics
+try:
+    from analytics.pattern_statistics import pattern_statistics
+    PATTERN_STATS_ENABLED = True
+except ImportError:
+    PATTERN_STATS_ENABLED = False
+    log("Pattern statistics module not available, statistics collection disabled", level="warning")
 
 # Add these common patterns at the top level
 COMMON_PATTERNS = {
@@ -34,10 +44,8 @@ def compile_patterns(pattern_defs: Dict[str, Any]) -> Dict[str, Any]:
     compiled = {}
     for category, patterns in pattern_defs.items():
         for name, pattern_obj in patterns.items():
-            try:
+            with ErrorBoundary(f"compile_pattern_{name}", error_types=(Exception,)):
                 compiled[name] = re.compile(pattern_obj.pattern, re.DOTALL)
-            except Exception as e:
-                log(f"Error compiling pattern {name}: {e}", level="error")
     return compiled
 
 class PatternProcessor:
@@ -55,10 +63,16 @@ class PatternProcessor:
         # Used to track which language patterns have been loaded
         self._loaded_languages = set()
         
+        # Import block extractor
+        from parsers.block_extractor import block_extractor
+        self.block_extractor = block_extractor
+        
+        # Track languages with tree-sitter support
+        self.tree_sitter_languages = TREE_SITTER_LANGUAGES
+        
     def _ensure_patterns_loaded(self, language: str):
         """
-        Ensure patterns for the specified language are loaded.
-        Uses lazy loading to improve performance.
+        Ensure patterns for a language are loaded.
         
         Args:
             language: The language to load patterns for
@@ -70,7 +84,7 @@ class PatternProcessor:
             return
             
         # Load the patterns based on parser type
-        try:
+        with ErrorBoundary(f"load_patterns_{normalized_lang}", error_types=(Exception,)):
             if normalized_lang in TREE_SITTER_LANGUAGES:
                 self._load_tree_sitter_patterns(normalized_lang)
             elif normalized_lang in CUSTOM_PARSER_LANGUAGES:
@@ -78,8 +92,6 @@ class PatternProcessor:
                 
             # Mark as loaded even if there were no patterns
             self._loaded_languages.add(normalized_lang)
-        except Exception as e:
-            log(f"Error loading patterns for {language}: {e}", level="error")
     
     def _load_tree_sitter_patterns(self, language: str):
         """
@@ -135,15 +147,55 @@ class PatternProcessor:
 
     def process_node(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
         """Process a node using appropriate pattern type."""
+        start_time = time.time()
+        compilation_time = 0
+        
+        # Track compilation time if available
+        if hasattr(pattern, 'compilation_time_ms'):
+            compilation_time = pattern.compilation_time_ms
+        
         if pattern.tree_sitter:
-            return self._process_tree_sitter_pattern(source_code, pattern)
+            matches = self._process_tree_sitter_pattern(source_code, pattern)
         elif pattern.regex:
-            return self._process_regex_pattern(source_code, pattern)
-        return []
+            matches = self._process_regex_pattern(source_code, pattern)
+        else:
+            matches = []
+        
+        # Record statistics if enabled
+        if PATTERN_STATS_ENABLED and hasattr(pattern, 'definition') and pattern.definition:
+            execution_time_ms = (time.time() - start_time) * 1000
+            pattern_id = getattr(pattern.definition, 'id', pattern.definition.name if hasattr(pattern.definition, 'name') else 'unknown')
+            pattern_type = getattr(pattern.definition, 'pattern_type', PatternType.CODE_STRUCTURE)
+            language = getattr(pattern.definition, 'language', 'unknown')
+            
+            # If pattern_type is a string, convert it to the enum
+            if isinstance(pattern_type, str):
+                try:
+                    pattern_type = PatternType(pattern_type)
+                except ValueError:
+                    pattern_type = PatternType.CODE_STRUCTURE
+            
+            # Call the pattern statistics manager
+            try:
+                pattern_statistics.track_pattern_execution(
+                    pattern_id=pattern_id,
+                    pattern_type=pattern_type,
+                    language=language,
+                    execution_time_ms=execution_time_ms,
+                    compilation_time_ms=compilation_time,
+                    matches_found=len(matches),
+                    memory_bytes=len(source_code) if matches else 0  # Rough estimate
+                )
+            except Exception as e:
+                log(f"Error tracking pattern statistics: {str(e)}", level="error")
+        
+        return matches
 
     def _process_regex_pattern(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
         """Process using regex pattern."""
+        start_time = time.time()
         matches = []
+        
         for match in pattern.regex.finditer(source_code):
             result = PatternMatch(
                 text=match.group(0),
@@ -151,7 +203,8 @@ class PatternProcessor:
                 end=match.end(),
                 metadata={
                     "groups": match.groups(),
-                    "named_groups": match.groupdict()
+                    "named_groups": match.groupdict(),
+                    "execution_time_ms": (time.time() - start_time) * 1000  # Add execution time for analysis
                 }
             )
             if pattern.extract:
@@ -161,19 +214,21 @@ class PatternProcessor:
 
     def _process_tree_sitter_pattern(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
         """Process using tree-sitter pattern."""
-        try:
+        # Pre-import required modules outside the error boundary
+        from tree_sitter_language_pack import get_parser
+        from parsers.models import PatternMatch
+        import hashlib
+        import asyncio
+        from utils.cache import ast_cache
+        
+        start_time = time.time()
+        
+        # Define a function to process with the context manager
+        def process_pattern():
             # Get the tree-sitter parser for this language
-            from tree_sitter_language_pack import get_parser
-            from parsers.models import PatternMatch
-            
             parser = get_parser(pattern.language_id)
             if not parser:
                 return []
-            
-            # Check if we already have a cached AST
-            from utils.cache import ast_cache
-            import hashlib
-            import asyncio
             
             # Create a unique cache key based on language and source code hash
             source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
@@ -214,25 +269,28 @@ class PatternProcessor:
                     text=match.pattern_node.text.decode('utf8'),
                     start=match.pattern_node.start_point,
                     end=match.pattern_node.end_point,
-                    metadata={"captures": captures}
+                    metadata={
+                        "captures": captures,
+                        "execution_time_ms": (time.time() - start_time) * 1000  # Add execution time for analysis
+                    }
                 )
                 
                 # Apply custom extraction if available
                 if pattern.extract:
-                    try:
+                    with ErrorBoundary("pattern extraction"):
                         extracted = pattern.extract(result)
                         if extracted:
                             result.metadata.update(extracted)
-                    except Exception as e:
-                        log(f"Error in pattern extraction: {e}", level="error")
                 
                 matches.append(result)
                 
             return matches
-            
-        except Exception as e:
-            log(f"Error processing tree-sitter pattern: {e}", level="error")
-            return []
+        
+        # Use the ErrorBoundary context manager
+        with ErrorBoundary("tree-sitter pattern processing"):
+            return process_pattern()
+        
+        return []
         
     def _convert_tree_to_dict(self, node) -> Dict[str, Any]:
         """Convert tree-sitter node to dict."""
@@ -249,95 +307,157 @@ class PatternProcessor:
 
     def extract_repository_patterns(self, file_path: str, source_code: str, language: str) -> List[Dict[str, Any]]:
         """
-        Extract potential patterns from a file for repository learning.
+        Extract patterns from source code for repository learning.
         
         Args:
-            file_path: Path to the file being processed
+            file_path: Path to the file (used for language detection if not specified)
             source_code: Source code content
-            language: Programming language of the file
+            language: Programming language
             
         Returns:
             List of extracted patterns with metadata
         """
-        # Ensure patterns are loaded for this language
-        self._ensure_patterns_loaded(language)
-        
         patterns = []
         
-        # Get language-specific rules
-        from ai_tools.rule_config import get_language_rules, get_policy_for_pattern, PatternType
-        
-        language_rules = get_language_rules(language)
-        
-        # Extract code structure patterns
-        structure_patterns = self._extract_code_structure_patterns(source_code, language_rules)
-        for pattern in structure_patterns:
-            pattern['pattern_type'] = PatternType.CODE_STRUCTURE
-            patterns.append(pattern)
+        with ErrorBoundary("extract_repository_patterns", error_types=(Exception,)):
+            # Load the appropriate pattern set based on language
+            from parsers.language_mapping import REPOSITORY_LEARNING_PATTERNS
             
-        # Extract naming convention patterns
-        naming_patterns = self._extract_naming_convention_patterns(source_code, language_rules)
-        for pattern in naming_patterns:
-            pattern['pattern_type'] = PatternType.CODE_NAMING
-            patterns.append(pattern)
+            language_rules = REPOSITORY_LEARNING_PATTERNS.get(language, {})
+            if not language_rules:
+                log(f"No repository learning patterns defined for {language}", level="debug")
+                return patterns
+                
+            # Extract different types of patterns
+            structure_patterns = self._extract_code_structure_patterns(
+                source_code, language_rules, language)
+            naming_patterns = self._extract_naming_convention_patterns(
+                source_code, language_rules)
+            error_patterns = self._extract_error_handling_patterns(
+                source_code, language_rules, language)
             
-        # Extract error handling patterns
-        error_patterns = self._extract_error_handling_patterns(source_code, language_rules)
-        for pattern in error_patterns:
-            pattern['pattern_type'] = PatternType.ERROR_HANDLING
-            patterns.append(pattern)
+            # Combine all patterns
+            patterns.extend(structure_patterns)
+            patterns.extend(naming_patterns)
+            patterns.extend(error_patterns)
+            
+            # Try to extract patterns using tree-sitter if available
+            if language in self.tree_sitter_languages:
+                try:
+                    from tree_sitter_language_pack import get_parser
+                    import importlib
+                    
+                    # Check if we have REPOSITORY_LEARNING section in language patterns
+                    pattern_module_name = f"parsers.query_patterns.{language}"
+                    learning_patterns = None
+                    
+                    try:
+                        pattern_module = importlib.import_module(pattern_module_name)
+                        if hasattr(pattern_module, f"{language.upper()}_PATTERNS"):
+                            pattern_dict = getattr(pattern_module, f"{language.upper()}_PATTERNS")
+                            learning_patterns = pattern_dict.get("REPOSITORY_LEARNING", {})
+                    except (ImportError, AttributeError):
+                        pass
+                    
+                    if learning_patterns:
+                        parser = get_parser(language)
+                        tree = parser.parse(source_code.encode("utf8"))
+                        root_node = tree.root_node
+                        
+                        # Process each tree-sitter pattern for learning
+                        for pattern_name, pattern_def in learning_patterns.items():
+                            if 'pattern' in pattern_def and 'extract' in pattern_def:
+                                try:
+                                    query = parser.query(pattern_def['pattern'])
+                                    
+                                    # Process captures using our improved block extractor
+                                    for capture in query.captures(root_node):
+                                        capture_name, node = capture
+                                        
+                                        # Extract the pattern content using the block extractor
+                                        block = self.block_extractor.extract_block(language, source_code, node)
+                                        if block and block.content:
+                                            # Create a mock capture result to pass to the extract function
+                                            capture_result = {
+                                                'node': node,
+                                                'captures': {capture_name: node},
+                                                'text': block.content
+                                            }
+                                            
+                                            # Apply the extract function to get metadata
+                                            try:
+                                                metadata = pattern_def['extract'](capture_result)
+                                                
+                                                if metadata:
+                                                    patterns.append({
+                                                        'name': pattern_name,
+                                                        'content': block.content,
+                                                        'pattern_type': metadata.get('type', PatternType.CUSTOM),
+                                                        'language': language,
+                                                        'confidence': 0.95,  # Higher confidence with tree-sitter
+                                                        'metadata': metadata
+                                                    })
+                                            except Exception as e:
+                                                log(f"Error in extract function for {pattern_name}: {str(e)}", level="error")
+                                except Exception as e:
+                                    log(f"Error processing tree-sitter query for {pattern_name}: {str(e)}", level="error")
+                except Exception as e:
+                    log(f"Error using tree-sitter for pattern extraction: {str(e)}", level="error")
             
         return patterns
         
-    def _extract_code_structure_patterns(self, source_code: str, language_rules: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract code structure patterns like class/function structures."""
+    def _extract_code_structure_patterns(self, source_code: str, language_rules: Dict[str, Any], language_id: str = None) -> List[Dict[str, Any]]:
+        """Extract code structure patterns from source using regex or tree-sitter queries."""
         patterns = []
         
-        # For common patterns like class/function definitions
-        if 'class' in language_rules.get('naming_conventions', {}):
-            class_pattern = language_rules['naming_conventions']['class']
-            class_matches = re.finditer(r'class\s+(' + class_pattern + r')', source_code)
+        with ErrorBoundary("extract_code_structure", error_types=(Exception,)):
+            # Extract classes first
+            class_pattern = language_rules.get('class_pattern')
+            if class_pattern:
+                class_matches = re.finditer(class_pattern, source_code)
+                for match in class_matches:
+                    class_name = match.group('class_name') if 'class_name' in match.groupdict() else ""
+                    class_start = match.start()
+                    
+                    # Use improved block extraction with language awareness
+                    class_content = self._extract_block_content(source_code, class_start, language_id)
+                    
+                    if class_content:
+                        patterns.append({
+                            'name': f'class_{class_name}',
+                            'content': class_content,
+                            'pattern_type': PatternType.CLASS_DEFINITION,
+                            'language': language_id or 'unknown',
+                            'confidence': 0.9,
+                            'metadata': {
+                                'type': 'class',
+                                'name': class_name
+                            }
+                        })
             
-            for match in class_matches:
-                # Find the class body
-                class_name = match.group(1)
-                class_start = match.start()
-                
-                # Simple heuristic to find class end - can be improved with actual parsing
-                class_content = self._extract_block_content(source_code, class_start)
-                if class_content:
-                    patterns.append({
-                        'name': f'class_{class_name}',
-                        'content': class_content,
-                        'language': language_rules.get('language', 'unknown'),
-                        'confidence': 0.8,
-                        'metadata': {
-                            'type': 'class',
-                            'class_name': class_name
-                        }
-                    })
-        
-        # Similar for functions/methods
-        if 'function' in language_rules.get('naming_conventions', {}):
-            func_pattern = language_rules['naming_conventions']['function']
-            func_matches = re.finditer(r'(def|function)\s+(' + func_pattern + r')', source_code)
-            
-            for match in func_matches:
-                func_name = match.group(2)
-                func_start = match.start()
-                
-                func_content = self._extract_block_content(source_code, func_start)
-                if func_content:
-                    patterns.append({
-                        'name': f'function_{func_name}',
-                        'content': func_content,
-                        'language': language_rules.get('language', 'unknown'),
-                        'confidence': 0.75,
-                        'metadata': {
-                            'type': 'function',
-                            'function_name': func_name
-                        }
-                    })
+            # Extract functions/methods
+            function_pattern = language_rules.get('function_pattern')
+            if function_pattern:
+                func_matches = re.finditer(function_pattern, source_code)
+                for match in func_matches:
+                    func_name = match.group('func_name') if 'func_name' in match.groupdict() else ""
+                    func_start = match.start()
+                    
+                    # Use improved block extraction with language awareness
+                    func_content = self._extract_block_content(source_code, func_start, language_id)
+                    
+                    if func_content:
+                        patterns.append({
+                            'name': f'function_{func_name}',
+                            'content': func_content,
+                            'pattern_type': PatternType.FUNCTION_DEFINITION,
+                            'language': language_id or 'unknown',
+                            'confidence': 0.85,
+                            'metadata': {
+                                'type': 'function',
+                                'name': func_name
+                            }
+                        })
         
         return patterns
     
@@ -369,41 +489,83 @@ class PatternProcessor:
         
         return patterns
     
-    def _extract_error_handling_patterns(self, source_code: str, language_rules: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract error handling patterns."""
+    def _extract_error_handling_patterns(self, source_code: str, language_rules: Dict[str, Any], language_id: str = None) -> List[Dict[str, Any]]:
+        """Extract error handling patterns from source."""
         patterns = []
-        error_keywords = language_rules.get('error_patterns', [])
         
-        for keyword in error_keywords:
-            if keyword in ['try', 'catch', 'except']:
-                # Find try-except/try-catch blocks
-                try_matches = re.finditer(r'try\s*:', source_code) if keyword == 'try' else []
-                
+        with ErrorBoundary("extract_error_handling", error_types=(Exception,)):
+            # Extract try/catch blocks
+            try_pattern = language_rules.get('try_pattern')
+            if try_pattern:
+                try_matches = re.finditer(try_pattern, source_code)
                 for match in try_matches:
                     try_start = match.start()
                     
-                    # Extract the full try-except block
-                    try_block = self._extract_block_content(source_code, try_start)
+                    # Use improved block extraction with language awareness
+                    try_block = self._extract_block_content(source_code, try_start, language_id)
+                    
                     if try_block:
                         patterns.append({
                             'name': 'error_handling',
                             'content': try_block,
-                            'language': language_rules.get('language', 'unknown'),
-                            'confidence': 0.85,
+                            'pattern_type': PatternType.ERROR_HANDLING,
+                            'language': language_id or 'unknown',
+                            'confidence': 0.8,
                             'metadata': {
-                                'type': 'error_handling',
-                                'subtype': 'try_except' 
+                                'type': 'try_catch',
+                                'has_finally': 'finally' in try_block.lower(),
+                                'has_multiple_catches': try_block.lower().count('catch') > 1
                             }
                         })
         
         return patterns
     
-    def _extract_block_content(self, source_code: str, start_pos: int) -> Optional[str]:
+    def _extract_block_content(self, source_code: str, start_pos: int, language_id: str = None) -> Optional[str]:
         """
         Extract a code block (like function/class body) starting from a position.
-        Simple implementation that can be enhanced with actual parsing.
+        Uses tree-sitter block extraction if available, otherwise falls back to heuristic approach.
+        
+        Args:
+            source_code: The complete source code
+            start_pos: Position where the block starts
+            language_id: Optional language identifier for language-specific extraction
+            
+        Returns:
+            Extracted block content or None if extraction failed
         """
-        try:
+        with ErrorBoundary("extract_block_content", error_types=(Exception,)):
+            # If we have a language ID and it's supported by tree-sitter, use the block extractor
+            if language_id and language_id in self.tree_sitter_languages:
+                try:
+                    # Use tree-sitter to parse the source and find the node at the position
+                    from tree_sitter_language_pack import get_parser
+                    parser = get_parser(language_id)
+                    if parser:
+                        tree = parser.parse(source_code.encode("utf8"))
+                        
+                        # Find the block containing the starting position
+                        # Convert start_pos to line and column
+                        lines = source_code[:start_pos].splitlines()
+                        if not lines:
+                            line = 0
+                            col = start_pos
+                        else:
+                            line = len(lines) - 1
+                            col = len(lines[-1])
+                        
+                        # Get the node at the position
+                        cursor = tree.root_node.walk()
+                        cursor.goto_first_child_for_point((line, col))
+                        
+                        # Try to extract the block
+                        if cursor.node:
+                            block = self.block_extractor.extract_block(language_id, source_code, cursor.node)
+                            if block and block.content:
+                                return block.content
+                except Exception as e:
+                    log(f"Tree-sitter block extraction failed, falling back to heuristic: {str(e)}", level="debug")
+            
+            # Fallback to the heuristic approach
             # Find the opening brace or colon
             block_start = source_code.find(':', start_pos)
             if block_start == -1:
@@ -421,7 +583,7 @@ class PatternProcessor:
             # Handle Python indentation-based blocks
             if source_code[block_start] == ':':
                 block_content = [lines[0]]
-                initial_indent = len(lines[1]) - len(lines[1].lstrip())
+                initial_indent = len(lines[1]) - len(lines[1].lstrip()) if len(lines) > 1 else 0
                 
                 for i, line in enumerate(lines[1:], 1):
                     if line.strip() and len(line) - len(line.lstrip()) <= initial_indent:
@@ -444,9 +606,7 @@ class PatternProcessor:
                         
                 return '\n'.join(block_content)
         
-        except Exception as e:
-            log(f"Error extracting block content: {e}", level="error")
-            return None
+        return None
 
 # Global instance
 pattern_processor = PatternProcessor() 

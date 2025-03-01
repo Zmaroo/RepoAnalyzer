@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List, Type
 from parsers.types import FileType
 from parsers.base_parser import BaseParser
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 import importlib
 import inspect
 import os
@@ -15,6 +16,7 @@ import sys
 # Dictionary to hold all custom parsers
 _parsers: Dict[str, Type[BaseParser]] = {}
 
+@handle_errors(error_types=(ProcessingError,))
 def _load_parsers():
     """Dynamically load all custom parser modules."""
     parser_dir = Path(__file__).parent
@@ -23,18 +25,20 @@ def _load_parsers():
             continue
             
         module_name = file.stem
-        try:
-            # Import the module
-            module = importlib.import_module(f"parsers.custom_parsers.{module_name}")
-            
-            # Find parser classes
-            for name, obj in inspect.getmembers(module):
-                if (inspect.isclass(obj) and issubclass(obj, BaseParser) and obj != BaseParser):
-                    language_id = getattr(obj, "LANGUAGE_ID", None) or module_name.replace("custom_", "")
-                    _parsers[language_id] = obj
-                    log(f"Registered custom parser for: {language_id}", level="debug")
-        except Exception as e:
-            log(f"Failed to load custom parser {module_name}: {e}", level="error")
+        with ErrorBoundary(f"loading parser module {module_name}"):
+            try:
+                # Import the module
+                module = importlib.import_module(f"parsers.custom_parsers.{module_name}")
+                
+                # Find parser classes
+                for name, obj in inspect.getmembers(module):
+                    if (inspect.isclass(obj) and issubclass(obj, BaseParser) and obj != BaseParser):
+                        language_id = getattr(obj, "LANGUAGE_ID", None) or module_name.replace("custom_", "")
+                        _parsers[language_id] = obj
+                        log(f"Registered custom parser for: {language_id}", level="debug")
+            except (ImportError, AttributeError, TypeError) as e:
+                log(f"Failed to load custom parser {module_name}: {e}", level="error")
+                # Continue loading other parsers even if one fails
 
 def get_parser(language_id: str, file_type: Optional[FileType] = None) -> Optional[BaseParser]:
     """
@@ -52,7 +56,9 @@ def get_parser(language_id: str, file_type: Optional[FileType] = None) -> Option
         
     parser_class = _parsers.get(language_id)
     if parser_class:
-        return parser_class(language_id, file_type)
+        # Create a default FileType if None is provided
+        actual_file_type = file_type if file_type is not None else FileType.CODE
+        return parser_class(language_id, actual_file_type)
     return None
 
 # Ensure all parsers have pattern extraction functionality

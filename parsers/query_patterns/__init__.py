@@ -6,13 +6,17 @@ Provides lazy loading mechanism for pattern modules to avoid circular imports.
 import os
 import importlib
 import logging
-from typing import Dict, Any, Optional, Set, Callable
+from typing import Dict, Any, Optional, Set, List, Union, cast
+
+# Import types needed for type annotations
+from parsers.types import PatternCategory, QueryPattern, PatternInfo
 
 # Track loaded modules to prevent redundant loading
 _loaded_modules: Set[str] = set()
 
-# Pattern registry for lazy loading
+# Registry to store loaded patterns to avoid reloading
 _pattern_registry: Dict[str, Dict[str, Any]] = {}
+_pattern_registries: Dict[str, Dict[str, Any]] = {}
 
 # Flag to track initialization
 _initialized = False
@@ -23,118 +27,175 @@ logger = logging.getLogger(__name__)
 # Import core pattern validation functionality
 from parsers.pattern_validator import validate_all_patterns, report_validation_results
 
-def _normalize_language_name(name: str) -> str:
-    """Normalize language name to handle special cases."""
-    name = name.lower().replace('-', '_')
-    
-    # Special case mappings
-    mappings = {
-        'js': 'javascript',
-        'ts': 'typescript',
-        'py': 'python',
-        'rb': 'ruby',
-        'dockerfile': 'dockerfil',  # Handle special case
-    }
-    
-    return mappings.get(name, name)
+def _normalize_language_name(language: str) -> str:
+    """Normalize language name for pattern lookup."""
+    return language.lower().replace(" ", "_").replace("-", "_")
 
-def get_pattern_module(language: str) -> Optional[Any]:
+def get_pattern_module(language_id: str) -> Optional[Any]:
     """
-    Lazily load a specific language pattern module.
+    Lazily load the pattern module for a given language.
     
     Args:
-        language: The programming language name
+        language_id: The language identifier to load patterns for.
         
     Returns:
-        Module object or None if not found
+        The loaded module or None if not found.
     """
-    language = _normalize_language_name(language)
-    
-    # Return from cache if already loaded
-    if language in _loaded_modules:
-        try:
-            return importlib.import_module(f"parsers.query_patterns.{language}")
-        except ImportError:
-            logging.error(f"Failed to import previously loaded module: {language}")
-            return None
-    
-    # Try to load the module
     try:
-        module = importlib.import_module(f"parsers.query_patterns.{language}")
-        _loaded_modules.add(language)
-        return module
-    except ImportError as e:
-        logging.debug(f"Pattern module not found for language: {language}. {str(e)}")
+        # First check if there's a custom module in parsers.query_patterns
+        module_name = f"parsers.query_patterns.{language_id}"
+        return importlib.import_module(module_name)
+    except ImportError:
+        # Not found, return None
         return None
+
+def _ensure_pattern_category_keys(patterns_dict: Dict[str, Any]) -> Dict[PatternCategory, Any]:
+    """
+    Ensures that all keys in the patterns dictionary are PatternCategory enum values.
+    
+    This function checks if the keys in the provided dictionary are already PatternCategory enums.
+    If not, it attempts to convert string keys to the corresponding enum values, handling
+    special cases like 'REPOSITORY_LEARNING'.
+    
+    Args:
+        patterns_dict: Dictionary with string keys
+        
+    Returns:
+        Dictionary with PatternCategory enum keys
+    """
+    result: Dict[PatternCategory, Any] = {}
+    
+    for key, value in patterns_dict.items():
+        # Try to convert string to enum
+        try:
+            if key == 'REPOSITORY_LEARNING':
+                # Special case handling for this category
+                enum_key = cast(PatternCategory, key)
+                result[enum_key] = value
+            else:
+                try:
+                    enum_key = PatternCategory[key]
+                    result[enum_key] = value
+                except KeyError:
+                    # If conversion fails, log a warning
+                    logger.warning(f"Could not convert key '{key}' to PatternCategory enum")
+        except (KeyError, TypeError):
+            # If conversion fails, log a warning but preserve the key for backward compatibility
+            logger.warning(f"Could not convert key '{key}' to PatternCategory enum")
+    
+    return result
 
 def get_patterns_for_language(language: str) -> Dict[str, Any]:
     """
-    Get patterns for a specific language, loading them on demand.
+    Get tree-sitter query patterns for the specified language.
     
     Args:
-        language: The programming language name
+        language: The language to get patterns for
         
     Returns:
-        Dictionary of patterns or empty dict if not found
+        Dictionary of patterns by category or empty dict if none found
     """
-    language = _normalize_language_name(language)
+    language_id = _normalize_language_name(language)
     
-    # Return from registry if already loaded
-    if language in _pattern_registry:
-        return _pattern_registry[language]
+    # Check if patterns are already loaded
+    if language_id in _pattern_registry:
+        return _pattern_registry[language_id]
     
-    # Load the module and extract patterns
-    module = get_pattern_module(language)
-    if not module:
-        return {}
+    # Load patterns dynamically
+    pattern_module = get_pattern_module(language_id)
     
-    patterns = {}
-    for attr in dir(module):
-        if attr.endswith('_PATTERNS') and not attr.startswith('__'):
-            pattern_dict = getattr(module, attr)
-            if isinstance(pattern_dict, dict):
-                patterns.update(pattern_dict)
+    if pattern_module and hasattr(pattern_module, "PATTERNS"):
+        _pattern_registry[language_id] = pattern_module.PATTERNS
+        return pattern_module.PATTERNS
     
-    # Cache the patterns
-    _pattern_registry[language] = patterns
-    return patterns
+    # No patterns found for this language
+    _pattern_registry[language_id] = {}
+    return {}
+
+def get_typed_patterns_for_language(language: str) -> Dict[PatternCategory, Dict[str, QueryPattern]]:
+    """
+    Get tree-sitter query patterns for the specified language with type annotations.
+    This is a wrapper around get_patterns_for_language that ensures keys are PatternCategory enums.
+    
+    Args:
+        language: The language to get patterns for
+        
+    Returns:
+        Dictionary of patterns by category with PatternCategory enum keys
+    """
+    patterns = get_patterns_for_language(language)
+    # Type conversion handling is done inside _ensure_pattern_category_keys
+    return _ensure_pattern_category_keys(patterns)
 
 def register_common_patterns() -> Dict[str, Any]:
-    """Register common patterns that apply to multiple languages."""
+    """
+    Register common patterns that apply to multiple languages.
+    
+    Returns:
+        Dictionary of registered patterns
+    """
     try:
+        # Import common patterns
         from parsers.query_patterns.common import COMMON_PATTERNS
         return COMMON_PATTERNS
     except ImportError:
-        logging.error("Failed to import common patterns")
+        logger.warning("Common patterns module not found")
         return {}
 
 def list_available_languages() -> Set[str]:
-    """Return a set of all available language pattern modules."""
-    pattern_dir = os.path.dirname(__file__)
+    """
+    List all available language pattern modules.
+    
+    Returns:
+        Set of available language pattern module names
+    """
     languages = set()
     
-    for file in os.listdir(pattern_dir):
-        if file.endswith('.py') and not file.startswith('__'):
-            lang = file[:-3]  # Remove .py extension
-            languages.add(lang)
+    # Get the directory path
+    dir_path = os.path.dirname(os.path.abspath(__file__))
+    
+    # Iterate through files in the directory
+    for filename in os.listdir(dir_path):
+        if filename.endswith(".py") and filename != "__init__.py" and filename != "common.py":
+            language = filename[:-3]  # Remove .py extension
+            languages.add(language)
     
     return languages
 
-def initialize_pattern_system():
-    """Initialize the pattern system, preparing it for use."""
-    global _initialized
-    if _initialized:
-        return
+def initialize_pattern_system() -> None:
+    """Initialize the pattern system by preloading common patterns."""
+    register_common_patterns()
+
+def get_all_available_patterns() -> Dict[str, Dict[str, Any]]:
+    """
+    Get all available patterns for all languages.
     
-    # Load common patterns
-    common_patterns = register_common_patterns()
-    logging.debug(f"Registered {len(common_patterns)} common patterns")
+    Returns:
+        Dictionary of patterns by language
+    """
+    patterns = {}
+    for language in list_available_languages():
+        language_patterns = get_patterns_for_language(language)
+        if language_patterns:
+            patterns[language] = language_patterns
     
-    # Don't eagerly load all patterns - just note what's available
-    available_languages = list_available_languages()
-    logging.debug(f"Found {len(available_languages)} language pattern modules")
+    return patterns
+
+def clear_pattern_cache() -> None:
+    """Clear the pattern registry cache."""
+    global _pattern_registry
+    _pattern_registry = {}
+
+def validate_loaded_patterns() -> str:
+    """
+    Validate all currently loaded patterns.
     
-    _initialized = True
+    Returns:
+        Summary of validation results
+    """
+    patterns_by_language = get_all_available_patterns()
+    validation_results = validate_all_patterns(patterns_by_language)
+    return report_validation_results(validation_results)
 
 # Initialize when imported, but don't load all patterns
 initialize_pattern_system()
@@ -143,74 +204,6 @@ initialize_pattern_system()
 __all__ = [
     'get_pattern_module',
     'get_patterns_for_language',
+    'get_typed_patterns_for_language',
     'list_available_languages',
 ]
-
-# Language pattern registries
-_pattern_registries = {}
-
-def get_patterns_for_language(language_id: str) -> Dict[str, Any]:
-    """
-    Get patterns for the specified language, loading them if necessary.
-    
-    Args:
-        language_id: The language identifier to get patterns for
-        
-    Returns:
-        Dictionary of patterns for the language, or empty dict if not supported
-    """
-    if language_id in _pattern_registries:
-        return _pattern_registries[language_id]
-        
-    # Try to load patterns from the appropriate module
-    try:
-        module_name = f"parsers.query_patterns.{language_id}"
-        module = importlib.import_module(module_name)
-        patterns = getattr(module, "PATTERNS", {})
-        
-        # Validate patterns before registering
-        validation_results = validate_all_patterns({language_id: patterns})
-        if validation_results:
-            validation_report = report_validation_results(validation_results)
-            logger.warning(f"Pattern validation found issues:\n{validation_report}")
-        
-        _pattern_registries[language_id] = patterns
-        logger.debug(f"Loaded {len(patterns)} patterns for language {language_id}")
-        return patterns
-    except (ImportError, AttributeError) as e:
-        logger.debug(f"No patterns available for language {language_id}: {str(e)}")
-        _pattern_registries[language_id] = {}
-        return {}
-
-def get_all_available_patterns() -> Dict[str, Dict[str, Any]]:
-    """
-    Return a dictionary of all available patterns for all languages.
-    
-    Returns:
-        Dictionary mapping language IDs to their pattern dictionaries
-    """
-    # Currently loaded patterns
-    patterns = {}
-    
-    # Add any patterns that were already loaded
-    for language_id, pattern_registry in _pattern_registries.items():
-        patterns[language_id] = pattern_registry
-        
-    return patterns
-
-def clear_pattern_cache():
-    """Clear the pattern registry cache."""
-    global _pattern_registries
-    _pattern_registries = {}
-    logger.debug("Pattern registry cache cleared")
-
-def validate_loaded_patterns() -> str:
-    """
-    Validate all currently loaded patterns and return a report.
-    
-    Returns:
-        String containing the validation report
-    """
-    patterns_by_language = get_all_available_patterns()
-    validation_results = validate_all_patterns(patterns_by_language)
-    return report_validation_results(validation_results)

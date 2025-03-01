@@ -8,6 +8,7 @@ from parsers.query_patterns.plaintext import PLAINTEXT_PATTERNS
 from utils.logger import log
 import re
 from collections import Counter
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 
 class PlaintextParser(BaseParser):
     """Parser for plaintext files with enhanced pattern extraction capabilities."""
@@ -32,6 +33,7 @@ class PlaintextParser(BaseParser):
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
         return PlaintextNode(**node_dict)
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse plaintext content into AST structure.
         
@@ -39,72 +41,79 @@ class PlaintextParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "document",
-                [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
+        with ErrorBoundary(reraise=False, operation="parsing plaintext content") as error_boundary:
+            try:
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "document",
+                    [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
 
-            current_paragraph = []
-            
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
+                current_paragraph = []
                 
-                if not line.strip():
-                    if current_paragraph:
-                        node = self._create_node(
-                            "paragraph",
-                            [i - len(current_paragraph), 0],
-                            [i - 1, len(current_paragraph[-1])],
-                            content="\n".join(current_paragraph)
-                        )
-                        ast.children.append(node)
-                        current_paragraph = []
-                    continue
-
-                matched = False
-                for category in PLAINTEXT_PATTERNS.values():
-                    for pattern_name, pattern_obj in category.items():
-                        if match := self.patterns[pattern_name].match(line):
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
+                    
+                    if not line.strip():
+                        if current_paragraph:
                             node = self._create_node(
-                                pattern_name,
-                                line_start,
-                                line_end,
-                                **pattern_obj.extract(match)
+                                "paragraph",
+                                [i - len(current_paragraph), 0],
+                                [i - 1, len(current_paragraph[-1])],
+                                content="\n".join(current_paragraph)
                             )
                             ast.children.append(node)
-                            matched = True
+                            current_paragraph = []
+                        continue
+
+                    matched = False
+                    for category in PLAINTEXT_PATTERNS.values():
+                        for pattern_name, pattern_obj in category.items():
+                            if match := self.patterns[pattern_name].match(line):
+                                node = self._create_node(
+                                    pattern_name,
+                                    line_start,
+                                    line_end,
+                                    **pattern_obj.extract(match)
+                                )
+                                ast.children.append(node)
+                                matched = True
+                                break
+                        if matched:
                             break
-                    if matched:
-                        break
 
-                if not matched:
-                    current_paragraph.append(line)
+                    if not matched:
+                        current_paragraph.append(line)
 
-            if current_paragraph:
-                node = self._create_node(
-                    "paragraph",
-                    [len(lines) - len(current_paragraph), 0],
-                    [len(lines) - 1, len(current_paragraph[-1])],
-                    content="\n".join(current_paragraph)
-                )
-                ast.children.append(node)
+                if current_paragraph:
+                    node = self._create_node(
+                        "paragraph",
+                        [len(lines) - len(current_paragraph), 0],
+                        [len(lines) - 1, len(current_paragraph[-1])],
+                        content="\n".join(current_paragraph)
+                    )
+                    ast.children.append(node)
 
-            return ast.__dict__
-            
-        except Exception as e:
-            log(f"Error parsing plaintext content: {e}", level="error")
+                return ast.__dict__
+                
+            except (ValueError, KeyError, TypeError, IndexError) as e:
+                log(f"Error parsing plaintext content: {e}", level="error")
+                raise ParsingError(f"Failed to parse plaintext content: {str(e)}") from e
+                
+        # This code runs when the ErrorBoundary catches an exception
+        if error_boundary.error:
+            log(f"Error in plaintext parser: {error_boundary.error}", level="error")
             return PlaintextNode(
                 type="document",
                 start_point=[0, 0],
                 end_point=[0, 0],
-                error=str(e),
+                error=str(error_boundary.error),
                 children=[]
             ).__dict__
-            
+
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract text patterns from plaintext files for repository learning.
@@ -117,92 +126,98 @@ class PlaintextParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            
-            # Extract structural patterns (headers, paragraphs, etc.)
-            structure_patterns = self._extract_structure_patterns(ast_dict)
-            for struct in structure_patterns:
-                patterns.append({
-                    'name': f'plaintext_structure_{struct["type"]}',
-                    'content': struct["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'document_structure',
-                        'structure_type': struct["type"],
-                        'count': struct.get("count", 1)
-                    }
-                })
-            
-            # Extract list patterns
-            list_patterns = self._extract_list_patterns(ast_dict)
-            for list_pattern in list_patterns:
-                patterns.append({
-                    'name': f'plaintext_list_{list_pattern["type"]}',
-                    'content': list_pattern["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'list_structure',
-                        'list_type': list_pattern["type"],
-                        'items': list_pattern.get("items", [])
-                    }
-                })
+        with ErrorBoundary(reraise=False, operation="extracting plaintext patterns") as error_boundary:
+            try:
+                # Parse the source first to get a structured representation
+                ast_dict = self._parse_source(source_code)
                 
-            # Extract metadata patterns
-            metadata_patterns = self._extract_metadata_patterns(ast_dict)
-            for meta in metadata_patterns:
-                patterns.append({
-                    'name': f'plaintext_metadata',
-                    'content': meta["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_METADATA,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'document_metadata',
-                        'metadata': meta.get("fields", {})
-                    }
-                })
+                # Extract structural patterns (headers, paragraphs, etc.)
+                structure_patterns = self._extract_structure_patterns(ast_dict)
+                for struct in structure_patterns:
+                    patterns.append({
+                        'name': f'plaintext_structure_{struct["type"]}',
+                        'content': struct["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'document_structure',
+                            'structure_type': struct["type"],
+                            'count': struct.get("count", 1)
+                        }
+                    })
                 
-            # Extract reference patterns (URLs, emails, etc.)
-            reference_patterns = self._extract_reference_patterns(ast_dict)
-            for ref in reference_patterns:
-                patterns.append({
-                    'name': f'plaintext_reference_{ref["type"]}',
-                    'content': ref["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_REFERENCE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'reference',
-                        'reference_type': ref["type"],
-                        'references': ref.get("references", [])
-                    }
-                })
+                # Extract list patterns
+                list_patterns = self._extract_list_patterns(ast_dict)
+                for list_pattern in list_patterns:
+                    patterns.append({
+                        'name': f'plaintext_list_{list_pattern["type"]}',
+                        'content': list_pattern["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'list_structure',
+                            'list_type': list_pattern["type"],
+                            'items': list_pattern.get("items", [])
+                        }
+                    })
+                    
+                # Extract metadata patterns
+                metadata_patterns = self._extract_metadata_patterns(ast_dict)
+                for meta in metadata_patterns:
+                    patterns.append({
+                        'name': f'plaintext_metadata',
+                        'content': meta["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_METADATA,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'document_metadata',
+                            'metadata': meta.get("fields", {})
+                        }
+                    })
+                    
+                # Extract reference patterns (URLs, emails, etc.)
+                reference_patterns = self._extract_reference_patterns(ast_dict)
+                for ref in reference_patterns:
+                    patterns.append({
+                        'name': f'plaintext_reference_{ref["type"]}',
+                        'content': ref["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_REFERENCE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'reference',
+                            'reference_type': ref["type"],
+                            'references': ref.get("references", [])
+                        }
+                    })
+                    
+                # Extract writing style patterns
+                style_patterns = self._extract_style_patterns(source_code)
+                for style in style_patterns:
+                    patterns.append({
+                        'name': f'plaintext_style_{style["name"]}',
+                        'content': style["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STYLE,
+                        'language': self.language_id,
+                        'confidence': 0.75,
+                        'metadata': {
+                            'type': 'writing_style',
+                            'style_name': style["name"],
+                            'metrics': style.get("metrics", {})
+                        }
+                    })
+                    
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                log(f"Error extracting plaintext patterns: {e}", level="error")
+                raise ProcessingError(f"Failed to extract plaintext patterns: {str(e)}") from e
                 
-            # Extract writing style patterns
-            style_patterns = self._extract_style_patterns(source_code)
-            for style in style_patterns:
-                patterns.append({
-                    'name': f'plaintext_style_{style["name"]}',
-                    'content': style["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STYLE,
-                    'language': self.language_id,
-                    'confidence': 0.75,
-                    'metadata': {
-                        'type': 'writing_style',
-                        'style_name': style["name"],
-                        'metrics': style.get("metrics", {})
-                    }
-                })
+        # This code runs when the ErrorBoundary catches an exception
+        if error_boundary.error:
+            log(f"Error in plaintext pattern extraction: {error_boundary.error}", level="error")
                 
-        except Exception as e:
-            log(f"Error extracting plaintext patterns: {e}", level="error")
-            
         return patterns
         
     def _extract_structure_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

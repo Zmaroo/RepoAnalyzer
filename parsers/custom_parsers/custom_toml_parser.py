@@ -6,6 +6,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.toml import TOML_PATTERNS
 from parsers.models import TomlNode, PatternType
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 import tomli
 from collections import Counter
 
@@ -55,6 +56,7 @@ class TomlParser(BaseParser):
                 value_data.children.append(child)
         return value_data
     
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse TOML content into AST structure.
         
@@ -62,52 +64,54 @@ class TomlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "document", [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
-            current_comments = []
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
-                matched = False
-                for category in TOML_PATTERNS.values():
-                    for pattern_name, pattern_obj in category.items():
-                        if match := self.patterns[pattern_name].match(line):
-                            node = self._create_node(
-                                pattern_name, line_start, line_end,
-                                **pattern_obj.extract(match)
-                            )
-                            if current_comments:
-                                node.metadata["comments"] = current_comments
-                                current_comments = []
-                            ast.children.append(node)
-                            matched = True
-                            break
-                    if matched:
-                        break
-                if not matched and line.strip():
-                    current_comments.append(line)
+        with ErrorBoundary(error_types=(ParsingError,), context="TOML parsing"):
             try:
-                data = tomli.loads(source_code)
-                root_value = self._process_value(data, [], [0, 0])
-                ast.children.append(root_value)
-            except Exception as e:
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "document", [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
+                current_comments = []
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
+                    matched = False
+                    for category in TOML_PATTERNS.values():
+                        for pattern_name, pattern_obj in category.items():
+                            if match := self.patterns[pattern_name].match(line):
+                                node = self._create_node(
+                                    pattern_name, line_start, line_end,
+                                    **pattern_obj.extract(match)
+                                )
+                                if current_comments:
+                                    node.metadata["comments"] = current_comments
+                                    current_comments = []
+                                ast.children.append(node)
+                                matched = True
+                                break
+                        if matched:
+                            break
+                    if not matched and line.strip():
+                        current_comments.append(line)
+                try:
+                    data = tomli.loads(source_code)
+                    root_value = self._process_value(data, [], [0, 0])
+                    ast.children.append(root_value)
+                except (tomli.TOMLDecodeError, ValueError) as e:
+                    log(f"Error parsing TOML content: {e}", level="error")
+                    return TomlNode(
+                        type="document", start_point=[0, 0], end_point=[0, 0],
+                        error=str(e), children=[]
+                    ).__dict__
+                return ast.__dict__
+            except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing TOML content: {e}", level="error")
                 return TomlNode(
                     type="document", start_point=[0, 0], end_point=[0, 0],
                     error=str(e), children=[]
                 ).__dict__
-            return ast.__dict__
-        except Exception as e:
-            log(f"Error parsing TOML content: {e}", level="error")
-            return TomlNode(
-                type="document", start_point=[0, 0], end_point=[0, 0],
-                error=str(e), children=[]
-            ).__dict__
             
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract configuration patterns from TOML files for repository learning.
@@ -120,66 +124,67 @@ class TomlParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source to get a structured representation
-            ast = self._parse_source(source_code)
-            
-            # Extract table structure patterns
-            table_patterns = self._extract_table_patterns(ast)
-            for table in table_patterns:
-                patterns.append({
-                    'name': f'toml_table_{table["name"]}',
-                    'content': table["content"],
-                    'pattern_type': PatternType.CONFIGURATION,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'table',
-                        'name': table["name"],
-                        'key_count': table.get("key_count", 0)
-                    }
-                })
-            
-            # Extract key-value patterns
-            kv_patterns = self._extract_key_value_patterns(ast)
-            for kv in kv_patterns:
-                patterns.append({
-                    'name': f'toml_key_value_{kv["key"]}',
-                    'content': kv["content"],
-                    'pattern_type': PatternType.CONFIGURATION,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'key_value',
-                        'key': kv["key"],
-                        'value_type': kv.get("value_type", "unknown")
-                    }
-                })
+        with ErrorBoundary(error_types=(ProcessingError,), context="TOML pattern extraction"):
+            try:
+                # Parse the source to get a structured representation
+                ast = self._parse_source(source_code)
                 
-            # Extract array patterns
-            array_patterns = self._extract_array_patterns(ast)
-            for array in array_patterns:
-                patterns.append({
-                    'name': f'toml_array_{array["name"]}',
-                    'content': array["content"],
-                    'pattern_type': PatternType.CONFIGURATION,
-                    'language': self.language_id,
-                    'confidence': 0.75,
-                    'metadata': {
-                        'type': 'array',
-                        'name': array["name"],
-                        'item_count': array.get("item_count", 0)
-                    }
-                })
+                # Extract table structure patterns
+                table_patterns = self._extract_table_patterns(ast)
+                for table in table_patterns:
+                    patterns.append({
+                        'name': f'toml_table_{table["name"]}',
+                        'content': table["content"],
+                        'pattern_type': PatternType.CONFIGURATION,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'table',
+                            'name': table["name"],
+                            'key_count': table.get("key_count", 0)
+                        }
+                    })
                 
-            # Extract naming convention patterns
-            naming_patterns = self._extract_naming_patterns(source_code)
-            for pattern in naming_patterns:
-                patterns.append(pattern)
+                # Extract key-value patterns
+                kv_patterns = self._extract_key_value_patterns(ast)
+                for kv in kv_patterns:
+                    patterns.append({
+                        'name': f'toml_key_value_{kv["key"]}',
+                        'content': kv["content"],
+                        'pattern_type': PatternType.CONFIGURATION,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'key_value',
+                            'key': kv["key"],
+                            'value_type': kv.get("value_type", "unknown")
+                        }
+                    })
+                    
+                # Extract array patterns
+                array_patterns = self._extract_array_patterns(ast)
+                for array in array_patterns:
+                    patterns.append({
+                        'name': f'toml_array_{array["name"]}',
+                        'content': array["content"],
+                        'pattern_type': PatternType.CONFIGURATION,
+                        'language': self.language_id,
+                        'confidence': 0.75,
+                        'metadata': {
+                            'type': 'array',
+                            'name': array["name"],
+                            'item_count': array.get("item_count", 0)
+                        }
+                    })
+                    
+                # Extract naming convention patterns
+                naming_patterns = self._extract_naming_patterns(source_code)
+                for pattern in naming_patterns:
+                    patterns.append(pattern)
+                    
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting TOML patterns: {e}", level="error")
                 
-        except Exception as e:
-            log(f"Error extracting TOML patterns: {e}", level="error")
-            
         return patterns
         
     def _extract_table_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

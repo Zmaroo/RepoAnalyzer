@@ -12,14 +12,20 @@ from parsers.types import FileType, ParserType
 from parsers.models import EditorconfigNode, PatternType
 from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+import re
+from collections import Counter
 
 class EditorconfigParser(BaseParser):
     """Parser for EditorConfig files."""
     
     def __init__(self, language_id: str = "editorconfig", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
-        # Use the shared helper from BaseParser to compile the regex patterns.
-        self.patterns = self._compile_patterns(EDITORCONFIG_PATTERNS)
+        
+        # Compile regex patterns for parsing
+        self.section_pattern = re.compile(r'^\s*\[(.*)\]\s*$')
+        self.property_pattern = re.compile(r'^\s*([^=]+?)\s*=\s*(.*?)\s*$')
+        self.comment_pattern = re.compile(r'^\s*[#;](.*)$')
     
     def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -37,6 +43,7 @@ class EditorconfigParser(BaseParser):
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
         return EditorconfigNode(**node_dict)
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse EditorConfig content into AST structure.
         
@@ -44,98 +51,113 @@ class EditorconfigParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "editorconfig",
-                [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
-            
-            current_section = None
-            
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
+        with ErrorBoundary(error_types=(ParsingError,), context="EditorConfig parsing"):
+            try:
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "editorconfig_file",
+                    [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0],
+                    children=[]
+                )
                 
-                # Skip empty lines
-                if not line.strip():
-                    continue
+                current_section = None
+                current_comments = []
                 
-                # Process comments.
-                if comment_match := self.patterns['comment'].match(line):
-                    node = self._create_node(
-                        "comment",
-                        line_start,
-                        line_end,
-                        content=comment_match.group(1).strip()
-                    )
-                    if current_section:
-                        current_section.children.append(node)
-                    else:
-                        ast.children.append(node)
-                    continue
-                
-                # Process sections.
-                if section_match := self.patterns['section'].match(line):
-                    current_section = self._create_node(
-                        "section",
-                        line_start,
-                        line_end,
-                        glob=section_match.group(1).strip(),
-                        properties=[]
-                    )
-                    ast.children.append(current_section)
-                    continue
-                
-                # Process properties.
-                if current_section and (property_match := self.patterns['property'].match(line)):
-                    node = self._create_node(
-                        "property",
-                        line_start,
-                        line_end,
-                        key=property_match.group(1).strip(),
-                        value=property_match.group(2).strip()
-                    )
-                    current_section.properties.append(node)
-                    current_section.children.append(node)
-                    continue
-                
-                # Process semantic patterns.
-                for pattern_name, pattern in self.patterns.items():
-                    if pattern_name in ['comment', 'section', 'property']:
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
+                    
+                    # Skip empty lines but track them
+                    if not line.strip():
+                        if current_comments:
+                            # Create a comment node for accumulated comments
+                            ast.children.append(
+                                self._create_node(
+                                    "comment",
+                                    [i - len(current_comments), 0],
+                                    [i - 1, len(current_comments[-1])],
+                                    content="\n".join(current_comments)
+                                )
+                            )
+                            current_comments = []
                         continue
                     
-                    if match := pattern.match(line):
-                        category = next(
-                            cat for cat, patterns in EDITORCONFIG_PATTERNS.items()
-                            if pattern_name in patterns
-                        )
-                        node_data = EDITORCONFIG_PATTERNS[category][pattern_name].extract(match)
-                        node = self._create_node(
-                            pattern_name,
+                    # Process comments
+                    if comment_match := self.comment_pattern.match(line):
+                        current_comments.append(comment_match.group(1).strip())
+                        continue
+                    
+                    # Process section headers
+                    if section_match := self.section_pattern.match(line):
+                        pattern = section_match.group(1)
+                        
+                        # Create the section node
+                        current_section = self._create_node(
+                            "section",
                             line_start,
                             line_end,
-                            **node_data
+                            pattern=pattern,
+                            properties=[],
+                            children=[]
                         )
+                        
+                        # Attach comments to section
+                        if current_comments:
+                            current_section.metadata["comments"] = current_comments
+                            current_comments = []
+                            
+                        ast.children.append(current_section)
+                        continue
+                    
+                    # Process properties
+                    if property_match := self.property_pattern.match(line):
+                        key, value = property_match.groups()
+                        
+                        # Create the property node
+                        property_node = self._create_node(
+                            "property",
+                            line_start,
+                            line_end,
+                            key=key,
+                            value=value
+                        )
+                        
+                        # Attach comments to property
+                        if current_comments:
+                            property_node.metadata["comments"] = current_comments
+                            current_comments = []
+                        
+                        # Add to current section or to root
                         if current_section:
-                            current_section.children.append(node)
+                            current_section.children.append(property_node)
                         else:
-                            ast.children.append(node)
-                        break
+                            ast.children.append(property_node)
+                
+                # Process any trailing comments
+                if current_comments:
+                    ast.children.append(
+                        self._create_node(
+                            "comment",
+                            [len(lines) - len(current_comments), 0],
+                            [len(lines) - 1, len(current_comments[-1])],
+                            content="\n".join(current_comments)
+                        )
+                    )
+                
+                return ast.__dict__
+                
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error parsing EditorConfig file: {e}", level="error")
+                return self._create_node(
+                    "editorconfig_file",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
             
-            return ast.__dict__
-            
-        except Exception as e:
-            log(f"Error parsing EditorConfig content: {e}", level="error")
-            return EditorconfigNode(
-                type="editorconfig",
-                start_point=[0, 0],
-                end_point=[0, 0],
-                error=str(e),
-                children=[]
-            ).__dict__
-            
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract configuration patterns from EditorConfig files for repository learning.
@@ -146,65 +168,67 @@ class EditorconfigParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
-        patterns = []
-        
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            
-            # Extract section patterns
-            sections = self._extract_section_patterns(ast_dict)
-            for section in sections:
-                patterns.append({
-                    'name': f'config_section_{section["glob"]}',
-                    'content': section["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'config_section',
-                        'glob': section["glob"],
-                        'properties': section["properties"]
-                    }
-                })
-            
-            # Extract property patterns
-            property_patterns = self._extract_property_patterns(ast_dict)
-            for prop in property_patterns:
-                patterns.append({
-                    'name': f'config_property_{prop["key"]}',
-                    'content': f'{prop["key"]}={prop["value"]}',
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'config_property',
-                        'key': prop["key"],
-                        'value': prop["value"],
-                        'section': prop.get("section", "*")
-                    }
-                })
+        with ErrorBoundary(error_types=(ProcessingError,), context="EditorConfig pattern extraction"):
+            try:
+                patterns = []
                 
-            # Extract common configuration patterns
-            common_patterns = self._extract_common_patterns(ast_dict)
-            for common in common_patterns:
-                patterns.append({
-                    'name': f'config_pattern_{common["name"]}',
-                    'content': common["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'common_config',
-                        'name': common["name"],
-                        'properties': common["properties"]
-                    }
-                })
+                # Parse the source first to get a structured representation
+                ast = self._parse_source(source_code)
                 
-        except Exception as e:
-            log(f"Error extracting EditorConfig patterns: {e}", level="error")
-            
-        return patterns
+                # Extract section patterns (file patterns)
+                section_patterns = self._extract_section_patterns(ast)
+                for section in section_patterns:
+                    patterns.append({
+                        'name': f'editorconfig_section_{section["pattern_type"]}',
+                        'content': section["pattern"],
+                        'pattern_type': PatternType.CONFIG_PATTERN,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'file_pattern',
+                            'pattern': section["pattern"],
+                            'pattern_type': section["pattern_type"]
+                        }
+                    })
+                
+                # Extract property patterns (settings)
+                property_patterns = self._extract_property_patterns(ast)
+                for prop in property_patterns:
+                    patterns.append({
+                        'name': f'editorconfig_property_{prop["key"]}',
+                        'content': f'{prop["key"]} = {prop["value"]}',
+                        'pattern_type': PatternType.CONFIG_PROPERTY,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'property',
+                            'key': prop["key"],
+                            'value': prop["value"],
+                            'frequency': prop["frequency"]
+                        }
+                    })
+                
+                # Extract style convention patterns
+                style_patterns = self._extract_style_conventions(ast)
+                for style in style_patterns:
+                    patterns.append({
+                        'name': f'editorconfig_style_{style["type"]}',
+                        'content': style["description"],
+                        'pattern_type': PatternType.STYLE_CONVENTION,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'style_convention',
+                            'convention_type': style["type"],
+                            'settings': style["settings"]
+                        }
+                    })
+                
+                return patterns
+                
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting EditorConfig patterns: {e}", level="error")
+                return []
         
     def _extract_section_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract section patterns from the AST."""
@@ -220,8 +244,9 @@ class EditorconfigParser(BaseParser):
                     })
                 
                 sections.append({
+                    'pattern': node.get('pattern', ''),
+                    'pattern_type': PatternType.CODE_STRUCTURE,
                     'glob': node.get('glob', ''),
-                    'content': str(node),  # Simplified - could extract actual content
                     'properties': properties
                 })
             
@@ -240,7 +265,8 @@ class EditorconfigParser(BaseParser):
                 if node.get('type') == 'property':
                     prop = {
                         'key': node.get('key', ''),
-                        'value': node.get('value', '')
+                        'value': node.get('value', ''),
+                        'frequency': Counter(node.get('key', ''))['']
                     }
                     if current_section:
                         prop['section'] = current_section
@@ -259,9 +285,9 @@ class EditorconfigParser(BaseParser):
         process_node(ast)
         return properties
         
-    def _extract_common_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract common configuration patterns from the AST."""
-        common_patterns = []
+    def _extract_style_conventions(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract style convention patterns from the AST."""
+        style_patterns = []
         
         # Check for common indent style configuration
         indent_style = None
@@ -286,16 +312,13 @@ class EditorconfigParser(BaseParser):
         
         # Create indent pattern if found
         if indent_style or indent_size:
-            properties = []
-            if indent_style:
-                properties.append({'key': 'indent_style', 'value': indent_style})
-            if indent_size:
-                properties.append({'key': 'indent_size', 'value': indent_size})
-                
-            common_patterns.append({
-                'name': 'indentation',
-                'content': f"indent_style={indent_style or 'not_set'}, indent_size={indent_size or 'not_set'}",
-                'properties': properties
+            style_patterns.append({
+                'type': 'indentation',
+                'description': f"indent_style={indent_style or 'not_set'}, indent_size={indent_size or 'not_set'}",
+                'settings': {
+                    'indent_style': indent_style,
+                    'indent_size': indent_size
+                }
             })
             
-        return common_patterns
+        return style_patterns

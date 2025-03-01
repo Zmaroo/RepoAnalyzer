@@ -11,6 +11,8 @@ import asyncio
 import os
 import json
 from datetime import datetime
+# The following import is circular, but explicitly used only when needed
+# from utils.logger import log
 
 class ProcessingError(Exception):
     """Base class for processing errors."""
@@ -72,6 +74,7 @@ ERROR_CATEGORIES = {
     Exception: "general"
 }
 
+# The handle_errors function can't use its own decorator since it would create a circular reference
 def handle_errors(error_types: Tuple[Type[Exception], ...] = (Exception,)):
     """Decorator for handling errors."""
     def decorator(func: Callable) -> Callable:
@@ -134,44 +137,22 @@ async def AsyncErrorBoundary(operation: str, error_types: Tuple[Type[Exception],
         raise
 
 def handle_async_errors(error_types=Exception, default_return=None):
-    """Decorator for handling async function errors.
-    
-    This decorator wraps asynchronous functions to provide consistent error handling.
-    When an exception matching the specified error_types occurs in the decorated function,
-    the error is logged and the function returns the default_return value instead of
-    propagating the exception.
-    
-    This is particularly useful for database operations where you want to gracefully
-    handle failures without crashing the application, while still logging the error
-    for debugging purposes.
+    """
+    Decorator for async functions to handle specified exceptions.
     
     Args:
-        error_types: Exception type or tuple of exception types to catch.
-                    Any other exception types will be propagated normally.
-        default_return: Value to return on error (default: None).
-                       This will be the return value of the function when an error occurs.
-    
+        error_types: Exception type or tuple of exception types to catch
+        default_return: Value to return if an exception occurs
+        
     Returns:
-        A decorator function that wraps the target async function.
-    
+        Decorator function
+        
     Example:
         ```python
-        @handle_async_errors(error_types=DatabaseError, default_return=False)
-        async def fetch_data(id: int) -> Optional[Dict]:
-            # If this raises a DatabaseError, the function will:
-            # 1. Log the error
-            # 2. Return False instead of propagating the exception
-            result = await database.query(f"SELECT * FROM table WHERE id = {id}")
-            return result
-            
-        # Usage:
-        data = await fetch_data(123)
-        if data is False:  # Error occurred
-            # Handle the error case
-            pass
-        else:
+        @handle_async_errors(error_types=(ValueError, TypeError))
+        async def process_data_async(data):
             # Process the data
-            process_data(data)
+            return await async_process(data)
         ```
     """
     import inspect
@@ -179,6 +160,7 @@ def handle_async_errors(error_types=Exception, default_return=None):
 
     def decorator(func):
         @wraps(func)
+        @handle_async_errors  # Recursive application to ensure proper error handling
         async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
@@ -193,28 +175,34 @@ def handle_async_errors(error_types=Exception, default_return=None):
                 if default_return is not None:
                     return default_return
                 
-                # Otherwise, try to determine appropriate return type based on function annotation
+                # Otherwise, try to determine an appropriate return type
+                return_type = None
                 try:
-                    return_type_hints = get_type_hints(func)
-                    if 'return' in return_type_hints:
-                        return_hint = return_type_hints['return']
-                        # Handle various common return types
-                        origin = getattr(return_hint, '__origin__', None)
-                        if origin is list or (hasattr(return_hint, '_name') and return_hint._name == 'List'):
-                            return []
-                        elif origin is dict or (hasattr(return_hint, '_name') and return_hint._name == 'Dict'):
-                            return {}
-                        elif return_hint is bool or return_hint == bool:
-                            return False
-                        elif inspect.isclass(return_hint) and issubclass(return_hint, (list, List)):
-                            return []
-                        elif inspect.isclass(return_hint) and issubclass(return_hint, (dict, Dict)):
-                            return {}
-                except Exception as type_error:
-                    log(f"Error determining return type for {func.__name__}: {type_error}", level="debug")
+                    signature = inspect.signature(func)
+                    return_type = signature.return_annotation
+                except (ValueError, TypeError) as e:
+                    # These are the most common exceptions that can occur during signature inspection
+                    from utils.logger import log
+                    log(f"Error getting function signature for {func.__name__}: {e}", level="debug")
                 
-                # Default fallback
-                return None
+                # Handle different return types
+                if return_type == bool:
+                    return False
+                elif return_type in (int, float):
+                    return 0
+                elif return_type == str:
+                    return ""
+                elif return_type == list or str(return_type).startswith("typing.List"):
+                    return []
+                elif return_type == dict or str(return_type).startswith("typing.Dict"):
+                    return {}
+                elif return_type == set or str(return_type).startswith("typing.Set"):
+                    return set()
+                elif return_type == tuple or str(return_type).startswith("typing.Tuple"):
+                    return ()
+                else:
+                    return None
+                    
         return wrapper
     return decorator
 
@@ -595,7 +583,7 @@ class ErrorAudit:
             from utils.logger import log
             log(f"Error analyzing file {file_path}: {e}", level="error")
 
-# Create an asynchronous function to run the audit
+@handle_async_errors
 async def run_exception_audit(codebase_dir: str = ".") -> Dict:
     """
     Run a comprehensive audit of exception handling across the codebase.

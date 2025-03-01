@@ -12,6 +12,7 @@ from utils.error_handling import (
     ErrorBoundary,
     PostgresError
 )
+from db.retry_utils import DatabaseRetryManager, RetryConfig
 
 import os
 
@@ -25,6 +26,8 @@ DATABASE_CONFIG = {
 }
 
 _pool = None
+# Initialize retry manager with default configuration
+_retry_manager = DatabaseRetryManager()
 
 class ConnectionError(DatabaseError):
     """Database connection specific errors."""
@@ -73,8 +76,8 @@ async def query(sql: str, params: tuple = None) -> list:
     """Execute a query and return results."""
     if not _pool:
         raise DatabaseError("Database pool not initialized")
-        
-    async with AsyncErrorBoundary("database query", error_types=DatabaseError):
+    
+    async def _execute_query():
         async with _pool.acquire() as conn:
             async with conn.transaction():
                 if params:
@@ -82,31 +85,40 @@ async def query(sql: str, params: tuple = None) -> list:
                 else:
                     results = await conn.fetch(sql)
                 return [dict(row) for row in results]
+    
+    # Use retry manager to execute the query with retry logic
+    return await _retry_manager.execute_with_retry(_execute_query)
 
 @handle_async_errors(error_types=DatabaseError)
 async def execute(sql: str, params: tuple = None) -> None:
     """Execute a SQL command."""
     if not _pool:
         raise DatabaseError("Database pool not initialized")
-        
-    async with AsyncErrorBoundary("database execute", error_types=DatabaseError):
+    
+    async def _execute_command():
         async with _pool.acquire() as conn:
             async with conn.transaction():
                 if params:
                     await conn.execute(sql, *params)
                 else:
                     await conn.execute(sql)
+    
+    # Use retry manager to execute the command with retry logic
+    await _retry_manager.execute_with_retry(_execute_command)
 
 @handle_async_errors(error_types=DatabaseError)
 async def execute_many(sql: str, params_list: list) -> None:
     """Execute a SQL command with multiple parameter sets."""
     if not _pool:
         raise DatabaseError("Database pool not initialized")
-        
-    async with AsyncErrorBoundary("database execute many", error_types=DatabaseError):
+    
+    async def _execute_many_command():
         async with _pool.acquire() as conn:
             async with conn.transaction():
                 await conn.executemany(sql, params_list)
+    
+    # Use retry manager to execute the command with retry logic
+    await _retry_manager.execute_with_retry(_execute_many_command)
 
 @handle_async_errors(error_types=DatabaseError)
 async def get_connection():

@@ -6,6 +6,7 @@ from .types import FileType, FeatureCategory, ParserType, Documentation, Complex
 from parsers.models import QueryResult, FileClassification
 from parsers.language_support import language_registry
 from utils.logger import log
+from utils.error_handling import ErrorBoundary
 from parsers.pattern_processor import PatternProcessor, PatternMatch, pattern_processor
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from abc import ABC, abstractmethod
@@ -72,7 +73,7 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     
     def _compile_pattern(self, pattern_def: Union[str, Dict[str, Any]], category: str, name: str) -> None:
         """Compile a Tree-sitter query pattern and store in queries dict."""
-        try:
+        with ErrorBoundary(f"compile_pattern_{category}_{name}", error_types=(Exception,)):
             if isinstance(pattern_def, str):
                 query_str = pattern_def
                 extractor_func: Optional[ExtractorFn] = None
@@ -93,13 +94,10 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                 'query': query,
                 'extract': extractor_func
             }
-            
-        except Exception as e:
-            log(f"Error compiling pattern {name}: {e}", level="error")
     
     def _process_query_result(self, result: QueryResult) -> Dict[str, Any]:
         """Process a single query result."""
-        try:
+        with ErrorBoundary(f"process_query_result_{result.pattern_name}", error_types=(Exception,)):
             node_features = self._extract_node_features(result.node)
             
             # Add capture information
@@ -112,10 +110,8 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             node_features.update(result.metadata)
             
             return node_features
-            
-        except Exception as e:
-            log(f"Error processing query result: {e}", level="error")
-            return {}
+        
+        return {}
     
     def _extract_node_features(self, node: Node) -> Dict[str, Any]:
         """Extract features from a node."""
@@ -135,7 +131,7 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     
     def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
         """[3.2.1.2] Extract features from Tree-sitter AST."""
-        try:
+        with ErrorBoundary("extract_features_tree_sitter", error_types=(Exception,)):
             # Check if we have a valid AST with a tree structure
             tree = None
             root_node = None
@@ -164,7 +160,7 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                     
                     # Process matches
                     for match in query.matches(root_node):
-                        try:
+                        with ErrorBoundary(f"process_match_{pattern_name}", error_types=(Exception,)):
                             result = QueryResult(
                                 pattern_name=pattern_name,
                                 node=match.pattern_node,
@@ -184,8 +180,6 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                             processed = self._process_query_result(result)
                             if processed:
                                 matches.append(processed)
-                        except Exception as e:
-                            continue
                             
                     if matches:
                         category_features[pattern_name] = matches
@@ -199,10 +193,9 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                 documentation=self._extract_documentation(features),
                 metrics=self._calculate_metrics(features, source_code)
             )
-            
-        except Exception as e:
-            log(f"Error extracting features: {e}", level="error")
-            return ExtractedFeatures()
+        
+        # Return empty features on error
+        return ExtractedFeatures()
 
     def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
         """Extract documentation features from parsed content.
@@ -288,7 +281,7 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
         - Complexity metrics
         - Pattern matches
         """
-        try:
+        with ErrorBoundary("extract_features_custom", error_types=(Exception,)):
             # Check if we have a valid AST structure
             if not ast:
                 log(f"No AST provided for feature extraction", level="debug")
@@ -320,12 +313,10 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
                             
                             # [3.2.2.4] Apply custom extractor if available
                             if pattern.extract:
-                                try:
+                                with ErrorBoundary(f"pattern_extraction_{pattern_name}", error_types=(Exception,)):
                                     extracted = pattern.extract(result)
                                     if extracted:
                                         result.update(extracted)
-                                except Exception as e:
-                                    log(f"Error in pattern extraction: {e}", level="error")
                                 
                             matches.append(result)
                             
@@ -348,10 +339,9 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
                 documentation=documentation,
                 metrics=metrics
             )
-            
-        except Exception as e:
-            log(f"Error extracting features: {e}", level="error")
-            return ExtractedFeatures()
+        
+        # Return empty features on error
+        return ExtractedFeatures()
             
     def _process_ast_nodes(self, nodes: List[Dict[str, Any]], features: Dict[str, Dict[str, Any]]) -> None:
         """Process AST nodes from a custom parser and add them to features."""

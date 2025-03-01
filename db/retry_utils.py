@@ -10,17 +10,20 @@ with support for:
 """
 
 import asyncio
-import random
 import time
-from typing import Callable, Any, Dict, List, Optional, Tuple, Type, Union
+import random
 from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, Type, Union
+
+from neo4j.exceptions import Neo4jError, ServiceUnavailable, ClientError
+from psycopg.errors import OperationalError as PostgresError
 
 from utils.logger import log
-from utils.error_handling import DatabaseError, Neo4jError, TransactionError
+from utils.error_handling import DatabaseError, Neo4jError, TransactionError, handle_async_errors, ErrorBoundary, PostgresError
 
 # Error classes for retry mechanism
 class RetryableError(Exception):
-    """Base class for errors that should trigger a retry."""
+    """Base class for errors that should be retried."""
     pass
 
 class NonRetryableError(Exception):
@@ -162,6 +165,7 @@ class DatabaseRetryManager:
         """
         self.config = config or RetryConfig()
     
+    @handle_async_errors(error_types=[DatabaseError, Neo4jError, PostgresError, RetryableError, NonRetryableError])
     async def execute_with_retry(
         self,
         operation_func: Callable,
@@ -189,63 +193,70 @@ class DatabaseRetryManager:
         # Start timer for performance tracking
         start_time = time.time()
         
-        while attempt <= self.config.max_retries:
-            try:
-                # Execute the operation
-                result = await operation_func(*args, **kwargs)
-                
-                # If successful and not the first attempt, log success after retry
-                if attempt > 0:
-                    total_time = time.time() - start_time
+        with ErrorBoundary(error_types=[DatabaseError, Neo4jError, PostgresError, Exception],
+                           error_message=f"Error in retry operation: {operation_name}",
+                           reraise=True) as outer_error_boundary:
+            while attempt <= self.config.max_retries:
+                try:
+                    # Execute the operation
+                    result = await operation_func(*args, **kwargs)
+                    
+                    # If successful and not the first attempt, log success after retry
+                    if attempt > 0:
+                        total_time = time.time() - start_time
+                        log(
+                            f"Operation '{operation_name}' succeeded after {attempt} retries "
+                            f"(total time: {total_time:.2f}s)",
+                            level="info"
+                        )
+                    
+                    return result
+                    
+                except Exception as e:
+                    # Classify the error
+                    if not isinstance(e, (RetryableError, NonRetryableError)):
+                        classified_error = classify_error(e)
+                    else:
+                        classified_error = e
+                    
+                    # If non-retryable, raise immediately
+                    if isinstance(classified_error, NonRetryableError):
+                        error_msg = f"Non-retryable error in '{operation_name}': {str(e)}"
+                        log(error_msg, level="error")
+                        raise DatabaseError(error_msg) from e
+                    
+                    # Handle retryable error
+                    attempt += 1
+                    last_error = e
+                    
+                    # If we've exceeded max retries, break out and raise
+                    if attempt > self.config.max_retries:
+                        break
+                    
+                    # Calculate delay with exponential backoff
+                    delay = self.config.calculate_delay(attempt - 1)
+                    
                     log(
-                        f"Operation '{operation_name}' succeeded after {attempt} retries "
-                        f"(total time: {total_time:.2f}s)",
-                        level="info"
+                        f"Retryable error in '{operation_name}' (attempt {attempt}/{self.config.max_retries}): "
+                        f"{str(e)}. Retrying in {delay:.2f}s",
+                        level="warn"
                     )
-                
-                return result
-                
-            except Exception as e:
-                # Classify the error
-                if not isinstance(e, (RetryableError, NonRetryableError)):
-                    classified_error = classify_error(e)
-                else:
-                    classified_error = e
-                
-                # If non-retryable, raise immediately
-                if isinstance(classified_error, NonRetryableError):
-                    error_msg = f"Non-retryable error in '{operation_name}': {str(e)}"
-                    log(error_msg, level="error")
-                    raise DatabaseError(error_msg) from e
-                
-                # Handle retryable error
-                attempt += 1
-                last_error = e
-                
-                # If we've exceeded max retries, break out and raise
-                if attempt > self.config.max_retries:
-                    break
-                
-                # Calculate delay with exponential backoff
-                delay = self.config.calculate_delay(attempt - 1)
-                
-                log(
-                    f"Retryable error in '{operation_name}' (attempt {attempt}/{self.config.max_retries}): "
-                    f"{str(e)}. Retrying in {delay:.2f}s",
-                    level="warn"
-                )
-                
-                # Wait before retrying
-                await asyncio.sleep(delay)
+                    
+                    # Wait before retrying
+                    await asyncio.sleep(delay)
+            
+            # If we get here, all retries failed
+            total_time = time.time() - start_time
+            error_msg = (
+                f"All {self.config.max_retries} retries failed for '{operation_name}' "
+                f"(total time: {total_time:.2f}s): {str(last_error)}"
+            )
+            log(error_msg, level="error")
+            raise DatabaseError(error_msg) from last_error
         
-        # If we get here, all retries failed
-        total_time = time.time() - start_time
-        error_msg = (
-            f"All {self.config.max_retries} retries failed for '{operation_name}' "
-            f"(total time: {total_time:.2f}s): {str(last_error)}"
-        )
-        log(error_msg, level="error")
-        raise DatabaseError(error_msg) from last_error
+        if outer_error_boundary.error:
+            log(f"Unexpected error in retry mechanism: {outer_error_boundary.error}", level="error")
+            raise DatabaseError(f"Retry mechanism failed: {str(outer_error_boundary.error)}")
     
     def retry(
         self,

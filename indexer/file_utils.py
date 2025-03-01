@@ -18,6 +18,7 @@ from parsers.language_mapping import is_binary_extension, BINARY_EXTENSIONS
 from config import FileConfig
 # Import the file classification module
 from parsers.file_classification import classify_file as parsers_classify_file
+from utils.error_handling import handle_errors, ErrorBoundary
 
 # Global config instance
 file_config = FileConfig.create()
@@ -45,6 +46,7 @@ def should_ignore(file_path: str) -> bool:
     path_parts = Path(file_path).parts
     return any(pattern in path_parts for pattern in ignore_patterns)
 
+@handle_errors(error_types=(Exception,))
 def is_binary_file(file_path: str) -> bool:
     """
     Check if file is binary using magic numbers.
@@ -68,6 +70,7 @@ def is_binary_file(file_path: str) -> bool:
         log(f"Error checking if file is binary {file_path}: {e}", level="error")
         return True
 
+@handle_errors(error_types=(Exception,))
 def get_file_classification(file_path: str) -> Optional[FileClassification]:
     """
     Get file classification based on extension and content.

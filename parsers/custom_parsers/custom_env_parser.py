@@ -11,6 +11,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.models import EnvNode, PatternType
 from parsers.query_patterns.env import ENV_PATTERNS
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 import re
 
 class EnvParser(BaseParser):
@@ -47,6 +48,7 @@ class EnvParser(BaseParser):
             return value[1:-1], "multiline"
         return value, "raw"
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse env content into AST structure.
         
@@ -54,152 +56,155 @@ class EnvParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "env_file",
-                [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0],
-                children=[]
-            )
-            
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
+        with ErrorBoundary("env file parsing"):
+            try:
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "env_file",
+                    [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0],
+                    children=[]
+                )
                 
-                # Skip empty lines
-                if not line.strip():
-                    continue
-                
-                # Process comments
-                if comment_match := self.patterns['comment'].match(line):
-                    node = self._create_node(
-                        "comment",
-                        line_start,
-                        line_end,
-                        content=comment_match.group(1).strip()
-                    )
-                    ast.children.append(node)
-                    continue
-                
-                # Process exports
-                if export_match := self.patterns['export'].match(line):
-                    name, raw_value = export_match.groups()
-                    value, value_type = self._process_value(raw_value)
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
                     
-                    node = self._create_node(
-                        "export",
-                        line_start,
-                        line_end,
-                        name=name,
-                        value=value,
-                        value_type=value_type
-                    )
-                    ast.children.append(node)
-                    continue
+                    # Skip empty lines
+                    if not line.strip():
+                        continue
+                    
+                    # Process comments
+                    if comment_match := self.patterns['comment'].match(line):
+                        node = self._create_node(
+                            "comment",
+                            line_start,
+                            line_end,
+                            content=comment_match.group(1).strip()
+                        )
+                        ast.children.append(node)
+                        continue
+                    
+                    # Process exports
+                    if export_match := self.patterns['export'].match(line):
+                        name, raw_value = export_match.groups()
+                        value, value_type = self._process_value(raw_value)
+                        
+                        node = self._create_node(
+                            "export",
+                            line_start,
+                            line_end,
+                            name=name,
+                            value=value,
+                            value_type=value_type
+                        )
+                        ast.children.append(node)
+                        continue
+                    
+                    # Process variables
+                    if var_match := self.patterns['variable'].match(line):
+                        name, raw_value = var_match.groups()
+                        value, value_type = self._process_value(raw_value)
+                        
+                        node = self._create_node(
+                            "variable",
+                            line_start,
+                            line_end,
+                            name=name,
+                            value=value,
+                            value_type=value_type
+                        )
+                        ast.children.append(node)
+                        
+                        # Process semantic patterns
+                        for pattern_name in ['url', 'path']:
+                            if pattern_match := self.patterns[pattern_name].search(raw_value):
+                                semantic_data = ENV_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(pattern_match)
+                                node.metadata["semantics"] = semantic_data
                 
-                # Process variables
-                if var_match := self.patterns['variable'].match(line):
-                    name, raw_value = var_match.groups()
-                    value, value_type = self._process_value(raw_value)
-                    
-                    node = self._create_node(
-                        "variable",
-                        line_start,
-                        line_end,
-                        name=name,
-                        value=value,
-                        value_type=value_type
-                    )
-                    ast.children.append(node)
-                    
-                    # Process semantic patterns
-                    for pattern_name in ['url', 'path']:
-                        if pattern_match := self.patterns[pattern_name].search(raw_value):
-                            semantic_data = ENV_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(pattern_match)
-                            node.metadata["semantics"] = semantic_data
+                return ast.__dict__
+                
+            except (ValueError, KeyError, TypeError) as e:  # Use specific error types instead of broad Exception
+                log(f"Error parsing ENV file: {str(e)}", level="error")
+                # Return a minimal valid AST structure on error
+                return self._create_node(
+                    "env_file",
+                    [0, 0],
+                    [0, 0],
+                    variables=[]
+                )
             
-            return ast.__dict__
-            
-        except Exception as e:
-            log(f"Error parsing env content: {e}", level="error")
-            return self._create_node(
-                "env_file",
-                [0, 0],
-                [0, 0],
-                error=str(e),
-                children=[]
-            ).__dict__
-            
+    @handle_errors(error_types=(ParsingError, ProcessingError))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """
-        Extract environment variable patterns from .env files for repository learning.
+        """Extract patterns from env file content.
         
         Args:
-            source_code: The content of the .env file
+            source_code: The content of the env file
             
         Returns:
-            List of extracted patterns with metadata
+            List of extracted pattern dictionaries
         """
-        patterns = []
-        
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            
-            # Extract variable patterns
-            variables = self._extract_variable_patterns(ast_dict)
-            for variable in variables:
-                patterns.append({
-                    'name': f'env_variable_{variable["name"]}',
-                    'content': f'{variable["name"]}={variable["value"]}',
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'env_variable',
-                        'name': variable["name"],
-                        'value_type': variable["value_type"],
-                        'is_export': variable.get("is_export", False)
-                    }
-                })
-            
-            # Extract naming convention patterns
-            naming_patterns = self._extract_naming_patterns(ast_dict)
-            for naming in naming_patterns:
-                patterns.append({
-                    'name': f'env_naming_{naming["pattern"]}',
-                    'content': naming["examples"],
-                    'pattern_type': PatternType.CODE_NAMING,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'naming_convention',
-                        'pattern': naming["pattern"],
-                        'examples': naming["examples"].split(', ')
-                    }
-                })
+        with ErrorBoundary("env pattern extraction"):
+            try:
+                patterns = []
                 
-            # Extract common env configurations
-            config_patterns = self._extract_config_patterns(ast_dict)
-            for config in config_patterns:
-                patterns.append({
-                    'name': f'env_config_{config["category"]}',
-                    'content': config["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'env_config',
-                        'category': config["category"],
-                        'variables': config["variables"]
-                    }
-                })
+                # Parse the source first to get a structured representation
+                ast_dict = self._parse_source(source_code)
                 
-        except Exception as e:
-            log(f"Error extracting env patterns: {e}", level="error")
-            
-        return patterns
+                # Extract variable patterns
+                variables = self._extract_variable_patterns(ast_dict)
+                for variable in variables:
+                    patterns.append({
+                        'name': f'env_variable_{variable["name"]}',
+                        'content': f'{variable["name"]}={variable["value"]}',
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'env_variable',
+                            'name': variable["name"],
+                            'value_type': variable["value_type"],
+                            'is_export': variable.get("is_export", False)
+                        }
+                    })
+                
+                # Extract naming convention patterns
+                naming_patterns = self._extract_naming_patterns(ast_dict)
+                for naming in naming_patterns:
+                    patterns.append({
+                        'name': f'env_naming_{naming["pattern"]}',
+                        'content': naming["examples"],
+                        'pattern_type': PatternType.CODE_NAMING,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'naming_convention',
+                            'pattern': naming["pattern"],
+                            'examples': naming["examples"].split(', ')
+                        }
+                    })
+                    
+                # Extract common env configurations
+                config_patterns = self._extract_config_patterns(ast_dict)
+                for config in config_patterns:
+                    patterns.append({
+                        'name': f'env_config_{config["category"]}',
+                        'content': config["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'env_config',
+                            'category': config["category"],
+                            'variables': config["variables"]
+                        }
+                    })
+                    
+                return patterns
+                
+            except (ValueError, KeyError, TypeError) as e:  # Use specific error types instead of broad Exception
+                log(f"Error extracting patterns from ENV file: {str(e)}", level="error")
+                return []
         
     def _extract_variable_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract variable patterns from the AST."""

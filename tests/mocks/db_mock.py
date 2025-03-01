@@ -25,14 +25,19 @@ import json
 import re
 from contextlib import asynccontextmanager
 import time
+import inspect
+
+from utils.error_handling import handle_async_errors
+from utils.logger import log
 
 try:
     from pytest import FixtureFunction as PyTestFixtureFunction
-    # For pytest fixtures, define proper type parameters with two arguments
-    # Define two simple type variables for the fixture function
+    # Define type variables for the fixture function
     T_Fixture = TypeVar('T_Fixture')
     T_Factory = TypeVar('T_Factory')
-    FixtureFunction = PyTestFixtureFunction[T_Fixture, T_Factory]
+    # Completely redefine FixtureFunction to avoid any typing errors
+    # This simplified definition will work with Pylance and other type checkers
+    FixtureFunction = Callable[..., Any]  # Simple definition without generic parameters
 except (ImportError, TypeError):
     # If not available or wrong version, create a placeholder
     FixtureFunction = Callable[..., Any]
@@ -184,6 +189,7 @@ class MockPostgresPool:
         self.current_retry = 0
     
     @asynccontextmanager
+    @handle_async_errors()
     async def acquire(self):
         """Acquire a connection from the pool."""
         # Record the operation
@@ -241,12 +247,20 @@ class MockPostgresPool:
                 print(f"DEBUG: Exact match found! Calling handler")
                 result = handler(*params) if params else handler()
                 print(f"DEBUG: Handler returned: {result}")
+                # If the handler already returns an awaitable, return it directly
+                if inspect.isawaitable(result):
+                    return await result
+                # Otherwise, return the result directly
                 return result
             # Then try regex match
             elif re.search(pattern, query):
                 print(f"DEBUG: Pattern matched! Calling handler")
                 result = handler(*params) if params else handler()
                 print(f"DEBUG: Handler returned: {result}")
+                # If the handler already returns an awaitable, return it directly
+                if inspect.isawaitable(result):
+                    return await result
+                # Otherwise, return the result directly
                 return result
         
         # Default behavior for common queries
@@ -255,20 +269,15 @@ class MockPostgresPool:
                 {"id": 1, "name": "test-repo", "url": "https://github.com/test/test-repo"},
                 {"id": 2, "name": "another-repo", "url": "https://github.com/test/another-repo"}
             ]
-        elif query == "SELECT * FROM code_snippets":
-            return [
-                {"id": 1, "repo_id": 1, "file_path": "src/main.py", "content": "def main():\n    print('Hello, world!')"},
-                {"id": 2, "repo_id": 1, "file_path": "src/utils.py", "content": "def helper():\n    return 42"}
-            ]
-        elif query == "SELECT * FROM users":
-            return [
-                {"id": 1, "username": "testuser", "email": "test@example.com"},
-                {"id": 2, "username": "anotheruser", "email": "another@example.com"}
-            ]
-        
-        # For any other query, return an empty list
-        print(f"DEBUG: No handler found, returning empty list")
-        return []
+        elif "DROP TABLE" in query:
+            # For DROP TABLE queries, just return an empty list
+            return []
+        elif "CREATE TABLE" in query:
+            # For CREATE TABLE queries, just return an empty list
+            return []
+        else:
+            # Default empty result for any other query
+            return []
 
 class MockNeo4jTransaction:
     """Mock Neo4j transaction with operation recording."""
@@ -535,14 +544,14 @@ class MockDatabaseFactory:
         try:
             from db.psql import _pool
             sys.modules['db.psql']._pool = self.pg_mock
-        except (ImportError, AttributeError):
-            pass
+        except (ImportError, AttributeError) as e:
+            log(f"Could not mock PostgreSQL pool: {e}", level="warning")
             
         try:
             from db.neo4j_ops import _driver
             sys.modules['db.neo4j_ops']._driver = self.neo4j_mock
-        except (ImportError, AttributeError):
-            pass
+        except (ImportError, AttributeError) as e:
+            log(f"Could not mock Neo4j driver: {e}", level="warning")
     
     def get_postgres_mock(self):
         """Get the PostgreSQL mock."""
@@ -615,16 +624,42 @@ def patch_postgres():
     
     # Define a function to handle the query and return the correct data
     async def mock_query(sql, params=None):
+        """Mock implementation of query that is properly awaitable."""
         # Use the handle_query method for all queries
-        # Make sure params is properly passed to handle_query
         result = await pg_pool.handle_query(sql, params)
         return result
     
     # Define a function to handle execute operations
     async def mock_execute(sql, params=None):
+        """Mock implementation of execute that is properly awaitable."""
         # Make sure params is properly passed to handle_query
         result = await pg_pool.handle_query(sql, params)
         return result
+    
+    # Define a mock transaction_scope context manager
+    @asynccontextmanager
+    async def mock_transaction_scope(invalidate_cache=True):
+        """Mock implementation of transaction_scope as an async context manager.
+        
+        This matches the signature of the real transaction_scope function:
+        @asynccontextmanager
+        async def transaction_scope(invalidate_cache: bool = True)
+        """
+        # Create a mock transaction coordinator
+        coordinator = MagicMock()
+        coordinator._lock = asyncio.Lock()
+        coordinator.track_repo_change = AsyncMock()
+        coordinator.track_cache_invalidation = AsyncMock()
+        
+        try:
+            yield coordinator
+        except Exception as e:
+            # Log the exception but don't suppress it
+            print(f"Mock transaction error: {e}")
+            raise
+        finally:
+            # Clean up - in a real implementation this would commit or rollback
+            pass
     
     patches = [
         patch('db.psql._pool', pg_pool),
@@ -633,6 +668,8 @@ def patch_postgres():
         patch('db.psql.query', mock_query),  # Use the function directly, not AsyncMock
         patch('db.psql.execute', mock_execute),  # Use the function directly, not AsyncMock
         patch('db.transaction.get_connection', AsyncMock(side_effect=lambda: pg_pool.acquire())),
+        patch('db.transaction.transaction_scope', mock_transaction_scope),  # Add mock for transaction_scope
+        patch('db.schema.query', mock_query),  # Add patch for db.schema.query
     ]
     
     return patches
@@ -642,6 +679,7 @@ def patch_neo4j():
     neo4j_driver = mock_db_factory.create_neo4j_driver()
     
     # Define a function to handle Neo4j queries
+    @handle_async_errors()
     async def mock_run_query(query, params=None, **kwargs):
         try:
             session = neo4j_driver.session()
@@ -723,3 +761,22 @@ class MockPostgresResult:
     def __getitem__(self, index):
         """Support indexing."""
         return self.records[index] 
+
+# Also explicitly export this type for other modules
+__all__ = [
+    'FixtureFunction',
+    'MockTransaction',
+    'MockPostgresConnection',
+    'MockPostgresPool',
+    'MockNeo4jTransaction',
+    'MockNeo4jSession',
+    'MockNeo4jRecord',
+    'MockNeo4jResult',
+    'MockNeo4jDriver',
+    'MockDatabaseFactory',
+    'patch_postgres',
+    'patch_neo4j',
+    'mock_db_factory',
+    'register_common_fixtures',
+    'reset_mock_factory'
+] 

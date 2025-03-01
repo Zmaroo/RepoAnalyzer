@@ -1,0 +1,1043 @@
+{
+  "statistics": {
+    "total_errors": 0,
+    "unique_error_types": 0,
+    "error_counts_by_type": {},
+    "error_counts_by_category": {},
+    "top_error_locations": [],
+    "raw_exception_handlers": 171,
+    "error_handling_coverage": {
+      "total_functions": 613,
+      "decorated_functions": 159,
+      "coverage_percentage": 25.938009787928223
+    }
+  },
+  "recommendations": [
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/tree_sitter_parser.py:50",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/feature_extractor.py:291",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:221",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/mocks/db_mock.py:199",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/examples/cache_usage_examples.py:86",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/cache_analytics.py:92",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/base_parser.py:196",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/mocks/db_mock.py:651",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:180",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:189",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/graph_sync.py:513",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/unified_indexer.py:144",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/feature_extractor.py:75",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/unified_indexer.py:136",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/graph_capabilities.py:225",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_rst_parser.py:53",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/unified_indexer.py:65",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/mocks/db_mock.py:545",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:690",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_json_parser.py:230",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_yaml_parser.py:130",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:219",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:1145",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:798",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:1112",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/graph_sync.py:365",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_plaintext_parser.py:45",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/graph_capabilities.py:230",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_utils.py:156",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/async_utils.py:82",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/async_runner.py:24",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/watcher/file_watcher.py:142",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/examples/cache_usage_examples.py:99",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools_docs/graph_capabilities.py:31",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_cobalt_parser.py:162",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/unified_parser.py:44",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_utils.py:60",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/psql.py:40",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_processor.py:151",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/base_parser.py:114",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/tree_sitter_parser.py:117",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:548",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/upsert_ops.py:172",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:821",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/tree_sitter_parser.py:104",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:497",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_graphql_parser.py:205",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_xml_parser.py:64",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:525",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/pattern_processor.py:222",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/ai_interface.py:165",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/clone_and_index.py:23",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/graph_sync.py:389",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_env_parser.py:148",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_plaintext_parser.py:130",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/language_support.py:123",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/base_parser.py:70",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/common.py:35",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_yaml_parser.py:77",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_graphql_parser.py:75",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/db_utils.py:28",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/tree_sitter_parser.py:67",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/query_patterns/__init__.py:166",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/query_patterns/__init__.py:62",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_ini_parser.py:144",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/test_indexing_pipeline.py:42",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/logger.py:56",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_asciidoc_parser.py:49",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_ocaml_parser.py:76",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_json_parser.py:128",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/app_init.py:54",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:514",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_processor.py:58",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:130",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/mocks/db_mock.py:653",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_xml_parser.py:113",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_editorconfig_parser.py:55",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_editorconfig_parser.py:172",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/index.py:114",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/watcher/file_watcher.py:105",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_markdown_parser.py:45",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:809",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/language_support.py:193",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_toml_parser.py:68",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_toml_parser.py:96",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/language_support.py:108",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_html_parser.py:116",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/scripts/run_exception_audit.py:115",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_html_parser.py:161",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/schema.py:221",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_utils.py:172",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/pattern_processor.py:406",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/cache_analytics.py:248",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/unified_indexer.py:102",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/app_init.py:39",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/transaction.py:49",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/query_patterns/json.py:188",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:165",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/mocks/db_mock.py:154",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/ai_interface.py:148",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/feature_extractor.py:102",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/app_init.py:27",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_asciidoc_parser.py:79",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:544",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/language_mapping.py:397",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/watcher/file_watcher.py:53",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/query_patterns/__init__.py:104",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/db_utils.py:43",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:586",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/pattern_processor.py:164",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/pattern_validator.py:39",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/code_understanding.py:66",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_yaml_parser.py:98",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/retry_utils.py:200",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:132",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:664",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_utils.py:126",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_ini_parser.py:46",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_xml_parser.py:81",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/cache_analytics.py:15",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_toml_parser.py:128",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/base_parser.py:97",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/ai_interface.py:193",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/scripts/analyze_exception_patterns.py:265",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/language_support.py:142",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:778",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_utils.py:88",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:61",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/index.py:260",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/ai_interface.py:280",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_ocaml_parser.py:158",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:244",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_nim_parser.py:157",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_utils.py:4",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/clear_cache_utils.py:45",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_cobalt_parser.py:47",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/__init__.py:29",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_rst_parser.py:149",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/feature_extractor.py:167",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_nim_parser.py:59",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/cache.py:15",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:83",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/ai_interface.py:527",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:212",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/mocks/db_mock.py:539",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/graph_sync.py:489",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/query_patterns/__init__.py:55",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:302",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/mocks/db_mock.py:32",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/neo4j_ops.py:49",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_markdown_parser.py:147",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/pattern_processor.py:37",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/test_indexing_pipeline.py:30",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/unified_indexer.py:74",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/clone_and_index.py:56",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_env_parser.py:60",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/graph_sync.py:563",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/tests/test_indexing_pipeline.py:94",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/db/transaction.py:83",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/tree_sitter_parser.py:27",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/ai_interface.py:131",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/indexer/file_processor.py:98",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/feature_extractor.py:323",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/async_runner.py:77",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/pattern_processor.py:73",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/error_handling.py:599",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/ai_tools/reference_repository_learning.py:691",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/custom_parsers/custom_html_parser.py:96",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/examples/cache_usage_examples.py:112",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/utils/logger.py:25",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    },
+    {
+      "location": "/Users/michaelmarler/Projects/RepoAnalyzer/parsers/feature_extractor.py:138",
+      "issue": "Raw try/except block",
+      "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
+      "error_count": 0
+    }
+  ]
+}

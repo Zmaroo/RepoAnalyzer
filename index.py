@@ -32,8 +32,12 @@ from parsers.models import (
     PatternMatch,
     PatternDefinition,
     QueryPattern,
-    QueryResult,
-    FeatureExtractor
+    QueryResult
+)
+from parsers.feature_extractor import (
+    BaseFeatureExtractor,
+    TreeSitterFeatureExtractor,
+    CustomFeatureExtractor
 )
 
 # Use the new consolidated module for schema initialization.
@@ -54,6 +58,7 @@ from semantic.search import (  # Updated import path
 from ai_tools.graph_capabilities import graph_analysis  # Add graph analysis
 from ai_tools.ai_interface import AIAssistant  # Add AI Assistant
 from watcher.file_watcher import watch_directory
+from utils.error_handling import handle_async_errors, ErrorBoundary, handle_errors
 
 # Create AI Assistant instance
 ai_assistant = AIAssistant()
@@ -62,30 +67,31 @@ ai_assistant = AIAssistant()
 # Asynchronous tasks delegating major responsibilities.
 # ------------------------------------------------------------------
 
+@handle_async_errors
 async def process_share_docs(share_docs_arg: str):
     """
     Shares documentation based on input argument.
     Expected format: "doc_id1,doc_id2:target_repo_id"
     """
-    try:
+    with ErrorBoundary("sharing documentation"):
         doc_ids_str, target_repo = share_docs_arg.split(":")
         doc_ids = [int(doc_id.strip()) for doc_id in doc_ids_str.split(",")]
         result = await share_docs_with_repo(doc_ids, int(target_repo))
         log(f"Sharing docs result: {result}", level="info")
-    except Exception as e:
-        log(f"Error sharing docs: {e}", level="error")
 
+@handle_async_errors
 async def handle_file_change(file_path: str, repo_id: int):
     log(f"File changed: {file_path}", level="info")
     await process_repository_indexing(file_path, repo_id, single_file=True)
     await auto_reinvoke_projection_once(repo_id)
     await graph_analysis.analyze_code_structure(repo_id)
 
+@handle_async_errors
 async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int = None):
     """
     Learn patterns from a reference repository and optionally apply them to an active repo.
     """
-    try:
+    with ErrorBoundary("learning from reference repository"):
         # Add support for deep learning from multiple repositories
         if isinstance(reference_repo_id, list):
             learn_result = await ai_assistant.deep_learn_from_multiple_repositories(reference_repo_id)
@@ -101,13 +107,12 @@ async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int 
             log(f"Applied patterns to active repo: {apply_result}", level="info")
             return apply_result
         return learn_result
-    except Exception as e:
-        log(f"Error in reference repository learning: {e}", level="error")
 
 # ------------------------------------------------------------------
 # Main async routine assembling tasks (indexing, sharing, searching).
 # ------------------------------------------------------------------
 
+@handle_async_errors
 async def main_async(args):
     """Main async coordinator for indexing, documentation operations, and watch mode."""
     try:
@@ -228,6 +233,7 @@ async def main_async(args):
         ai_assistant.close()
         log("Cleanup complete.", level="info")
 
+@handle_errors(error_types=(Exception,))
 def main():
     """CLI entry point with argument parsing."""
     parser = argparse.ArgumentParser(description="Repository indexing and analysis tool.")
@@ -260,6 +266,9 @@ def main():
     except KeyboardInterrupt:
         log("KeyboardInterrupt caught – shutting down.", level="warning")
         sys.exit(0)
+    except Exception as e:
+        log(f"Fatal error in main process: {e}", level="error")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 

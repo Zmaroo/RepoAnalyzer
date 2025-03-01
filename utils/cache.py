@@ -8,6 +8,7 @@ import random
 from typing import Any, Optional, Set, Dict, List, Tuple, Callable, Awaitable, TypedDict
 from datetime import datetime, timedelta
 from utils.logger import log
+from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary
 from config import RedisConfig  # If we add Redis config later
 
 # Try to import redis; if not available, mark it accordingly
@@ -256,34 +257,34 @@ class UnifiedCache:
         
         # Redis configuration
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        self.use_redis = False
+        self.use_redis = redis_url and redis_url.lower() != "none"
         
-        if REDIS_AVAILABLE:
+        if self.use_redis:
             try:
-                self.client = redis.Redis.from_url(
-                    redis_url,
-                    decode_responses=True,
-                    socket_timeout=1
-                )
-                self.client.ping()
-                self.use_redis = True
-                log(f"Redis cache enabled for {name}")
-            except Exception as e:
-                log(f"Redis not available for {name}, using local cache: {e}", level="warning")
+                import redis
+                self._redis = redis.from_url(redis_url)
+                self._redis_available = True
+            except (ImportError, Exception) as e:
+                log(f"Redis not available for cache {name}: {e}", level="warning")
+                self._redis_available = False
+                self.use_redis = False
+        else:
+            self._redis_available = False
         
+    @handle_async_errors
     async def get_async(self, key: str) -> Optional[Any]:
         """Async get operation with metrics tracking."""
         value = None
         hit = False
         
         if self.use_redis:
-            try:
-                value = await asyncio.to_thread(self.client.get, f"{self.name}:{key}")
+            with ErrorBoundary("retrieving from Redis", error_types=(redis.RedisError, ConnectionError, TimeoutError, json.JSONDecodeError)):
+                value = await asyncio.to_thread(self._redis.get, f"{self.name}:{key}")
                 if value:
                     value = json.loads(value)
                     hit = True
-            except Exception:
-                # Fall back to local cache
+            
+            if value is None:  # Fallback to local cache if Redis failed
                 value = self._get_local(key)
                 hit = value is not None
         else:
@@ -302,6 +303,7 @@ class UnifiedCache:
             
         return value
     
+    @handle_async_errors
     async def set_async(self, key: str, value: Any, ttl: Optional[int] = None):
         """Async set operation with metrics tracking."""
         # Track metrics
@@ -316,31 +318,31 @@ class UnifiedCache:
             effective_ttl = ttl or self.default_ttl
             
         if self.use_redis:
-            try:
+            with ErrorBoundary("storing in Redis", error_types=(redis.RedisError, ConnectionError, TimeoutError, TypeError)):
                 await asyncio.to_thread(
-                    self.client.set,
+                    self._redis.set,
                     f"{self.name}:{key}",
                     json.dumps(value),
                     ex=effective_ttl
                 )
-            except Exception:
+            # If Redis failed, fall back to local cache
+            if not self.use_redis:
                 self._set_local(key, value, effective_ttl)
         else:
             self._set_local(key, value, effective_ttl)
     
+    @handle_async_errors
     async def clear_async(self):
         """Async cache clear with metrics tracking."""
         evicted = 0
         
         if self.use_redis:
-            try:
+            with ErrorBoundary("clearing Redis cache", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
                 pattern = f"{self.name}:*"
-                keys = await asyncio.to_thread(self.client.keys, pattern)
+                keys = await asyncio.to_thread(self._redis.keys, pattern)
                 if keys:
                     evicted = len(keys)
-                    await asyncio.to_thread(self.client.delete, *keys)
-            except Exception as e:
-                log(f"Error clearing Redis cache: {e}", level="error")
+                    await asyncio.to_thread(self._redis.delete, *keys)
         
         # Clear local cache
         evicted += len(self._local_cache)
@@ -350,19 +352,18 @@ class UnifiedCache:
         # Track metrics
         await cache_metrics.increment(self.name, "evictions", evicted)
     
+    @handle_async_errors
     async def clear_pattern_async(self, pattern: str):
         """Async pattern-based cache clear with metrics tracking."""
         evicted = 0
         
         if self.use_redis:
-            try:
+            with ErrorBoundary("clearing Redis cache pattern", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
                 full_pattern = f"{self.name}:{pattern}"
-                keys = await asyncio.to_thread(self.client.keys, full_pattern)
+                keys = await asyncio.to_thread(self._redis.keys, full_pattern)
                 if keys:
                     evicted = len(keys)
-                    await asyncio.to_thread(self.client.delete, *keys)
-            except Exception as e:
-                log(f"Error clearing Redis cache pattern: {e}", level="error")
+                    await asyncio.to_thread(self._redis.delete, *keys)
         
         # Clear matching local cache entries
         local_keys = [k for k in self._local_cache if pattern in k]
@@ -387,6 +388,7 @@ class UnifiedCache:
         
         log(f"Warmed up cache '{self.name}' with {len(keys_values)} entries", level="info")
     
+    @handle_async_errors
     async def warmup_from_function(
         self,
         keys: List[str],
@@ -404,16 +406,14 @@ class UnifiedCache:
         if not keys:
             return
             
-        try:
+        with ErrorBoundary(f"warming up cache '{self.name}'"):
             # Fetch values for the given keys
             values = await fetch_func(keys)
             
             # Only cache values that were successfully retrieved
             await self.warmup(values, ttl)
-            
-        except Exception as e:
-            log(f"Error warming up cache '{self.name}': {e}", level="error")
     
+    @handle_async_errors
     async def auto_warmup(
         self,
         fetch_func: Callable[[List[str]], Awaitable[Dict[str, Any]]],
@@ -426,7 +426,7 @@ class UnifiedCache:
             fetch_func: Async function that takes a list of keys and returns a dict of results
             limit: Maximum number of keys to warm up
         """
-        try:
+        with ErrorBoundary(f"auto-warming cache '{self.name}'"):
             # Get most popular keys
             popular_keys = await self._usage_tracker.get_popular_keys(limit)
             
@@ -434,9 +434,6 @@ class UnifiedCache:
                 keys = [k for k, _ in popular_keys]
                 await self.warmup_from_function(keys, fetch_func)
                 log(f"Auto-warmed up {len(keys)} popular keys for cache '{self.name}'", level="info")
-                
-        except Exception as e:
-            log(f"Error in auto-warmup for cache '{self.name}': {e}", level="error")
     
     def _get_local(self, key: str) -> Optional[Any]:
         """Get from local cache with TTL check."""

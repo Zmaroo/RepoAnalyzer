@@ -80,6 +80,7 @@ class MockDatabase:
 db = MockDatabase()
 
 # Example warmup functions for each cache
+@handle_async_errors()
 async def warmup_repository_cache(repo_ids: List[str]) -> Dict[str, Any]:
     """Fetch repository data for cache warmup."""
     try:
@@ -92,6 +93,7 @@ async def warmup_repository_cache(repo_ids: List[str]) -> Dict[str, Any]:
         log(f"Error in repository warmup: {e}", level="error")
         return {}
 
+@handle_async_errors()
 async def warmup_user_cache(user_ids: List[str]) -> Dict[str, Any]:
     """Fetch user data for cache warmup."""
     try:
@@ -104,6 +106,7 @@ async def warmup_user_cache(user_ids: List[str]) -> Dict[str, Any]:
         log(f"Error in user warmup: {e}", level="error")
         return {}
 
+@handle_async_errors()
 async def warmup_search_cache(queries: List[str]) -> Dict[str, Any]:
     """Fetch search results for cache warmup."""
     try:

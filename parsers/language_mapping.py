@@ -15,6 +15,7 @@ import os
 import re
 from parsers.types import FileType, ParserType
 from parsers.models import LanguageFeatures
+from utils.error_handling import ErrorBoundary
 
 # Language support mappings
 # --------------------------
@@ -384,7 +385,7 @@ LANGUAGE_TO_FILE_TYPE = {
 
 def normalize_language_name(language: str) -> str:
     """
-    Normalize a language name using LANGUAGE_ALIASES.
+    Normalize language name to a standard format.
     
     Args:
         language: The language name to normalize
@@ -394,12 +395,12 @@ def normalize_language_name(language: str) -> str:
     """
     if not language:
         return "unknown"
-    try:
+    
+    with ErrorBoundary("normalize_language_name", error_types=(Exception,)):
         normalized = language.lower().strip()
         return LANGUAGE_ALIASES.get(normalized, normalized)
-    except Exception as e:
-        log(f"Error normalizing language name '{language}': {e}", level="error")
-        return "unknown"
+    
+    return "unknown"
 
 def is_supported_language(language_id: str) -> bool:
     """

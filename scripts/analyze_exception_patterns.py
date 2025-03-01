@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple, Any, Optional
 from dataclasses import dataclass, field
 
+# Add the parent directory to sys.path to import from utils
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError
+
 
 @dataclass
 class ExceptionIssue:
@@ -236,6 +240,7 @@ class ExceptionPatternVisitor(ast.NodeVisitor):
         return False
 
 
+@handle_errors(error_types=(ProcessingError,))
 def find_python_files(directory: str, exclude_dirs: List[str] = None) -> List[str]:
     """Find all Python files in the given directory."""
     if exclude_dirs is None:
@@ -253,95 +258,99 @@ def find_python_files(directory: str, exclude_dirs: List[str] = None) -> List[st
     return python_files
 
 
+@handle_errors(error_types=(ProcessingError,))
 def analyze_file(file_path: str, result: AnalysisResult) -> None:
     """Analyze a single Python file for exception handling patterns."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Parse the AST
-        tree = ast.parse(content, filename=file_path)
-        
-        # Run the visitor
-        visitor = ExceptionPatternVisitor(file_path, result)
-        visitor.visit(tree)
-        
-        # Check for imports of error handling utilities
-        has_error_imports = False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for name in node.names:
-                    if 'error_handling' in name.name:
-                        has_error_imports = True
-                        break
-            elif isinstance(node, ast.ImportFrom):
-                if 'error_handling' in node.module:
-                    has_error_imports = True
-                    break
+    with ErrorBoundary(f"analyzing file {file_path}", error_types=(SyntaxError, ProcessingError)):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
             
-            if has_error_imports:
-                break
-        
-        # If there are try/except blocks but no error_handling imports
-        try_except_count = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Try))
-        if try_except_count > 0 and not has_error_imports:
-            result.add_issue(ExceptionIssue(
-                file_path=file_path,
-                line_number=1,
-                issue_type="missing_error_handling_import",
-                description="File contains exception handling but doesn't import error_handling utilities",
-                severity="medium",
-                suggested_fix="Import error handling utilities: from utils.error_handling import handle_errors, ErrorBoundary"
-            ))
-        
-        # Special check for database operations
-        if 'db/' in file_path and not '/test' in file_path:
-            # Check if retry_utils is imported for database operations
-            has_retry_imports = False
+            # Parse the AST
+            tree = ast.parse(content, filename=file_path)
+            
+            # Run the visitor
+            visitor = ExceptionPatternVisitor(file_path, result)
+            visitor.visit(tree)
+            
+            # Check for imports of error handling utilities
+            has_error_imports = False
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for name in node.names:
-                        if 'retry_utils' in name.name:
-                            has_retry_imports = True
+                        if 'error_handling' in name.name:
+                            has_error_imports = True
                             break
                 elif isinstance(node, ast.ImportFrom):
-                    if 'retry_utils' in (node.module or ''):
-                        has_retry_imports = True
+                    if 'error_handling' in node.module:
+                        has_error_imports = True
                         break
                 
-                if has_retry_imports:
+                if has_error_imports:
                     break
             
-            if not has_retry_imports and try_except_count > 0:
+            # If there are try/except blocks but no error_handling imports
+            try_except_count = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Try))
+            if try_except_count > 0 and not has_error_imports:
                 result.add_issue(ExceptionIssue(
                     file_path=file_path,
                     line_number=1,
-                    issue_type="missing_retry_mechanism",
-                    description="Database operations file doesn't use retry mechanism",
+                    issue_type="missing_error_handling_import",
+                    description="File contains exception handling but doesn't import error_handling utilities",
                     severity="medium",
-                    suggested_fix="Import and use retry utilities: from db.retry_utils import with_retry"
+                    suggested_fix="Import error handling utilities: from utils.error_handling import handle_errors, ErrorBoundary"
                 ))
-    
-    except SyntaxError as e:
-        result.add_issue(ExceptionIssue(
-            file_path=file_path,
-            line_number=e.lineno or 1,
-            issue_type="syntax_error",
-            description=f"Syntax error: {str(e)}",
-            severity="high",
-            suggested_fix="Fix the syntax error to enable proper analysis"
-        ))
-    except Exception as e:
-        result.add_issue(ExceptionIssue(
-            file_path=file_path,
-            line_number=1,
-            issue_type="analysis_error",
-            description=f"Error analyzing file: {str(e)}",
-            severity="low",
-            suggested_fix=None
-        ))
+            
+            # Special check for database operations
+            if 'db/' in file_path and not '/test' in file_path:
+                # Check if retry_utils is imported for database operations
+                has_retry_imports = False
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for name in node.names:
+                            if 'retry_utils' in name.name:
+                                has_retry_imports = True
+                                break
+                    elif isinstance(node, ast.ImportFrom):
+                        if 'retry_utils' in (node.module or ''):
+                            has_retry_imports = True
+                            break
+                    
+                    if has_retry_imports:
+                        break
+                
+                if not has_retry_imports and try_except_count > 0:
+                    result.add_issue(ExceptionIssue(
+                        file_path=file_path,
+                        line_number=1,
+                        issue_type="missing_retry_mechanism",
+                        description="Database operations file doesn't use retry mechanism",
+                        severity="medium",
+                        suggested_fix="Import and use retry utilities: from db.retry_utils import with_retry"
+                    ))
+        
+        except SyntaxError as e:
+            result.add_issue(ExceptionIssue(
+                file_path=file_path,
+                line_number=e.lineno or 1,
+                issue_type="syntax_error",
+                description=f"Syntax error: {str(e)}",
+                severity="high",
+                suggested_fix="Fix the syntax error to enable proper analysis"
+            ))
+        except Exception as e:
+            # Use more specific exceptions when possible, but keep this general handler as a fallback
+            result.add_issue(ExceptionIssue(
+                file_path=file_path,
+                line_number=1,
+                issue_type="analysis_error",
+                description=f"Error analyzing file: {str(e)}",
+                severity="low",
+                suggested_fix=None
+            ))
 
 
+@handle_errors(error_types=(ProcessingError,))
 def analyze_codebase(directory: str, exclude_dirs: List[str] = None) -> AnalysisResult:
     """Analyze the entire codebase for exception handling patterns."""
     result = AnalysisResult()
@@ -355,27 +364,183 @@ def analyze_codebase(directory: str, exclude_dirs: List[str] = None) -> Analysis
     return result
 
 
-def print_report(result: AnalysisResult, verbose: bool = False) -> None:
+@handle_errors(error_types=(ProcessingError,))
+def print_report(result: AnalysisResult, verbose: bool = False, severity_filter: Optional[str] = None, 
+                issue_type_filter: Optional[str] = None, file_filter: Optional[str] = None,
+                group_by_file: bool = False, fix_mode: bool = False, interactive: bool = True) -> None:
     """Print a human-readable report of the analysis results."""
+    # Apply filters
+    filtered_issues = result.issues
+    
+    # Apply severity filter if provided
+    if severity_filter:
+        filtered_issues = [i for i in filtered_issues if i.severity == severity_filter.lower()]
+        
+    # Apply issue type filter if provided
+    if issue_type_filter:
+        filtered_issues = [i for i in filtered_issues if i.issue_type == issue_type_filter]
+        
+    # Apply file filter if provided
+    if file_filter:
+        filtered_issues = [i for i in filtered_issues if file_filter in i.file_path]
+    
+    # Print header
     print("\n" + "=" * 80)
     print(f"EXCEPTION HANDLING ANALYSIS REPORT")
     print("=" * 80)
     
+    # Print statistics
     print(f"\nFiles analyzed: {result.files_analyzed}")
     print(f"Total issues found: {len(result.issues)}")
     
+    if severity_filter or issue_type_filter or file_filter:
+        print(f"Filtered issues: {len(filtered_issues)}")
+        if severity_filter:
+            print(f"  - Severity filter: {severity_filter.upper()}")
+        if issue_type_filter:
+            print(f"  - Issue type filter: {issue_type_filter}")
+        if file_filter:
+            print(f"  - File filter: {file_filter}")
+    
+    # Print severity statistics
     print("\nIssues by severity:")
     for severity, count in sorted(result.issue_count_by_severity.items(), 
                                  key=lambda x: {'high': 0, 'medium': 1, 'low': 2}.get(x[0], 3)):
         print(f"  {severity.upper()}: {count}")
     
+    # Print issue type statistics
     print("\nIssues by type:")
     for issue_type, count in sorted(result.issue_count_by_type.items(), key=lambda x: x[1], reverse=True):
         print(f"  {issue_type}: {count}")
     
+    # If fix mode is enabled, show issues with fix suggestions
+    if fix_mode and filtered_issues:
+        print("\n" + "=" * 80)
+        print("FIX MODE - Issues with suggested fixes:")
+        print("=" * 80)
+        
+        # Sort issues by file and then by line number
+        sorted_issues = sorted(filtered_issues, key=lambda x: (x.file_path, x.line_number))
+        
+        if interactive:
+            # Interactive mode - show one issue at a time
+            for i, issue in enumerate(sorted_issues):
+                print(f"\n[{i+1}/{len(filtered_issues)}] {issue.file_path}:{issue.line_number}")
+                print(f"Type: {issue.issue_type}")
+                print(f"Severity: {issue.severity.upper()}")
+                print(f"Description: {issue.description}")
+                
+                if issue.suggested_fix:
+                    print("\nSuggested Fix:")
+                    print("-" * 40)
+                    
+                    # For missing decorators, provide the exact code to add
+                    if issue.issue_type == "missing_async_decorator":
+                        print("Add this line before the function definition:")
+                        print(f"@handle_async_errors")
+                    elif issue.issue_type == "missing_decorator":
+                        print("Add this line before the function definition:")
+                        print(f"@handle_errors")
+                    elif issue.issue_type == "missing_error_handling_import":
+                        print("Add these imports at the top of the file:")
+                        print("from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary")
+                    elif issue.issue_type == "missing_retry_mechanism":
+                        print("Add retry mechanism to database operations:")
+                        print("from db.retry_utils import with_retry")
+                        print("\nAnd decorate functions that perform database operations:")
+                        print("@with_retry()")
+                    else:
+                        print(issue.suggested_fix)
+                    print("-" * 40)
+                
+                print("\nPress Enter to continue to the next issue, or type 'q' to quit fix mode")
+                if i < len(filtered_issues) - 1:  # Don't wait for input on the last issue
+                    response = input()
+                    if response.lower() == 'q':
+                        break
+        else:
+            # Non-interactive mode - show all issues at once
+            current_file = None
+            for i, issue in enumerate(sorted_issues):
+                # Group by file for better readability in non-interactive mode
+                if current_file != issue.file_path:
+                    current_file = issue.file_path
+                    print(f"\n\nFile: {current_file}")
+                    print("-" * (len(f"File: {current_file}")))
+                
+                print(f"\n[{i+1}/{len(filtered_issues)}] Line {issue.line_number}")
+                print(f"Type: {issue.issue_type}")
+                print(f"Severity: {issue.severity.upper()}")
+                print(f"Description: {issue.description}")
+                
+                if issue.suggested_fix:
+                    print("\nSuggested Fix:")
+                    print("-" * 40)
+                    
+                    # For missing decorators, provide the exact code to add
+                    if issue.issue_type == "missing_async_decorator":
+                        print("Add this line before the function definition:")
+                        print(f"@handle_async_errors")
+                    elif issue.issue_type == "missing_decorator":
+                        print("Add this line before the function definition:")
+                        print(f"@handle_errors")
+                    elif issue.issue_type == "missing_error_handling_import":
+                        print("Add these imports at the top of the file:")
+                        print("from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary")
+                    elif issue.issue_type == "missing_retry_mechanism":
+                        print("Add retry mechanism to database operations:")
+                        print("from db.retry_utils import with_retry")
+                        print("\nAnd decorate functions that perform database operations:")
+                        print("@with_retry()")
+                    else:
+                        print(issue.suggested_fix)
+                    print("-" * 40)
+        
+        return  # Exit after fix mode
+    
+    # Group by file if requested
+    if group_by_file and filtered_issues:
+        print("\nIssues grouped by file:")
+        # Group issues by file
+        issues_by_file = {}
+        for issue in filtered_issues:
+            if issue.file_path not in issues_by_file:
+                issues_by_file[issue.file_path] = []
+            issues_by_file[issue.file_path].append(issue)
+        
+        # Print issues grouped by file
+        for file_path, issues in sorted(issues_by_file.items()):
+            print(f"\nFile: {file_path}")
+            print("-" * len(f"File: {file_path}"))
+            print(f"Total issues: {len(issues)}")
+            
+            # Count issues by severity in this file
+            severity_counts = {}
+            for issue in issues:
+                severity_counts[issue.severity] = severity_counts.get(issue.severity, 0) + 1
+            
+            for severity in ["high", "medium", "low"]:
+                if severity in severity_counts:
+                    print(f"  {severity.upper()}: {severity_counts[severity]}")
+            
+            # Print issues in this file
+            for issue in sorted(issues, key=lambda x: x.line_number):
+                severity_marker = {
+                    'high': '!!!',
+                    'medium': ' !!',
+                    'low': '  !'
+                }.get(issue.severity, '   ')
+                
+                print(f"  {severity_marker} Line {issue.line_number}: {issue.description}")
+                if verbose and issue.suggested_fix:
+                    print(f"      Suggestion: {issue.suggested_fix}")
+        
+        return  # Exit after grouped output
+    
+    # Regular detailed or summary output
     if verbose:
         print("\nDetailed Issues:")
-        for issue in sorted(result.issues, key=lambda x: (x.severity, x.file_path, x.line_number)):
+        for issue in sorted(filtered_issues, key=lambda x: (x.severity, x.file_path, x.line_number)):
             severity_marker = {
                 'high': '!!!',
                 'medium': ' !!',
@@ -388,15 +553,15 @@ def print_report(result: AnalysisResult, verbose: bool = False) -> None:
             if issue.suggested_fix:
                 print(f"    Suggestion: {issue.suggested_fix}")
     else:
-        # Print summary of high severity issues
-        high_severity = [i for i in result.issues if i.severity == 'high']
+        # Print summary of filtered or high severity issues
+        high_severity = [i for i in filtered_issues if i.severity == 'high'] if not severity_filter else filtered_issues
         if high_severity:
-            print("\nHigh Severity Issues:")
+            print("\nHigh Severity Issues:") if not severity_filter else print(f"\n{severity_filter.capitalize()} Severity Issues:")
             for issue in sorted(high_severity, key=lambda x: (x.file_path, x.line_number))[:10]:  # Show top 10
                 print(f"  {issue.file_path}:{issue.line_number} - {issue.description}")
             
             if len(high_severity) > 10:
-                print(f"  ... and {len(high_severity) - 10} more high severity issues")
+                print(f"  ... and {len(high_severity) - 10} more {severity_filter if severity_filter else 'high'} severity issues")
     
     # Provide recommendations
     print("\nRecommendations:")
@@ -415,12 +580,23 @@ def print_report(result: AnalysisResult, verbose: bool = False) -> None:
     print("=" * 80)
 
 
+@handle_errors(error_types=(ProcessingError, IOError))
 def main():
     parser = argparse.ArgumentParser(description="Analyze exception handling patterns in Python code")
     parser.add_argument("directory", nargs="?", default=".", help="Directory to analyze (defaults to current directory)")
     parser.add_argument("--exclude", nargs="+", default=None, help="Directories to exclude")
     parser.add_argument("--output", "-o", help="Output file for JSON report")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed issue information")
+    parser.add_argument("--severity", choices=["high", "medium", "low"], 
+                       help="Filter issues by severity (high, medium, or low)")
+    parser.add_argument("--issue-type", dest="issue_type", 
+                       help="Filter issues by type (e.g., missing_async_decorator, broad_except)")
+    parser.add_argument("--file", help="Filter issues to only those in files matching this pattern")
+    parser.add_argument("--group-by-file", action="store_true", help="Group issues by file")
+    parser.add_argument("--fix-mode", action="store_true", 
+                       help="Mode showing issues with fix suggestions")
+    parser.add_argument("--non-interactive", action="store_true",
+                       help="Show all fixes at once without waiting for user input (use with --fix-mode)")
     args = parser.parse_args()
     
     # Construct the exclude list
@@ -432,13 +608,40 @@ def main():
     print(f"Analyzing Python files in {args.directory}...")
     result = analyze_codebase(args.directory, exclude_dirs)
     
+    # Determine if interactive mode should be used
+    interactive = not args.non_interactive
+    
     # Print human-readable report
-    print_report(result, args.verbose)
+    print_report(result, args.verbose, args.severity, args.issue_type, args.file, 
+                args.group_by_file, args.fix_mode, interactive)
     
     # Save JSON report if requested
     if args.output:
+        # Apply filters to JSON output if provided
+        filtered_issues = result.issues
+        
+        if args.severity:
+            filtered_issues = [i for i in filtered_issues if i.severity == args.severity.lower()]
+            
+        if args.issue_type:
+            filtered_issues = [i for i in filtered_issues if i.issue_type == args.issue_type]
+            
+        if args.file:
+            filtered_issues = [i for i in filtered_issues if args.file in i.file_path]
+        
+        # Create filtered result
+        if args.severity or args.issue_type or args.file:
+            filtered_result = AnalysisResult()
+            filtered_result.files_analyzed = result.files_analyzed
+            filtered_result.issue_count_by_type = result.issue_count_by_type
+            filtered_result.issue_count_by_severity = result.issue_count_by_severity
+            filtered_result.issues = filtered_issues
+            json_result = filtered_result.to_dict()
+        else:
+            json_result = result.to_dict()
+            
         with open(args.output, 'w', encoding='utf-8') as f:
-            json.dump(result.to_dict(), f, indent=2)
+            json.dump(json_result, f, indent=2)
         print(f"\nDetailed report saved to {args.output}")
 
 

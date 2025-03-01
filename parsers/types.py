@@ -28,6 +28,14 @@ class PatternCategory(Enum):
     CODE = "code"
     LEARNING = "learning"
 
+class PatternType(Enum):
+    """Types of patterns used for code analysis."""
+    CODE_STRUCTURE = "code_structure"
+    CODE_NAMING = "code_naming"
+    ERROR_HANDLING = "error_handling"
+    DOCUMENTATION_STRUCTURE = "documentation_structure"
+    ARCHITECTURE = "architecture"
+
 class ParserType(Enum):
     """Parser implementation types."""
     TREE_SITTER = "tree_sitter"

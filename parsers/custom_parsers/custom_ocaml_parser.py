@@ -29,6 +29,7 @@ from parsers.query_patterns.ocaml_interface import OCAML_INTERFACE_PATTERNS
 from parsers.models import OcamlNode, PatternType
 from parsers.types import FileType, ParserType, PatternCategory
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 
 def compute_offset(lines, line_no, col):
     """
@@ -63,6 +64,7 @@ class OcamlParser(BaseParser):
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
         return OcamlNode(**node_dict)
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse OCaml content into AST structure.
         
@@ -70,69 +72,76 @@ class OcamlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "ocaml_module" if not self.is_interface else "ocaml_interface",
-                [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
+        with ErrorBoundary(reraise=False, operation="parsing OCaml content") as error_boundary:
+            try:
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "ocaml_module" if not self.is_interface else "ocaml_interface",
+                    [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
 
-            # Use the original patterns dictionary for extraction.
-            patterns = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
-            current_doc = []
-            
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
+                # Use the original patterns dictionary for extraction.
+                patterns = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
+                current_doc = []
                 
-                line = line.strip()
-                if not line:
-                    continue
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
+                    
+                    line = line.strip()
+                    if not line:
+                        continue
 
-                # Process documentation
-                if doc_match := self.patterns['doc_comment'].match(line):
-                    node = self._create_node(
-                        "doc_comment",
-                        line_start,
-                        line_end,
-                        **patterns["documentation"]["doc_comment"]["extract"](doc_match)
-                    )
-                    current_doc.append(node)
-                    continue
+                    # Process documentation
+                    if doc_match := self.patterns['doc_comment'].match(line):
+                        node = self._create_node(
+                            "doc_comment",
+                            line_start,
+                            line_end,
+                            **patterns["documentation"]["doc_comment"]["extract"](doc_match)
+                        )
+                        current_doc.append(node)
+                        continue
 
-                # Process declarations
-                for category in ["syntax", "structure", "semantics"]:
-                    for pattern_name, pattern_info in patterns[category].items():
-                        if match := self.patterns[pattern_name].match(line):
-                            node = self._create_node(
-                                pattern_name,
-                                line_start,
-                                line_end,
-                                **pattern_info["extract"](match)
-                            )
-                            if current_doc:
-                                node.metadata["documentation"] = current_doc
-                                current_doc = []
-                            ast.children.append(node)
-                            break
+                    # Process declarations
+                    for category in ["syntax", "structure", "semantics"]:
+                        for pattern_name, pattern_info in patterns[category].items():
+                            if match := self.patterns[pattern_name].match(line):
+                                node = self._create_node(
+                                    pattern_name,
+                                    line_start,
+                                    line_end,
+                                    **pattern_info["extract"](match)
+                                )
+                                if current_doc:
+                                    node.metadata["documentation"] = current_doc
+                                    current_doc = []
+                                ast.children.append(node)
+                                break
 
-            # Add any remaining documentation
-            if current_doc:
-                ast.metadata["trailing_documentation"] = current_doc
+                # Add any remaining documentation
+                if current_doc:
+                    ast.metadata["trailing_documentation"] = current_doc
 
-            return ast.__dict__
-            
-        except Exception as e:
-            log(f"Error parsing OCaml content: {e}", level="error")
+                return ast.__dict__
+                
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                log(f"Error parsing OCaml content: {e}", level="error")
+                raise ParsingError(f"Failed to parse OCaml content: {str(e)}") from e
+                
+        # This code runs when the ErrorBoundary catches an exception
+        if error_boundary.error:
+            log(f"Error in OCaml parser: {error_boundary.error}", level="error")
             return OcamlNode(
                 type="ocaml_module" if not self.is_interface else "ocaml_interface",
                 start_point=[0, 0],
                 end_point=[0, 0],
-                error=str(e),
+                error=str(error_boundary.error),
                 children=[]
-            ).__dict__ 
-            
+            ).__dict__
+
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract code patterns from OCaml files for repository learning.
@@ -145,92 +154,98 @@ class OcamlParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            
-            # Extract let binding patterns
-            let_binding_patterns = self._extract_let_binding_patterns(ast_dict)
-            for binding in let_binding_patterns:
-                patterns.append({
-                    'name': f'ocaml_binding_{binding["name"]}',
-                    'content': binding["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'ocaml_binding',
-                        'name': binding["name"],
-                        'is_recursive': binding.get("is_recursive", False)
-                    }
-                })
-            
-            # Extract type definition patterns
-            type_patterns = self._extract_type_patterns(ast_dict)
-            for type_pattern in type_patterns:
-                patterns.append({
-                    'name': f'ocaml_type_{type_pattern["name"]}',
-                    'content': type_pattern["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'ocaml_type',
-                        'name': type_pattern["name"]
-                    }
-                })
+        with ErrorBoundary(reraise=False, operation="extracting OCaml patterns") as error_boundary:
+            try:
+                # Parse the source first to get a structured representation
+                ast_dict = self._parse_source(source_code)
                 
-            # Extract module structure patterns
-            module_patterns = self._extract_module_patterns(ast_dict)
-            for module_pattern in module_patterns:
-                patterns.append({
-                    'name': f'ocaml_module_{module_pattern["name"]}',
-                    'content': module_pattern["content"],
-                    'pattern_type': PatternType.MODULE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'ocaml_module',
-                        'name': module_pattern["name"],
-                        'elements': module_pattern.get("elements", [])
-                    }
-                })
+                # Extract let binding patterns
+                let_binding_patterns = self._extract_let_binding_patterns(ast_dict)
+                for binding in let_binding_patterns:
+                    patterns.append({
+                        'name': f'ocaml_binding_{binding["name"]}',
+                        'content': binding["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'ocaml_binding',
+                            'name': binding["name"],
+                            'is_recursive': binding.get("is_recursive", False)
+                        }
+                    })
                 
-            # Extract naming convention patterns
-            naming_patterns = self._extract_naming_convention_patterns(ast_dict)
-            for naming in naming_patterns:
-                patterns.append({
-                    'name': f'ocaml_naming_{naming["convention"]}',
-                    'content': naming["content"],
-                    'pattern_type': PatternType.NAMING_CONVENTION,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'naming_convention',
-                        'convention': naming["convention"],
-                        'examples': naming.get("examples", [])
-                    }
-                })
+                # Extract type definition patterns
+                type_patterns = self._extract_type_patterns(ast_dict)
+                for type_pattern in type_patterns:
+                    patterns.append({
+                        'name': f'ocaml_type_{type_pattern["name"]}',
+                        'content': type_pattern["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'ocaml_type',
+                            'name': type_pattern["name"]
+                        }
+                    })
+                    
+                # Extract module structure patterns
+                module_patterns = self._extract_module_patterns(ast_dict)
+                for module_pattern in module_patterns:
+                    patterns.append({
+                        'name': f'ocaml_module_{module_pattern["name"]}',
+                        'content': module_pattern["content"],
+                        'pattern_type': PatternType.MODULE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'ocaml_module',
+                            'name': module_pattern["name"],
+                            'elements': module_pattern.get("elements", [])
+                        }
+                    })
+                    
+                # Extract naming convention patterns
+                naming_patterns = self._extract_naming_convention_patterns(ast_dict)
+                for naming in naming_patterns:
+                    patterns.append({
+                        'name': f'ocaml_naming_{naming["convention"]}',
+                        'content': naming["content"],
+                        'pattern_type': PatternType.NAMING_CONVENTION,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'naming_convention',
+                            'convention': naming["convention"],
+                            'examples': naming.get("examples", [])
+                        }
+                    })
+                    
+                # Extract documentation patterns
+                doc_patterns = self._extract_documentation_patterns(ast_dict)
+                for doc in doc_patterns:
+                    patterns.append({
+                        'name': f'ocaml_documentation_{doc["type"]}',
+                        'content': doc["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'documentation',
+                            'doc_type': doc["type"],
+                            'examples': doc.get("examples", [])
+                        }
+                    })
+                    
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                log(f"Error extracting OCaml patterns: {e}", level="error")
+                raise ProcessingError(f"Failed to extract OCaml patterns: {str(e)}") from e
                 
-            # Extract documentation patterns
-            doc_patterns = self._extract_documentation_patterns(ast_dict)
-            for doc in doc_patterns:
-                patterns.append({
-                    'name': f'ocaml_documentation_{doc["type"]}',
-                    'content': doc["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'documentation',
-                        'doc_type': doc["type"],
-                        'examples': doc.get("examples", [])
-                    }
-                })
+        # This code runs when the ErrorBoundary catches an exception
+        if error_boundary.error:
+            log(f"Error in OCaml pattern extraction: {error_boundary.error}", level="error")
                 
-        except Exception as e:
-            log(f"Error extracting OCaml patterns: {e}", level="error")
-            
         return patterns
         
     def _extract_let_binding_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

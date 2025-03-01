@@ -8,6 +8,7 @@ from parsers.query_patterns.rst import RST_PATTERNS
 from utils.logger import log
 import re
 from collections import Counter
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 
 class RstParser(BaseParser):
     """Parser for reStructuredText files with enhanced pattern extraction capabilities."""
@@ -40,6 +41,7 @@ class RstParser(BaseParser):
         }
         return levels.get(char, 99)
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse RST content into AST structure.
         
@@ -47,83 +49,90 @@ class RstParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "document",
-                [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
+        with ErrorBoundary(reraise=False, operation="parsing RST content") as error_boundary:
+            try:
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "document",
+                    [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
 
-            current_content = []
-            section_stack = []
+                current_content = []
+                section_stack = []
 
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
-                
-                # Process section underlines when current content exists.
-                if self.patterns.get('section') and self.patterns['section'].match(line) and current_content:
-                    section_title = current_content[-1]
-                    section_level = self._get_section_level(line[0])
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
                     
-                    node = self._create_node(
-                        "section",
-                        [i - 1, 0],
-                        line_end,
-                        title=section_title,
-                        level=section_level
-                    )
-                    
-                    while section_stack and section_stack[-1].metadata.get('level', 0) >= section_level:
-                        section_stack.pop()
-                    
-                    if section_stack:
-                        section_stack[-1].children.append(node)
-                    else:
-                        ast.children.append(node)
-                    
-                    section_stack.append(node)
-                    current_content = []
-                    continue
+                    # Process section underlines when current content exists.
+                    if self.patterns.get('section') and self.patterns['section'].match(line) and current_content:
+                        section_title = current_content[-1]
+                        section_level = self._get_section_level(line[0])
+                        
+                        node = self._create_node(
+                            "section",
+                            [i - 1, 0],
+                            line_end,
+                            title=section_title,
+                            level=section_level
+                        )
+                        
+                        while section_stack and section_stack[-1].metadata.get('level', 0) >= section_level:
+                            section_stack.pop()
+                        
+                        if section_stack:
+                            section_stack[-1].children.append(node)
+                        else:
+                            ast.children.append(node)
+                        
+                        section_stack.append(node)
+                        current_content = []
+                        continue
 
-                # Process other patterns.
-                matched = False
-                for category in RST_PATTERNS.values():
-                    for pattern_name, pattern_obj in category.items():
-                        if match := self.patterns[pattern_name].match(line):
-                            node = self._create_node(
-                                pattern_name,
-                                line_start,
-                                line_end,
-                                **pattern_obj.extract(match)
-                            )
-                            
-                            if section_stack:
-                                section_stack[-1].children.append(node)
-                            else:
-                                ast.children.append(node)
+                    # Process other patterns.
+                    matched = False
+                    for category in RST_PATTERNS.values():
+                        for pattern_name, pattern_obj in category.items():
+                            if match := self.patterns[pattern_name].match(line):
+                                node = self._create_node(
+                                    pattern_name,
+                                    line_start,
+                                    line_end,
+                                    **pattern_obj.extract(match)
+                                )
                                 
-                            matched = True
+                                if section_stack:
+                                    section_stack[-1].children.append(node)
+                                else:
+                                    ast.children.append(node)
+                                    
+                                matched = True
+                                break
+                        if matched:
                             break
-                    if matched:
-                        break
 
-                if not matched and line.strip():
-                    current_content.append(line)
+                    if not matched and line.strip():
+                        current_content.append(line)
 
-            return ast.__dict__
-            
-        except Exception as e:
-            log(f"Error parsing RST content: {e}", level="error")
+                return ast.__dict__
+                
+            except (ValueError, KeyError, TypeError, IndexError) as e:
+                log(f"Error parsing RST content: {e}", level="error")
+                raise ParsingError(f"Failed to parse RST content: {str(e)}") from e
+                
+        # This code runs when the ErrorBoundary catches an exception
+        if error_boundary.error:
+            log(f"Error in RST parser: {error_boundary.error}", level="error")
             return RstNode(
                 type="document",
                 start_point=[0, 0],
                 end_point=[0, 0],
-                error=str(e),
+                error=str(error_boundary.error),
                 children=[]
-            ).__dict__ 
-    
+            ).__dict__
+
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract documentation patterns from reStructuredText files for repository learning.
@@ -136,77 +145,83 @@ class RstParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            
-            # Extract section structure patterns
-            section_patterns = self._extract_section_patterns(ast_dict)
-            for section in section_patterns:
-                patterns.append({
-                    'name': f'rst_section_{section["name"]}',
-                    'content': section["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'rst_section',
-                        'section_level': section.get("level", 1),
-                        'section_count': section.get("count", 1)
-                    }
-                })
-            
-            # Extract directive patterns
-            directive_patterns = self._extract_directive_patterns(ast_dict)
-            for directive in directive_patterns:
-                patterns.append({
-                    'name': f'rst_directive_{directive["type"]}',
-                    'content': directive["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'rst_directive',
-                        'directive_type': directive["type"],
-                        'directives': directive.get("items", [])
-                    }
-                })
-            
-            # Extract role patterns
-            role_patterns = self._extract_role_patterns(ast_dict)
-            for role in role_patterns:
-                patterns.append({
-                    'name': f'rst_role_{role["type"]}',
-                    'content': role["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_REFERENCE,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'rst_role',
-                        'role_type': role["type"],
-                        'roles': role.get("items", [])
-                    }
-                })
-            
-            # Extract structural patterns
-            structure_patterns = self._extract_structure_patterns(ast_dict)
-            for structure in structure_patterns:
-                patterns.append({
-                    'name': f'rst_structure_{structure["type"]}',
-                    'content': structure["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'document_structure',
-                        'structure_type': structure["type"],
-                        'count': structure.get("count", 1)
-                    }
-                })
+        with ErrorBoundary(reraise=False, operation="extracting RST patterns") as error_boundary:
+            try:
+                # Parse the source first to get a structured representation
+                ast_dict = self._parse_source(source_code)
                 
-        except Exception as e:
-            log(f"Error extracting RST patterns: {e}", level="error")
-            
+                # Extract section structure patterns
+                section_patterns = self._extract_section_patterns(ast_dict)
+                for section in section_patterns:
+                    patterns.append({
+                        'name': f'rst_section_{section["name"]}',
+                        'content': section["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'rst_section',
+                            'section_level': section.get("level", 1),
+                            'section_count': section.get("count", 1)
+                        }
+                    })
+                
+                # Extract directive patterns
+                directive_patterns = self._extract_directive_patterns(ast_dict)
+                for directive in directive_patterns:
+                    patterns.append({
+                        'name': f'rst_directive_{directive["type"]}',
+                        'content': directive["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'rst_directive',
+                            'directive_type': directive["type"],
+                            'directives': directive.get("items", [])
+                        }
+                    })
+                
+                # Extract role patterns
+                role_patterns = self._extract_role_patterns(ast_dict)
+                for role in role_patterns:
+                    patterns.append({
+                        'name': f'rst_role_{role["type"]}',
+                        'content': role["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_REFERENCE,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'rst_role',
+                            'role_type': role["type"],
+                            'roles': role.get("items", [])
+                        }
+                    })
+                
+                # Extract structural patterns
+                structure_patterns = self._extract_structure_patterns(ast_dict)
+                for structure in structure_patterns:
+                    patterns.append({
+                        'name': f'rst_structure_{structure["type"]}',
+                        'content': structure["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'document_structure',
+                            'structure_type': structure["type"],
+                            'count': structure.get("count", 1)
+                        }
+                    })
+                    
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                log(f"Error extracting RST patterns: {e}", level="error")
+                raise ProcessingError(f"Failed to extract RST patterns: {str(e)}") from e
+                
+        # This code runs when the ErrorBoundary catches an exception
+        if error_boundary.error:
+            log(f"Error in RST pattern extraction: {error_boundary.error}", level="error")
+                
         return patterns
         
     def _extract_section_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

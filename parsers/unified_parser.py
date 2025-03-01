@@ -30,7 +30,7 @@ from parsers.language_mapping import (
     get_parser_info_for_language, 
     get_complete_language_info
 )
-from utils.error_handling import handle_async_errors, ParsingError
+from utils.error_handling import handle_async_errors, ParsingError, ErrorBoundary
 from utils.encoding import encode_query_pattern
 from utils.logger import log
 from utils.cache import parser_cache
@@ -41,13 +41,13 @@ class UnifiedParser:
     @handle_async_errors(error_types=(ParsingError, Exception))
     async def parse_file(self, file_path: str, content: str) -> Optional[ParserResult]:
         """Parse file content using appropriate parser."""
-        try:
-            # Check if the complete parsed result is already cached
-            parse_cache_key = f"parse:{file_path}:{hash(content)}"
-            cached_result = await parser_cache.get_async(parse_cache_key)
-            if cached_result:
-                return ParserResult(**cached_result)
-            
+        # Check if the complete parsed result is already cached
+        parse_cache_key = f"parse:{file_path}:{hash(content)}"
+        cached_result = await parser_cache.get_async(parse_cache_key)
+        if cached_result:
+            return ParserResult(**cached_result)
+        
+        async with ErrorBoundary(f"parse_file_{file_path}", error_types=(ParsingError, Exception)):
             # Use the improved language detection with confidence score
             language_id, confidence = detect_language(file_path, content)
             if confidence < 0.6:
@@ -101,10 +101,8 @@ class UnifiedParser:
             cached_result = asdict(result)
             await parser_cache.set_async(parse_cache_key, cached_result)
             return result
-
-        except Exception as e:
-            log(f"Error parsing file {file_path}: {e}", level="error")
-            return None
+        
+        return None
 
 # Global instance
 unified_parser = UnifiedParser() 

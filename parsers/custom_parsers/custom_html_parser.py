@@ -6,6 +6,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.html import HTML_PATTERNS
 from parsers.models import HtmlNode, PatternType
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 from xml.etree.ElementTree import Element, fromstring
 from xml.sax.saxutils import escape, unescape
 import re
@@ -83,6 +84,7 @@ class HtmlParser(BaseParser):
         
         return element_data
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse HTML content into AST structure.
         
@@ -90,57 +92,59 @@ class HtmlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "html_document",
-                [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
-            
-            # Process comments and doctypes first.
-            for pattern_name in ['comment', 'doctype']:
-                for match in self.patterns[pattern_name].finditer(source_code):
-                    node = self._create_node(
-                        pattern_name,
-                        [source_code.count('\n', 0, match.start()), match.start()],
-                        [source_code.count('\n', 0, match.end()), match.end()],
-                        **HTML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(match)
-                    )
-                    ast.children.append(node)
-            
-            # Parse HTML structure.
+        with ErrorBoundary(error_types=(ParsingError,), context="HTML parsing"):
             try:
-                root = fromstring(source_code)
-                root_node = self._process_element(root, [], 0)
-                ast.children.append(root_node)
-            except Exception as e:
-                log(f"Error parsing HTML structure: {e}", level="error")
-                ast.metadata["parse_error"] = str(e)
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "html_document",
+                    [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
+                
+                # Process comments and doctypes first.
+                for pattern_name in ['comment', 'doctype']:
+                    for match in self.patterns[pattern_name].finditer(source_code):
+                        node = self._create_node(
+                            pattern_name,
+                            [source_code.count('\n', 0, match.start()), match.start()],
+                            [source_code.count('\n', 0, match.end()), match.end()],
+                            **HTML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(match)
+                        )
+                        ast.children.append(node)
+                
+                # Parse HTML structure.
+                try:
+                    root = fromstring(source_code)
+                    root_node = self._process_element(root, [], 0)
+                    ast.children.append(root_node)
+                except (ValueError, SyntaxError) as e:
+                    log(f"Error parsing HTML structure: {e}", level="error")
+                    ast.metadata["parse_error"] = str(e)
+                
+                # Process scripts and styles.
+                for pattern_name in ['script', 'style']:
+                    for match in self.patterns[pattern_name].finditer(source_code):
+                        node = self._create_node(
+                            pattern_name,
+                            [source_code.count('\n', 0, match.start()), match.start()],
+                            [source_code.count('\n', 0, match.end()), match.end()],
+                            **HTML_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
+                        )
+                        ast.children.append(node)
+                
+                return ast.__dict__
+                
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error parsing HTML content: {e}", level="error")
+                return HtmlNode(
+                    type="html_document",
+                    start_point=[0, 0],
+                    end_point=[0, 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
             
-            # Process scripts and styles.
-            for pattern_name in ['script', 'style']:
-                for match in self.patterns[pattern_name].finditer(source_code):
-                    node = self._create_node(
-                        pattern_name,
-                        [source_code.count('\n', 0, match.start()), match.start()],
-                        [source_code.count('\n', 0, match.end()), match.end()],
-                        **HTML_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
-                    )
-                    ast.children.append(node)
-            
-            return ast.__dict__
-            
-        except Exception as e:
-            log(f"Error parsing HTML content: {e}", level="error")
-            return HtmlNode(
-                type="html_document",
-                start_point=[0, 0],
-                end_point=[0, 0],
-                error=str(e),
-                children=[]
-            ).__dict__
-            
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract HTML patterns from HTML files for repository learning.
@@ -153,78 +157,79 @@ class HtmlParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            
-            # Extract element structure patterns
-            elements = self._extract_element_patterns(ast_dict)
-            for element in elements:
-                patterns.append({
-                    'name': f'html_element_{element["tag"]}',
-                    'content': element["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'html_element',
-                        'tag': element["tag"],
-                        'attributes': element.get("attributes", []),
-                        'depth': element.get("depth", 0)
-                    }
-                })
-            
-            # Extract component patterns (reusable HTML structures)
-            components = self._extract_component_patterns(ast_dict)
-            for component in components:
-                patterns.append({
-                    'name': f'html_component_{component["name"]}',
-                    'content': component["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'html_component',
-                        'name': component["name"],
-                        'elements': component.get("elements", [])
-                    }
-                })
+        with ErrorBoundary(error_types=(ProcessingError,), context="HTML pattern extraction"):
+            try:
+                # Parse the source first to get a structured representation
+                ast_dict = self._parse_source(source_code)
                 
-            # Extract semantic patterns (accessibility, data attributes)
-            semantic_patterns = self._extract_semantic_patterns(ast_dict)
-            for semantic in semantic_patterns:
-                patterns.append({
-                    'name': f'html_semantic_{semantic["category"]}',
-                    'content': semantic["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'html_semantic',
-                        'category': semantic["category"],
-                        'attributes': semantic.get("attributes", [])
-                    }
-                })
+                # Extract element structure patterns
+                elements = self._extract_element_patterns(ast_dict)
+                for element in elements:
+                    patterns.append({
+                        'name': f'html_element_{element["tag"]}',
+                        'content': element["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'html_element',
+                            'tag': element["tag"],
+                            'attributes': element.get("attributes", []),
+                            'depth': element.get("depth", 0)
+                        }
+                    })
                 
-            # Extract script and style patterns
-            embedded_patterns = self._extract_embedded_patterns(ast_dict)
-            for embedded in embedded_patterns:
-                patterns.append({
-                    'name': f'html_embedded_{embedded["type"]}',
-                    'content': embedded["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': embedded.get("language", self.language_id),
-                    'confidence': 0.75,
-                    'metadata': {
-                        'type': 'html_embedded',
-                        'embedded_type': embedded["type"],
-                        'language': embedded.get("language")
-                    }
-                })
+                # Extract component patterns (reusable HTML structures)
+                components = self._extract_component_patterns(ast_dict)
+                for component in components:
+                    patterns.append({
+                        'name': f'html_component_{component["name"]}',
+                        'content': component["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'html_component',
+                            'name': component["name"],
+                            'elements': component.get("elements", [])
+                        }
+                    })
+                    
+                # Extract semantic patterns (accessibility, data attributes)
+                semantic_patterns = self._extract_semantic_patterns(ast_dict)
+                for semantic in semantic_patterns:
+                    patterns.append({
+                        'name': f'html_semantic_{semantic["category"]}',
+                        'content': semantic["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'html_semantic',
+                            'category': semantic["category"],
+                            'attributes': semantic.get("attributes", [])
+                        }
+                    })
+                    
+                # Extract script and style patterns
+                embedded_patterns = self._extract_embedded_patterns(ast_dict)
+                for embedded in embedded_patterns:
+                    patterns.append({
+                        'name': f'html_embedded_{embedded["type"]}',
+                        'content': embedded["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': embedded.get("language", self.language_id),
+                        'confidence': 0.75,
+                        'metadata': {
+                            'type': 'html_embedded',
+                            'embedded_type': embedded["type"],
+                            'language': embedded.get("language")
+                        }
+                    })
+                    
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting HTML patterns: {e}", level="error")
                 
-        except Exception as e:
-            log(f"Error extracting HTML patterns: {e}", level="error")
-            
         return patterns
         
     def _extract_element_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

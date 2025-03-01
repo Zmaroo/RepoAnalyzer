@@ -8,6 +8,8 @@ in the pattern processor, helping to catch errors early in the development proce
 import re
 from typing import Dict, Any, List, Optional, Set, Callable
 from parsers.types import PatternCategory, PatternDefinition, QueryPattern
+from utils.error_handling import ErrorBoundary
+from utils.logger import log
 
 class PatternValidationError(Exception):
     """Exception raised for pattern validation errors."""
@@ -116,7 +118,8 @@ class PatternValidator:
         if ' ' in pattern_name:
             errors.append(f"Pattern name '{pattern_name}' contains spaces (use underscores instead)")
         
-        if not pattern_name.islower() and '_' in pattern_name:
+        # Check for snake_case: all lowercase with underscores
+        if not pattern_name.islower() or (pattern_name.isalnum() and not pattern_name.islower()):
             errors.append(f"Pattern name '{pattern_name}' should use snake_case (all lowercase with underscores)")
         
         return errors

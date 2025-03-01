@@ -116,6 +116,7 @@ class AIAssistant:
                 "context": context
             }
 
+    @handle_errors(error_types=ProcessingError)
     def trace_code_flow(self, entry_point: str, repo_id: int) -> list:
         """
         Traces the code flow starting from a given entry point.
@@ -129,10 +130,15 @@ class AIAssistant:
         """
         try:
             return self.graph_analysis.trace_code_flow(entry_point, repo_id)
-        except Exception as e:
-            import traceback
-            log(f"Error tracing code flow from {entry_point}: {e}\n{traceback.format_exc()}", level="error")
+        except (ValueError, KeyError) as e:
+            # Handle expected errors
+            log(f"Error tracing code flow from {entry_point}: {e}", level="error")
             return []
+        except Exception as e:
+            # Handle unexpected errors
+            import traceback
+            log(f"Unexpected error tracing code flow from {entry_point}: {e}\n{traceback.format_exc()}", level="error")
+            raise ProcessingError(f"Failed to trace code flow: {e}")
 
     @handle_async_errors(error_types=ProcessingError)
     async def search_code_snippets(self, query: str, repo_id: int, limit: int = 3) -> list:
@@ -141,9 +147,15 @@ class AIAssistant:
         from semantic.search import search_code
         try:
             return await search_code(query, repo_id, limit=limit)
-        except Exception as e:
-            log(f"Error in semantic search for query '{query}': {e}", level="error")
+        except ImportError as e:
+            log(f"Search module not available: {e}", level="error")
             return []
+        except ValueError as e:
+            log(f"Invalid search parameters for query '{query}': {e}", level="error")
+            return []
+        except Exception as e:
+            log(f"Unexpected error in semantic search for query '{query}': {e}", level="error")
+            raise ProcessingError(f"Search operation failed: {e}")
 
     @handle_async_errors(error_types=ProcessingError)
     async def search_documentation(self, query: str, repo_id: int = None) -> list:
@@ -152,9 +164,15 @@ class AIAssistant:
         from semantic.search import search_docs
         try:
             return await search_docs(query, repo_id, limit=3)
-        except Exception as e:
-            log(f"Error searching documentation for query '{query}': {e}", level="error")
+        except ImportError as e:
+            log(f"Documentation search module not available: {e}", level="error")
             return []
+        except ValueError as e:
+            log(f"Invalid documentation search parameters for query '{query}': {e}", level="error")
+            return []
+        except Exception as e:
+            log(f"Unexpected error searching documentation for query '{query}': {e}", level="error")
+            raise ProcessingError(f"Documentation search operation failed: {e}")
     
     def get_available_docs(self, search_term: str, repo_id: int = None) -> list[dict]:
         """Find documentation that could be linked to a project."""
@@ -185,9 +203,15 @@ class AIAssistant:
                     "coverage": self._analyze_coverage(docs),
                     "quality": self._batch_quality_analysis(docs)
                 }
+            except ImportError as e:
+                log(f"Documentation module not available: {e}", level="error")
+                return {"error": f"Documentation service unavailable: {e}"}
+            except ValueError as e:
+                log(f"Invalid repository ID ({repo_id}): {e}", level="error")
+                return {"error": f"Invalid repository parameters: {e}"}
             except Exception as e:
-                log(f"Error analyzing documentation: {e}", level="error")
-                return {"error": str(e)}
+                log(f"Unexpected error analyzing documentation: {e}", level="error")
+                raise ProcessingError(f"Documentation analysis failed: {e}")
 
     @handle_errors(error_types=ProcessingError)
     def _analyze_doc_clusters(self, docs: List[Dict]) -> Dict[str, Any]:
@@ -250,12 +274,13 @@ class AIAssistant:
             
             return quality_metrics
 
-    def suggest_documentation_improvements(self, repo_id: int) -> List[Dict]:
+    @handle_errors(error_types=ProcessingError)
+    async def suggest_documentation_improvements(self, repo_id: int) -> List[Dict]:
         """Suggest improvements to documentation based on quality analysis."""
         try:
             # Import locally to avoid circular dependencies
             from semantic.search import get_repo_docs
-            docs = get_repo_docs(repo_id)
+            docs = await get_repo_docs(repo_id)
             if not docs:
                 return [{"error": "No documentation found"}]
             
@@ -278,23 +303,31 @@ class AIAssistant:
                     })
             
             return suggestions
+        except KeyError as e:
+            log(f"Error accessing document quality metrics: {e}", level="error")
+            return [{"error": f"Missing document attribute: {e}"}]
+        except ImportError as e:
+            log(f"Error importing semantic search module: {e}", level="error")
+            return [{"error": "Search module unavailable"}]
         except Exception as e:
-            log(f"Error suggesting documentation improvements: {e}", level="error")
-            return [{"error": str(e)}]
+            log(f"Unexpected error suggesting documentation improvements: {e}", level="error")
+            raise ProcessingError(f"Failed to analyze documentation quality: {e}")
 
-    def track_doc_version(self, doc_id: int, new_content: str) -> Dict:
+    @handle_errors(error_types=ProcessingError)
+    async def track_doc_version(self, doc_id: int, new_content: str) -> Dict:
         """Track a new version of documentation."""
         changes = SequenceMatcher(None, "", new_content).ratio()
         # Import locally to avoid circular dependencies
         from semantic.search import update_doc_version
-        return update_doc_version(doc_id, new_content, changes)
+        return await update_doc_version(doc_id, new_content, changes)
 
-    def suggest_documentation_links(self, repo_id: int, threshold: float = 0.8) -> List[Dict]:
+    @handle_errors(error_types=ProcessingError)
+    async def suggest_documentation_links(self, repo_id: int, threshold: float = 0.8) -> List[Dict]:
         """Suggest links between documentation and code."""
         # Import locally to avoid circular dependencies
         from semantic.search import get_repo_docs, search_docs
-        repo_docs = get_repo_docs(repo_id)
-        all_docs = search_docs("", limit=100)  # Get broader set of docs
+        repo_docs = await get_repo_docs(repo_id)
+        all_docs = await search_docs("", limit=100)  # Get broader set of docs
         
         suggestions = []
         for doc in all_docs:

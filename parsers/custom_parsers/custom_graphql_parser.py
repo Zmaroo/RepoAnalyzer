@@ -11,6 +11,8 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.graphql import GRAPHQL_PATTERNS
 from parsers.models import GraphQLNode, PatternType
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+import re
 
 class GraphqlParser(BaseParser):
     """Parser for GraphQL schema files."""
@@ -61,6 +63,7 @@ class GraphqlParser(BaseParser):
             directives.append(directive)
         return directives
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse GraphQL content into AST structure.
         
@@ -68,122 +71,124 @@ class GraphqlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "document",
-                [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
-            
-            current_type = None
-            current_interface = None
-            current_description = None
-            
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
+        with ErrorBoundary(error_types=(ParsingError,), context="GraphQL parsing"):
+            try:
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "document",
+                    [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
                 
-                line = line.strip()
-                if not line:
-                    continue
+                current_type = None
+                current_interface = None
+                current_description = None
                 
-                # Process descriptions and comments.
-                if desc_match := self.patterns['description'].match(line):
-                    node = self._create_node(
-                        "description",
-                        line_start,
-                        line_end,
-                        **GRAPHQL_PATTERNS[PatternCategory.DOCUMENTATION]['description'].extract(desc_match)
-                    )
-                    ast.children.append(node)
-                    current_description = node
-                    continue
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
                     
-                if comment_match := self.patterns['comment'].match(line):
-                    node = self._create_node(
-                        "comment",
-                        line_start,
-                        line_end,
-                        **GRAPHQL_PATTERNS[PatternCategory.DOCUMENTATION]['comment'].extract(comment_match)
-                    )
-                    ast.children.append(node)
-                    continue
-                
-                # Process type definitions.
-                if type_match := self.patterns['type'].match(line):
-                    node = self._create_node(
-                        "type",
-                        line_start,
-                        line_end,
-                        **GRAPHQL_PATTERNS[PatternCategory.SYNTAX]['type'].extract(type_match)
-                    )
-                    if current_description:
-                        node.metadata["description"] = current_description
-                        current_description = None
-                    ast.children.append(node)
-                    current_type = node
-                    continue
-                
-                # Process interfaces.
-                if interface_match := self.patterns['interface'].match(line):
-                    node = self._create_node(
-                        "interface",
-                        line_start,
-                        line_end,
-                        **GRAPHQL_PATTERNS[PatternCategory.STRUCTURE]['interface'].extract(interface_match)
-                    )
-                    if current_description:
-                        node.metadata["description"] = current_description
-                        current_description = None
-                    ast.children.append(node)
-                    current_interface = node
-                    continue
-                
-                # Process fields.
-                if field_match := self.patterns['field'].match(line):
-                    if not (current_type or current_interface):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # Process descriptions and comments.
+                    if desc_match := self.patterns['description'].match(line):
+                        node = self._create_node(
+                            "description",
+                            line_start,
+                            line_end,
+                            **GRAPHQL_PATTERNS[PatternCategory.DOCUMENTATION]['description'].extract(desc_match)
+                        )
+                        ast.children.append(node)
+                        current_description = node
                         continue
                         
-                    field_data = GRAPHQL_PATTERNS[PatternCategory.SYNTAX]['field'].extract(field_match)
-                    field_data["arguments"] = self._process_arguments(field_data["arguments"])
-                    field_data["directives"] = self._process_directives(line, i + 1)
+                    if comment_match := self.patterns['comment'].match(line):
+                        node = self._create_node(
+                            "comment",
+                            line_start,
+                            line_end,
+                            **GRAPHQL_PATTERNS[PatternCategory.DOCUMENTATION]['comment'].extract(comment_match)
+                        )
+                        ast.children.append(node)
+                        continue
                     
-                    node = self._create_node(
-                        "field",
-                        line_start,
-                        line_end,
-                        **field_data
-                    )
+                    # Process type definitions.
+                    if type_match := self.patterns['type'].match(line):
+                        node = self._create_node(
+                            "type",
+                            line_start,
+                            line_end,
+                            **GRAPHQL_PATTERNS[PatternCategory.SYNTAX]['type'].extract(type_match)
+                        )
+                        if current_description:
+                            node.metadata["description"] = current_description
+                            current_description = None
+                        ast.children.append(node)
+                        current_type = node
+                        continue
                     
-                    if current_type:
-                        current_type.children.append(node)
-                    else:
-                        current_interface.children.append(node)
-                    continue
+                    # Process interfaces.
+                    if interface_match := self.patterns['interface'].match(line):
+                        node = self._create_node(
+                            "interface",
+                            line_start,
+                            line_end,
+                            **GRAPHQL_PATTERNS[PatternCategory.STRUCTURE]['interface'].extract(interface_match)
+                        )
+                        if current_description:
+                            node.metadata["description"] = current_description
+                            current_description = None
+                        ast.children.append(node)
+                        current_interface = node
+                        continue
+                    
+                    # Process fields.
+                    if field_match := self.patterns['field'].match(line):
+                        if not (current_type or current_interface):
+                            continue
+                            
+                        field_data = GRAPHQL_PATTERNS[PatternCategory.SYNTAX]['field'].extract(field_match)
+                        field_data["arguments"] = self._process_arguments(field_data["arguments"])
+                        field_data["directives"] = self._process_directives(line, i + 1)
+                        
+                        node = self._create_node(
+                            "field",
+                            line_start,
+                            line_end,
+                            **field_data
+                        )
+                        
+                        if current_type:
+                            current_type.children.append(node)
+                        else:
+                            current_interface.children.append(node)
+                        continue
+                    
+                    # Process fragments.
+                    if fragment_match := self.patterns['fragment'].match(line):
+                        node = self._create_node(
+                            "fragment",
+                            line_start,
+                            line_end,
+                            **GRAPHQL_PATTERNS[PatternCategory.STRUCTURE]['fragment'].extract(fragment_match)
+                        )
+                        ast.children.append(node)
                 
-                # Process fragments.
-                if fragment_match := self.patterns['fragment'].match(line):
-                    node = self._create_node(
-                        "fragment",
-                        line_start,
-                        line_end,
-                        **GRAPHQL_PATTERNS[PatternCategory.STRUCTURE]['fragment'].extract(fragment_match)
-                    )
-                    ast.children.append(node)
-            
-            return ast.__dict__
-            
-        except Exception as e:
-            log(f"Error parsing GraphQL content: {e}", level="error")
-            return GraphQLNode(
-                type="document",
-                start_point=[0, 0],
-                end_point=[0, 0],
-                error=str(e),
-                children=[]
-            ).__dict__
+                return ast.__dict__
+                
+            except Exception as e:
+                log(f"Error parsing GraphQL content: {e}", level="error")
+                return GraphQLNode(
+                    type="document",
+                    start_point=[0, 0],
+                    end_point=[0, 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
 
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract API and schema patterns from GraphQL files for repository learning.
@@ -196,76 +201,77 @@ class GraphqlParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            
-            # Extract type patterns
-            types = self._extract_type_patterns(ast_dict)
-            for type_pattern in types:
-                patterns.append({
-                    'name': f'graphql_type_{type_pattern["name"]}',
-                    'content': type_pattern["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'graphql_type',
-                        'name': type_pattern["name"],
-                        'fields': type_pattern.get("fields", [])
-                    }
-                })
-            
-            # Extract interface patterns
-            interfaces = self._extract_interface_patterns(ast_dict)
-            for interface in interfaces:
-                patterns.append({
-                    'name': f'graphql_interface_{interface["name"]}',
-                    'content': interface["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'graphql_interface',
-                        'name': interface["name"],
-                        'fields': interface.get("fields", [])
-                    }
-                })
+        with ErrorBoundary(error_types=(ProcessingError,), context="GraphQL pattern extraction"):
+            try:
+                # Parse the source first to get a structured representation
+                ast_dict = self._parse_source(source_code)
                 
-            # Extract schema patterns (common GraphQL patterns)
-            schema_patterns = self._extract_schema_patterns(ast_dict)
-            for schema in schema_patterns:
-                patterns.append({
-                    'name': f'graphql_schema_{schema["category"]}',
-                    'content': schema["content"],
-                    'pattern_type': PatternType.CODE_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.95,
-                    'metadata': {
-                        'type': 'graphql_schema',
-                        'category': schema["category"],
-                        'elements': schema.get("elements", [])
-                    }
-                })
+                # Extract type patterns
+                types = self._extract_type_patterns(ast_dict)
+                for type_pattern in types:
+                    patterns.append({
+                        'name': f'graphql_type_{type_pattern["name"]}',
+                        'content': type_pattern["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'graphql_type',
+                            'name': type_pattern["name"],
+                            'fields': type_pattern.get("fields", [])
+                        }
+                    })
                 
-            # Extract naming convention patterns
-            naming_patterns = self._extract_naming_patterns(ast_dict)
-            for naming in naming_patterns:
-                patterns.append({
-                    'name': f'graphql_naming_{naming["convention"]}',
-                    'content': naming["examples"],
-                    'pattern_type': PatternType.CODE_NAMING,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'naming_convention',
-                        'convention': naming["convention"],
-                        'examples': naming["examples"].split(', ')
-                    }
-                })
-                
-        except Exception as e:
-            log(f"Error extracting GraphQL patterns: {e}", level="error")
+                # Extract interface patterns
+                interfaces = self._extract_interface_patterns(ast_dict)
+                for interface in interfaces:
+                    patterns.append({
+                        'name': f'graphql_interface_{interface["name"]}',
+                        'content': interface["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'graphql_interface',
+                            'name': interface["name"],
+                            'fields': interface.get("fields", [])
+                        }
+                    })
+                    
+                # Extract schema patterns (common GraphQL patterns)
+                schema_patterns = self._extract_schema_patterns(ast_dict)
+                for schema in schema_patterns:
+                    patterns.append({
+                        'name': f'graphql_schema_{schema["category"]}',
+                        'content': schema["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.95,
+                        'metadata': {
+                            'type': 'graphql_schema',
+                            'category': schema["category"],
+                            'elements': schema.get("elements", [])
+                        }
+                    })
+                    
+                # Extract naming convention patterns
+                naming_patterns = self._extract_naming_patterns(ast_dict)
+                for naming in naming_patterns:
+                    patterns.append({
+                        'name': f'graphql_naming_{naming["convention"]}',
+                        'content': naming["examples"],
+                        'pattern_type': PatternType.CODE_NAMING,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'naming_convention',
+                            'convention': naming["convention"],
+                            'examples': naming["examples"].split(', ')
+                        }
+                    })
+                    
+            except Exception as e:
+                log(f"Error extracting GraphQL patterns: {e}", level="error")
             
         return patterns
         

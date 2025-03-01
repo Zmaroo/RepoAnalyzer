@@ -18,6 +18,7 @@ from parsers.language_mapping import (
     get_parser_info_for_language
 )
 from utils.logger import log
+from utils.error_handling import ErrorBoundary
 from dataclasses import dataclass
 import re
 
@@ -105,27 +106,25 @@ def get_language_by_extension(file_path: str) -> Optional[LanguageFeatures]:
     
     RETURNS: LanguageFeatures if a language is identified, else None.
     """
-    try:
-        basename = os.path.basename(file_path)
+    basename = os.path.basename(file_path)
+    
+    with ErrorBoundary(f"get_language_for_path_{basename}", error_types=(Exception,)):
         # Use the language mapping module to detect language
         from parsers.language_mapping import detect_language_from_filename
         language = detect_language_from_filename(basename)
         
         if language:
             return get_language_features(language)
-        return None
-    except Exception as e:
-        log(f"Error getting language for path '{file_path}': {e}", level="error")
-        return None
+    
+    return None
 
 def get_extensions_for_language(language: str) -> Set[str]:
     """Get all file extensions associated with a language."""
-    try:
+    with ErrorBoundary(f"get_extensions_for_{language}", error_types=(Exception,)):
         from parsers.language_mapping import get_extensions_for_language as get_exts
         return get_exts(language)
-    except Exception as e:
-        log(f"Error getting extensions for language '{language}': {e}", level="error")
-        return set()
+    
+    return set()
 
 class LanguageRegistry(ParserRegistryInterface):
     """Registry for language parsers."""
@@ -139,8 +138,9 @@ class LanguageRegistry(ParserRegistryInterface):
         Get the appropriate parser for a file classification.
         Will try the primary parser first, then fall back to alternatives if needed.
         """
-        try:
-            language = classification.language_id
+        language = classification.language_id
+        
+        with ErrorBoundary(f"get_parser_{language}", error_types=(Exception,)):
             # Try to get an existing parser first
             if language in self._parsers:
                 return self._parsers.get(language)
@@ -181,16 +181,13 @@ class LanguageRegistry(ParserRegistryInterface):
                 if alt_parser:
                     log(f"Using alternative language {alt_language} parser for {language}", level="info")
                     return alt_parser
-                    
-            # No parser available
-            return None
-        except Exception as e:
-            log(f"Error getting parser for {classification.language_id}: {e}", level="error")
-            return None
+        
+        # No parser available
+        return None
     
     def _create_parser(self, language: str, parser_type: ParserType, file_type: FileType) -> Optional[BaseParserInterface]:
         """Create a new parser instance of the specified type."""
-        try:
+        with ErrorBoundary(f"create_parser_{language}_{parser_type.name}", error_types=(Exception,)):
             # Import here to avoid circular imports
             from parsers.tree_sitter_parser import TreeSitterParser
             from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
@@ -212,11 +209,8 @@ class LanguageRegistry(ParserRegistryInterface):
                 parser_cls = CUSTOM_PARSER_CLASSES.get(language)
                 if parser_cls:
                     return parser_cls(language, file_type)
-            
-            return None
-        except Exception as e:
-            log(f"Error creating parser for {language} with type {parser_type}: {e}", level="error")
-            return None
+        
+        return None
 
     def get_supported_languages(self) -> Dict[str, ParserType]:
         """Get all supported languages and their parser types."""

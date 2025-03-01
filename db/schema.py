@@ -6,10 +6,11 @@ from utils.error_handling import (
     DatabaseError,
     PostgresError
 )
+from db.retry_utils import DatabaseRetryManager, RetryConfig
 
 import asyncio
 from db.transaction import transaction_scope
-from indexer.async_utils import handle_async_errors, AsyncErrorBoundary
+from indexer.async_utils import handle_async_errors
 
 """[6.6] Database schema management.
 
@@ -37,6 +38,9 @@ Flow:
 
 # Global schema lock
 _schema_lock = asyncio.Lock()
+
+# Initialize retry manager for schema operations
+_retry_manager = DatabaseRetryManager()
 
 class SchemaError(DatabaseError):
     """Schema management specific errors."""
@@ -211,23 +215,27 @@ async def create_arch_patterns_table():
 
 @handle_async_errors(error_types=(SchemaError, PostgresError))
 async def create_all_tables():
-    """[6.6.10] Initialize all database tables."""
-    async with _schema_lock:
-        async with AsyncErrorBoundary("create database tables"):
-            try:
-                # Create in correct order for foreign key constraints
-                await create_repositories_table()
-                await create_code_snippets_table()
-                await create_repo_docs_table()
-                await create_repo_doc_relations_table()
-                await create_doc_versions_table()
-                await create_doc_clusters_table()
-                
-                # Create pattern tables
-                await create_code_patterns_table()
-                await create_doc_patterns_table()
-                await create_arch_patterns_table()
-                
-                log("✅ All database tables initialized!")
-            except Exception as e:
-                raise SchemaError(f"Failed to create tables: {e}")
+    """[6.6.3] Initialize all database tables."""
+    @handle_async_errors(error_types=(SchemaError, PostgresError))
+    async def _create_tables():
+        try:
+            async with AsyncErrorBoundary("schema creation", error_types=(SchemaError, PostgresError)):
+                async with _schema_lock:
+                    await create_repositories_table()
+                    await create_code_snippets_table()
+                    await create_repo_docs_table()
+                    await create_repo_doc_relations_table()
+                    await create_doc_versions_table()
+                    await create_doc_clusters_table()
+                    await create_code_patterns_table()
+                    await create_doc_patterns_table()
+                    await create_arch_patterns_table()
+                    
+                    log("✅ Schema initialization complete")
+        except Exception as e:
+            error_msg = f"Schema initialization failed: {str(e)}"
+            log(error_msg, level="error")
+            raise SchemaError(error_msg)
+    
+    # Use retry manager to execute the schema creation with retry logic
+    await _retry_manager.execute_with_retry(_create_tables)

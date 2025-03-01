@@ -20,6 +20,7 @@ except ImportError:
 
 from utils.logger import log
 from utils.cache import cache_coordinator, UnifiedCache
+from utils.error_handling import handle_async_errors, ErrorBoundary, CacheError
 
 # Type for cache warmup functions
 WarmupFunc = Callable[[List[str]], Awaitable[Dict[str, Any]]]
@@ -70,6 +71,7 @@ class CacheAnalytics:
         self._task = asyncio.create_task(self._monitoring_loop())
         log("Started cache performance monitoring", level="info")
     
+    @handle_async_errors
     async def stop_monitoring(self):
         """Stop cache performance monitoring."""
         if not self._is_running:
@@ -78,14 +80,13 @@ class CacheAnalytics:
         self._is_running = False
         if self._task:
             self._task.cancel()
-            try:
+            with ErrorBoundary("handling task cancellation"):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
             
         log("Stopped cache performance monitoring", level="info")
     
+    @handle_async_errors
     async def _monitoring_loop(self):
         """Background loop for cache monitoring."""
         try:
@@ -108,13 +109,17 @@ class CacheAnalytics:
         except asyncio.CancelledError:
             log("Cache monitoring loop cancelled", level="info")
             raise
+        except (asyncio.TimeoutError, ConnectionError, IOError) as e:
+            log(f"Network-related error in cache monitoring loop: {e}", level="error")
+            self._is_running = False
         except Exception as e:
-            log(f"Error in cache monitoring loop: {e}", level="error")
+            log(f"Unexpected error in cache monitoring loop: {e}", level="error")
             self._is_running = False
     
+    @handle_async_errors
     async def generate_performance_report(self):
         """Generate a comprehensive cache performance report."""
-        try:
+        with ErrorBoundary("generating cache performance report"):
             # Get metrics from all caches
             metrics = await cache_coordinator.get_metrics()
             
@@ -146,12 +151,10 @@ class CacheAnalytics:
             if total_ops > 0:  # Only save if we have meaningful data
                 await self._save_metrics_history(metrics)
                 
-        except Exception as e:
-            log(f"Error generating cache performance report: {e}", level="error")
-    
+    @handle_async_errors
     async def _save_metrics_history(self, metrics: Dict):
         """Save metrics to a historical data file."""
-        try:
+        with ErrorBoundary("saving cache metrics history"):
             # Skip if aiofiles not available
             if not AIOFILES_AVAILABLE:
                 log("Cannot save metrics history: aiofiles not installed", level="warning")
@@ -177,9 +180,7 @@ class CacheAnalytics:
             async with aiofiles.open(file_path, "a") as f:
                 await f.write(json.dumps(record) + "\n")
                 
-        except Exception as e:
-            log(f"Error saving cache metrics history: {e}", level="error")
-    
+    @handle_async_errors
     async def warmup_all_caches(self):
         """Warm up all registered caches with their most popular keys."""
         # Get all registered caches
@@ -192,21 +193,20 @@ class CacheAnalytics:
                 continue
                 
             log(f"Auto-warming up cache: {name}", level="info")
-            try:
+            with ErrorBoundary(f"warming up cache {name}"):
                 await self._warmup_cache_if_possible(name, cache)
-            except Exception as e:
-                log(f"Error warming up cache {name}: {e}", level="error")
     
+    @handle_async_errors
     async def _warmup_cache_if_possible(self, cache_name: str, cache: UnifiedCache):
         """Attempt to warm up a cache if it has a registered warmup function."""
-        # Check if we have a registered warmup function
-        warmup_func = self._warmup_funcs.get(cache_name)
-        if not warmup_func:
-            log(f"No warmup function registered for cache: {cache_name}", level="debug")
-            return
-            
-        # Get popular keys to warm up
-        try:
+        with ErrorBoundary(f"warming up cache {cache_name}"):
+            # Check if we have a registered warmup function
+            warmup_func = self._warmup_funcs.get(cache_name)
+            if not warmup_func:
+                log(f"No warmup function registered for cache: {cache_name}", level="debug")
+                return
+                
+            # Get popular keys to warm up
             popular_keys = await cache._usage_tracker.get_popular_keys(limit=50)
             if not popular_keys:
                 log(f"No popular keys found for cache: {cache_name}", level="debug")
@@ -218,9 +218,7 @@ class CacheAnalytics:
             # Use the registered warmup function
             await cache.warmup_from_function(keys, warmup_func)
             
-        except Exception as e:
-            log(f"Error during cache warmup for {cache_name}: {e}", level="error")
-            
+    @handle_async_errors
     async def warmup_cache(self, cache_name: str, keys: List[str]) -> bool:
         """
         Manually trigger cache warmup for specific keys.
@@ -245,14 +243,21 @@ class CacheAnalytics:
         if not warmup_func:
             log(f"No warmup function registered for cache: {cache_name}", level="error")
             return False
-            
-        try:
-            await cache.warmup_from_function(keys, warmup_func)
-            log(f"Successfully warmed up {len(keys)} keys for cache: {cache_name}", level="info")
-            return True
-        except Exception as e:
-            log(f"Error warming up cache {cache_name}: {e}", level="error")
-            return False
+        
+        with ErrorBoundary(f"warming up cache {cache_name}"):
+            try:
+                await cache.warmup_from_function(keys, warmup_func)
+                log(f"Successfully warmed up {len(keys)} keys for cache: {cache_name}", level="info")
+                return True
+            except (ConnectionError, TimeoutError) as e:
+                log(f"Network error warming up cache {cache_name}: {e}", level="error")
+                return False
+            except CacheError as e:
+                log(f"Cache error warming up cache {cache_name}: {e}", level="error")
+                return False
+            except Exception as e:
+                log(f"Unexpected error warming up cache {cache_name}: {e}", level="error")
+                return False
     
     async def optimize_ttl_values(self):
         """Analyze cache usage patterns and suggest optimal TTL values."""

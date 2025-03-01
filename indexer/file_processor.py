@@ -15,6 +15,7 @@ Flow:
    - Concurrent operation limits
    - Proper error handling
    - Cache management
+   - Request-level caching for improved performance
 """
 
 from typing import Optional, Dict, List
@@ -39,6 +40,7 @@ from utils.async_runner import get_loop
 from indexer.common import async_read_file
 import asyncio
 from embedding.embedding_models import code_embedder, doc_embedder
+from utils.request_cache import cached_in_request
 
 class FileProcessor:
     """[2.1] Coordinates file processing and database storage."""
@@ -51,11 +53,13 @@ class FileProcessor:
         self._processed_files = 0
         self._failed_files = 0
     
+    @handle_async_errors
     async def process_file(self, file_path: str, repo_id: int, base_path: str) -> Optional[Dict]:
         """[2.2] Process a single file using the managed event loop."""
         async with self._semaphore:  # Control concurrent operations
             try:
-                content = await async_read_file(file_path)
+                # Use cached file reader to avoid redundant I/O for the same file
+                content = await cached_read_file(file_path)
                 if content is None:
                     self._failed_files += 1
                     log(f"Could not read file content: {file_path}", level="warning")
@@ -64,8 +68,8 @@ class FileProcessor:
                 # Get relative path for storage
                 rel_path = get_relative_path(file_path, base_path)
                 
-                # Process based on file type
-                classification = get_file_classification(file_path)
+                # Process based on file type - use cached classification to avoid redundant work
+                classification = await cached_classify_file(file_path)
                 if not classification:
                     log(f"Could not classify file: {file_path}", level="debug")
                     return None
@@ -90,83 +94,87 @@ class FileProcessor:
                 log(f"Error in file processor: {e}", level="error")
                 return None
     
+    @handle_async_errors
     async def _process_code_file(self, repo_id: int, rel_path: str, content: str, classification) -> Optional[Dict]:
         """[2.3] Process and store code file with embeddings."""
-        try:
-            # Parse file
-            with AsyncErrorBoundary(f"Error parsing {rel_path}"):
-                parse_result = await unified_parser.parse_file(rel_path, content, classification)
-                if not parse_result:
-                    # Try alternative language if primary parsing fails
-                    for alt_language in get_suggested_alternatives(classification.language_id):
-                        log(f"Trying alternative language {alt_language} for {rel_path}", level="debug")
-                        alt_classification = classification._replace(
-                            language_id=alt_language,
-                            parser_type=classification.parser_type  # Keep same parser type initially
-                        )
-                        parse_result = await unified_parser.parse_file(rel_path, content, alt_classification)
-                        if parse_result:
-                            log(f"Successfully parsed {rel_path} as {alt_language}", level="info")
-                            break
+        with AsyncErrorBoundary(f"processing code file {rel_path}"):
+            try:
+                # Parse file - use cached parser to avoid redundant parsing
+                with AsyncErrorBoundary(f"Error parsing {rel_path}"):
+                    parse_result = await cached_parse_file(rel_path, content, classification)
+                    if not parse_result:
+                        # Try alternative language if primary parsing fails
+                        for alt_language in get_suggested_alternatives(classification.language_id):
+                            log(f"Trying alternative language {alt_language} for {rel_path}", level="debug")
+                            alt_classification = classification._replace(
+                                language_id=alt_language,
+                                parser_type=classification.parser_type  # Keep same parser type initially
+                            )
+                            parse_result = await unified_parser.parse_file(rel_path, content, alt_classification)
+                            if parse_result:
+                                log(f"Successfully parsed {rel_path} as {alt_language}", level="info")
+                                break
                 
-                if not parse_result:
-                    log(f"Failed to parse file: {rel_path}", level="warning")
-                    return None
+                    if not parse_result:
+                        log(f"Failed to parse file: {rel_path}", level="warning")
+                        return None
                 
-            # Get patterns for the file if needed for feature extraction
-            patterns = self._pattern_processor.get_patterns_for_file(classification)
-            
-            # Generate embedding
-            with AsyncErrorBoundary(f"Error generating embedding for {rel_path}"):
-                embedding = await code_embedder.embed_async(content)
-            
-            # Store with embedding
-            with AsyncErrorBoundary(f"Error storing {rel_path} in database"):
-                await upsert_code_snippet({
-                    'repo_id': repo_id,
+                # Get patterns for the file if needed for feature extraction
+                patterns = await cached_get_patterns(classification)
+                
+                # Generate embedding - use cached embedder to avoid redundant embedding generation
+                with AsyncErrorBoundary(f"Error generating embedding for {rel_path}"):
+                    embedding = await cached_embed_code(content)
+                
+                # Store with embedding
+                with AsyncErrorBoundary(f"Error storing {rel_path} in database"):
+                    await upsert_code_snippet({
+                        'repo_id': repo_id,
+                        'file_path': rel_path,
+                        'content': content,
+                        'language': classification.language_id,
+                        'ast': parse_result.ast,
+                        'enriched_features': parse_result.features,
+                        'embedding': embedding.tolist() if embedding is not None else None
+                    })
+                
+                return {
                     'file_path': rel_path,
-                    'content': content,
                     'language': classification.language_id,
-                    'ast': parse_result.ast,
-                    'enriched_features': parse_result.features,
-                    'embedding': embedding.tolist() if embedding is not None else None
-                })
-            
-            return {
-                'file_path': rel_path,
-                'language': classification.language_id,
-                'status': 'success'
-            }
-        except Exception as e:
-            log(f"Error processing code file {rel_path}: {e}", level="error")
-            return None
+                    'status': 'success'
+                }
+            except Exception as e:
+                log(f"Error processing code file {rel_path}: {e}", level="error")
+                return None
     
+    @handle_async_errors
     async def _process_doc_file(self, repo_id: int, rel_path: str, content: str, classification) -> Optional[Dict]:
         """[2.4] Process and store documentation file with embeddings."""
-        try:
-            # Generate embedding
-            with AsyncErrorBoundary(f"Error generating embedding for doc {rel_path}"):
-                embedding = await doc_embedder.embed_async(content)
-            
-            doc_type = classification.language_id
-            
-            with AsyncErrorBoundary(f"Error storing doc {rel_path} in database"):
-                await upsert_doc(
-                    repo_id=repo_id,
-                    file_path=rel_path,
-                    content=content,
-                    doc_type=doc_type,
-                    embedding=embedding.tolist() if embedding is not None else None
-                )
-            
-            return {
-                'file_path': rel_path,
-                'doc_type': doc_type,
-                'status': 'success'
-            }
-        except Exception as e:
-            log(f"Error processing doc file {rel_path}: {e}", level="error")
-            return None
+        with AsyncErrorBoundary(f"processing doc file {rel_path}"):
+            try:
+                # Generate embedding - use cached embedder to avoid redundant embedding generation
+                with AsyncErrorBoundary(f"Error generating embedding for doc {rel_path}"):
+                    embedding = await cached_embed_doc(content)
+                
+                doc_type = classification.language_id
+                
+                with AsyncErrorBoundary(f"Error storing doc {rel_path} in database"):
+                    await upsert_doc(
+                        repo_id=repo_id,
+                        file_path=rel_path,
+                        content=content,
+                        doc_type=doc_type,
+                        embedding=embedding.tolist() if embedding is not None else None
+                    )
+                
+                return {
+                    'file_path': rel_path,
+                    'doc_type': doc_type,
+                    'status': 'success'
+                }
+            except Exception as e:
+                log(f"Error processing doc file {rel_path}: {e}", level="error")
+                return None
 
     def get_stats(self) -> Dict[str, int]:
         """Get processing statistics."""
@@ -178,4 +186,37 @@ class FileProcessor:
     def clear_cache(self):
         """Clear all caches"""
         # Each parser manages its own cache
-        pass 
+        pass
+
+
+# Cache-enabled utility functions
+
+@cached_in_request
+async def cached_read_file(file_path: str) -> Optional[str]:
+    """Cached version of async_read_file to avoid redundant file I/O."""
+    return await async_read_file(file_path)
+
+@cached_in_request
+async def cached_classify_file(file_path: str):
+    """Cached file classification to avoid redundant classification."""
+    return get_file_classification(file_path)
+
+@cached_in_request
+async def cached_parse_file(rel_path: str, content: str, classification):
+    """Cached file parsing to avoid redundant parsing operations."""
+    return await unified_parser.parse_file(rel_path, content, classification)
+
+@cached_in_request
+async def cached_get_patterns(classification):
+    """Cached pattern retrieval to avoid redundant pattern loading."""
+    return pattern_processor.get_patterns_for_file(classification)
+
+@cached_in_request
+async def cached_embed_code(content: str):
+    """Cached code embedding to avoid redundant embedding generation."""
+    return await code_embedder.embed_async(content)
+
+@cached_in_request
+async def cached_embed_doc(content: str):
+    """Cached documentation embedding to avoid redundant embedding generation."""
+    return await doc_embedder.embed_async(content) 

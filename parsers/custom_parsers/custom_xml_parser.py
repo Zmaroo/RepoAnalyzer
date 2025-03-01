@@ -7,6 +7,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.xml import XML_PATTERNS
 from parsers.models import XmlNode, PatternType
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 from collections import Counter
 import re
 
@@ -51,6 +52,7 @@ class XmlParser(BaseParser):
             element_data.children.append(child_node)
         return element_data
     
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse XML content into AST structure.
         
@@ -58,41 +60,43 @@ class XmlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "document", [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
-                for category in XML_PATTERNS.values():
-                    for pattern_name, pattern_obj in category.items():
-                        if match := self.patterns[pattern_name].match(line):
-                            node = self._create_node(
-                                pattern_name, line_start, line_end,
-                                **pattern_obj.extract(match)
-                            )
-                            ast.children.append(node)
+        with ErrorBoundary(error_types=(ParsingError,), context="XML parsing"):
             try:
-                root = ET.fromstring(source_code)
-                root_node = self._process_element(root, [], [0, 0])
-                ast.children.append(root_node)
-            except ET.ParseError as e:
-                log(f"Error parsing XML structure: {e}", level="error")
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "document", [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
+                    for category in XML_PATTERNS.values():
+                        for pattern_name, pattern_obj in category.items():
+                            if match := self.patterns[pattern_name].match(line):
+                                node = self._create_node(
+                                    pattern_name, line_start, line_end,
+                                    **pattern_obj.extract(match)
+                                )
+                                ast.children.append(node)
+                try:
+                    root = ET.fromstring(source_code)
+                    root_node = self._process_element(root, [], [0, 0])
+                    ast.children.append(root_node)
+                except ET.ParseError as e:
+                    log(f"Error parsing XML structure: {e}", level="error")
+                    return XmlNode(
+                        type="document", start_point=[0, 0], end_point=[0, 0],
+                        error=str(e), children=[]
+                    ).__dict__
+                return ast.__dict__
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error parsing XML content: {e}", level="error")
                 return XmlNode(
                     type="document", start_point=[0, 0], end_point=[0, 0],
                     error=str(e), children=[]
                 ).__dict__
-            return ast.__dict__
-        except Exception as e:
-            log(f"Error parsing XML content: {e}", level="error")
-            return XmlNode(
-                type="document", start_point=[0, 0], end_point=[0, 0],
-                error=str(e), children=[]
-            ).__dict__
             
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract patterns from XML files for repository learning.
@@ -105,68 +109,69 @@ class XmlParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast = self._parse_source(source_code)
-            
-            # Extract structure patterns (elements, attributes, nesting)
-            element_patterns = self._extract_element_patterns(ast)
-            for element in element_patterns:
-                patterns.append({
-                    'name': f'xml_element_{element["tag"]}',
-                    'content': element["content"],
-                    'pattern_type': PatternType.STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'element',
-                        'tag': element["tag"],
-                        'child_count': element["child_count"],
-                        'has_attributes': element["has_attributes"]
-                    }
-                })
-            
-            # Extract attribute patterns
-            attribute_patterns = self._extract_attribute_patterns(ast)
-            for attr in attribute_patterns:
-                patterns.append({
-                    'name': f'xml_attribute_{attr["name"]}',
-                    'content': attr["content"],
-                    'pattern_type': PatternType.ATTRIBUTE,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'attribute',
-                        'name': attr["name"],
-                        'element': attr["element"],
-                        'value_type': attr["value_type"]
-                    }
-                })
+        with ErrorBoundary(error_types=(ProcessingError,), context="XML pattern extraction"):
+            try:
+                # Parse the source first to get a structured representation
+                ast = self._parse_source(source_code)
                 
-            # Extract namespace patterns
-            namespace_patterns = self._extract_namespace_patterns(ast)
-            for ns in namespace_patterns:
-                patterns.append({
-                    'name': f'xml_namespace_{ns["prefix"] or "default"}',
-                    'content': ns["content"],
-                    'pattern_type': PatternType.NAMESPACE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'namespace',
-                        'prefix': ns["prefix"],
-                        'uri': ns["uri"]
-                    }
-                })
+                # Extract structure patterns (elements, attributes, nesting)
+                element_patterns = self._extract_element_patterns(ast)
+                for element in element_patterns:
+                    patterns.append({
+                        'name': f'xml_element_{element["tag"]}',
+                        'content': element["content"],
+                        'pattern_type': PatternType.STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'element',
+                            'tag': element["tag"],
+                            'child_count': element["child_count"],
+                            'has_attributes': element["has_attributes"]
+                        }
+                    })
                 
-            # Extract naming convention patterns
-            naming_patterns = self._extract_naming_patterns(source_code)
-            for pattern in naming_patterns:
-                patterns.append(pattern)
+                # Extract attribute patterns
+                attribute_patterns = self._extract_attribute_patterns(ast)
+                for attr in attribute_patterns:
+                    patterns.append({
+                        'name': f'xml_attribute_{attr["name"]}',
+                        'content': attr["content"],
+                        'pattern_type': PatternType.ATTRIBUTE,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'attribute',
+                            'name': attr["name"],
+                            'element': attr["element"],
+                            'value_type': attr["value_type"]
+                        }
+                    })
+                    
+                # Extract namespace patterns
+                namespace_patterns = self._extract_namespace_patterns(ast)
+                for ns in namespace_patterns:
+                    patterns.append({
+                        'name': f'xml_namespace_{ns["prefix"] or "default"}',
+                        'content': ns["content"],
+                        'pattern_type': PatternType.NAMESPACE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'namespace',
+                            'prefix': ns["prefix"],
+                            'uri': ns["uri"]
+                        }
+                    })
+                    
+                # Extract naming convention patterns
+                naming_patterns = self._extract_naming_patterns(source_code)
+                for pattern in naming_patterns:
+                    patterns.append(pattern)
+                    
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting XML patterns: {e}", level="error")
                 
-        except Exception as e:
-            log(f"Error extracting XML patterns: {e}", level="error")
-            
         return patterns
         
     def _extract_element_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

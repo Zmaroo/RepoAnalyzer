@@ -6,6 +6,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.models import IniNode, PatternType
 from parsers.query_patterns.ini import INI_PATTERNS
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 import re
 from collections import Counter
 
@@ -33,6 +34,7 @@ class IniParser(BaseParser):
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
         return IniNode(**node_dict)
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse INI content into AST structure.
         
@@ -40,90 +42,92 @@ class IniParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            lines = source_code.splitlines()
-            ast = self._create_node(
-                "ini_file",
-                [0, 0],
-                [len(lines) - 1, len(lines[-1]) if lines else 0]
-            )
-            
-            current_section = None
-            current_comment_block = []
-            
-            for i, line in enumerate(lines):
-                line_start = [i, 0]
-                line_end = [i, len(line)]
+        with ErrorBoundary(error_types=(ParsingError,), context="INI parsing"):
+            try:
+                lines = source_code.splitlines()
+                ast = self._create_node(
+                    "ini_file",
+                    [0, 0],
+                    [len(lines) - 1, len(lines[-1]) if lines else 0]
+                )
                 
-                line = line.strip()
-                if not line:
-                    continue
+                current_section = None
+                current_comment_block = []
                 
-                # Process comments
-                if comment_match := self.patterns['comment'].match(line):
-                    node = self._create_node(
-                        "comment",
-                        line_start,
-                        line_end,
-                        **INI_PATTERNS[PatternCategory.DOCUMENTATION]['comment'].extract(comment_match)
-                    )
-                    current_comment_block.append(node)
-                    continue
-                
-                # Process sections
-                if section_match := self.patterns['section'].match(line):
-                    node = self._create_node(
-                        "section",
-                        line_start,
-                        line_end,
-                        **INI_PATTERNS[PatternCategory.SYNTAX]['section'].extract(section_match)
-                    )
-                    if current_comment_block:
-                        node.metadata["comments"] = current_comment_block
-                        current_comment_block = []
-                    ast.children.append(node)
-                    current_section = node
-                    continue
-                
-                # Process properties
-                if property_match := self.patterns['property'].match(line):
-                    node = self._create_node(
-                        "property",
-                        line_start,
-                        line_end,
-                        **INI_PATTERNS[PatternCategory.SYNTAX]['property'].extract(property_match)
-                    )
-                    if current_comment_block:
-                        node.metadata["comments"] = current_comment_block
-                        current_comment_block = []
+                for i, line in enumerate(lines):
+                    line_start = [i, 0]
+                    line_end = [i, len(line)]
                     
-                    # Check for semantic patterns.
-                    for pattern_name in ['environment', 'path']:
-                        if semantic_match := self.patterns[pattern_name].match(line):
-                            semantic_data = INI_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(semantic_match)
-                            node.metadata["semantics"] = semantic_data
+                    line = line.strip()
+                    if not line:
+                        continue
                     
-                    if current_section:
-                        current_section.children.append(node)
-                    else:
+                    # Process comments
+                    if comment_match := self.patterns['comment'].match(line):
+                        node = self._create_node(
+                            "comment",
+                            line_start,
+                            line_end,
+                            **INI_PATTERNS[PatternCategory.DOCUMENTATION]['comment'].extract(comment_match)
+                        )
+                        current_comment_block.append(node)
+                        continue
+                    
+                    # Process sections
+                    if section_match := self.patterns['section'].match(line):
+                        node = self._create_node(
+                            "section",
+                            line_start,
+                            line_end,
+                            **INI_PATTERNS[PatternCategory.SYNTAX]['section'].extract(section_match)
+                        )
+                        if current_comment_block:
+                            node.metadata["comments"] = current_comment_block
+                            current_comment_block = []
                         ast.children.append(node)
+                        current_section = node
+                        continue
+                    
+                    # Process properties
+                    if property_match := self.patterns['property'].match(line):
+                        node = self._create_node(
+                            "property",
+                            line_start,
+                            line_end,
+                            **INI_PATTERNS[PatternCategory.SYNTAX]['property'].extract(property_match)
+                        )
+                        if current_comment_block:
+                            node.metadata["comments"] = current_comment_block
+                            current_comment_block = []
+                        
+                        # Check for semantic patterns.
+                        for pattern_name in ['environment', 'path']:
+                            if semantic_match := self.patterns[pattern_name].match(line):
+                                semantic_data = INI_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(semantic_match)
+                                node.metadata["semantics"] = semantic_data
+                        
+                        if current_section:
+                            current_section.children.append(node)
+                        else:
+                            ast.children.append(node)
+                
+                # Add any remaining comments.
+                if current_comment_block:
+                    ast.metadata["trailing_comments"] = current_comment_block
+                
+                return ast.__dict__
+                
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error parsing INI content: {e}", level="error")
+                return self._create_node(
+                    "ini_file",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
             
-            # Add any remaining comments.
-            if current_comment_block:
-                ast.metadata["trailing_comments"] = current_comment_block
-            
-            return ast.__dict__
-            
-        except Exception as e:
-            log(f"Error parsing INI content: {e}", level="error")
-            return self._create_node(
-                "ini_file",
-                [0, 0],
-                [0, 0],
-                error=str(e),
-                children=[]
-            ).__dict__
-            
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract configuration patterns from INI files for repository learning.
@@ -136,77 +140,78 @@ class IniParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast_dict = self._parse_source(source_code)
-            
-            # Extract section patterns
-            section_patterns = self._extract_section_patterns(ast_dict)
-            for section in section_patterns:
-                patterns.append({
-                    'name': f'ini_section_{section["name"]}',
-                    'content': section["content"],
-                    'pattern_type': PatternType.CONFIG_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'ini_section',
-                        'name': section["name"],
-                        'properties': section.get("properties", [])
-                    }
-                })
-            
-            # Extract common property patterns
-            property_patterns = self._extract_property_patterns(ast_dict)
-            for prop in property_patterns:
-                patterns.append({
-                    'name': f'ini_property_{prop["category"]}',
-                    'content': prop["content"],
-                    'pattern_type': PatternType.CONFIG_PROPERTY,
-                    'language': self.language_id,
-                    'confidence': 0.85,
-                    'metadata': {
-                        'type': 'ini_property',
-                        'category': prop["category"],
-                        'properties': prop.get("properties", [])
-                    }
-                })
+        with ErrorBoundary(error_types=(ProcessingError,), context="INI pattern extraction"):
+            try:
+                # Parse the source first to get a structured representation
+                ast_dict = self._parse_source(source_code)
                 
-            # Extract reference patterns (environment variables, includes, etc.)
-            reference_patterns = self._extract_reference_patterns(ast_dict)
-            for ref in reference_patterns:
-                patterns.append({
-                    'name': f'ini_reference_{ref["type"]}',
-                    'content': ref["content"],
-                    'pattern_type': PatternType.CONFIG_REFERENCE,
-                    'language': self.language_id,
-                    'confidence': 0.9,
-                    'metadata': {
-                        'type': 'ini_reference',
-                        'reference_type': ref["type"],
-                        'references': ref.get("references", [])
-                    }
-                })
+                # Extract section patterns
+                section_patterns = self._extract_section_patterns(ast_dict)
+                for section in section_patterns:
+                    patterns.append({
+                        'name': f'ini_section_{section["name"]}',
+                        'content': section["content"],
+                        'pattern_type': PatternType.CONFIG_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'ini_section',
+                            'name': section["name"],
+                            'properties': section.get("properties", [])
+                        }
+                    })
                 
-            # Extract naming convention patterns
-            naming_patterns = self._extract_naming_convention_patterns(ast_dict)
-            for naming in naming_patterns:
-                patterns.append({
-                    'name': f'ini_naming_{naming["convention"]}',
-                    'content': naming["content"],
-                    'pattern_type': PatternType.NAMING_CONVENTION,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'naming_convention',
-                        'convention': naming["convention"],
-                        'examples': naming.get("examples", [])
-                    }
-                })
+                # Extract common property patterns
+                property_patterns = self._extract_property_patterns(ast_dict)
+                for prop in property_patterns:
+                    patterns.append({
+                        'name': f'ini_property_{prop["category"]}',
+                        'content': prop["content"],
+                        'pattern_type': PatternType.CONFIG_PROPERTY,
+                        'language': self.language_id,
+                        'confidence': 0.85,
+                        'metadata': {
+                            'type': 'ini_property',
+                            'category': prop["category"],
+                            'properties': prop.get("properties", [])
+                        }
+                    })
+                    
+                # Extract reference patterns (environment variables, includes, etc.)
+                reference_patterns = self._extract_reference_patterns(ast_dict)
+                for ref in reference_patterns:
+                    patterns.append({
+                        'name': f'ini_reference_{ref["type"]}',
+                        'content': ref["content"],
+                        'pattern_type': PatternType.CONFIG_REFERENCE,
+                        'language': self.language_id,
+                        'confidence': 0.9,
+                        'metadata': {
+                            'type': 'ini_reference',
+                            'reference_type': ref["type"],
+                            'references': ref.get("references", [])
+                        }
+                    })
+                    
+                # Extract naming convention patterns
+                naming_patterns = self._extract_naming_convention_patterns(ast_dict)
+                for naming in naming_patterns:
+                    patterns.append({
+                        'name': f'ini_naming_{naming["convention"]}',
+                        'content': naming["content"],
+                        'pattern_type': PatternType.NAMING_CONVENTION,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'naming_convention',
+                            'convention': naming["convention"],
+                            'examples': naming.get("examples", [])
+                        }
+                    })
+                    
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting INI patterns: {e}", level="error")
                 
-        except Exception as e:
-            log(f"Error extracting INI patterns: {e}", level="error")
-            
         return patterns
         
     def _extract_section_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

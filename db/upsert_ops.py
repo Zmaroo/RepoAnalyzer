@@ -30,6 +30,7 @@ from embedding.embedding_models import DocEmbedder
 from db.neo4j_ops import Neo4jTools, run_query
 from db.transaction import transaction_scope
 from parsers.types import ParserResult, ExtractedFeatures
+from db.retry_utils import DatabaseRetryManager, RetryConfig
 
 from utils.error_handling import (
     AsyncErrorBoundary,
@@ -38,14 +39,18 @@ from utils.error_handling import (
     PostgresError,
     Neo4jError,
     TransactionError,
-    handle_async_errors
+    handle_async_errors,
+    ErrorBoundary
 )
 
 
 # Initialize Neo4j tools once
 neo4j = Neo4jTools()
 doc_embedder = DocEmbedder()
+# Initialize retry manager for upsert operations
+_retry_manager = DatabaseRetryManager(RetryConfig(max_retries=5))  # More retries for upsert operations
 
+@handle_async_errors(error_types=[PostgresError, DatabaseError])
 async def store_code_in_postgres(code_data: Dict) -> None:
     """[6.5.1] Store code data in PostgreSQL."""
     sql = """
@@ -57,14 +62,20 @@ async def store_code_in_postgres(code_data: Dict) -> None:
         embedding = EXCLUDED.embedding,
         enriched_features = EXCLUDED.enriched_features;
     """
-    await execute(sql, (
-        code_data['repo_id'],
-        code_data['file_path'],
-        json.dumps(code_data['ast']) if code_data.get('ast') else None,
-        code_data.get('embedding'),
-        json.dumps(code_data['enriched_features']) if code_data.get('enriched_features') else None
-    ))
+    
+    async def _do_store():
+        await execute(sql, (
+            code_data['repo_id'],
+            code_data['file_path'],
+            json.dumps(code_data['ast']) if code_data.get('ast') else None,
+            code_data.get('embedding'),
+            json.dumps(code_data['enriched_features']) if code_data.get('enriched_features') else None
+        ))
+    
+    # Use retry manager to store code data with retry logic
+    await _retry_manager.execute_with_retry(_do_store)
 
+@handle_async_errors(error_types=[Neo4jError, DatabaseError])
 async def store_code_in_neo4j(code_data: Dict) -> None:
     """Store code data in Neo4j"""
     cypher = """
@@ -79,9 +90,14 @@ async def store_code_in_neo4j(code_data: Dict) -> None:
         'embedding': code_data.get('embedding'),
         'enriched_features': code_data.get('enriched_features')
     }
-    run_query(cypher, {'repo_id': code_data['repo_id'], 
-                      'file_path': code_data['file_path'], 
-                      'properties': properties})
+    
+    async def _do_store_neo4j():
+        run_query(cypher, {'repo_id': code_data['repo_id'], 
+                          'file_path': code_data['file_path'], 
+                          'properties': properties})
+    
+    # Use retry manager to store code data in Neo4j with retry logic
+    await _retry_manager.execute_with_retry(_do_store_neo4j)
 
 async def store_doc_in_postgres(doc_data: Dict) -> int:
     """Store document data in PostgreSQL and return doc_id"""
@@ -120,9 +136,11 @@ async def store_doc_in_postgres(doc_data: Dict) -> int:
     
     return doc_id
 
+@handle_async_errors(error_types=[Neo4jError, DatabaseError])
 async def store_doc_in_neo4j(doc_data: Dict) -> None:
     """Store document data in Neo4j."""
-    try:
+    with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception],
+                       error_message=f"Error storing document in Neo4j: {doc_data.get('file_path', 'unknown')}") as error_boundary:
         cypher = """
         MERGE (d:Documentation {repo_id: $repo_id, path: $path})
         SET d += $properties
@@ -138,11 +156,13 @@ async def store_doc_in_neo4j(doc_data: Dict) -> None:
         }
         await run_query(cypher, {
             'repo_id': doc_data['repo_id'], 
-            'path': doc_data['file_path'], 
+            'path': doc_data['file_path'],
             'properties': properties
         })
-    except Exception as e:
-        log(f"Error storing document in Neo4j: {e}", level="error")
+    
+    if error_boundary.error:
+        log(f"Error storing document in Neo4j: {error_boundary.error}", level="error")
+        raise DatabaseError(f"Failed to store document in Neo4j: {str(error_boundary.error)}")
 
 @handle_async_errors(error_types=(PostgresError, Neo4jError, TransactionError))
 async def upsert_code_snippet(code_data: Dict) -> None:
@@ -166,6 +186,7 @@ async def upsert_code_snippet(code_data: Dict) -> None:
                 })
                 raise
 
+@handle_async_errors(error_types=[Neo4jError, DatabaseError])
 async def upsert_doc(
     repo_id: int,
     file_path: str, 
@@ -175,7 +196,8 @@ async def upsert_doc(
     is_primary: bool = True
 ) -> Optional[str]:
     """High-level document upsert function."""
-    try:
+    with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception],
+                       error_message=f"Error upserting document: {file_path}") as error_boundary:
         doc_data = {
             'repo_id': repo_id,
             'file_path': file_path,
@@ -189,8 +211,9 @@ async def upsert_doc(
             properties=doc_data,
             key_fields=["repo_id", "file_path"]
         )
-    except Exception as e:
-        log(f"Error upserting document: {e}", level="error")
+    
+    if error_boundary.error:
+        log(f"Error upserting document: {error_boundary.error}", level="error")
         return None
 
 async def upsert_repository(repo_data: Dict) -> int:
@@ -218,9 +241,11 @@ async def upsert_repository(repo_data: Dict) -> int:
         log(f"Upserted repository {repo_data['repo_name']}", level="info")
         return repo_id
 
+@handle_async_errors(error_types=[PostgresError, DatabaseError])
 async def share_docs_with_repo(doc_ids: list, target_repo_id: int) -> dict:
     """[6.5.5] Share documents with another repository."""
-    try:
+    with ErrorBoundary(error_types=[PostgresError, DatabaseError, Exception],
+                       error_message=f"Error sharing docs with repo {target_repo_id}") as error_boundary:
         for doc_id in doc_ids:
             await execute("""
                 INSERT INTO repo_doc_relations (repo_id, doc_id, is_primary)
@@ -228,9 +253,10 @@ async def share_docs_with_repo(doc_ids: list, target_repo_id: int) -> dict:
                 ON CONFLICT (repo_id, doc_id) DO NOTHING
             """, (target_repo_id, doc_id))
         return {"shared_docs": len(doc_ids), "target_repo": target_repo_id}
-    except Exception as e:
-        log(f"Error sharing docs: {e}", level="error")
-        raise
+    
+    if error_boundary.error:
+        log(f"Error sharing docs: {error_boundary.error}", level="error")
+        raise DatabaseError(f"Failed to share docs with repo {target_repo_id}: {str(error_boundary.error)}")
 
 async def store_parsed_content(
     repo_id: int,

@@ -7,8 +7,12 @@ from utils.logger import log
 from db.psql import _pool
 from db.connection import driver
 from utils.cache import cache_coordinator
-from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorBoundary
 from utils.error_handling import PostgresError, Neo4jError, TransactionError, CacheError
+from db.retry_utils import DatabaseRetryManager, RetryConfig
+
+# Initialize retry manager for transaction operations
+_retry_manager = DatabaseRetryManager()
 
 async def get_connection():
     """
@@ -67,7 +71,7 @@ class TransactionCoordinator:
     @handle_async_errors(error_types=(PostgresError, Neo4jError, TransactionError, CacheError))
     async def _commit_all(self):
         """[6.4.4] Commit all active transactions."""
-        try:
+        async def _do_commit():
             if self.pg_conn:
                 async with AsyncErrorBoundary("postgres commit", error_types=PostgresError):
                     await self.pg_transaction.commit()
@@ -75,27 +79,38 @@ class TransactionCoordinator:
             if self.neo4j_session:
                 async with AsyncErrorBoundary("neo4j commit", error_types=Neo4jError):
                     await self.neo4j_transaction.commit()
-                    
+        
+        try:
+            # Use retry manager to execute the commit with retry logic
+            await _retry_manager.execute_with_retry(_do_commit)
         except (PostgresError, Neo4jError) as e:
             await self._rollback_all()
             raise TransactionError(f"Transaction commit failed: {str(e)}")
             
+    @handle_async_errors(error_types=[PostgresError, Neo4jError, Exception])
     async def _rollback_all(self):
         """Rollback all active transactions."""
-        try:
+        async def _do_rollback():
             if self.pg_conn:
                 await self.pg_transaction.rollback()
                 
             if self.neo4j_session:
                 await self.neo4j_transaction.rollback()
-                
-        except Exception as e:
-            log(f"Error rolling back transactions: {e}", level="error")
-            raise
+        
+        with ErrorBoundary(error_types=[PostgresError, Neo4jError, Exception],
+                           error_message="Error rolling back transactions") as error_boundary:
+            # Use retry manager to execute the rollback with retry logic
+            await _retry_manager.execute_with_retry(_do_rollback)
+        
+        if error_boundary.error:
+            log(f"Error rolling back transactions: {error_boundary.error}", level="error")
+            raise TransactionError(f"Transaction rollback failed: {str(error_boundary.error)}")
             
+    @handle_async_errors(error_types=[PostgresError, Neo4jError, Exception])
     async def _cleanup(self):
         """Clean up all resources."""
-        try:
+        with ErrorBoundary(error_types=[PostgresError, Neo4jError, Exception],
+                           error_message="Error cleaning up transactions") as error_boundary:
             if self.pg_conn:
                 await _pool.release(self.pg_conn)
                 self.pg_conn = None
@@ -103,11 +118,12 @@ class TransactionCoordinator:
             if self.neo4j_session:
                 self.neo4j_session.close()
                 self.neo4j_session = None
-                
-        except Exception as e:
-            log(f"Error cleaning up transactions: {e}", level="error")
-            raise
+        
+        if error_boundary.error:
+            log(f"Error cleaning up transactions: {error_boundary.error}", level="error")
+            raise TransactionError(f"Transaction cleanup failed: {str(error_boundary.error)}")
 
+@handle_async_errors(error_types=[PostgresError, Neo4jError, TransactionError, CacheError, Exception])
 @asynccontextmanager
 async def transaction_scope(invalidate_cache: bool = True):
     """
@@ -119,7 +135,8 @@ async def transaction_scope(invalidate_cache: bool = True):
         # Transactions will be automatically committed or rolled back
     """
     coordinator = TransactionCoordinator()
-    try:
+    with ErrorBoundary(error_types=[PostgresError, Neo4jError, TransactionError, CacheError, Exception],
+                       error_message="Transaction scope error") as error_boundary:
         async with coordinator._lock:
             await coordinator._start_postgres()
             await coordinator._start_neo4j()
@@ -127,6 +144,8 @@ async def transaction_scope(invalidate_cache: bool = True):
             await coordinator._commit_all()
             if invalidate_cache:
                 await coordinator._invalidate_caches()
-    except Exception as e:
+    
+    if error_boundary.error:
+        log(f"Transaction scope error: {error_boundary.error}", level="error")
         await coordinator._rollback_all()
-        raise 
+        raise TransactionError(f"Transaction scope failed: {str(error_boundary.error)}") 

@@ -2,7 +2,7 @@
 
 from typing import Dict, Any, List, Optional, Set, Union, Callable
 from dataclasses import dataclass, field
-from parsers.types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, PatternCategory, PatternDefinition, QueryPattern
+from parsers.types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, PatternCategory, PatternDefinition, QueryPattern, PatternType
 from enum import Enum, auto
 import re
 
@@ -168,13 +168,6 @@ class ProcessedPattern:
     matches: List[PatternMatch] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
-
-class PatternType(Enum):
-    CODE_STRUCTURE = "code_structure"
-    CODE_NAMING = "code_naming"
-    ERROR_HANDLING = "error_handling"
-    DOCUMENTATION_STRUCTURE = "documentation_structure"
-    ARCHITECTURE = "architecture"
 
 PATTERN_CATEGORIES = {
     FeatureCategory.SYNTAX: {

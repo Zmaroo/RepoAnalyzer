@@ -217,6 +217,7 @@ class GraphAnalysis:
             results = await run_query(query, {"repo_id": repo_id, "file_path": file_path, "depth": depth})
             return results if results else []
     
+    @handle_errors(error_types=(Exception,))
     def close(self):
         """Closes Neo4j connections and graph projections."""
         with ErrorBoundary("Neo4j connection cleanup"):

@@ -6,6 +6,7 @@ from parsers.models import AsciidocNode, PatternType
 from parsers.types import FileType, ParserType
 from parsers.query_patterns.asciidoc import ASCIIDOC_PATTERNS
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
 import re
 
 class AsciidocParser(BaseParser):
@@ -36,6 +37,7 @@ class AsciidocParser(BaseParser):
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
         return AsciidocNode(**node_dict)
 
+    @handle_errors(error_types=(ParsingError,))
     def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse AsciiDoc source code and produce an AST.
         
@@ -43,22 +45,24 @@ class AsciidocParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        try:
-            ast = self._create_node("asciidoc_document", [0, 0], [0, 0], children=[])
-            # Your custom parsing logic here...
-            # For each line, create nodes as needed.
-            lines = source_code.splitlines()
-            for i, line in enumerate(lines):
-                if line.startswith("="):
-                    # Example: treat lines starting with "=" as headers.
-                    node = self._create_node("header", [i, 0], [i, len(line)], title=line.strip("="))
-                    ast["children"].append(node)
-            return ast
-        except Exception as e:
-            log(f"Error parsing AsciiDoc content: {e}", level="error")
-            fallback = self._create_node("asciidoc_document", [0, 0], [0, 0], error=str(e), children=[])
-            return fallback
+        with ErrorBoundary(error_types=(ParsingError,), context="AsciiDoc parsing"):
+            try:
+                ast = self._create_node("asciidoc_document", [0, 0], [0, 0], children=[])
+                # Your custom parsing logic here...
+                # For each line, create nodes as needed.
+                lines = source_code.splitlines()
+                for i, line in enumerate(lines):
+                    if line.startswith("="):
+                        # Example: treat lines starting with "=" as headers.
+                        node = self._create_node("header", [i, 0], [i, len(line)], title=line.strip("="))
+                        ast["children"].append(node)
+                return ast
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error parsing AsciiDoc content: {e}", level="error")
+                fallback = self._create_node("asciidoc_document", [0, 0], [0, 0], error=str(e), children=[])
+                return fallback
             
+    @handle_errors(error_types=(ProcessingError,))
     def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract documentation patterns from AsciiDoc files for repository learning.
@@ -71,58 +75,59 @@ class AsciidocParser(BaseParser):
         """
         patterns = []
         
-        try:
-            # Parse the source first to get a structured representation
-            ast = self._parse_source(source_code)
-            
-            # Extract header patterns (document structure)
-            headers = self._extract_header_patterns(ast)
-            for header in headers:
-                patterns.append({
-                    'name': f'doc_header_{header["level"]}',
-                    'content': header["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.8,
-                    'metadata': {
-                        'type': 'header',
-                        'level': header["level"]
-                    }
-                })
-            
-            # Extract section patterns
-            sections = self._extract_section_patterns(ast)
-            for section in sections:
-                patterns.append({
-                    'name': f'doc_section_{section["title"]}',
-                    'content': section["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.75,
-                    'metadata': {
-                        'type': 'section',
-                        'title': section["title"]
-                    }
-                })
+        with ErrorBoundary(error_types=(ProcessingError,), context="AsciiDoc pattern extraction"):
+            try:
+                # Parse the source first to get a structured representation
+                ast = self._parse_source(source_code)
                 
-            # Extract list patterns for structure
-            lists = self._extract_list_patterns(ast)
-            for list_pattern in lists:
-                patterns.append({
-                    'name': f'doc_list_{list_pattern["type"]}',
-                    'content': list_pattern["content"],
-                    'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                    'language': self.language_id,
-                    'confidence': 0.7,
-                    'metadata': {
-                        'type': 'list',
-                        'list_type': list_pattern["type"]
-                    }
-                })
+                # Extract header patterns (document structure)
+                headers = self._extract_header_patterns(ast)
+                for header in headers:
+                    patterns.append({
+                        'name': f'doc_header_{header["level"]}',
+                        'content': header["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'header',
+                            'level': header["level"]
+                        }
+                    })
                 
-        except Exception as e:
-            log(f"Error extracting AsciiDoc patterns: {e}", level="error")
-            
+                # Extract section patterns
+                sections = self._extract_section_patterns(ast)
+                for section in sections:
+                    patterns.append({
+                        'name': f'doc_section_{section["title"]}',
+                        'content': section["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.75,
+                        'metadata': {
+                            'type': 'section',
+                            'title': section["title"]
+                        }
+                    })
+                    
+                # Extract list patterns for structure
+                lists = self._extract_list_patterns(ast)
+                for list_pattern in lists:
+                    patterns.append({
+                        'name': f'doc_list_{list_pattern["type"]}',
+                        'content': list_pattern["content"],
+                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.7,
+                        'metadata': {
+                            'type': 'list',
+                            'list_type': list_pattern["type"]
+                        }
+                    })
+                    
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting AsciiDoc patterns: {e}", level="error")
+                
         return patterns
         
     def _extract_header_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
