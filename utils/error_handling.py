@@ -92,7 +92,7 @@ def handle_errors(error_types: Tuple[Type[Exception], ...] = (Exception,)):
     return decorator
 
 @asynccontextmanager
-async def AsyncErrorBoundary(operation: str, error_types: Tuple[Type[Exception], ...] = (Exception,)):
+async def AsyncErrorBoundary(operation_name: str, error_types: Tuple[Type[Exception], ...] = (Exception,)):
     """Async context manager for error boundaries.
     
     This context manager provides a way to handle errors in asynchronous code blocks without
@@ -104,7 +104,7 @@ async def AsyncErrorBoundary(operation: str, error_types: Tuple[Type[Exception],
     want to log errors but still need them to propagate up the call stack.
     
     Args:
-        operation: A string describing the operation being performed. This appears in the
+        operation_name: A string describing the operation being performed. This appears in the
                  error log to help identify where the error occurred.
         error_types: A tuple of exception types to catch. By default, it catches all exceptions,
                     but you can narrow it to specific error types.
@@ -118,7 +118,7 @@ async def AsyncErrorBoundary(operation: str, error_types: Tuple[Type[Exception],
     Example:
         ```python
         async def process_data(data):
-            async with AsyncErrorBoundary("data processing", error_types=(ValueError, TypeError)):
+            async with AsyncErrorBoundary(operation_name="data processing", error_types=(ValueError, TypeError)):
                 # If any ValueError or TypeError occurs in this block:
                 # 1. It will be logged with the operation name "data processing"
                 # 2. The exception will still be raised after logging
@@ -131,24 +131,33 @@ async def AsyncErrorBoundary(operation: str, error_types: Tuple[Type[Exception],
         yield
     except error_types as e:
         from utils.logger import log
-        log(f"Error in {operation}: {str(e)}", level="error")
+        log(f"Error in {operation_name}: {str(e)}", level="error")
         # Record the error for audit purposes
-        ErrorAudit.record_error(e, operation, error_types)
+        ErrorAudit.record_error(e, operation_name, error_types)
         raise
 
-def handle_async_errors(error_types=Exception, default_return=None):
+def handle_async_errors(func=None, error_types=Exception, default_return=None):
     """
     Decorator for async functions to handle specified exceptions.
+    Can be used as @handle_async_errors or with parameters @handle_async_errors(error_types=...)
     
     Args:
+        func: The function to decorate (only used when decorator is applied directly)
         error_types: Exception type or tuple of exception types to catch
         default_return: Value to return if an exception occurs
         
     Returns:
-        Decorator function
+        Decorated function or decorator function
         
     Example:
         ```python
+        # Direct usage
+        @handle_async_errors
+        async def process_data_async(data):
+            # Process the data
+            return await async_process(data)
+            
+        # Parameterized usage
         @handle_async_errors(error_types=(ValueError, TypeError))
         async def process_data_async(data):
             # Process the data
@@ -157,54 +166,72 @@ def handle_async_errors(error_types=Exception, default_return=None):
     """
     import inspect
     from typing import List, Dict, Optional, Awaitable, get_type_hints
-
-    def decorator(func):
+    
+    # When used as @handle_async_errors without calling (no parentheses)
+    if func is not None:
+        # This is the direct decorator case - func is the actual function
         @wraps(func)
-        @handle_async_errors  # Recursive application to ensure proper error handling
-        async def wrapper(*args, **kwargs):
+        async def direct_wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
-            except error_types as e:
+            except Exception as e:
                 from utils.logger import log
                 log(f"Error in {func.__name__}: {e}", level="error")
                 
                 # Record the error for audit purposes
-                ErrorAudit.record_error(e, func.__name__, error_types)
-                
-                # If default_return is explicitly provided, use that
-                if default_return is not None:
-                    return default_return
-                
-                # Otherwise, try to determine an appropriate return type
-                return_type = None
+                ErrorAudit.record_error(e, func.__name__, Exception)
+                return None
+        
+        return direct_wrapper
+    
+    # When used as @handle_async_errors(error_types=...) with calling (with parentheses)
+    else:
+        def decorator(func):
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
                 try:
-                    signature = inspect.signature(func)
-                    return_type = signature.return_annotation
-                except (ValueError, TypeError) as e:
-                    # These are the most common exceptions that can occur during signature inspection
+                    return await func(*args, **kwargs)
+                except error_types as e:
                     from utils.logger import log
-                    log(f"Error getting function signature for {func.__name__}: {e}", level="debug")
-                
-                # Handle different return types
-                if return_type == bool:
-                    return False
-                elif return_type in (int, float):
-                    return 0
-                elif return_type == str:
-                    return ""
-                elif return_type == list or str(return_type).startswith("typing.List"):
-                    return []
-                elif return_type == dict or str(return_type).startswith("typing.Dict"):
-                    return {}
-                elif return_type == set or str(return_type).startswith("typing.Set"):
-                    return set()
-                elif return_type == tuple or str(return_type).startswith("typing.Tuple"):
-                    return ()
-                else:
-                    return None
+                    log(f"Error in {func.__name__}: {e}", level="error")
                     
-        return wrapper
-    return decorator
+                    # Record the error for audit purposes
+                    ErrorAudit.record_error(e, func.__name__, error_types)
+                    
+                    # If default_return is explicitly provided, use that
+                    if default_return is not None:
+                        return default_return
+                    
+                    # Otherwise, try to determine an appropriate return type
+                    return_type = None
+                    try:
+                        signature = inspect.signature(func)
+                        return_type = signature.return_annotation
+                    except (ValueError, TypeError) as e:
+                        # These are the most common exceptions that can occur during signature inspection
+                        from utils.logger import log
+                        log(f"Error getting function signature for {func.__name__}: {e}", level="debug")
+                    
+                    # Handle different return types
+                    if return_type == bool:
+                        return False
+                    elif return_type in (int, float):
+                        return 0
+                    elif return_type == str:
+                        return ""
+                    elif return_type == list or str(return_type).startswith("typing.List"):
+                        return []
+                    elif return_type == dict or str(return_type).startswith("typing.Dict"):
+                        return {}
+                    elif return_type == set or str(return_type).startswith("typing.Set"):
+                        return set()
+                    elif return_type == tuple or str(return_type).startswith("typing.Tuple"):
+                        return ()
+                    else:
+                        return None
+                        
+            return wrapper
+        return decorator
 
 @contextmanager
 def ErrorBoundary(operation_name: str, error_types: Tuple[Type[Exception], ...] = (Exception,)):
@@ -243,6 +270,51 @@ class ErrorAudit:
     # Track error handling coverage
     _decorated_functions: Set[str] = set()
     _all_functions: Set[str] = set()
+    
+    # Periodic reporting
+    _last_report_time: datetime = None
+    _reporting_task = None
+    _reporting_interval: int = 86400  # Default to daily (in seconds)
+    
+    @classmethod
+    def start_periodic_reporting(cls, interval: int = 86400, report_file: str = None):
+        """
+        Start periodic error reporting.
+        
+        Args:
+            interval: Time between reports in seconds (default: 86400 - daily)
+            report_file: Path to save reports (default: logs/error_report_{timestamp}.json)
+        """
+        cls._reporting_interval = interval
+        
+        # Cancel any existing reporting task
+        if cls._reporting_task:
+            cls._reporting_task.cancel()
+        
+        async def _reporting_loop():
+            while True:
+                await asyncio.sleep(cls._reporting_interval)
+                await cls.save_report(report_file)
+                from utils.logger import log
+                log("Generated periodic error audit report", level="info")
+                
+        # Start new reporting task
+        from utils.async_runner import submit_async_task
+        cls._reporting_task = submit_async_task(_reporting_loop())
+        cls._last_report_time = datetime.now()
+        
+        from utils.logger import log
+        log(f"Started periodic error reporting every {interval} seconds", level="info")
+    
+    @classmethod
+    def stop_periodic_reporting(cls):
+        """Stop periodic error reporting."""
+        if cls._reporting_task:
+            cls._reporting_task.cancel()
+            cls._reporting_task = None
+            
+            from utils.logger import log
+            log("Stopped periodic error reporting", level="info")
     
     @classmethod
     def record_error(cls, error: Exception, location: str, handled_types: Union[Type[Exception], Tuple[Type[Exception], ...]] = (Exception,)):
@@ -403,6 +475,34 @@ class ErrorAudit:
                         location_counts[location] = 0
                     location_counts[location] += 1
             
+            # Track parameter patterns in error handling
+            parameter_patterns = {}
+            inconsistent_parameters = set()
+            
+            # Analyze parameter patterns
+            for error_type, occurrences in cls._errors.items():
+                for occurrence in occurrences:
+                    handled_by = occurrence.get("handled_by", [])
+                    location = occurrence.get("location", "unknown")
+                    
+                    # Track parameter patterns (tuple vs single error type)
+                    if len(handled_by) > 0:
+                        pattern = "tuple" if len(handled_by) > 1 else "single"
+                        if location not in parameter_patterns:
+                            parameter_patterns[location] = pattern
+                        elif parameter_patterns[location] != pattern:
+                            inconsistent_parameters.add(location)
+            
+            # Recommend parameter standardization
+            if inconsistent_parameters:
+                recommendations.append({
+                    "type": "parameter_standardization",
+                    "issue": "Inconsistent error type parameters",
+                    "locations": list(inconsistent_parameters),
+                    "recommendation": "Standardize error_types parameter to use tuples consistently",
+                    "priority": "high"
+                })
+            
             # Recommend decorators for high-error functions
             for location, count in location_counts.items():
                 if count >= 3 and location not in cls._decorated_functions:
@@ -430,9 +530,34 @@ class ErrorAudit:
                     "recommendation": "Replace with ErrorBoundary or AsyncErrorBoundary context manager",
                     "error_count": 0  # We don't have error counts for these
                 })
+                
+            # Check for modules with inconsistent handling patterns
+            module_patterns = {}
+            for error_type, occurrences in cls._errors.items():
+                for occurrence in occurrences:
+                    location = occurrence.get("location", "unknown")
+                    module = location.split('.')[0] if '.' in location else location
+                    
+                    if "handled_by" in occurrence:
+                        handler = "decorator" if any(d in location for d in ["handle_errors", "handle_async_errors"]) else "context_manager"
+                        
+                        if module not in module_patterns:
+                            module_patterns[module] = set()
+                        module_patterns[module].add(handler)
+            
+            # Recommend standardizing handling within modules
+            for module, patterns in module_patterns.items():
+                if len(patterns) > 1:
+                    recommendations.append({
+                        "type": "module_standardization",
+                        "module": module,
+                        "issue": "Inconsistent error handling patterns within module",
+                        "recommendation": "Standardize error handling approach across the module",
+                        "priority": "medium"
+                    })
         
         # Sort recommendations by error count (descending)
-        return sorted(recommendations, key=lambda x: x["error_count"], reverse=True)
+        return sorted(recommendations, key=lambda x: x.get("error_count", 0), reverse=True)
     
     @classmethod
     def _get_most_common_category_for_location(cls, location: str) -> str:

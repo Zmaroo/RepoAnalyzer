@@ -1,0 +1,19 @@
+{
+  "timestamp": "2025-03-01T11:25:24.766245",
+  "system_status": "healthy",
+  "components": {},
+  "system_resources": {
+    "cpu_percent": 13.3,
+    "memory_percent": 21.8,
+    "memory_used": 28627517440,
+    "memory_available": 107534516224,
+    "disk_usage": 0.4,
+    "disk_free": 2662973915136,
+    "open_files": 1,
+    "open_connections": 13,
+    "thread_count": 6
+  },
+  "database": {},
+  "recent_errors": [],
+  "recommendations": []
+}

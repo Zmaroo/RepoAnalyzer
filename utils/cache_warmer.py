@@ -17,7 +17,7 @@ from datetime import datetime
 import traceback
 
 from utils.logger import log
-from utils.error_handling import handle_async_errors, ErrorBoundary
+from utils.error_handling import handle_async_errors, ErrorBoundary, AsyncErrorBoundary
 from utils.cache import (
     UnifiedCache, cache_coordinator, pattern_cache,
     repository_cache, search_cache, embedding_cache,
@@ -181,7 +181,7 @@ class CacheWarmer:
         
         for cache_name, strategies in self._warmup_registry.items():
             for strategy_name in strategies:
-                with ErrorBoundary(f"executing warming strategy '{strategy_name}' for '{cache_name}'"):
+                async with AsyncErrorBoundary(operation_name=f"executing warming strategy '{strategy_name}' for '{cache_name}'"):
                     await self.warm_cache(cache_name, strategy_name)
         
         log("Completed proactive cache warming cycle", level="info")
@@ -213,7 +213,7 @@ async def warm_common_patterns(limit: int = 50, **kwargs) -> bool:
     """
     from utils.patterns import get_common_patterns
     
-    with ErrorBoundary("warming common patterns"):
+    async with AsyncErrorBoundary(operation_name="warming common patterns"):
         # Get most commonly used patterns
         patterns = await get_common_patterns(limit)
         
@@ -241,7 +241,7 @@ async def warm_language_specific_patterns(language: str, **kwargs) -> bool:
     """
     from utils.patterns import get_language_patterns
     
-    with ErrorBoundary(f"warming patterns for language {language}"):
+    async with AsyncErrorBoundary(operation_name=f"warming patterns for language {language}"):
         # Get patterns for the specific language
         patterns = await get_language_patterns(language)
         
@@ -270,7 +270,7 @@ async def warm_by_complexity(min_complexity: float = 0.7, **kwargs) -> bool:
     """
     from utils.patterns import get_pattern_complexity
     
-    with ErrorBoundary("warming complex patterns"):
+    async with AsyncErrorBoundary(operation_name="warming complex patterns"):
         # Get patterns with their complexity
         patterns_with_complexity = await get_pattern_complexity()
         
@@ -310,7 +310,7 @@ async def warm_recent_repositories(limit: int = 10, **kwargs) -> bool:
     """
     from utils.repository import get_recent_repositories
     
-    with ErrorBoundary("warming recent repositories"):
+    async with AsyncErrorBoundary(operation_name="warming recent repositories"):
         # Get recently accessed repositories
         repositories = await get_recent_repositories(limit)
         
@@ -343,7 +343,7 @@ async def warm_ast_for_common_files(limit: int = 20, **kwargs) -> bool:
     """
     from utils.ast_parser import parse_files_for_cache
     
-    with ErrorBoundary("warming AST cache for common files"):
+    async with AsyncErrorBoundary(operation_name="warming AST cache for common files"):
         # Get commonly accessed files
         from utils.file_access import get_commonly_accessed_files
         common_files = await get_commonly_accessed_files(limit)

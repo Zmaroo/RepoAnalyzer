@@ -146,6 +146,8 @@ def cached_in_request(key_fn=None):
     current request cache. If no request cache is active, the function
     is executed normally without caching.
     
+    Supports both synchronous and asynchronous functions.
+    
     Args:
         key_fn: Optional function to generate the cache key from the function arguments.
                If not provided, a default key based on function name and args is used.
@@ -155,6 +157,11 @@ def cached_in_request(key_fn=None):
         def expensive_operation(arg1, arg2):
             # This result will be cached in the current request
             return do_expensive_work(arg1, arg2)
+            
+        @cached_in_request
+        async def expensive_async_operation(arg1, arg2):
+            # This async result will be cached in the current request
+            return await do_expensive_async_work(arg1, arg2)
             
         # With custom key generation
         @cached_in_request(lambda repo_id, file_path: f"repo:{repo_id}:file:{file_path}")
@@ -173,31 +180,64 @@ def cached_in_request(key_fn=None):
     
     # This is the actual decorator that will be returned
     def actual_decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # Get the current request cache
-            cache = get_current_request_cache()
-            if cache is None:
-                # No active request cache, just execute the function
-                return func(*args, **kwargs)
-            
-            # Determine the cache key
-            if key_fn is not None:
-                # Use the user-provided key function
-                cache_key = key_fn(*args, **kwargs)
-            else:
-                # Use the default key function
-                cache_key = default_key_fn(func.__name__, *args, **kwargs)
-            
-            # Check if result is already cached
-            if cache.has(cache_key):
-                return cache.get(cache_key)
-            
-            # Execute the function and cache the result
-            result = func(*args, **kwargs)
-            cache.set(cache_key, result)
-            return result
-        return wrapper
+        import asyncio
+        import inspect
+        
+        # Check if the function is a coroutine function (async)
+        is_async = asyncio.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
+        
+        if is_async:
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                # Get the current request cache
+                cache = get_current_request_cache()
+                if cache is None:
+                    # No active request cache, just execute the function
+                    return await func(*args, **kwargs)
+                
+                # Determine the cache key
+                if key_fn is not None:
+                    # Use the user-provided key function
+                    cache_key = key_fn(*args, **kwargs)
+                else:
+                    # Use the default key function
+                    cache_key = default_key_fn(func.__name__, *args, **kwargs)
+                
+                # Check if result is already cached
+                if cache.has(cache_key):
+                    return cache.get(cache_key)
+                
+                # Execute the function and cache the result
+                result = await func(*args, **kwargs)
+                cache.set(cache_key, result)
+                return result
+            return async_wrapper
+        else:
+            @wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                # Get the current request cache
+                cache = get_current_request_cache()
+                if cache is None:
+                    # No active request cache, just execute the function
+                    return func(*args, **kwargs)
+                
+                # Determine the cache key
+                if key_fn is not None:
+                    # Use the user-provided key function
+                    cache_key = key_fn(*args, **kwargs)
+                else:
+                    # Use the default key function
+                    cache_key = default_key_fn(func.__name__, *args, **kwargs)
+                
+                # Check if result is already cached
+                if cache.has(cache_key):
+                    return cache.get(cache_key)
+                
+                # Execute the function and cache the result
+                result = func(*args, **kwargs)
+                cache.set(cache_key, result)
+                return result
+            return sync_wrapper
     
     # Handle the case where decorator is used without parentheses
     if callable(key_fn) and not isinstance(key_fn, type) and key_fn.__name__ != '<lambda>':

@@ -20,7 +20,7 @@ except ImportError:
 
 from utils.logger import log
 from utils.cache import cache_coordinator, UnifiedCache
-from utils.error_handling import handle_async_errors, ErrorBoundary, CacheError
+from utils.error_handling import handle_async_errors, ErrorBoundary, CacheError, AsyncErrorBoundary
 
 # Type for cache warmup functions
 WarmupFunc = Callable[[List[str]], Awaitable[Dict[str, Any]]]
@@ -80,7 +80,7 @@ class CacheAnalytics:
         self._is_running = False
         if self._task:
             self._task.cancel()
-            with ErrorBoundary("handling task cancellation"):
+            async with AsyncErrorBoundary(operation_name="handling task cancellation"):
                 await self._task
             self._task = None
             
@@ -119,7 +119,7 @@ class CacheAnalytics:
     @handle_async_errors
     async def generate_performance_report(self):
         """Generate a comprehensive cache performance report."""
-        with ErrorBoundary("generating cache performance report"):
+        async with AsyncErrorBoundary(operation_name="generating cache performance report"):
             # Get metrics from all caches
             metrics = await cache_coordinator.get_metrics()
             
@@ -154,7 +154,7 @@ class CacheAnalytics:
     @handle_async_errors
     async def _save_metrics_history(self, metrics: Dict):
         """Save metrics to a historical data file."""
-        with ErrorBoundary("saving cache metrics history"):
+        async with AsyncErrorBoundary(operation_name="saving cache metrics history"):
             # Skip if aiofiles not available
             if not AIOFILES_AVAILABLE:
                 log("Cannot save metrics history: aiofiles not installed", level="warning")
@@ -182,24 +182,22 @@ class CacheAnalytics:
                 
     @handle_async_errors
     async def warmup_all_caches(self):
-        """Warm up all registered caches with their most popular keys."""
+        """Warm up all registered caches with their registered warmup functions."""
         # Get all registered caches
-        caches = cache_coordinator._caches
-        if not caches:
-            return
+        caches = cache_coordinator.get_all_caches()
         
         for name, cache in caches.items():
             if not isinstance(cache, UnifiedCache):
                 continue
                 
             log(f"Auto-warming up cache: {name}", level="info")
-            with ErrorBoundary(f"warming up cache {name}"):
+            async with AsyncErrorBoundary(operation_name=f"warming up cache {name}"):
                 await self._warmup_cache_if_possible(name, cache)
     
     @handle_async_errors
     async def _warmup_cache_if_possible(self, cache_name: str, cache: UnifiedCache):
         """Attempt to warm up a cache if it has a registered warmup function."""
-        with ErrorBoundary(f"warming up cache {cache_name}"):
+        async with AsyncErrorBoundary(operation_name=f"warming up cache {cache_name}"):
             # Check if we have a registered warmup function
             warmup_func = self._warmup_funcs.get(cache_name)
             if not warmup_func:
@@ -221,7 +219,7 @@ class CacheAnalytics:
     @handle_async_errors
     async def warmup_cache(self, cache_name: str, keys: List[str]) -> bool:
         """
-        Manually trigger cache warmup for specific keys.
+        Warm up a specific cache with the provided keys.
         
         Args:
             cache_name: Name of the cache to warm up
@@ -230,13 +228,9 @@ class CacheAnalytics:
         Returns:
             bool: True if successful, False otherwise
         """
-        if cache_name not in cache_coordinator._caches:
+        cache = cache_coordinator.get_cache(cache_name)
+        if not cache:
             log(f"Cache not found: {cache_name}", level="error")
-            return False
-            
-        cache = cache_coordinator._caches[cache_name]
-        if not isinstance(cache, UnifiedCache):
-            log(f"Invalid cache type: {cache_name}", level="error")
             return False
             
         warmup_func = self._warmup_funcs.get(cache_name)
@@ -244,7 +238,7 @@ class CacheAnalytics:
             log(f"No warmup function registered for cache: {cache_name}", level="error")
             return False
         
-        with ErrorBoundary(f"warming up cache {cache_name}"):
+        async with AsyncErrorBoundary(operation_name=f"warming up cache {cache_name}"):
             try:
                 await cache.warmup_from_function(keys, warmup_func)
                 log(f"Successfully warmed up {len(keys)} keys for cache: {cache_name}", level="info")

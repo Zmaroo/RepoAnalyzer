@@ -18,7 +18,6 @@ Flow:
    - ProcessingError: AI operations
    - AsyncErrorBoundary: Async operations
 """
-
 from ai_tools.graph_capabilities import GraphAnalysis
 from utils.logger import log
 from ai_tools.code_understanding import CodeUnderstanding
@@ -27,21 +26,9 @@ from typing import List, Dict, Optional, Any
 from embedding.embedding_models import DocEmbedder
 from sklearn.cluster import DBSCAN
 from difflib import SequenceMatcher
-from utils.error_handling import (
-    handle_async_errors,
-    handle_errors,
-    ProcessingError,
-    AsyncErrorBoundary,
-    ErrorBoundary,
-)
-from parsers.models import (
-    FileType,
-    FileClassification,
-)
-from parsers.types import (
-    ParserResult,
-    ExtractedFeatures,
-)
+from utils.error_handling import handle_async_errors, handle_errors, ProcessingError, AsyncErrorBoundary, ErrorBoundary
+from parsers.models import FileType, FileClassification
+from parsers.types import ParserResult, ExtractedFeatures
 import numpy as np
 import os
 import asyncio
@@ -50,74 +37,56 @@ from config import ParserConfig
 
 class AIAssistant:
     """[4.1.1] Unified AI assistance interface."""
-    
+
     def __init__(self):
-        with ErrorBoundary("AI Assistant initialization"):
+        with ErrorBoundary(operation_name='AI Assistant initialization'):
             self.graph_analysis = GraphAnalysis()
             self.code_understanding = CodeUnderstanding()
             self.doc_embedder = DocEmbedder()
             self.reference_learning = reference_learning
-            
-            # Skip the language data path check during initialization
-            # This helps with testing and avoids initialization errors
-            # if not os.path.exists(ParserConfig().language_data_path):
-            #     raise ProcessingError(f"Invalid language data path")
-            
-            # Additional AI tools can be initialized here in the future.
-            log("AI Assistant initialized", level="info")
+            log('AI Assistant initialized', level='info')
 
     @handle_async_errors(error_types=ProcessingError)
-    async def analyze_repository(self, repo_id: int) -> Dict[str, Any]:
+    async def analyze_repository(self, repo_id: int) ->Dict[str, Any]:
         """[4.1.2] Perform comprehensive repository analysis concurrently."""
-        async with AsyncErrorBoundary("repository analysis"):
-            structure_task = asyncio.create_task(self.analyze_code_structure(repo_id))
-            codebase_task = asyncio.create_task(self.code_understanding.analyze_codebase(repo_id))
-            docs_task = asyncio.create_task(self.analyze_documentation(repo_id))
-            structure, codebase, docs = await asyncio.gather(structure_task, codebase_task, docs_task)
-            return {
-                "structure": structure,
-                "codebase": codebase,
-                "documentation": docs
-            }
+        async with AsyncErrorBoundary(operation_name='repository analysis'):
+            structure_task = asyncio.create_task(self.
+                analyze_code_structure(repo_id))
+            codebase_task = asyncio.create_task(self.code_understanding.
+                analyze_codebase(repo_id))
+            docs_task = asyncio.create_task(self.analyze_documentation(repo_id)
+                )
+            structure, codebase, docs = await asyncio.gather(structure_task,
+                codebase_task, docs_task)
+            return {'structure': structure, 'codebase': codebase,
+                'documentation': docs}
 
     @handle_async_errors(error_types=ProcessingError)
-    async def analyze_code_structure(
-        self,
-        repo_id: int,
-        file_path: Optional[str] = None
-    ) -> Dict[str, Any]:
+    async def analyze_code_structure(self, repo_id: int, file_path:
+        Optional[str]=None) ->Dict[str, Any]:
         """Analyze code structure using graph capabilities."""
-        async with AsyncErrorBoundary("code structure analysis"):
-            metrics = await self.graph_analysis.get_code_metrics(repo_id, file_path)
-            dependencies = await self.graph_analysis.get_dependencies(repo_id, file_path)
-            
-            return {
-                "metrics": metrics,
-                "dependencies": dependencies
-            }
+        async with AsyncErrorBoundary(operation_name='code structure analysis'
+            ):
+            metrics = await self.graph_analysis.get_code_metrics(repo_id,
+                file_path)
+            dependencies = await self.graph_analysis.get_dependencies(repo_id,
+                file_path)
+            return {'metrics': metrics, 'dependencies': dependencies}
 
     @handle_async_errors(error_types=ProcessingError)
-    async def get_code_context(
-        self,
-        repo_id: int,
-        file_path: str
-    ) -> Dict[str, Any]:
+    async def get_code_context(self, repo_id: int, file_path: str) ->Dict[
+        str, Any]:
         """Get comprehensive code context concurrently."""
-        async with AsyncErrorBoundary("code context retrieval"):
-            structure, references, context = await asyncio.gather(
-                self.analyze_code_structure(repo_id, file_path),
-                self.graph_analysis.get_references(repo_id, file_path),
-                self.code_understanding.get_code_context(file_path, repo_id)
-            )
-            
-            return {
-                "structure": structure,
-                "references": references,
-                "context": context
-            }
+        async with AsyncErrorBoundary(operation_name='code context retrieval'):
+            structure, references, context = await asyncio.gather(self.
+                analyze_code_structure(repo_id, file_path), self.
+                graph_analysis.get_references(repo_id, file_path), self.
+                code_understanding.get_code_context(file_path, repo_id))
+            return {'structure': structure, 'references': references,
+                'context': context}
 
     @handle_errors(error_types=ProcessingError)
-    def trace_code_flow(self, entry_point: str, repo_id: int) -> list:
+    def trace_code_flow(self, entry_point: str, repo_id: int) ->list:
         """
         Traces the code flow starting from a given entry point.
 
@@ -131,263 +100,236 @@ class AIAssistant:
         try:
             return self.graph_analysis.trace_code_flow(entry_point, repo_id)
         except (ValueError, KeyError) as e:
-            # Handle expected errors
-            log(f"Error tracing code flow from {entry_point}: {e}", level="error")
+            log(f'Error tracing code flow from {entry_point}: {e}', level=
+                'error')
             return []
         except Exception as e:
-            # Handle unexpected errors
             import traceback
-            log(f"Unexpected error tracing code flow from {entry_point}: {e}\n{traceback.format_exc()}", level="error")
-            raise ProcessingError(f"Failed to trace code flow: {e}")
+            log(f"""Unexpected error tracing code flow from {entry_point}: {e}
+{traceback.format_exc()}"""
+                , level='error')
+            raise ProcessingError(f'Failed to trace code flow: {e}')
 
     @handle_async_errors(error_types=ProcessingError)
-    async def search_code_snippets(self, query: str, repo_id: int, limit: int = 3) -> list:
+    async def search_code_snippets(self, query: str, repo_id: int, limit: int=3
+        ) ->list:
         """Searches for code snippets matching the query using semantic search."""
-        # Import locally to avoid circular dependencies
         from semantic.search import search_code
         try:
             return await search_code(query, repo_id, limit=limit)
         except ImportError as e:
-            log(f"Search module not available: {e}", level="error")
+            log(f'Search module not available: {e}', level='error')
             return []
         except ValueError as e:
-            log(f"Invalid search parameters for query '{query}': {e}", level="error")
+            log(f"Invalid search parameters for query '{query}': {e}",
+                level='error')
             return []
         except Exception as e:
-            log(f"Unexpected error in semantic search for query '{query}': {e}", level="error")
-            raise ProcessingError(f"Search operation failed: {e}")
+            log(f"Unexpected error in semantic search for query '{query}': {e}"
+                , level='error')
+            raise ProcessingError(f'Search operation failed: {e}')
 
     @handle_async_errors(error_types=ProcessingError)
-    async def search_documentation(self, query: str, repo_id: int = None) -> list:
+    async def search_documentation(self, query: str, repo_id: int=None) ->list:
         """Search across all available documentation."""
-        # Import locally to avoid circular dependencies
         from semantic.search import search_docs
         try:
             return await search_docs(query, repo_id, limit=3)
         except ImportError as e:
-            log(f"Documentation search module not available: {e}", level="error")
+            log(f'Documentation search module not available: {e}', level=
+                'error')
             return []
         except ValueError as e:
-            log(f"Invalid documentation search parameters for query '{query}': {e}", level="error")
+            log(f"Invalid documentation search parameters for query '{query}': {e}"
+                , level='error')
             return []
         except Exception as e:
-            log(f"Unexpected error searching documentation for query '{query}': {e}", level="error")
-            raise ProcessingError(f"Documentation search operation failed: {e}")
-    
-    def get_available_docs(self, search_term: str, repo_id: int = None) -> list[dict]:
+            log(f"Unexpected error searching documentation for query '{query}': {e}"
+                , level='error')
+            raise ProcessingError(f'Documentation search operation failed: {e}'
+                )
+
+    def get_available_docs(self, search_term: str, repo_id: int=None) ->list[
+        dict]:
         """Find documentation that could be linked to a project."""
-        # Import locally to avoid circular dependencies
         from semantic.search import search_available_docs
         return search_available_docs(search_term, repo_id)
-    
-    def share_documentation(self, doc_ids: list[int], target_repo_id: int) -> dict:
+
+    def share_documentation(self, doc_ids: list[int], target_repo_id: int
+        ) ->dict:
         """Share selected documentation with a target repository."""
-        # Import locally to avoid circular dependencies
         from semantic.search import share_docs_with_repo
         return share_docs_with_repo(doc_ids, target_repo_id)
 
     @handle_async_errors(error_types=ProcessingError)
-    async def analyze_documentation(self, repo_id: int) -> Dict[str, Any]:
+    async def analyze_documentation(self, repo_id: int) ->Dict[str, Any]:
         """[4.1.5] Analyze documentation quality, coverage, and clusters."""
-        async with AsyncErrorBoundary("documentation analysis"):
+        async with AsyncErrorBoundary(operation_name='documentation analysis'):
             try:
-                # Import locally to avoid circular dependencies
                 from semantic.search import get_repo_docs
                 docs = await get_repo_docs(repo_id)
                 if not docs:
-                    return {"error": "No documentation found for this repository"}
-                
-                return {
-                    "total_docs": len(docs),
-                    "clusters": self._analyze_doc_clusters(docs),
-                    "coverage": self._analyze_coverage(docs),
-                    "quality": self._batch_quality_analysis(docs)
-                }
+                    return {'error':
+                        'No documentation found for this repository'}
+                return {'total_docs': len(docs), 'clusters': self.
+                    _analyze_doc_clusters(docs), 'coverage': self.
+                    _analyze_coverage(docs), 'quality': self.
+                    _batch_quality_analysis(docs)}
             except ImportError as e:
-                log(f"Documentation module not available: {e}", level="error")
-                return {"error": f"Documentation service unavailable: {e}"}
+                log(f'Documentation module not available: {e}', level='error')
+                return {'error': f'Documentation service unavailable: {e}'}
             except ValueError as e:
-                log(f"Invalid repository ID ({repo_id}): {e}", level="error")
-                return {"error": f"Invalid repository parameters: {e}"}
+                log(f'Invalid repository ID ({repo_id}): {e}', level='error')
+                return {'error': f'Invalid repository parameters: {e}'}
             except Exception as e:
-                log(f"Unexpected error analyzing documentation: {e}", level="error")
-                raise ProcessingError(f"Documentation analysis failed: {e}")
+                log(f'Unexpected error analyzing documentation: {e}', level
+                    ='error')
+                raise ProcessingError(f'Documentation analysis failed: {e}')
 
     @handle_errors(error_types=ProcessingError)
-    def _analyze_doc_clusters(self, docs: List[Dict]) -> Dict[str, Any]:
+    def _analyze_doc_clusters(self, docs: List[Dict]) ->Dict[str, Any]:
         """Cluster similar documentation."""
-        with ErrorBoundary("documentation clustering"):
+        with ErrorBoundary(operation_name='documentation clustering'):
             if not docs:
                 return {}
-            
-            embeddings = np.array([
-                self.doc_embedder.embed(doc['content'])
-                for doc in docs
-            ])
-            
+            embeddings = np.array([self.doc_embedder.embed(doc['content']) for
+                doc in docs])
             clustering = DBSCAN(eps=0.3, min_samples=2).fit(embeddings)
-            
             clusters = {}
             for i, label in enumerate(clustering.labels_):
                 if label >= 0:
-                    clusters.setdefault(label, []).append({
-                        'id': docs[i]['id'],
-                        'path': docs[i]['file_path']
-                    })
-            
+                    clusters.setdefault(label, []).append({'id': docs[i][
+                        'id'], 'path': docs[i]['file_path']})
             return clusters
 
     @handle_errors(error_types=ProcessingError)
-    def _analyze_coverage(self, docs: List[Dict]) -> Dict[str, Any]:
+    def _analyze_coverage(self, docs: List[Dict]) ->Dict[str, Any]:
         """Analyze documentation coverage."""
-        with ErrorBoundary("coverage analysis"):
-            coverage = {
-                "total_lines": sum(len(doc['content'].splitlines()) for doc in docs),
-                "coverage_by_type": {},
-                "missing_areas": []
-            }
-            
+        with ErrorBoundary(operation_name='coverage analysis'):
+            coverage = {'total_lines': sum(len(doc['content'].splitlines()) for
+                doc in docs), 'coverage_by_type': {}, 'missing_areas': []}
             for doc in docs:
                 doc_type = doc.get('doc_type', 'unknown')
-                coverage["coverage_by_type"][doc_type] = coverage["coverage_by_type"].get(doc_type, 0) + 1
-            
+                coverage['coverage_by_type'][doc_type] = coverage[
+                    'coverage_by_type'].get(doc_type, 0) + 1
             return coverage
 
     @handle_errors(error_types=ProcessingError)
-    def _batch_quality_analysis(self, docs: List[Dict]) -> Dict[str, Any]:
+    def _batch_quality_analysis(self, docs: List[Dict]) ->Dict[str, Any]:
         """Analyze documentation quality by computing various metrics."""
-        with ErrorBoundary("quality analysis"):
+        with ErrorBoundary(operation_name='quality analysis'):
             quality_metrics = {}
-            
             for doc in docs:
                 lines = doc['content'].splitlines()
-                header_count = sum(1 for line in lines if line.strip().startswith("#"))
-                structure_score = (header_count / len(lines)) if lines else 0
-
-                metrics = {
-                    "completeness": len(doc['content'].split()) / 100,  # Basic metric
-                    "has_examples": 1.0 if "```" in doc['content'] else 0.0,
-                    "has_sections": 1.0 if "#" in doc['content'] else 0.0,
-                    "structure": structure_score  # Newly added structure metric
-                }
+                header_count = sum(1 for line in lines if line.strip().
+                    startswith('#'))
+                structure_score = header_count / len(lines) if lines else 0
+                metrics = {'completeness': len(doc['content'].split()) / 
+                    100, 'has_examples': 1.0 if '```' in doc['content'] else
+                    0.0, 'has_sections': 1.0 if '#' in doc['content'] else 
+                    0.0, 'structure': structure_score}
                 quality_metrics[doc['id']] = metrics
-            
             return quality_metrics
 
     @handle_errors(error_types=ProcessingError)
-    async def suggest_documentation_improvements(self, repo_id: int) -> List[Dict]:
+    async def suggest_documentation_improvements(self, repo_id: int) ->List[
+        Dict]:
         """Suggest improvements to documentation based on quality analysis."""
         try:
-            # Import locally to avoid circular dependencies
             from semantic.search import get_repo_docs
             docs = await get_repo_docs(repo_id)
             if not docs:
-                return [{"error": "No documentation found"}]
-            
+                return [{'error': 'No documentation found'}]
             suggestions = []
             for doc in docs:
                 quality = self._batch_quality_analysis([doc])[doc['id']]
-                
                 if quality['completeness'] < 0.7:
-                    suggestions.append({
-                        "doc_id": doc['id'],
-                        "type": "completeness",
-                        "suggestion": "Add more detailed explanations and examples"
-                    })
-                    
+                    suggestions.append({'doc_id': doc['id'], 'type':
+                        'completeness', 'suggestion':
+                        'Add more detailed explanations and examples'})
                 if quality['structure'] < 0.7:
-                    suggestions.append({
-                        "doc_id": doc['id'],
-                        "type": "structure",
-                        "suggestion": "Improve document structure with headers and sections"
-                    })
-            
+                    suggestions.append({'doc_id': doc['id'], 'type':
+                        'structure', 'suggestion':
+                        'Improve document structure with headers and sections'}
+                        )
             return suggestions
         except KeyError as e:
-            log(f"Error accessing document quality metrics: {e}", level="error")
-            return [{"error": f"Missing document attribute: {e}"}]
+            log(f'Error accessing document quality metrics: {e}', level='error'
+                )
+            return [{'error': f'Missing document attribute: {e}'}]
         except ImportError as e:
-            log(f"Error importing semantic search module: {e}", level="error")
-            return [{"error": "Search module unavailable"}]
+            log(f'Error importing semantic search module: {e}', level='error')
+            return [{'error': 'Search module unavailable'}]
         except Exception as e:
-            log(f"Unexpected error suggesting documentation improvements: {e}", level="error")
-            raise ProcessingError(f"Failed to analyze documentation quality: {e}")
+            log(f'Unexpected error suggesting documentation improvements: {e}',
+                level='error')
+            raise ProcessingError(
+                f'Failed to analyze documentation quality: {e}')
 
     @handle_errors(error_types=ProcessingError)
-    async def track_doc_version(self, doc_id: int, new_content: str) -> Dict:
+    async def track_doc_version(self, doc_id: int, new_content: str) ->Dict:
         """Track a new version of documentation."""
-        changes = SequenceMatcher(None, "", new_content).ratio()
-        # Import locally to avoid circular dependencies
+        changes = SequenceMatcher(None, '', new_content).ratio()
         from semantic.search import update_doc_version
         return await update_doc_version(doc_id, new_content, changes)
 
     @handle_errors(error_types=ProcessingError)
-    async def suggest_documentation_links(self, repo_id: int, threshold: float = 0.8) -> List[Dict]:
+    async def suggest_documentation_links(self, repo_id: int, threshold:
+        float=0.8) ->List[Dict]:
         """Suggest links between documentation and code."""
-        # Import locally to avoid circular dependencies
         from semantic.search import get_repo_docs, search_docs
         repo_docs = await get_repo_docs(repo_id)
-        all_docs = await search_docs("", limit=100)  # Get broader set of docs
-        
+        all_docs = await search_docs('', limit=100)
         suggestions = []
         for doc in all_docs:
             if doc['id'] not in [d['id'] for d in repo_docs]:
                 relevance = self._calculate_doc_relevance(doc, repo_docs)
                 if relevance > threshold:
-                    suggestions.append({
-                        "doc_id": doc['id'],
-                        "file_path": doc['file_path'],
-                        "relevance": relevance,
-                        "reason": "Similar content to existing documentation"
-                    })
-        
+                    suggestions.append({'doc_id': doc['id'], 'file_path':
+                        doc['file_path'], 'relevance': relevance, 'reason':
+                        'Similar content to existing documentation'})
         return sorted(suggestions, key=lambda x: x['relevance'], reverse=True)
 
-    def _calculate_doc_quality(self, doc: Dict) -> Dict:
+    def _calculate_doc_quality(self, doc: Dict) ->Dict:
         """Calculate quality metrics for a document."""
         content = doc['content']
-        return {
-            "completeness": len(content.split()) / 100,  # Basic length metric
-            "structure": self._analyze_doc_structure(content),
-            "clarity": self._analyze_doc_clarity(content)
-        }
+        return {'completeness': len(content.split()) / 100, 'structure':
+            self._analyze_doc_structure(content), 'clarity': self.
+            _analyze_doc_clarity(content)}
 
-    def _calculate_doc_relevance(self, doc: Dict, repo_docs: List[Dict]) -> float:
+    def _calculate_doc_relevance(self, doc: Dict, repo_docs: List[Dict]
+        ) ->float:
         """Calculate how relevant a document is to existing repo docs."""
         doc_embedding = self.doc_embedder.embed(doc['content'])
         max_similarity = 0.0
-        
         for repo_doc in repo_docs:
             repo_doc_embedding = self.doc_embedder.embed(repo_doc['content'])
-            similarity = self._calculate_similarity(doc_embedding, repo_doc_embedding)
+            similarity = self._calculate_similarity(doc_embedding,
+                repo_doc_embedding)
             max_similarity = max(max_similarity, similarity)
-            
         return max_similarity
 
     @handle_async_errors(error_types=ProcessingError)
-    async def learn_from_reference_repo(self, reference_repo_id: int) -> Dict[str, Any]:
+    async def learn_from_reference_repo(self, reference_repo_id: int) ->Dict[
+        str, Any]:
         """[4.1.11] Learn patterns from a reference repository."""
-        async with AsyncErrorBoundary("reference repository learning"):
-            return await self.reference_learning.learn_from_repository(reference_repo_id)
-    
+        async with AsyncErrorBoundary(operation_name=
+            'reference repository learning'):
+            return await self.reference_learning.learn_from_repository(
+                reference_repo_id)
+
     @handle_async_errors(error_types=ProcessingError)
-    async def apply_reference_patterns(
-        self,
-        reference_repo_id: int,
-        target_repo_id: int
-    ) -> Dict[str, Any]:
+    async def apply_reference_patterns(self, reference_repo_id: int,
+        target_repo_id: int) ->Dict[str, Any]:
         """[4.1.12] Apply learned patterns from a reference repository to a target project."""
-        async with AsyncErrorBoundary("applying reference patterns"):
+        async with AsyncErrorBoundary(operation_name=
+            'applying reference patterns'):
             return await self.reference_learning.apply_patterns_to_project(
-                reference_repo_id, target_repo_id
-            )
-    
+                reference_repo_id, target_repo_id)
+
     @handle_async_errors(error_types=ProcessingError)
-    async def analyze_repository_with_reference(
-        self,
-        repo_id: int,
-        reference_repo_id: int
-    ) -> Dict[str, Any]:
+    async def analyze_repository_with_reference(self, repo_id: int,
+        reference_repo_id: int) ->Dict[str, Any]:
         """[4.1.13] Analyze repository with reference to another one.
         
         This enhanced method uses graph-based repository comparison to identify structural
@@ -400,146 +342,101 @@ class AIAssistant:
         Returns:
             Dict containing comprehensive analysis with repository comparison results
         """
-        async with AsyncErrorBoundary("repository analysis with reference"):
-            # First analyze the repository
-            analysis_task = asyncio.create_task(self.analyze_repository(repo_id))
-            
-            # Learn from reference repository if needed
-            reference_status_task = asyncio.create_task(
-                self.reference_learning.learn_from_repository(reference_repo_id)
-            )
-            
-            # Compare repositories using graph projection capabilities
-            comparison_task = asyncio.create_task(
-                self.reference_learning.compare_with_reference_repository(
-                    active_repo_id=repo_id,
-                    reference_repo_id=reference_repo_id
-                )
-            )
-            
-            # Apply reference patterns (this will generate recommendations)
-            patterns_task = asyncio.create_task(
-                self.reference_learning.apply_patterns_to_project(
-                    reference_repo_id, repo_id
-                )
-            )
-            
-            # Wait for all tasks to complete
-            analysis, reference_status, comparison, patterns = await asyncio.gather(
-                analysis_task, reference_status_task, comparison_task, patterns_task
-            )
-            
-            # Extract the most similar files for detailed analysis
+        async with AsyncErrorBoundary(operation_name=
+            'repository analysis with reference'):
+            analysis_task = asyncio.create_task(self.analyze_repository(
+                repo_id))
+            reference_status_task = asyncio.create_task(self.
+                reference_learning.learn_from_repository(reference_repo_id))
+            comparison_task = asyncio.create_task(self.reference_learning.
+                compare_with_reference_repository(active_repo_id=repo_id,
+                reference_repo_id=reference_repo_id))
+            patterns_task = asyncio.create_task(self.reference_learning.
+                apply_patterns_to_project(reference_repo_id, repo_id))
+            analysis, reference_status, comparison, patterns = (await
+                asyncio.gather(analysis_task, reference_status_task,
+                comparison_task, patterns_task))
             similar_files = []
-            if "similarities" in comparison:
-                for similarity in comparison["similarities"][:5]:  # Top 5 most similar
-                    similar_files.append({
-                        "active_file": similarity.get("active_file"),
-                        "reference_file": similarity.get("reference_file"),
-                        "language": similarity.get("language"),
-                        "similarity_score": similarity.get("similarity")
-                    })
-            
-            # Combine the results into a comprehensive analysis
-            combined_analysis = {
-                **analysis,
-                "reference_patterns": patterns,
-                "repository_comparison": {
-                    "similarity_score": comparison.get("similarity_count", 0) / 20 if comparison.get("similarity_count") else 0,
-                    "similar_files": similar_files,
-                    "active_repo_stats": comparison.get("active_repo_stats", []),
-                    "reference_repo_stats": comparison.get("reference_repo_stats", []),
-                    "pattern_counts": {
-                        "active": comparison.get("active_patterns_count", 0),
-                        "reference": comparison.get("reference_patterns_count", 0)
-                    }
-                },
-                "reference_repository": {
-                    "id": reference_repo_id,
-                    "patterns": {
-                        "code_patterns": reference_status.get("code_patterns", 0),
-                        "doc_patterns": reference_status.get("doc_patterns", 0),
-                        "architecture_patterns": reference_status.get("architecture_patterns", 0)
-                    }
-                }
-            }
-            
+            if 'similarities' in comparison:
+                for similarity in comparison['similarities'][:5]:
+                    similar_files.append({'active_file': similarity.get(
+                        'active_file'), 'reference_file': similarity.get(
+                        'reference_file'), 'language': similarity.get(
+                        'language'), 'similarity_score': similarity.get(
+                        'similarity')})
+            combined_analysis = {**analysis, 'reference_patterns': patterns,
+                'repository_comparison': {'similarity_score': comparison.
+                get('similarity_count', 0) / 20 if comparison.get(
+                'similarity_count') else 0, 'similar_files': similar_files,
+                'active_repo_stats': comparison.get('active_repo_stats', []
+                ), 'reference_repo_stats': comparison.get(
+                'reference_repo_stats', []), 'pattern_counts': {'active':
+                comparison.get('active_patterns_count', 0), 'reference':
+                comparison.get('reference_patterns_count', 0)}},
+                'reference_repository': {'id': reference_repo_id,
+                'patterns': {'code_patterns': reference_status.get(
+                'code_patterns', 0), 'doc_patterns': reference_status.get(
+                'doc_patterns', 0), 'architecture_patterns':
+                reference_status.get('architecture_patterns', 0)}}}
             return combined_analysis
 
     @handle_async_errors(error_types=ProcessingError)
-    async def search_patterns(
-        self, 
-        query_text: str, 
-        repo_id: Optional[int] = None,
-        pattern_type: Optional[str] = None,
-        limit: int = 10
-    ) -> List[Dict[str, Any]]:
+    async def search_patterns(self, query_text: str, repo_id: Optional[int]
+        =None, pattern_type: Optional[str]=None, limit: int=10) ->List[Dict
+        [str, Any]]:
         """[4.1.14] Search for code patterns matching the query."""
-        async with AsyncErrorBoundary("pattern search"):
+        async with AsyncErrorBoundary(operation_name='pattern search'):
             from semantic.search import search_engine
-            return await search_engine.search_patterns(
-                query_text=query_text,
-                repo_id=repo_id,
-                pattern_type=pattern_type,
-                limit=limit
-            )
-    
+            return await search_engine.search_patterns(query_text=
+                query_text, repo_id=repo_id, pattern_type=pattern_type,
+                limit=limit)
+
     @handle_async_errors(error_types=ProcessingError)
-    async def get_repository_patterns(
-        self,
-        repo_id: int,
-        pattern_type: Optional[str] = None,
-        limit: int = 50
-    ) -> List[Dict[str, Any]]:
+    async def get_repository_patterns(self, repo_id: int, pattern_type:
+        Optional[str]=None, limit: int=50) ->List[Dict[str, Any]]:
         """[4.1.15] Get patterns extracted from a specific repository."""
-        async with AsyncErrorBoundary("get repository patterns"):
+        async with AsyncErrorBoundary(operation_name='get repository patterns'
+            ):
             from semantic.search import search_engine
-            return await search_engine.get_repository_patterns(
-                repo_id=repo_id,
-                pattern_type=pattern_type,
-                limit=limit
-            )
-    
+            return await search_engine.get_repository_patterns(repo_id=
+                repo_id, pattern_type=pattern_type, limit=limit)
+
     @handle_async_errors(error_types=ProcessingError)
-    async def deep_learn_from_multiple_repositories(
-        self,
-        repo_ids: List[int]
-    ) -> Dict[str, Any]:
+    async def deep_learn_from_multiple_repositories(self, repo_ids: List[int]
+        ) ->Dict[str, Any]:
         """[4.1.16] Deep learn from multiple reference repositories."""
-        async with AsyncErrorBoundary("deep learning from multiple repositories"):
-            return await self.reference_learning.deep_learn_from_multiple_repositories(repo_ids)
-    
+        async with AsyncErrorBoundary(operation_name=
+            'deep learning from multiple repositories'):
+            return (await self.reference_learning.
+                deep_learn_from_multiple_repositories(repo_ids))
+
     @handle_async_errors(error_types=ProcessingError)
-    async def apply_cross_repository_patterns(
-        self,
-        target_repo_id: int,
-        reference_repo_ids: List[int]
-    ) -> Dict[str, Any]:
+    async def apply_cross_repository_patterns(self, target_repo_id: int,
+        reference_repo_ids: List[int]) ->Dict[str, Any]:
         """[4.1.17] Apply patterns learned from multiple reference repositories to a target project."""
-        async with AsyncErrorBoundary("applying cross-repository patterns"):
-            return await self.reference_learning.apply_cross_repository_patterns(
-                target_repo_id=target_repo_id,
-                repo_ids=reference_repo_ids
-            )
-    
+        async with AsyncErrorBoundary(operation_name=
+            'applying cross-repository patterns'):
+            return (await self.reference_learning.
+                apply_cross_repository_patterns(target_repo_id=
+                target_repo_id, repo_ids=reference_repo_ids))
+
     @handle_errors(error_types=ProcessingError)
-    def close(self) -> None:
+    def close(self) ->None:
         """[4.1.10] Cleanup all resources."""
-        with ErrorBoundary("resource cleanup"):
+        with ErrorBoundary(operation_name='resource cleanup'):
             try:
                 self.graph_analysis.cleanup()
                 self.code_understanding.cleanup()
                 self.reference_learning.cleanup()
-                log("All AI resources cleaned up.", level="debug")
+                log('All AI resources cleaned up.', level='debug')
             except Exception as e:
-                raise ProcessingError(f"Error during AI resource cleanup: {e}")
+                raise ProcessingError(f'Error during AI resource cleanup: {e}')
 
-    # Optional alias to match documentation
-    async def find_similar_code(self, query: str, repo_id: Optional[int] = None, limit: int = 5) -> list:
+    async def find_similar_code(self, query: str, repo_id: Optional[int]=
+        None, limit: int=5) ->list:
         """Find similar code based on semantic search."""
-        # Import locally to avoid circular dependencies
         from semantic.search import semantic_search
-        return await semantic_search(query, "code", repo_id, limit)
+        return await semantic_search(query, 'code', repo_id, limit)
 
-# Global instance
+
 ai_assistant = AIAssistant()

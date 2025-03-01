@@ -1,5 +1,4 @@
 """File watcher implementation."""
-
 import os
 import asyncio
 import fnmatch
@@ -13,25 +12,28 @@ from parsers.models import FileType, FileClassification
 from parsers.language_support import language_registry
 from db.upsert_ops import upsert_code_snippet, upsert_doc
 from db.neo4j_ops import auto_reinvoke_projection_once
-from utils.error_handling import handle_async_errors, ErrorBoundary
+from utils.error_handling import handle_async_errors, ErrorBoundary, AsyncErrorBoundary
+
 
 class AsyncFileChangeHandler(FileSystemEventHandler):
+
     def __init__(self, on_change):
         self.on_change = on_change
         self._tasks = set()
 
     def on_modified(self, event):
         if not event.is_directory:
-            # Create a task but also track it to prevent it from being garbage collected
             task = asyncio.create_task(self._handle_change(event.src_path))
             self._tasks.add(task)
-            task.add_done_callback(lambda t: self._tasks.remove(t) if t in self._tasks else None)
-    
+            task.add_done_callback(lambda t: self._tasks.remove(t) if t in
+                self._tasks else None)
+
     @handle_async_errors
     async def _handle_change(self, file_path):
         """Handle file change in a properly tracked async task."""
-        with ErrorBoundary(f"handling file change for {file_path}"):
+        with AsyncErrorBoundary(f'handling file change for {file_path}'):
             await self.on_change(file_path)
+
 
 @handle_async_errors
 async def watch_directory(directory: str, repo_id: int, on_change):
@@ -43,22 +45,20 @@ async def watch_directory(directory: str, repo_id: int, on_change):
         repo_id: Repository ID associated with the files.
         on_change: Asynchronous callback to execute on file changes.
     """
-    with ErrorBoundary(f"watching directory {directory}"):
+    with AsyncErrorBoundary(f'watching directory {directory}'):
         event_handler = AsyncFileChangeHandler(on_change)
         observer = Observer()
         observer.schedule(event_handler, directory, recursive=True)
         observer.start()
-        log(f"Started watching directory: {directory}", level="info")
+        log(f'Started watching directory: {directory}', level='info')
         try:
             while True:
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
-            log("File watcher cancelled.", level="warning")
-            # Cancel all pending tasks
+            log('File watcher cancelled.', level='warning')
             for task in asyncio.all_tasks():
                 if task != asyncio.current_task():
                     task.cancel()
-            # Wait for tasks to complete with timeout
             pending = asyncio.all_tasks() - {asyncio.current_task()}
             if pending:
                 await asyncio.wait(pending, timeout=5)
@@ -66,7 +66,8 @@ async def watch_directory(directory: str, repo_id: int, on_change):
             observer.stop()
             observer.join()
 
-def is_pattern_relevant_file(file_path: str) -> bool:
+
+def is_pattern_relevant_file(file_path: str) ->bool:
     """
     Determine if a file is relevant for pattern extraction.
     
@@ -76,12 +77,11 @@ def is_pattern_relevant_file(file_path: str) -> bool:
     Returns:
         bool: True if the file is relevant for pattern extraction
     """
-    # Get file extension
     _, ext = os.path.splitext(file_path)
-    
-    # Code files are relevant for pattern extraction
-    code_extensions = {'.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.go', '.rb', '.php'}
+    code_extensions = {'.py', '.js', '.ts', '.java', '.cpp', '.c', '.h',
+        '.go', '.rb', '.php'}
     return ext.lower() in code_extensions
+
 
 @handle_async_errors
 async def handle_file_change(file_path: str, repo_id: int):
@@ -92,53 +92,45 @@ async def handle_file_change(file_path: str, repo_id: int):
         file_path: Path to the file that changed
         repo_id: Repository ID
     """
-    with ErrorBoundary(f"handling file change for {file_path}"):
-        log(f"File changed: {file_path}", level="info")
-        
-        # Process the changed file
+    with AsyncErrorBoundary(f'handling file change for {file_path}'):
+        log(f'File changed: {file_path}', level='info')
         from indexer.unified_indexer import process_repository_indexing
         await process_repository_indexing(file_path, repo_id, single_file=True)
-        
-        # Update repository patterns if the file is relevant
         if is_pattern_relevant_file(file_path):
             try:
-                # Import here to avoid circular imports
                 from ai_tools.reference_repository_learning import ReferenceRepositoryLearning
                 from db.psql import query
-                
-                # Get the repository type
-                repo_result = await query("SELECT repo_type FROM repositories WHERE id = %s", (repo_id,))
-                
-                # Only update patterns for reference repositories
+                repo_result = await query(
+                    'SELECT repo_type FROM repositories WHERE id = %s', (
+                    repo_id,))
                 if repo_result and repo_result[0]['repo_type'] == 'reference':
                     ref_repo_learning = ReferenceRepositoryLearning()
-                    log(f"Updating patterns for file: {file_path}", level="info")
-                    
-                    # Get relative path for the file
+                    log(f'Updating patterns for file: {file_path}', level=
+                        'info')
                     base_path = os.path.dirname(os.path.dirname(file_path))
                     rel_path = get_relative_path(file_path, base_path)
-                    
-                    # Update patterns for the specific file
-                    await ref_repo_learning.update_patterns_for_file(repo_id, rel_path)
+                    await ref_repo_learning.update_patterns_for_file(repo_id,
+                        rel_path)
             except Exception as e:
-                log(f"Error updating patterns for file {file_path}: {e}", level="error")
-        
-        # Update graph analysis
+                log(f'Error updating patterns for file {file_path}: {e}',
+                    level='error')
         from ai_tools.graph_capabilities import graph_analysis
         await graph_analysis.analyze_code_structure(repo_id)
 
-def start_file_watcher(path: str = ".") -> None:
+
+def start_file_watcher(path: str='.') ->None:
     """Start the file watcher in the current directory."""
-    
+
     @handle_async_errors
     async def async_main():
-        with ErrorBoundary("starting file watcher"):
+        with AsyncErrorBoundary(operation_name='starting file watcher'):
             repo_name = os.path.basename(os.getcwd())
-            repo_id = await get_or_create_repo(repo_name, repo_type="active")
-            log(f"Starting file watcher for repository: {repo_name} (id: {repo_id})")
-            await watch_directory(path, repo_id, lambda file_path: asyncio.create_task(handle_file_change(file_path, repo_id)))
-
+            repo_id = await get_or_create_repo(repo_name, repo_type='active')
+            log(f'Starting file watcher for repository: {repo_name} (id: {repo_id})'
+                )
+            await watch_directory(path, repo_id, lambda file_path: asyncio.
+                create_task(handle_file_change(file_path, repo_id)))
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
-        log("File watcher stopped by user", level="info")
+        log('File watcher stopped by user', level='info')

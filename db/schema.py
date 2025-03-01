@@ -10,7 +10,6 @@ from db.retry_utils import DatabaseRetryManager, RetryConfig
 
 import asyncio
 from db.transaction import transaction_scope
-from indexer.async_utils import handle_async_errors
 
 """[6.6] Database schema management.
 
@@ -79,21 +78,27 @@ async def create_repositories_table():
 
 async def create_code_snippets_table():
     """[6.6.1] Create code storage with vector similarity support."""
-    sql = """
+    # Create table first
+    sql_table = """
     CREATE TABLE IF NOT EXISTS code_snippets (
         id SERIAL PRIMARY KEY,
         repo_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
         file_path TEXT NOT NULL,
         ast TEXT,
-        embedding VECTOR(768),  # GraphCodeBERT dimension
+        embedding VECTOR(768),  -- GraphCodeBERT dimension
         enriched_features JSONB,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(repo_id, file_path)
     );
+    """
+    await query(sql_table)
+    
+    # Create index in a separate query
+    sql_index = """
     CREATE INDEX IF NOT EXISTS idx_code_snippets_embedding 
     ON code_snippets USING ivfflat (embedding vector_cosine_ops);
     """
-    await query(sql)
+    await query(sql_index)
 
 async def create_repo_docs_table():
     """[6.6.2] Create documentation storage with versioning."""
@@ -219,7 +224,7 @@ async def create_all_tables():
     @handle_async_errors(error_types=(SchemaError, PostgresError))
     async def _create_tables():
         try:
-            async with AsyncErrorBoundary("schema creation", error_types=(SchemaError, PostgresError)):
+            async with AsyncErrorBoundary(operation_name="schema creation", error_types=(SchemaError, PostgresError)):
                 async with _schema_lock:
                     await create_repositories_table()
                     await create_code_snippets_table()

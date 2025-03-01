@@ -4,6 +4,7 @@ import logging
 from psycopg2.extras import RealDictCursor, Json
 from psycopg2 import pool
 from config import PostgresConfig
+import db
 from utils.logger import log
 from utils.error_handling import (
     handle_async_errors,
@@ -13,8 +14,8 @@ from utils.error_handling import (
     PostgresError
 )
 from db.retry_utils import DatabaseRetryManager, RetryConfig
-
 import os
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 # Define your PostgreSQL configuration using environment variables or hardcoded values.
 DATABASE_CONFIG = {
@@ -38,7 +39,7 @@ async def init_db_pool() -> None:
     """[6.1.1] Initialize the database connection pool."""
     global _pool
     try:
-        async with AsyncErrorBoundary("db pool initialization", error_types=ConnectionError):
+        async with AsyncErrorBoundary(operation_name="db pool initialization", error_types=ConnectionError):
             _pool = await asyncpg.create_pool(
                 user=PostgresConfig.user,
                 password=PostgresConfig.password,
@@ -68,8 +69,16 @@ async def close_db_pool() -> None:
     """Close the database connection pool."""
     global _pool
     if _pool:
-        await _pool.close()
-        _pool = None
+        try:
+            # Use a timeout to avoid hanging on pool closure
+            await asyncio.wait_for(_pool.close(), timeout=5.0)
+            log("Database pool closed with timeout", level="debug")
+        except asyncio.TimeoutError:
+            log("Database pool closure timed out, some connections may be unreleased", level="warning")
+        except Exception as e:
+            log(f"Error during database pool closure: {e}", level="error")
+        finally:
+            _pool = None
 
 @handle_async_errors(error_types=DatabaseError, default_return=[])
 async def query(sql: str, params: tuple = None) -> list:
@@ -130,5 +139,5 @@ async def get_connection():
 @handle_async_errors(error_types=DatabaseError)
 async def release_connection(conn):
     """Release a database connection back to the pool."""
-    await _pool.release(conn)
+    await db.psql._pool.release(conn)
 

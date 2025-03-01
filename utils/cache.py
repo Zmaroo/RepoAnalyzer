@@ -8,7 +8,7 @@ import random
 from typing import Any, Optional, Set, Dict, List, Tuple, Callable, Awaitable, TypedDict
 from datetime import datetime, timedelta
 from utils.logger import log
-from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary
+from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary
 from config import RedisConfig  # If we add Redis config later
 
 # Try to import redis; if not available, mark it accordingly
@@ -278,7 +278,7 @@ class UnifiedCache:
         hit = False
         
         if self.use_redis:
-            with ErrorBoundary("retrieving from Redis", error_types=(redis.RedisError, ConnectionError, TimeoutError, json.JSONDecodeError)):
+            async with AsyncErrorBoundary(operation_name="retrieving from Redis", error_types=(redis.RedisError, ConnectionError, TimeoutError, json.JSONDecodeError)):
                 value = await asyncio.to_thread(self._redis.get, f"{self.name}:{key}")
                 if value:
                     value = json.loads(value)
@@ -318,7 +318,7 @@ class UnifiedCache:
             effective_ttl = ttl or self.default_ttl
             
         if self.use_redis:
-            with ErrorBoundary("storing in Redis", error_types=(redis.RedisError, ConnectionError, TimeoutError, TypeError)):
+            async with AsyncErrorBoundary(operation_name="storing in Redis", error_types=(redis.RedisError, ConnectionError, TimeoutError, TypeError)):
                 await asyncio.to_thread(
                     self._redis.set,
                     f"{self.name}:{key}",
@@ -337,7 +337,7 @@ class UnifiedCache:
         evicted = 0
         
         if self.use_redis:
-            with ErrorBoundary("clearing Redis cache", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
+            async with AsyncErrorBoundary(operation_name="clearing Redis cache", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
                 pattern = f"{self.name}:*"
                 keys = await asyncio.to_thread(self._redis.keys, pattern)
                 if keys:
@@ -358,7 +358,7 @@ class UnifiedCache:
         evicted = 0
         
         if self.use_redis:
-            with ErrorBoundary("clearing Redis cache pattern", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
+            async with AsyncErrorBoundary(operation_name="clearing Redis cache pattern", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
                 full_pattern = f"{self.name}:{pattern}"
                 keys = await asyncio.to_thread(self._redis.keys, full_pattern)
                 if keys:
@@ -406,7 +406,7 @@ class UnifiedCache:
         if not keys:
             return
             
-        with ErrorBoundary(f"warming up cache '{self.name}'"):
+        async with AsyncErrorBoundary(operation_name=f"warming up cache '{self.name}'"):
             # Fetch values for the given keys
             values = await fetch_func(keys)
             
@@ -426,7 +426,7 @@ class UnifiedCache:
             fetch_func: Async function that takes a list of keys and returns a dict of results
             limit: Maximum number of keys to warm up
         """
-        with ErrorBoundary(f"auto-warming cache '{self.name}'"):
+        async with AsyncErrorBoundary(operation_name=f"auto-warming cache '{self.name}'"):
             # Get most popular keys
             popular_keys = await self._usage_tracker.get_popular_keys(limit)
             

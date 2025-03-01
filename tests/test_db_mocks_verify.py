@@ -39,7 +39,7 @@ async def test_verify_mocks(mock_databases):
     
     # Test 5: Verify AsyncErrorBoundary with transaction_scope
     log("Testing AsyncErrorBoundary with transaction_scope")
-    async with AsyncErrorBoundary("test boundary"):
+    async with AsyncErrorBoundary(operation_name="test boundary"):
         async with db.transaction.transaction_scope() as txn:
             assert txn is not None, "Transaction coordinator should not be None"
     log("✅ All tests passed!") 

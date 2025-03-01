@@ -26,6 +26,7 @@ import re
 from contextlib import asynccontextmanager
 import time
 import inspect
+import db.psql
 
 from utils.error_handling import handle_async_errors
 from utils.logger import log

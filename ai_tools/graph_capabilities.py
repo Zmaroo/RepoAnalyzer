@@ -15,66 +15,46 @@ Flow:
    - ProcessingError: Analysis operations
    - DatabaseError: Graph operations
 """
-
 from typing import Dict, List, Optional, Any
 from db.neo4j_ops import run_query, Neo4jTools
 from db.neo4j_ops import Neo4jProjections
 from utils.logger import log
-from utils.error_handling import (
-    handle_async_errors,
-    handle_errors,
-    ProcessingError,
-    DatabaseError,
-    ErrorBoundary,
-    AsyncErrorBoundary
-)
-from parsers.types import (
-    FileType,
-    ParserResult,
-    ExtractedFeatures
-)
-from parsers.models import (
-    FileClassification
-)
+from utils.error_handling import handle_async_errors, handle_errors, ProcessingError, DatabaseError, ErrorBoundary, AsyncErrorBoundary
+from parsers.types import FileType, ParserResult, ExtractedFeatures
+from parsers.models import FileClassification
 from config import Neo4jConfig
+import asyncio
+
 
 class GraphAnalysis:
     """[4.3.1] Graph-based code analysis capabilities using GDS."""
-    
+
     def __init__(self):
-        with ErrorBoundary("Neo4j tools initialization"):
+        with ErrorBoundary(operation_name='Neo4j tools initialization'):
             self.neo4j = Neo4jTools()
             self.projections = Neo4jProjections()
-            
-            # Validate Neo4j configuration and plugins
-            # Skip validation during initialization to avoid sync/async issues
-            # We'll validate when methods are actually called
             pass
-    
+
     async def _validate_plugins(self):
         """Validate that required plugins are installed."""
-        plugins_query = "CALL dbms.procedures()"
+        plugins_query = 'CALL dbms.procedures()'
         results = await run_query(plugins_query)
-        procedures = [r["name"] for r in results]
-        
-        required = ["gds.", "apoc."]
-        missing = [p for p in required if not any(proc.startswith(p) for proc in procedures)]
+        procedures = [r['name'] for r in results]
+        required = ['gds.', 'apoc.']
+        missing = [p for p in required if not any(proc.startswith(p) for
+            proc in procedures)]
         if missing:
-            log(f"Missing required Neo4j plugins: {', '.join(missing)}", level="warning")
+            log(f"Missing required Neo4j plugins: {', '.join(missing)}",
+                level='warning')
             return False
         return True
-    
+
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def get_code_metrics(
-        self,
-        repo_id: int,
-        file_path: Optional[str] = None
-    ) -> Dict[str, Any]:
+    async def get_code_metrics(self, repo_id: int, file_path: Optional[str]
+        =None) ->Dict[str, Any]:
         """[4.3.2] Get advanced code metrics using GDS."""
-        async with AsyncErrorBoundary("code metrics analysis"):
+        async with AsyncErrorBoundary(operation_name='code metrics analysis'):
             file_filter = 'WHERE n.file_path = $file_path' if file_path else ''
-            
-            # Use GDS for centrality and community detection
             query = f"""
             CALL gds.graph.project.cypher(
                 'code-graph',
@@ -97,25 +77,17 @@ class GraphAnalysis:
                    size((n)-->()) as outDegree,
                    apoc.node.degree(n) as totalDegree
             """
-            
-            params = {"repo_id": repo_id}
+            params = {'repo_id': repo_id}
             if file_path:
-                params["file_path"] = file_path
-                
+                params['file_path'] = file_path
             results = await run_query(query, params)
-            
-            # Cleanup temporary graph
             await run_query("CALL gds.graph.drop('code-graph')")
-            
             return results[0] if results else {}
-    
+
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def analyze_code_structure(
-        self,
-        repo_id: int
-    ) -> Dict[str, Any]:
+    async def analyze_code_structure(self, repo_id: int) ->Dict[str, Any]:
         """Analyze code structure using GDS algorithms."""
-        async with AsyncErrorBoundary("structure analysis"):
+        async with AsyncErrorBoundary(operation_name='structure analysis'):
             query = """
             CALL gds.graph.project.cypher(
                 'code-structure',
@@ -136,21 +108,15 @@ class GraphAnalysis:
             
             RETURN communities, central_files
             """
-            
-            results = await run_query(query, {"repo_id": repo_id})
+            results = await run_query(query, {'repo_id': repo_id})
             await run_query("CALL gds.graph.drop('code-structure')")
-            
             return results[0] if results else {}
-    
+
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def find_similar_components(
-        self,
-        file_path: str,
-        repo_id: int,
-        similarity_cutoff: float = 0.8
-    ) -> List[Dict[str, Any]]:
+    async def find_similar_components(self, file_path: str, repo_id: int,
+        similarity_cutoff: float=0.8) ->List[Dict[str, Any]]:
         """Find similar code components using node2vec."""
-        async with AsyncErrorBoundary("similarity analysis"):
+        async with AsyncErrorBoundary(operation_name='similarity analysis'):
             query = """
             CALL gds.graph.project.cypher(
                 'similarity-graph',
@@ -182,55 +148,65 @@ class GraphAnalysis:
                    similarity as score
             ORDER BY score DESC
             """
-            
-            results = await run_query(
-                query,
-                {
-                    "repo_id": repo_id,
-                    "file_path": file_path,
-                    "cutoff": similarity_cutoff
-                }
-            )
-            
+            results = await run_query(query, {'repo_id': repo_id,
+                'file_path': file_path, 'cutoff': similarity_cutoff})
             await run_query("CALL gds.graph.drop('similarity-graph')")
             return results
-    
+
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def get_references(self, repo_id: int, file_path: str) -> list:
+    async def get_references(self, repo_id: int, file_path: str) ->list:
         """Retrieve code references for a given file via Neo4j."""
-        async with AsyncErrorBoundary("reference retrieval"):
+        async with AsyncErrorBoundary(operation_name='reference retrieval'):
             query = """
             MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:RELATED_TO]->(m:Code)
             RETURN m.file_path as file_path
             """
-            results = await run_query(query, {"repo_id": repo_id, "file_path": file_path})
+            results = await run_query(query, {'repo_id': repo_id,
+                'file_path': file_path})
             return results if results else []
-    
+
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def get_dependencies(self, repo_id: int, file_path: str, depth: int = 3) -> list:
+    async def get_dependencies(self, repo_id: int, file_path: str, depth: int=3
+        ) ->list:
         """Retrieve code dependencies up to a specified depth using variable-length relationships."""
-        async with AsyncErrorBoundary("dependency retrieval"):
+        async with AsyncErrorBoundary(operation_name='dependency retrieval'):
             query = """
             MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:DEPENDS_ON*1..$depth]->(dep:Code)
             RETURN dep.file_path as file_path
             """
-            results = await run_query(query, {"repo_id": repo_id, "file_path": file_path, "depth": depth})
+            results = await run_query(query, {'repo_id': repo_id,
+                'file_path': file_path, 'depth': depth})
             return results if results else []
-    
+
     @handle_errors(error_types=(Exception,))
     def close(self):
         """Closes Neo4j connections and graph projections."""
-        with ErrorBoundary("Neo4j connection cleanup"):
+        with ErrorBoundary(operation_name='Neo4j connection cleanup'):
             if hasattr(self, 'neo4j'):
                 try:
                     self.neo4j.close()
                 except Exception as e:
-                    log(f"Error closing neo4j connection: {e}", level="error")
+                    log(f'Error closing neo4j connection: {e}', level='error')
             if hasattr(self, 'projections'):
                 try:
-                    self.projections.close()
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    if loop.is_running():
+                        asyncio.create_task(self.projections.close())
+                        log('Neo4j projections cleanup scheduled', level='info'
+                            )
+                    else:
+                        loop.run_until_complete(self.projections.close())
                 except Exception as e:
-                    log(f"Error closing projections: {e}", level="error")
+                    log(f'Error closing projections: {e}', level='error')
 
-# Global instance
-graph_analysis = GraphAnalysis() 
+    @handle_errors(error_types=(Exception,))
+    def cleanup(self):
+        """Alias for close() to maintain compatibility with AIAssistant."""
+        return self.close()
+
+
+graph_analysis = GraphAnalysis()

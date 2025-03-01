@@ -30,7 +30,7 @@ async def setup_cleanup():
     log("Setting up test environment", context={"phase": "setup"})
     
     try:
-        async with AsyncErrorBoundary("test database setup", error_types=(DatabaseError,)):
+        async with AsyncErrorBoundary(operation_name="test database setup", error_types=(DatabaseError,)):
             await drop_all_tables()
             await create_all_tables()
         
@@ -42,7 +42,7 @@ async def setup_cleanup():
     finally:
         log("Running cleanup", context={"phase": "cleanup"})
         try:
-            async with AsyncErrorBoundary("test cleanup", error_types=(DatabaseError,)):
+            async with AsyncErrorBoundary(operation_name="test cleanup", error_types=(DatabaseError,)):
                 async with transaction_scope() as txn:
                     # Clean test data
                     await query("DELETE FROM code_snippets WHERE repo_id IN (SELECT id FROM repositories WHERE repo_type = 'active')")
@@ -63,7 +63,7 @@ async def setup_cleanup():
 @pytest.fixture
 async def test_repo_id():
     """Create and return a test repository ID."""
-    async with AsyncErrorBoundary("test repo creation", error_types=(DatabaseError,)):
+    async with AsyncErrorBoundary(operation_name="test repo creation", error_types=(DatabaseError,)):
         async with transaction_scope() as txn:
             repos = await query(
                 "INSERT INTO repositories (repo_name, repo_type) VALUES ($1, $2) RETURNING id",
@@ -95,7 +95,7 @@ async def test_python_indexing_pipeline(mock_databases):
     
     try:
         # 1. Test main indexing flow
-        async with AsyncErrorBoundary("main indexing", error_types=(ProcessingError, DatabaseError)):
+        async with AsyncErrorBoundary(operation_name="main indexing", error_types=(ProcessingError, DatabaseError)):
             # Check if main_async is awaitable directly or needs to be called first
             if inspect.iscoroutinefunction(main_async):
                 await main_async(args)
@@ -107,7 +107,7 @@ async def test_python_indexing_pipeline(mock_databases):
             log("Main indexing completed", context={"status": "success"})
             
         # 2. Verify database records
-        async with AsyncErrorBoundary("verification", error_types=(DatabaseError,)):
+        async with AsyncErrorBoundary(operation_name="verification", error_types=(DatabaseError,)):
             # Check if repositories were created
             repos = await query("SELECT * FROM repositories")
             assert len(repos) > 0, "No repositories were created"

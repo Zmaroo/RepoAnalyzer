@@ -1,10 +1,10 @@
 from db.psql import query, close_db_pool
 import asyncio
 from pprint import pprint
-from utils.error_handling import handle_async_errors, ErrorBoundary, PostgresError
-from utils.logging import log
+from utils.error_handling import handle_async_errors, ErrorBoundary, PostgresError, AsyncErrorBoundary
+from utils.logger import log
 
-@handle_async_errors(error_types=[PostgresError])
+@handle_async_errors(error_types=(PostgresError))
 async def check_all_postgres_tables():
     print("\n==========================================")
     print("     PostgreSQL Database Check")
@@ -21,8 +21,7 @@ async def check_all_postgres_tables():
     }
     
     for table_name, sql in tables.items():
-        with ErrorBoundary(error_types=[PostgresError, Exception],
-                           error_message=f"Error querying {table_name}") as error_boundary:
+        async with AsyncErrorBoundary(operation_name=f"Querying {table_name}", error_types=(PostgresError, Exception)) as error_boundary:
             records = await query(sql)
             print(f"{table_name}:")
             print("-" * len(table_name))
