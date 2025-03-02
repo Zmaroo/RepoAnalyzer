@@ -19,6 +19,7 @@ class NimParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(NIM_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -179,6 +180,7 @@ class NimParser(BaseParser):
         ]:
         """Extract procedure patterns from the AST."""
         procs = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict) and node.get('type') == 'proc':
@@ -207,6 +209,7 @@ class NimParser(BaseParser):
     def _extract_type_patterns(self, ast: Dict[str, Any]) ->List[Dict[str, Any]
         ]:
         """Extract type patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         types = []
 
         def process_node(node):
@@ -224,6 +227,7 @@ class NimParser(BaseParser):
     def _extract_variable_patterns(self, ast: Dict[str, Any]) ->tuple[List[
         Dict[str, Any]], List[Dict[str, Any]]]:
         """Extract variable patterns and naming conventions from the AST."""
+@handle_errors(error_types=(Exception,))
         variables = {}
         names = []
 

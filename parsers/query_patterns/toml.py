@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
 import re
 
+@handle_errors(error_types=(Exception,))
 def extract_table(match: Match) -> Dict[str, Any]:
     """Extract table information."""
     return {
@@ -12,6 +13,7 @@ def extract_table(match: Match) -> Dict[str, Any]:
         "path": match.group(1),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_key_value(match: Match) -> Dict[str, Any]:
     """Extract key-value information."""
@@ -224,6 +226,7 @@ TOML_PATTERNS_FOR_LEARNING = {
 
 # Add the repository learning patterns to the main patterns
 TOML_PATTERNS['REPOSITORY_LEARNING'] = TOML_PATTERNS_FOR_LEARNING
+@handle_errors(error_types=(Exception,))
 
 # Function to extract patterns for repository learning
 def extract_toml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

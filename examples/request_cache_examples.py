@@ -17,6 +17,7 @@ from utils.request_cache import request_cache_context, cached_in_request
 # Basic Usage Examples #
 ########################
 
+@handle_errors(error_types=(Exception,))
 def basic_example():
     """Demonstrate basic usage of request cache context manager."""
     print("\n=== Basic Request Cache Example ===")
@@ -51,6 +52,7 @@ def basic_example():
 #############################
 # Decorator Usage Examples #
 #############################
+@handle_errors(error_types=(Exception,))
 
 def slow_operation(user_id: str) -> Dict[str, Any]:
     """Simulate a slow database operation."""
@@ -61,9 +63,11 @@ def slow_operation(user_id: str) -> Dict[str, Any]:
         "name": f"User {user_id}",
         "email": f"user{user_id}@example.com"
     }
+@handle_errors(error_types=(Exception,))
 
 @cached_in_request
 def get_user_data(user_id: str) -> Dict[str, Any]:
+@handle_errors(error_types=(Exception,))
     """Get user data with caching."""
     return slow_operation(user_id)
 
@@ -95,6 +99,7 @@ def decorator_example():
 
 
 ###############################
+@handle_errors(error_types=(Exception,))
 # Custom Key Function Example #
 ###############################
 
@@ -109,6 +114,7 @@ def process_items(items: List[Dict[str, Any]], options: Dict[str, Any]) -> List[
         processed.append({
             **item,
             "processed": True,
+@handle_errors(error_types=(Exception,))
             "timestamp": time.time()
         })
     return processed
@@ -119,15 +125,18 @@ def stable_hash(obj):
     if isinstance(obj, dict):
         return hash(frozenset((k, stable_hash(v)) for k, v in sorted(obj.items())))
     elif isinstance(obj, (list, tuple)):
+@handle_errors(error_types=(Exception,))
         return hash(tuple(stable_hash(x) for x in obj))
     else:
         return hash(obj)
 
 # Custom key function that creates a stable cache key based on the content of
 # the items list and selected options
+@handle_errors(error_types=(Exception,))
 def items_cache_key(items, options):
     """Generate a cache key based on item IDs and important options."""
     item_ids = [item["id"] for item in items]
+@handle_errors(error_types=(Exception,))
     relevant_options = {k: v for k, v in options.items() if k in ["format", "filter"]}
     return f"process:{stable_hash(item_ids)}:{stable_hash(relevant_options)}"
 
@@ -170,6 +179,7 @@ def custom_key_example():
         print(f"Fourth call (different items) took: {time.time() - start_time:.4f} seconds")
         
         # Note that result1 and result2 are the same object because of caching
+@handle_errors(error_types=(Exception,))
         print(f"result1 is result2: {result1 is result2}")
         print(f"result2 is result3: {result2 is result3}")
         print(f"result3 is result4: {result3 is result4}")
@@ -180,28 +190,34 @@ def custom_key_example():
 ########################
 
 def simulate_fetch_repository_data(repo_id: str) -> Dict[str, Any]:
+@handle_errors(error_types=(Exception,))
     """Simulate fetching repository data from a database."""
     print(f"Fetching repository data for {repo_id}...")
     time.sleep(1.5)  # Simulate a slow database query
     return {
         "id": repo_id,
+@handle_errors(error_types=(Exception,))
         "name": f"Repository {repo_id}",
         "files": 150,
         "branches": ["main", "develop"]
     }
 
 def simulate_fetch_file_content(repo_id: str, file_path: str) -> str:
+@handle_errors(error_types=(Exception,))
     """Simulate fetching file content from storage."""
     print(f"Fetching file content for {repo_id}/{file_path}...")
     time.sleep(0.8)  # Simulate slow file I/O
     return f"Content of {file_path} in repository {repo_id}"
+@handle_errors(error_types=(Exception,))
 
 def simulate_parse_file(content: str):
     """Simulate parsing file content."""
     print(f"Parsing file content: {content[:20]}...")
+@handle_errors(error_types=(Exception,))
     time.sleep(0.5)  # Simulate parsing operation
     return {"parsed": True, "content": content}
 
+@handle_errors(error_types=(Exception,))
 @cached_in_request
 def get_repository_data(repo_id: str) -> Dict[str, Any]:
     """Get repository data with caching."""
@@ -219,6 +235,7 @@ def parse_file_content(content: str):
 
 def analyze_repository_file(repo_id: str, file_path: str) -> Dict[str, Any]:
     """Analyze a file in a repository using cached operations."""
+@handle_errors(error_types=(Exception,))
     # Get repository data
     repo_data = get_repository_data(repo_id)
     

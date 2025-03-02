@@ -33,6 +33,7 @@ from parsers.language_mapping import (
 )
 from utils.logger import log
 
+@handle_errors(error_types=(Exception,))
 def classify_file(file_path: str, content: Optional[str] = None) -> FileClassification:
     """
     Classify a file based on its path and optionally its content.
@@ -89,6 +90,7 @@ def _is_likely_binary(file_path: str, content: Optional[str] = None) -> bool:
             return True
     
     return False
+@handle_errors(error_types=(Exception,))
 
 def get_supported_languages() -> Dict[str, ParserType]:
     """
@@ -98,6 +100,7 @@ def get_supported_languages() -> Dict[str, ParserType]:
     """
     # Use the function from language_mapping.py
     from parsers.language_mapping import get_supported_languages as get_langs
+@handle_errors(error_types=(Exception,))
     return get_langs()
 
 def get_supported_extensions() -> Dict[str, str]:

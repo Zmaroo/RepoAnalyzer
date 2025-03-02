@@ -118,6 +118,7 @@ def process_item(item: Any) -> Any:
 """
 
 @pytest.fixture
+@handle_async_errors(error_types=(Exception,))
 async def setup_cleanup():
     """Setup and cleanup for the test environment."""
     # Create temporary directory for test repository
@@ -160,6 +161,7 @@ class Args:
         self.apply_ref_patterns = kwargs.get("apply_ref_patterns", False)
         self.deep_learning = kwargs.get("deep_learning", False)
 
+@handle_async_errors(error_types=(Exception,))
 @pytest.mark.asyncio
 async def test_ai_pipeline(setup_cleanup):
     """Test the AI pipeline from end to end."""
@@ -232,6 +234,7 @@ async def test_ai_pipeline(setup_cleanup):
     
     # Cleanup and report success
     log("All integration tests passed", level="info")
+@handle_async_errors(error_types=(Exception,))
 
 @pytest.mark.asyncio
 async def test_pattern_execution_tracking():
@@ -283,6 +286,7 @@ async def test_pattern_execution_tracking():
     
     # Test cache warming recommendations
     recommendations = manager.generate_cache_warming_recommendations()
+@handle_async_errors(error_types=(Exception,))
     assert len(recommendations) > 0, "Should have warming recommendations"
 
 # Mock version of main_async for testing

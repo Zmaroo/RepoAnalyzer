@@ -12,6 +12,7 @@ from utils.cache import ast_cache
 class TestASTCache(unittest.TestCase):
     """Test cases for AST caching."""
     
+@handle_errors(error_types=(Exception,))
     def setUp(self):
         """Set up the test case."""
         # Clear cache before each test
@@ -30,6 +31,7 @@ hello_world()
 """
         self.code_hash = hashlib.md5(self.sample_code.encode('utf8')).hexdigest()
         self.cache_key = f"ast:python:{self.code_hash}"
+@handle_errors(error_types=(Exception,))
     
     def test_ast_caching(self):
         """Test that ASTs are properly cached."""
@@ -48,6 +50,7 @@ hello_world()
                 
                 # Verify we got a valid AST with a root node
                 self.assertIn("root", ast)
+@handle_errors(error_types=(Exception,))
                 self.assertIn("tree", ast)
     
     def test_ast_cache_hit(self):
@@ -67,6 +70,7 @@ hello_world()
             # Verify the cache was checked
             mock_get.assert_called_once()
             
+@handle_errors(error_types=(Exception,))
             # Verify the cached result was used
             self.assertEqual(ast2["tree"], mock_cached_ast["tree"])
     

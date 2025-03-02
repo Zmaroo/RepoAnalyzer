@@ -17,6 +17,7 @@ from db.retry_utils import (
 from utils.error_handling import DatabaseError, Neo4jError
 
 @pytest.fixture
+@handle_errors(error_types=(Exception,))
 def retry_manager():
     """Create a retry manager with a small retry delay for testing."""
     return DatabaseRetryManager(
@@ -25,6 +26,7 @@ def retry_manager():
 
 class TestRetryClassification:
     """Tests for error classification functionality."""
+@handle_errors(error_types=(Exception,))
     
     def test_is_retryable_error_with_retryable_patterns(self):
         """Test that errors with retryable patterns are classified correctly."""
@@ -38,6 +40,7 @@ class TestRetryClassification:
         ]
         
         for error in retryable_errors:
+@handle_errors(error_types=(Exception,))
             assert is_retryable_error(error), f"Error '{error}' should be retryable"
     
     def test_is_retryable_error_with_non_retryable_patterns(self):
@@ -51,6 +54,7 @@ class TestRetryClassification:
             Exception("Permission denied")
         ]
         
+@handle_errors(error_types=(Exception,))
         for error in non_retryable_errors:
             assert not is_retryable_error(error), f"Error '{error}' should not be retryable"
     
@@ -64,6 +68,7 @@ class TestRetryClassification:
         
         # Neo4jError should be retryable by default
         assert is_retryable_error(Neo4jError("Generic Neo4j error"))
+@handle_errors(error_types=(Exception,))
         
         # But Neo4jError with non-retryable pattern should not be retryable
         assert not is_retryable_error(Neo4jError("Syntax error"))
@@ -76,6 +81,7 @@ class TestRetryClassification:
         
         # Non-retryable errors
         assert isinstance(classify_error(Exception("Syntax error")), NonRetryableNeo4jError)
+@handle_errors(error_types=(Exception,))
         assert isinstance(classify_error(Neo4jError("Constraint violation")), NonRetryableNeo4jError)
 
 class TestRetryConfig:
@@ -89,6 +95,7 @@ class TestRetryConfig:
         assert config.calculate_delay(0) == 1.0
         assert config.calculate_delay(1) == 2.0
         assert config.calculate_delay(2) == 4.0
+@handle_errors(error_types=(Exception,))
         assert config.calculate_delay(3) == 8.0
         
         # Test max delay cap
@@ -103,6 +110,7 @@ class TestRetryConfig:
         delays = [config.calculate_delay(1) for _ in range(10)]
         assert len(set(delays)) > 1, "Jitter should produce different delays"
         
+@handle_async_errors(error_types=(Exception,))
         # All delays should be within the jitter range
         for delay in delays:
             assert 1.0 <= delay <= 3.0, f"Delay {delay} should be between 1.0 and 3.0"
@@ -111,6 +119,7 @@ class TestDatabaseRetryManager:
     """Tests for the DatabaseRetryManager class."""
     
     async def test_execute_with_retry_success_first_attempt(self, retry_manager):
+@handle_async_errors(error_types=(Exception,))
         """Test that a successful operation on the first attempt returns the correct result."""
         mock_func = AsyncMock(return_value="success")
         
@@ -124,6 +133,7 @@ class TestDatabaseRetryManager:
         # Mock function that fails twice then succeeds
         mock_func = AsyncMock(side_effect=[
             RetryableNeo4jError("Error 1"),
+@handle_async_errors(error_types=(Exception,))
             RetryableNeo4jError("Error 2"),
             "success"
         ])
@@ -133,6 +143,7 @@ class TestDatabaseRetryManager:
         assert result == "success"
         assert mock_func.call_count == 3
     
+@handle_async_errors(error_types=(Exception,))
     async def test_execute_with_retry_non_retryable_error(self, retry_manager):
         """Test that a non-retryable error is raised immediately."""
         mock_func = AsyncMock(side_effect=NonRetryableNeo4jError("Non-retryable error"))
@@ -143,6 +154,7 @@ class TestDatabaseRetryManager:
         # Should only be called once since the error is non-retryable
         mock_func.assert_called_once()
     
+@handle_async_errors(error_types=(Exception,))
     async def test_execute_with_retry_max_retries_exceeded(self, retry_manager):
         """Test that exceeding max retries raises a DatabaseError."""
         # Mock function that always fails with a retryable error
@@ -161,6 +173,7 @@ class TestDatabaseRetryManager:
             RetryConfig(max_retries=1, base_delay=0.01)
         )
         
+@handle_async_errors(error_types=(Exception,))
         # Mock function that always fails with a retryable error
         mock_func = AsyncMock(side_effect=RetryableNeo4jError("Retryable error"))
         
@@ -168,6 +181,7 @@ class TestDatabaseRetryManager:
             await retry_manager.execute_with_retry(mock_func)
         
         # Should be called max_retries + 1 times (initial + retries)
+@handle_async_errors(error_types=(Exception,))
         assert mock_func.call_count == 2
 
 class TestWithRetryDecorator:
@@ -177,9 +191,11 @@ class TestWithRetryDecorator:
         """Test that the with_retry decorator properly applies retry logic."""
         mock_func = AsyncMock(side_effect=[
             RetryableNeo4jError("Error 1"),
+@handle_async_errors(error_types=(Exception,))
             "success"
         ])
         
+@handle_async_errors(error_types=(Exception,))
         @with_retry(max_retries=3, base_delay=0.01)
         async def func_with_retry(*args, **kwargs):
             return await mock_func(*args, **kwargs)
@@ -204,6 +220,8 @@ class TestWithRetryDecorator:
         # Should only be called once since the error is non-retryable
         mock_func.assert_called_once()
 
+@handle_async_errors(error_types=(Exception,))
+@handle_async_errors(error_types=(Exception,))
 @pytest.mark.asyncio
 async def test_integration_with_real_code():
     """

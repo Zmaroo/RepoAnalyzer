@@ -14,6 +14,7 @@ from db.retry_utils import DatabaseRetryManager, RetryConfig
 # Initialize retry manager for transaction operations
 _retry_manager = DatabaseRetryManager()
 
+@handle_async_errors(error_types=(Exception,))
 async def get_connection():
     """
     Get a database connection for use in transactions.
@@ -46,9 +47,11 @@ class TransactionCoordinator:
         self._lock = asyncio.Lock()
         self._affected_repos = set()  # Track affected repos
         self._affected_caches = set()  # Track which caches need invalidation
+@handle_async_errors(error_types=(Exception,))
         
     async def track_repo_change(self, repo_id: int):
         """Track which repos are modified in this transaction."""
+@handle_async_errors(error_types=(Exception,))
         self._affected_repos.add(repo_id)
     
     async def track_cache_invalidation(self, cache_name: str):
@@ -133,6 +136,7 @@ class TransactionCoordinator:
                 self.neo4j_session = None
         
         if error_boundary.error:
+@handle_async_errors(error_types=(Exception,))
             log(f"Error cleaning up transactions: {error_boundary.error}", level="error")
             raise TransactionError(f"Transaction cleanup failed: {str(error_boundary.error)}")
 
@@ -145,6 +149,7 @@ class TransactionCoordinator:
                 await self.pg_transaction.start()
             except Exception as e:
                 log(f"Error starting PostgreSQL transaction: {e}", level="error")
+@handle_async_errors(error_types=(Exception,))
                 self.pg_conn = None
                 self.pg_transaction = None
                 raise
@@ -247,9 +252,11 @@ class MockTransactionCoordinator:
         self._affected_repos = set()
         self._affected_caches = set()
         self._lock = asyncio.Lock()
+@handle_async_errors(error_types=(Exception,))
         self.pg_conn = None
         self.pg_transaction = None
         self.neo4j_session = None
+@handle_async_errors(error_types=(Exception,))
         self.neo4j_transaction = None
     
     async def track_repo_change(self, repo_id: int):

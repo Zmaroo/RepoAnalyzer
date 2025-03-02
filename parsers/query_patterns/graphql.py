@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
 import re
 
+@handle_errors(error_types=(Exception,))
 def extract_type(match: Match) -> Dict[str, Any]:
     """Extract type information."""
     return {
@@ -12,6 +13,7 @@ def extract_type(match: Match) -> Dict[str, Any]:
         "implements": match.group(2).strip() if match.group(2) else None,
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_field(match: Match) -> Dict[str, Any]:
     """Extract field information."""
@@ -198,6 +200,7 @@ GRAPHQL_PATTERNS_FOR_LEARNING = {
 
 # Add the repository learning patterns to the main patterns
 GRAPHQL_PATTERNS['REPOSITORY_LEARNING'] = GRAPHQL_PATTERNS_FOR_LEARNING
+@handle_errors(error_types=(Exception,))
 
 # Function to extract patterns for repository learning
 def extract_graphql_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

@@ -22,6 +22,7 @@ from utils.logger import log
 # Path to the test_parse directory
 TEST_PARSE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tests', 'test_parse')
 
+@handle_errors(error_types=(Exception,))
 def test_file_classification():
     """Test file classification on the test_parse directory files."""
     print("\n=== Testing File Classification ===")
@@ -68,6 +69,7 @@ def test_file_classification():
     
     print("\nFile classification testing completed.")
     return True
+@handle_errors(error_types=(Exception,))
 
 def test_pattern_loading():
     """Test pattern loading for various languages."""
@@ -110,6 +112,7 @@ def test_pattern_loading():
             print(f"  Error loading patterns: {e}")
     
     print("\nPattern loading testing completed.")
+@handle_errors(error_types=(Exception,))
     return True
 
 def main():

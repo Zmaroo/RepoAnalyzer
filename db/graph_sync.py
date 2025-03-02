@@ -219,6 +219,7 @@ class GraphSyncCoordinator:
         if error_boundary.error:
             log(f"Error dropping projection: {error_boundary.error}", level="error")
 
+@handle_async_errors(error_types=(Exception,))
     async def queue_projection_update(self, repo_id: int) -> None:
         """[6.3.4] Queue projection update with debouncing.
         
@@ -345,9 +346,11 @@ async def sync_graph(nodes: List[Dict[str, Any]], relationships: List[Dict[str, 
     
     return False
 
+@handle_async_errors(error_types=(Exception,))
 async def graph_sync_from_file(file_path: str) -> bool:
     # Implementation needed
     return False  # Placeholder return, actual implementation needed
+@handle_async_errors(error_types=(Exception,))
 
 async def graph_sync_from_search(query: str) -> bool:
     # Implementation needed

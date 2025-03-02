@@ -47,6 +47,7 @@ class MockDatabase:
             "file3": {"id": 3, "content": "Example content 3", "repo_id": 2},
         }
     
+@handle_async_errors(error_types=(Exception,))
     async def get_repositories(self, repo_ids: List[int]) -> Dict[int, Dict]:
         """Get repositories by IDs."""
         await asyncio.sleep(0.1)  # Simulate DB latency
@@ -56,6 +57,7 @@ class MockDatabase:
                 if repo_data["id"] == repo_id:
                     result[repo_id] = repo_data
         return result
+@handle_async_errors(error_types=(Exception,))
     
     async def get_users(self, user_ids: List[int]) -> Dict[int, Dict]:
         """Get users by IDs."""
@@ -65,6 +67,7 @@ class MockDatabase:
             for user_key, user_data in self.users.items():
                 if user_data["id"] == user_id:
                     result[user_id] = user_data
+@handle_async_errors(error_types=(Exception,))
         return result
     
     async def search_files(self, query: str) -> List[Dict]:
@@ -119,6 +122,7 @@ async def warmup_search_cache(queries: List[str]) -> Dict[str, Any]:
         return {}
 
 # Register warmup functions
+@handle_errors(error_types=(Exception,))
 def register_warmup_functions():
     """Register all warmup functions with the cache analytics."""
     cache_analytics.register_warmup_function("repository", warmup_repository_cache)
@@ -179,6 +183,7 @@ class RepositoryService:
         
         return results
 
+@handle_async_errors(error_types=(Exception,))
 # Example function to demonstrate caching in action
 async def demonstrate_caching():
     """Demonstrate caching features with example operations."""
@@ -229,6 +234,7 @@ async def demonstrate_caching():
     await cache_analytics.stop_monitoring()
     
     log("Cache demonstration completed", level="info")
+@handle_errors(error_types=(Exception,))
 
 # Function to run the demo
 def run_demo():

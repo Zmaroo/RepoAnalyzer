@@ -29,6 +29,7 @@ try:
 except ImportError:
     print("Could not import RepoAnalyzer modules. Running in subprocess mode only.")
 
+@handle_errors(error_types=(Exception,))
 def run_indexer_subprocess():
     """Run the indexer as a subprocess and capture output"""
     print("Testing RepoAnalyzer with subprocess call to: python index.py --index")
@@ -86,6 +87,7 @@ class Args:
         self.multi_ref = kwargs.get('multi_ref', None)
         self.apply_ref_patterns = kwargs.get('apply_ref_patterns', False)
         self.deep_learning = kwargs.get('deep_learning', False)
+@handle_async_errors(error_types=(Exception,))
 
 async def verify_postgres_data(repo_id):
     """Verify data was properly stored in PostgreSQL"""
@@ -103,6 +105,7 @@ async def verify_postgres_data(repo_id):
     doc_count = await query("SELECT COUNT(*) FROM repo_docs WHERE repo_id = %s", (repo_id,))
     results['docs_count'] = doc_count[0]['count'] if doc_count else 0
     
+@handle_errors(error_types=(Exception,))
     return results
 
 def verify_neo4j_data(repo_id):
@@ -143,6 +146,7 @@ def verify_neo4j_data(repo_id):
     except Exception as e:
         print(f"Error verifying Neo4j data: {e}")
         results['error'] = str(e)
+@handle_errors(error_types=(Exception,))
     
     return results
 
@@ -167,6 +171,7 @@ def check_language_detection():
         results['extensions_found'] = file_extensions
     except Exception as e:
         print(f"Error checking files: {e}")
+@handle_async_errors(error_types=(Exception,))
         results['error'] = str(e)
     
     return results
@@ -243,6 +248,7 @@ async def run_indexer_api():
         return False
     finally:
         # Ensure database connection is closed
+@handle_errors(error_types=(Exception,))
         try:
             await close_db_pool()
         except Exception:

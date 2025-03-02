@@ -1,3 +1,4 @@
+@handle_errors(error_types=(Exception,))
 def encode_query_pattern(pattern):
     """
     Encodes a query pattern to bytes if it's a string.
@@ -6,6 +7,7 @@ def encode_query_pattern(pattern):
     if isinstance(pattern, str):
         return pattern.encode('utf-8')
     return pattern
+@handle_errors(error_types=(Exception,))
 
 def encode_query_patterns(patterns):
     """

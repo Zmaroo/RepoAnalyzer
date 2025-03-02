@@ -16,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger('parsers.pattern_processor').setLevel(logging.DEBUG)
 logging.getLogger('parsers.file_classification').setLevel(logging.DEBUG)
 
+@handle_async_errors(error_types=(Exception,))
 async def test_file_classification():
     """Test file classification on various file types."""
     test_files = [
@@ -36,6 +37,7 @@ async def test_file_classification():
         print(f"  Language: {classification.language_id}")
         print(f"  Parser Type: {classification.parser_type}")
         print(f"  Is Binary: {classification.is_binary}")
+@handle_async_errors(error_types=(Exception,))
 
 async def test_pattern_loading():
     """Test pattern loading for various languages."""
@@ -61,6 +63,7 @@ async def test_pattern_loading():
         print(f"  Parser Type: {parser_type}")
         print(f"  Patterns found: {len(patterns)}")
         if patterns:
+@handle_async_errors(error_types=(Exception,))
             print(f"  Pattern examples: {list(patterns.keys())[:3]}")
 
 async def main():

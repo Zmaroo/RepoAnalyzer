@@ -127,6 +127,7 @@ class TreeSitterBlockExtractor:
             log(f'Heuristic extraction failed: {e}', level='warning')
             return None
 
+@handle_errors(error_types=(Exception,))
     def _initialize_parser(self, language_id: str) ->Any:
         """Initialize a tree-sitter parser for the given language."""
         try:

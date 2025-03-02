@@ -15,6 +15,7 @@ class TestParser(BaseParser):
         super().__init__(language_id, file_type, ParserType.CUSTOM)
         self._initialized = True
     
+@handle_errors(error_types=(Exception,))
     def initialize(self) -> bool:
         """Initialize the parser."""
         self._initialized = True
@@ -34,6 +35,7 @@ class MockFeatureResult:
 
 class TestBaseParserCaching(unittest.TestCase):
     """Test cases for AST caching in BaseParser."""
+@handle_errors(error_types=(Exception,))
     
     def setUp(self):
         """Set up the test case."""
@@ -57,6 +59,7 @@ class TestBaseParserCaching(unittest.TestCase):
             self.parser.feature_extractor = mock_extractor
         
         # Configure the cache key format
+@handle_errors(error_types=(Exception,))
         self.cache_key = f"ast:test_lang:{self.code_hash}"
     
     def test_parse_with_cache_miss(self):
@@ -84,6 +87,7 @@ class TestBaseParserCaching(unittest.TestCase):
                     
                     # Verify result contains the expected AST
                     self.assertIsNotNone(result)
+@handle_errors(error_types=(Exception,))
                     self.assertEqual(result.ast, mock_ast)
                     self.assertTrue(result.success)
     
@@ -108,6 +112,7 @@ class TestBaseParserCaching(unittest.TestCase):
                     mock_store_cache.assert_not_called()  # Should not store again
                     
                     # Verify result contains the cached AST
+@handle_errors(error_types=(Exception,))
                     self.assertIsNotNone(result)
                     self.assertEqual(result.ast, mock_ast)
                     self.assertTrue(result.success)

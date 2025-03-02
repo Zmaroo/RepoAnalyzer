@@ -39,6 +39,7 @@ def _load_parsers():
                     level='error')
 
 
+@handle_errors(error_types=(Exception,))
 def get_parser(language_id: str, file_type: Optional[FileType]=None
     ) ->Optional[BaseParser]:
     """
@@ -60,6 +61,7 @@ def get_parser(language_id: str, file_type: Optional[FileType]=None
         return parser_class(language_id, actual_file_type)
     return None
 
+@handle_errors(error_types=(Exception,))
 
 def ensure_pattern_extraction():
     """
@@ -71,6 +73,7 @@ def ensure_pattern_extraction():
     for language_id, parser_class in _parsers.items():
         if not hasattr(parser_class, 'extract_patterns'):
             log(f'Adding default pattern extraction to {language_id} parser',
+@handle_errors(error_types=(Exception,))
                 level='debug')
 
             def default_extract_patterns(self, source_code: str) ->List[Dict

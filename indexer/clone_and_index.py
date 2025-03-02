@@ -16,6 +16,7 @@ from utils.error_handling import handle_async_errors, ErrorBoundary, AsyncErrorB
 
 
 @asynccontextmanager
+@handle_async_errors(error_types=(Exception,))
 async def repository_transaction():
     """
     Context manager for repository operations ensuring proper cleanup.

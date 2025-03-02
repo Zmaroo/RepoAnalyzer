@@ -17,6 +17,7 @@ logging.getLogger('parsers.pattern_processor').setLevel(logging.DEBUG)
 logging.getLogger('parsers.file_classification').setLevel(logging.DEBUG)
 logging.getLogger('indexer').setLevel(logging.DEBUG)
 
+@handle_async_errors(error_types=(Exception,))
 async def test_file_classification():
     """Test file classification from both modules."""
     test_files = [
@@ -40,6 +41,7 @@ async def test_file_classification():
         print(f"  Direct Language: {direct_classification.language_id}")
         print(f"  Indexer Language: {indexer_classification.language_id}")
         print(f"  Parser Type: {direct_classification.parser_type}")
+@handle_async_errors(error_types=(Exception,))
 
 async def test_async_read_file():
     """Test the async_read_file function from the common module."""
@@ -56,6 +58,7 @@ async def test_async_read_file():
         print(f"  Content length: {len(content)} characters")
         print(f"  First line: {content.split('\n')[0]}")
     else:
+@handle_async_errors(error_types=(Exception,))
         print(f"Failed to read {test_file}")
 
 async def test_file_processor():
@@ -64,6 +67,7 @@ async def test_file_processor():
     processor = FileProcessor()
     print("FileProcessor instantiated successfully")
     print(f"  Pattern processor: {processor._pattern_processor.__class__.__name__}")
+@handle_async_errors(error_types=(Exception,))
     print(f"  Language registry: {processor._language_registry.__class__.__name__ if processor._language_registry else 'None'}")
     print(f"  Semaphore value: {processor._semaphore._value}")
 

@@ -30,10 +30,12 @@ class ErrorBoundaryVisitor(ast.NodeVisitor):
         self.import_issues = {}
         self.pool_references = []
         
+@handle_errors(error_types=(Exception,))
     def visit_AsyncFunctionDef(self, node):
         """Track async functions."""
         self.async_functions.add(node.name)
         self.generic_visit(node)
+@handle_errors(error_types=(Exception,))
         
     def visit_With(self, node):
         """Find with statements using ErrorBoundary or AsyncErrorBoundary."""
@@ -44,6 +46,7 @@ class ErrorBoundaryVisitor(ast.NodeVisitor):
                         self.error_boundary_uses.append((node, item.context_expr))
                     elif item.context_expr.func.id == 'AsyncErrorBoundary':
                         self.async_error_boundary_uses.append((node, item.context_expr))
+@handle_errors(error_types=(Exception,))
         self.generic_visit(node)
         
     def visit_Import(self, node):
@@ -52,6 +55,7 @@ class ErrorBoundaryVisitor(ast.NodeVisitor):
             if 'error_handling' in name.name:
                 # Found error_handling import
                 if not name.asname:  # Not aliased
+@handle_errors(error_types=(Exception,))
                     self.import_issues[node] = {'node': node, 'type': 'direct_import', 'has_async': False}
         self.generic_visit(node)
         
@@ -59,6 +63,7 @@ class ErrorBoundaryVisitor(ast.NodeVisitor):
         """Track from imports."""
         if node.module and 'error_handling' in node.module:
             # Check if AsyncErrorBoundary is imported
+@handle_errors(error_types=(Exception,))
             has_async = any(name.name == 'AsyncErrorBoundary' for name in node.names)
             self.import_issues[node] = {'node': node, 'type': 'from_import', 'has_async': has_async}
         self.generic_visit(node)
@@ -72,6 +77,7 @@ class ErrorBoundaryVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+@handle_errors(error_types=(Exception,))
 def find_python_files(directory: str) -> List[str]:
     """Find all Python files in the given directory and its subdirectories."""
     python_files = []
@@ -81,6 +87,7 @@ def find_python_files(directory: str) -> List[str]:
                 python_files.append(os.path.join(root, file))
     return python_files
 
+@handle_errors(error_types=(Exception,))
 
 def analyze_file(file_path: str) -> Tuple[ast.Module, ErrorBoundaryVisitor]:
     """
@@ -103,6 +110,7 @@ def analyze_file(file_path: str) -> Tuple[ast.Module, ErrorBoundaryVisitor]:
     except SyntaxError:
         print(f"Syntax error in {file_path}, skipping")
         return None, None
+@handle_errors(error_types=(Exception,))
 
 
 def fix_error_boundary_issues(file_path: str, tree: ast.Module, visitor: ErrorBoundaryVisitor) -> bool:
@@ -257,6 +265,7 @@ def fix_error_boundary_issues(file_path: str, tree: ast.Module, visitor: ErrorBo
             f.write('\n'.join(lines))
         modified = True
     
+@handle_errors(error_types=(Exception,))
     return modified
 
 
@@ -349,6 +358,7 @@ def apply_transaction_cleanup_fix(file_path: str) -> bool:
                         f.write('\n'.join(new_lines))
                     
                     return True
+@handle_errors(error_types=(Exception,))
     
     return False
 
@@ -395,6 +405,7 @@ def fix_with_regex(file_path: str) -> bool:
     
     if modified:
         with open(file_path, 'w', encoding='utf-8') as f:
+@handle_errors(error_types=(Exception,))
             f.write(content)
     
     return modified

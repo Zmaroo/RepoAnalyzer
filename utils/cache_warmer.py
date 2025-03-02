@@ -45,6 +45,7 @@ class CacheWarmer:
         self._is_running = False
         self._task = None
     
+@handle_errors(error_types=(Exception,))
     def register_warmup_strategy(self, 
                                 cache_name: str, 
                                 strategy_name: str, 
@@ -185,6 +186,7 @@ class CacheWarmer:
                     await self.warm_cache(cache_name, strategy_name)
         
         log("Completed proactive cache warming cycle", level="info")
+@handle_errors(error_types=(Exception,))
     
     def get_warming_status(self) -> Dict[str, Any]:
         """
@@ -374,6 +376,7 @@ cache_warmer.register_warmup_strategy("repositories", "recent", warm_recent_repo
 cache_warmer.register_warmup_strategy("ast", "common_files", warm_ast_for_common_files)
 
 # Initialize function
+@handle_errors(error_types=(Exception,))
 def initialize_cache_warmer(auto_start: bool = False, interval: int = 3600):
     """
     Initialize the cache warmer.

@@ -23,6 +23,7 @@ class EnvParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(ENV_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -149,6 +150,7 @@ class EnvParser(BaseParser):
         str, Any]]:
         """Extract variable patterns from the AST."""
         variables = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict):
@@ -167,6 +169,7 @@ class EnvParser(BaseParser):
         Any]]:
         """Extract naming convention patterns from the AST."""
         snake_case = []
+@handle_errors(error_types=(Exception,))
         screaming_snake_case = []
 
         def process_node(node):
@@ -194,6 +197,7 @@ class EnvParser(BaseParser):
         Any]]:
         """Extract common configuration patterns from the AST."""
         database_vars = []
+@handle_errors(error_types=(Exception,))
         api_vars = []
         auth_vars = []
 

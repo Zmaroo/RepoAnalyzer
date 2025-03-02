@@ -16,6 +16,7 @@ def _start_global_loop(loop: asyncio.AbstractEventLoop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
 
+@handle_errors(error_types=(Exception,))
 def get_loop() -> asyncio.AbstractEventLoop:
     """
     Returns the current running event loop if available.
@@ -32,6 +33,7 @@ def get_loop() -> asyncio.AbstractEventLoop:
             t = threading.Thread(target=_start_global_loop, args=(_global_loop,), daemon=True)
             t.start()
         return _global_loop
+@handle_errors(error_types=(Exception,))
 
 def submit_async_task(coro: Awaitable[T]) -> concurrent.futures.Future:
     """
@@ -60,6 +62,7 @@ def submit_async_task(coro: Awaitable[T]) -> concurrent.futures.Future:
     
     # Convert to a concurrent.futures.Future for compatibility
     future = asyncio.run_coroutine_threadsafe(coro, loop)
+@handle_errors(error_types=(Exception,))
     return future
 
 def cleanup_tasks():

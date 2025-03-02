@@ -42,10 +42,12 @@ class PatternProfiler:
         self.reports_dir = os.path.join("reports", "pattern_profiling")
         os.makedirs(self.reports_dir, exist_ok=True)
     
+@handle_errors(error_types=(Exception,))
     def configure(self, sampling_rate: float = 1.0, enabled: bool = True):
         """Configure the profiler."""
         self.sampling_rate = max(0.0, min(1.0, sampling_rate))
         self.enabled = enabled
+@handle_errors(error_types=(Exception,))
     
     def record_compilation(self, 
                           pattern_name: str, 
@@ -73,6 +75,7 @@ class PatternProfiler:
                 self.pattern_sizes[pattern_name] = pattern_size
                 
             if complexity_score > 0:
+@handle_errors(error_types=(Exception,))
                 self.pattern_complexity[pattern_name] = complexity_score
     
     def get_pattern_stats(self, pattern_name: str) -> Dict[str, Any]:
@@ -90,6 +93,7 @@ class PatternProfiler:
             "stdev_time": statistics.stdev(times) if len(times) > 1 else 0,
             "pattern_size": self.pattern_sizes.get(pattern_name, 0),
             "complexity_score": self.pattern_complexity.get(pattern_name, 0),
+@handle_errors(error_types=(Exception,))
             "total_time": sum(times)
         }
     
@@ -98,6 +102,7 @@ class PatternProfiler:
         pattern_avgs = []
         for pattern_name, times in self.compilation_times.items():
             if times:
+@handle_errors(error_types=(Exception,))
                 pattern_avgs.append((pattern_name, statistics.mean(times)))
         
         return sorted(pattern_avgs, key=lambda x: x[1], reverse=True)[:limit]
@@ -105,6 +110,7 @@ class PatternProfiler:
     def get_most_compiled_patterns(self, limit: int = 10) -> List[Tuple[str, int]]:
         """Get the most frequently compiled patterns."""
         return sorted(
+@handle_errors(error_types=(Exception,))
             self.compilation_count.items(), 
             key=lambda x: x[1], 
             reverse=True
@@ -122,6 +128,7 @@ class PatternProfiler:
             "pattern_details": {}
         }
         
+@handle_errors(error_types=(Exception,))
         # Add detailed stats for each pattern
         for pattern_name in self.compilation_times:
             report["pattern_details"][pattern_name] = self.get_pattern_stats(pattern_name)
@@ -129,33 +136,78 @@ class PatternProfiler:
         return report
     
     def save_report(self, filename: Optional[str] = None) -> str:
-        """Save the current profiling report to a file."""
-        if not filename:
+        """Save the current profiling data to a file.
+        
+        Args:
+        import warnings
+        warnings.warn(f"'save_report' is deprecated, use 'save_report' instead", DeprecationWarning, stacklevel=2)
+            filename: Path to save the report to. If None, generates a timestamped filename.
+            
+        Returns:
+            The path to the saved report file.
+        """
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'save_report' is deprecated, use 'save_report_async' instead", DeprecationWarning, stacklevel=2)
+        
+        if filename is None:
+            warnings.warn(f"'reset' is deprecated, use 'reset' instead", DeprecationWarning, stacklevel=2)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"pattern_profile_{timestamp}.json"
+@handle_errors(error_types=(Exception,))
+            
+        report = self.generate_report()
+        with open(filename, 'w') as f:
+            json.dump(report, f, indent=2)
+            
+        return filename
+    
+    def reset(self):
+        """Reset all profiling data."""
+        # Add deprecation warning
+        import warnings
+@handle_async_errors(error_types=(Exception,))
+        warnings.warn(f"'reset' is deprecated, use 'reset_async' instead", DeprecationWarning, stacklevel=2)
+        
+        with self._lock:
+            self._pattern_metrics = {}
+            self._started = {}
+            self._pattern_sizes = {}
+            self._match_metrics = {}
+    
+    async def save_report_async(self, filename: Optional[str] = None) -> str:
+        """Async version of save_report.
+        
+        Args:
+            filename: Path to save the report to. If None, generates a timestamped filename.
+            
+        Returns:
+            The path to the saved report file.
+        """
+        if filename is None:
+@handle_async_errors(error_types=(Exception,))
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"pattern_profile_{timestamp}.json"
             
         report = self.generate_report()
-        filepath = os.path.join(self.reports_dir, filename)
-        
-        with open(filepath, 'w') as f:
+        with open(filename, 'w') as f:
             json.dump(report, f, indent=2)
             
-        log(f"Pattern profiling report saved to {filepath}", level="info")
-        return filepath
+        return filename
     
-    def reset(self):
-        """Reset all profiling data."""
+    async def reset_async(self):
+        """Async version of reset."""
         with self._lock:
-            self.compilation_times = {}
-            self.pattern_sizes = {}
-            self.pattern_complexity = {}
-            self.compilation_count = {}
-            self.total_compilation_time = 0.0
+            self._pattern_metrics = {}
+            self._started = {}
+            self._pattern_sizes = {}
+            self._match_metrics = {}
 
 # Global instance
 pattern_profiler = PatternProfiler()
 
 @contextmanager
+@handle_errors(error_types=(Exception,))
 def profile_pattern_compilation(pattern_name: str, pattern_size: int = 0, complexity_score: int = 0):
     """Context manager for profiling pattern compilation.
     
@@ -165,6 +217,8 @@ def profile_pattern_compilation(pattern_name: str, pattern_size: int = 0, comple
         complexity_score: Estimated complexity score (higher = more complex)
     
     Example:
+    
+    warnings.warn(f"'wrapper' is deprecated, use 'wrapper' instead", DeprecationWarning, stacklevel=2)
         ```python
         with profile_pattern_compilation("my_pattern", pattern_size=len(pattern_str)):
             compiled_pattern = compile_pattern(pattern_str)
@@ -182,6 +236,7 @@ def profile_pattern_compilation(pattern_name: str, pattern_size: int = 0, comple
             pattern_size, 
             complexity_score
         )
+@handle_errors(error_types=(Exception,))
 
 def profile_compilation(func: Callable) -> Callable:
     """Decorator to profile pattern compilation functions.
@@ -192,6 +247,7 @@ def profile_compilation(func: Callable) -> Callable:
     Args:
         func: The function to profile
         
+@handle_errors(error_types=(Exception,))
     Returns:
         Wrapped function with profiling
         
@@ -205,6 +261,10 @@ def profile_compilation(func: Callable) -> Callable:
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'profile_compilation' is deprecated, use 'async_profile_compilation' instead", DeprecationWarning, stacklevel=2)
+        
         # Try to extract pattern name from args or kwargs
         pattern_name = None
         pattern_size = 0
@@ -231,6 +291,57 @@ def profile_compilation(func: Callable) -> Callable:
         with profile_pattern_compilation(pattern_name, pattern_size):
             return func(*args, **kwargs)
             
+@handle_errors(error_types=(Exception,))
+    return wrapper
+
+def async_profile_compilation(func):
+    """Async version of profile_compilation decorator.
+    
+    This decorator automatically profiles compilation time for async decorated functions.
+    The pattern name is derived from the function arguments.
+    
+    Args:
+@handle_async_errors(error_types=(Exception,))
+        func: The async function to profile
+        
+    Returns:
+        Wrapped async function with profiling
+        
+    Example:
+        ```python
+        @async_profile_compilation
+        async def compile_pattern_async(pattern_name, pattern_str):
+            # Compilation logic
+            return compiled_pattern
+        ```
+    """
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        # Try to extract pattern name from args or kwargs
+        pattern_name = None
+        pattern_size = 0
+        
+        if args and isinstance(args[0], str):
+            pattern_name = args[0]
+            if len(args) > 1 and isinstance(args[1], str):
+                pattern_size = len(args[1])
+        elif 'name' in kwargs:
+            pattern_name = kwargs['name']
+            if 'pattern' in kwargs and isinstance(kwargs['pattern'], str):
+                pattern_size = len(kwargs['pattern'])
+        
+        start_time = time.time()
+        try:
+            result = await func(*args, **kwargs)
+            return result
+        finally:
+            elapsed = time.time() - start_time
+            if pattern_name:
+                pattern_profiler.record_compilation(pattern_name, elapsed, pattern_size)
+            else:
+                pattern_profiler.record_compilation(func.__name__, elapsed, pattern_size)
+@handle_errors(error_types=(Exception,))
+    
     return wrapper
 
 def estimate_pattern_complexity(pattern: str) -> int:
@@ -288,6 +399,7 @@ def estimate_pattern_complexity(pattern: str) -> int:
     
     # Tree-sitter specific: check for wildcards
     wildcard_count = pattern.count('_') + pattern.count('.')
+@handle_errors(error_types=(Exception,))
     complexity += wildcard_count * 3
     
     return complexity
@@ -330,6 +442,7 @@ def analyze_pattern_bottlenecks() -> List[Dict[str, Any]]:
                 "pattern_name": pattern_name,
                 "reasons": bottleneck_reason,
                 "stats": stats,
+@handle_errors(error_types=(Exception,))
                 "optimization_suggestions": suggest_optimizations(pattern_name, stats)
             })
     
@@ -366,4 +479,4 @@ def suggest_optimizations(pattern_name: str, stats: Dict[str, Any]) -> List[str]
     # Generic suggestions
     suggestions.append("Review pattern for optimization opportunities (nested quantifiers, lookarounds, etc.)")
     
-    return suggestions 
+    return suggestions

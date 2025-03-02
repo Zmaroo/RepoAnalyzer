@@ -46,6 +46,7 @@ class FileAccessTracker:
                 
                 self._initialized = True
     
+@handle_async_errors(error_types=(Exception,))
     async def track_access(self, file_path: str):
         """
         Track access to a file.
@@ -84,6 +85,7 @@ class FileAccessTracker:
                 "last_accessed": last_accessed_serializable
             })
             log("Saved file access tracker to cache", level="debug")
+@handle_async_errors(error_types=(Exception,))
     
     async def get_commonly_accessed_files(self, limit: int = 20) -> List[str]:
         """
@@ -103,6 +105,7 @@ class FileAccessTracker:
                 limit, 
                 self._access_counts.items(), 
                 key=lambda item: item[1]
+@handle_async_errors(error_types=(Exception,))
             )]
     
     async def get_recently_accessed_files(self, limit: int = 20) -> List[str]:
@@ -128,6 +131,7 @@ class FileAccessTracker:
 # Global instance
 file_access_tracker = FileAccessTracker()
 
+@handle_async_errors(error_types=(Exception,))
 async def track_file_access(file_path: str):
     """
     Track access to a file using the global tracker.
@@ -136,6 +140,7 @@ async def track_file_access(file_path: str):
         file_path: Path of the accessed file
     """
     await file_access_tracker.track_access(file_path)
+@handle_async_errors(error_types=(Exception,))
 
 async def get_commonly_accessed_files(limit: int = 20) -> List[str]:
     """
@@ -179,6 +184,7 @@ async def get_commonly_accessed_files(limit: int = 20) -> List[str]:
         remaining = limit - len(access_files)
         access_files.extend(fallback_paths[:remaining])
     
+@handle_async_errors(error_types=(Exception,))
     return access_files
 
 async def get_recently_accessed_files(limit: int = 20) -> List[str]:

@@ -30,6 +30,7 @@ from tests.mocks.db_mock import mock_db_factory
 
 # PostgreSQL Tests
 @pytest.mark.asyncio
+@handle_async_errors(error_types=(Exception,))
 async def test_postgres_query(mock_databases):
     """Test querying from PostgreSQL and verify results."""
     # Get the PostgreSQL mock
@@ -61,6 +62,7 @@ async def test_postgres_query(mock_databases):
     assert len(query_ops) == 1
     assert query_ops[0]["query"] == "SELECT * FROM repositories"
 
+@handle_async_errors(error_types=(Exception,))
 @pytest.mark.asyncio
 async def test_postgres_custom_handler(mock_databases):
     """Test adding a custom query handler for PostgreSQL."""
@@ -85,6 +87,7 @@ async def test_postgres_custom_handler(mock_databases):
     # Verify results
     assert len(results) == 1
     assert results[0]["username"] == "testuser"
+@handle_async_errors(error_types=(Exception,))
 
 @pytest.mark.asyncio
 async def test_postgres_insert(mock_databases):
@@ -113,6 +116,7 @@ async def test_postgres_insert(mock_databases):
     
     # Check that there's at least one query operation
     query_ops = [op for op in operations if op["type"] == "query"]
+@handle_async_errors(error_types=(Exception,))
     assert len(query_ops) >= 1
 
 @pytest.mark.asyncio
@@ -129,6 +133,7 @@ async def test_postgres_error_handling(mock_databases):
         await pg_mock.handle_query("SELECT * FROM repositories", None)
     
     # Verify the error
+@handle_async_errors(error_types=(Exception,))
     assert "Connection refused" in str(excinfo.value)
 
 # Neo4j Tests
@@ -146,6 +151,7 @@ async def test_neo4j_query(mock_databases):
     assert results[0]["n"]["labels"] == ["File"]
     
     # Verify the operation was recorded
+@handle_async_errors(error_types=(Exception,))
     operations = neo4j_mock.get_operations()
     assert len(operations) == 1
     assert "MATCH (n) RETURN n" in operations[0]["query"]
@@ -167,6 +173,7 @@ async def test_neo4j_retry_mechanism(mock_databases):
         results = await neo4j_query("MATCH (n) RETURN n")
     
     # Verify the sleep was called for retries
+@handle_async_errors(error_types=(Exception,))
     assert mock_sleep.call_count >= 2
     
     # Verify we got results after retries
@@ -189,6 +196,7 @@ async def test_neo4j_non_retryable_error(mock_databases):
             await neo4j_query("MATCH (n) RETURN n")
     
     # Verify no retries were attempted
+@handle_async_errors(error_types=(Exception,))
     assert mock_sleep.call_count == 0
     
     # Verify the error
@@ -213,6 +221,7 @@ async def test_integrated_database_operations(mock_databases):
     
     # Execute database operations
     repo_data = await pg_query("SELECT * FROM repositories WHERE id = $1", (1,))
+@handle_async_errors(error_types=(Exception,))
     graph_data = await neo4j_query("MATCH (r:Repository {id: $id}) RETURN r", {"id": 1})
     
     # Verify results
@@ -241,6 +250,7 @@ async def test_graph_projection_operations(mock_databases):
     
     # Test ensure_projection
     result = await ensure_projection(1)
+@handle_async_errors(error_types=(Exception,))
     
     # Verify the result
     assert result is True
@@ -265,6 +275,7 @@ async def test_operation_recording(mock_databases):
     # Verify operations were recorded in order
     operations = pg_mock.get_operations()
     assert len(operations) >= 4  # Should have at least 4 operations (2 acquires and 2 queries)
+@handle_async_errors(error_types=(Exception,))
     
     # Check that at least two query operations exist
     query_ops = [op for op in operations if op["type"] == "query"]

@@ -60,6 +60,9 @@ R = TypeVar('R')
 class QueryHandler(Protocol):
     """Protocol for query handlers."""
     def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+    # Add deprecation warning
+    import warnings
+    warnings.warn(f"'__call__' is deprecated, use '__call__' instead", DeprecationWarning, stacklevel=2)
 
 class AsyncQueryHandler(Protocol):
     """Protocol for async query handlers."""
@@ -104,6 +107,7 @@ class MockTransaction:
         # If an exception was raised, don't suppress it
         return False
     
+@handle_errors(error_types=(Exception,))
     def record_operation(self, operation_type, *args, **kwargs):
         """Record an operation in this transaction."""
         self.operations.append({
@@ -120,21 +124,26 @@ class MockPostgresConnection:
         """Initialize the connection with a reference to the pool."""
         self.pool = pool
         self.closed = False
+@handle_async_errors(error_types=(Exception,))
     
     async def close(self):
         """Close the connection."""
         if not self.closed:
             self.closed = True
+@handle_async_errors(error_types=(Exception,))
             await self.pool.release(self)
     
     async def execute(self, query, *args):
+@handle_async_errors(error_types=(Exception,))
         """Execute a query."""
         return await self.pool.handle_query(query, args)
     
+@handle_async_errors(error_types=(Exception,))
     async def fetch(self, query, *args):
         """Fetch results from a query."""
         return await self.pool.handle_query(query, args)
     
+@handle_async_errors(error_types=(Exception,))
     async def fetchrow(self, query, *args):
         """Fetch a single row from a query."""
         results = await self.pool.handle_query(query, args)
@@ -144,6 +153,7 @@ class MockPostgresConnection:
         """Fetch a single value from a query."""
         results = await self.pool.handle_query(query, args)
         if not results:
+@handle_async_errors(error_types=(Exception,))
             return None
         if isinstance(results[0], dict):
             return next(iter(results[0].values()))
@@ -164,15 +174,19 @@ class MockPostgresPool:
     """Mock PostgreSQL connection pool."""
     
     def __init__(self):
+@handle_errors(error_types=(Exception,))
         """Initialize the mock pool."""
         self.operations = []
         self.query_handlers = {}
+@handle_errors(error_types=(Exception,))
         self.error_for_next_query = None
         self.retry_count = 0
         self.current_retry = 0
+@handle_errors(error_types=(Exception,))
     
     def clear_operations(self):
         """Clear recorded operations."""
+@handle_errors(error_types=(Exception,))
         self.operations = []
     
     def get_operations(self):
@@ -193,6 +207,7 @@ class MockPostgresPool:
     @handle_async_errors()
     async def acquire(self):
         """Acquire a connection from the pool."""
+@handle_async_errors(error_types=(Exception,))
         # Record the operation
         self.operations.append({
             "type": "acquire",
@@ -200,6 +215,7 @@ class MockPostgresPool:
         })
         conn = MockPostgresConnection(self)
         try:
+@handle_async_errors(error_types=(Exception,))
             yield conn
         finally:
             await self.release(conn)
@@ -298,6 +314,7 @@ class MockNeo4jTransaction:
         """Enter the transaction context."""
         self.is_active = True
         self.session.current_transaction = self
+@handle_errors(error_types=(Exception,))
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -306,6 +323,7 @@ class MockNeo4jTransaction:
         self.session.current_transaction = None
         
         if self.should_fail and not exc_type:
+@handle_async_errors(error_types=(Exception,))
             raise self.failure_type(self.failure_message)
         
         # If an exception was raised, don't suppress it
@@ -319,11 +337,13 @@ class MockNeo4jTransaction:
             "kwargs": kwargs,
             "timestamp": asyncio.get_event_loop().time()
         })
+@handle_async_errors(error_types=(Exception,))
     
     async def run(self, query, parameters=None, **kwargs):
         """Run a query within the transaction."""
         self.record_operation("run", query, parameters, **kwargs)
         # Extract transaction-related information for query execution
+@handle_async_errors(error_types=(Exception,))
         return await self.session.run(query, parameters, **kwargs)
 
 class MockNeo4jSession:
@@ -335,9 +355,11 @@ class MockNeo4jSession:
         self.closed = False
         
     async def run(self, query, parameters=None):
+@handle_errors(error_types=(Exception,))
         """Run a query and return a result."""
         if parameters is None:
             parameters = {}
+@handle_errors(error_types=(Exception,))
         return await self.driver.handle_query(query, parameters)
         
     async def close(self):
@@ -345,6 +367,7 @@ class MockNeo4jSession:
         self.closed = True
         return None
 
+@handle_errors(error_types=(Exception,))
 class MockNeo4jRecord:
     """Mock Neo4j record."""
     
@@ -356,9 +379,11 @@ class MockNeo4jRecord:
         """Return the data dictionary."""
         return self._data
     
+@handle_async_errors(error_types=(Exception,))
     def get(self, key, default=None):
         """Get a value from the record."""
         return self._data.get(key, default)
+@handle_errors(error_types=(Exception,))
     
     def __getitem__(self, key):
         """Get a value from the record."""
@@ -373,9 +398,11 @@ class MockNeo4jResult:
     
     def __init__(self, records):
         """Initialize with a list of records."""
+@handle_errors(error_types=(Exception,))
         self.records = [MockNeo4jRecord(record) if not isinstance(record, MockNeo4jRecord) else record
                         for record in records]
     
+@handle_errors(error_types=(Exception,))
     async def fetch(self):
         """Fetch all records."""
         return self.records
@@ -385,15 +412,19 @@ class MockNeo4jResult:
         return [record.data() for record in self.records]
 
 class MockNeo4jDriver:
+@handle_errors(error_types=(Exception,))
     """Mock Neo4j driver with async methods."""
     
     def __init__(self):
+@handle_errors(error_types=(Exception,))
         """Initialize the driver."""
         self.session_mock = MagicMock()
         self.operations = []
+@handle_errors(error_types=(Exception,))
         self.query_handlers = {}
         self.next_error = None
         self.retry_count = 0
+@handle_async_errors(error_types=(Exception,))
         
     def session(self):
         """Create a new session."""
@@ -509,6 +540,7 @@ class MockDatabaseFactory:
         # Check if we should raise an error
         if self.neo4j_mock.next_error:
             error = self.neo4j_mock.next_error
+@handle_errors(error_types=(Exception,))
             if self.neo4j_mock.retry_count <= 0:
                 self.neo4j_mock.next_error = None
             else:
@@ -525,18 +557,23 @@ class MockDatabaseFactory:
             ]
             mock_result.fetch = AsyncMock(return_value=records)
             return mock_result
+@handle_errors(error_types=(Exception,))
         elif "MATCH (r:Repository {id: $id}) RETURN r" in query:
             repo_id = params.get('id', 0)
             mock_result = MagicMock()
+@handle_errors(error_types=(Exception,))
             records = [MockNeo4jRecord({"r": {"id": repo_id, "name": "test-repo"}})]
             mock_result.fetch = AsyncMock(return_value=records)
             return mock_result
+@handle_errors(error_types=(Exception,))
         else:
             # Default empty result
             mock_result = MagicMock()
+@handle_errors(error_types=(Exception,))
             mock_result.fetch = AsyncMock(return_value=[])
             return mock_result
         
+@handle_errors(error_types=(Exception,))
     def _register_mocks(self):
         """Register the mocks with the database modules."""
         import sys
@@ -579,6 +616,7 @@ class MockDatabaseFactory:
 mock_db_factory = MockDatabaseFactory()
 
 # Common test fixtures
+@handle_errors(error_types=(Exception,))
 def register_common_fixtures():
     """Register common fixtures for tests."""
     # Create repositories
@@ -589,12 +627,14 @@ def register_common_fixtures():
     
     # Create users
     users = [
+@handle_async_errors(error_types=(Exception,))
         {"id": 1, "username": "testuser", "email": "test@example.com"},
         {"id": 2, "username": "anotheruser", "email": "another@example.com"}
     ]
     
     # Create code snippets
     code_snippets = [
+@handle_async_errors(error_types=(Exception,))
         {"id": 1, "repo_id": 1, "file_path": "src/main.py", "content": "def main():\n    print('Hello, world!')"},
         {"id": 2, "repo_id": 1, "file_path": "src/utils.py", "content": "def helper():\n    return 42"}
     ]
@@ -602,6 +642,7 @@ def register_common_fixtures():
     # Register handlers for common queries
     mock_db_factory.pg_mock.add_query_handler(
         "SELECT * FROM repositories",
+@handle_async_errors(error_types=(Exception,))
         lambda: repositories
     )
     
@@ -618,6 +659,7 @@ def register_common_fixtures():
 # Register common fixtures
 register_common_fixtures()
 
+@handle_errors(error_types=(Exception,))
 # Patch functions for use in tests
 def patch_postgres():
     """Patch PostgreSQL functions with mocks."""
@@ -663,6 +705,7 @@ def patch_postgres():
             pass
     
     patches = [
+@handle_errors(error_types=(Exception,))
         patch('db.psql._pool', pg_pool),
         patch('db.psql.init_db_pool', AsyncMock(return_value=None)),
         patch('db.psql.close_db_pool', AsyncMock(return_value=None)),
@@ -673,6 +716,7 @@ def patch_postgres():
         patch('db.schema.query', mock_query),  # Add patch for db.schema.query
     ]
     
+@handle_errors(error_types=(Exception,))
     return patches
 
 def patch_neo4j():
@@ -738,6 +782,7 @@ def patch_neo4j():
 #     for p in pg_patches + neo4j_patches:
 #         p.stop()
 #     
+@handle_errors(error_types=(Exception,))
 #     # Reset for next test
 #     mock_db_factory.reset_all()
 

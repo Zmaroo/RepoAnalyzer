@@ -46,12 +46,14 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 @pytest.fixture
+@handle_errors(error_types=(Exception,))
 def language_registry():
     """Fixture for language registry."""
     registry = LanguageRegistry()
     yield registry
     registry.cleanup()  # Clean up after tests
 
+@handle_errors(error_types=(Exception,))
 @pytest.fixture
 def temp_python_file():
     """Create a temporary Python file for testing."""
@@ -60,6 +62,7 @@ def temp_python_file():
         file_path = tf.name
     yield file_path
     os.unlink(file_path)  # Delete the file after test
+@handle_errors(error_types=(Exception,))
 
 @pytest.fixture
 def temp_js_file():
@@ -72,6 +75,7 @@ def temp_js_file():
     
     # Cleanup
     if os.path.exists(file_path):
+@handle_errors(error_types=(Exception,))
         os.unlink(file_path)
 
 @pytest.fixture
@@ -86,6 +90,7 @@ def temp_markdown_file():
     # Cleanup
     if os.path.exists(file_path):
         os.unlink(file_path)
+@handle_errors(error_types=(Exception,))
 
 class TestFileClassification:
     """Tests for file classification functionality."""
@@ -103,6 +108,7 @@ class TestFileClassification:
         # Test unknown extension
         assert detect_language_from_filename('test.unknown') is None
         
+@handle_errors(error_types=(Exception,))
         # Test special filename patterns
         assert detect_language_from_filename('package.json') == "json"
         assert detect_language_from_filename('docker-compose.yml') == "yaml"
@@ -115,6 +121,7 @@ class TestFileClassification:
         classification = classify_file(temp_python_file)
         
         assert classification.file_type == FileType.CODE
+@handle_errors(error_types=(Exception,))
         assert classification.language_id == "python"
         assert classification.parser_type == ParserType.TREE_SITTER
         assert classification.is_binary is False
@@ -128,6 +135,7 @@ class TestFileClassification:
         classification = classify_file(temp_js_file)
         
         assert classification.file_type == FileType.CODE
+@handle_errors(error_types=(Exception,))
         assert classification.language_id == "javascript"
         assert classification.parser_type == ParserType.TREE_SITTER
         assert classification.is_binary is False
@@ -154,6 +162,7 @@ class TestFileClassification:
             classification = classify_file(temp_markdown_file)
             
             # Accept either 'md' or 'markdown' as valid identifiers
+@handle_errors(error_types=(Exception,))
             assert classification.language_id in ["md", "markdown"], f"Expected 'md' or 'markdown', got '{classification.language_id}'"
             assert classification.parser_type == ParserType.CUSTOM
             assert classification.is_binary is False
@@ -170,6 +179,7 @@ class TestFileClassification:
         # we'll just verify that the function returns a valid classification
         # with reasonable defaults for a nonexistent file
         classification = classify_file("nonexistent_file.py")
+@handle_errors(error_types=(Exception,))
         
         assert classification is not None
         assert classification.language_id == "python"  # Based on .py extension
@@ -208,6 +218,7 @@ class TestPatternProcessor:
         
         for pattern_name, pattern in patterns.items():
             pattern_types.add(pattern.category)
+@handle_errors(error_types=(Exception,))
             if "function" in pattern_name.lower():
                 has_function_pattern = True
         
@@ -241,6 +252,7 @@ class TestPatternProcessor:
         assert len(patterns) > 0
         
         # Check for markdown-specific patterns using our mocked patterns
+@handle_errors(error_types=(Exception,))
         has_heading_pattern = False
         
         for pattern_name, pattern in patterns.items():
@@ -253,6 +265,7 @@ class TestLanguageSupport:
     """Tests for language support functionality."""
     
     def test_language_registry(self):
+@handle_errors(error_types=(Exception,))
         """Test language registry initialization."""
         assert global_language_registry is not None
         
@@ -279,6 +292,7 @@ class TestLanguageSupport:
         assert markdown_parser is not None
         assert markdown_parser.parser_type == ParserType.CUSTOM
         
+@handle_async_errors(error_types=(Exception,))
         # Unknown language should return a fallback parser
         unknown_classification = FileClassification(file_path="test.unknown", language_id="unknown", parser_type=ParserType.UNKNOWN)
         unknown_parser = global_language_registry.get_parser(unknown_classification)
@@ -312,6 +326,7 @@ class TestUnifiedParser:
         
         parser = UnifiedParser()
         with open(temp_python_file, 'r') as f:
+@handle_async_errors(error_types=(Exception,))
             content = f.read()
         result = await parser.parse_file(temp_python_file, content)
         
@@ -352,6 +367,7 @@ class TestUnifiedParser:
         
         # Check for some common Markdown features
         has_headings = "headings" in result.features
+@handle_errors(error_types=(Exception,))
         has_paragraphs = "paragraphs" in result.features
         assert has_headings or has_paragraphs
 
@@ -376,6 +392,7 @@ class TestLanguageRegistry:
             file_path="test.py",
             language_id="python",
             file_type=FileType.CODE,
+@handle_errors(error_types=(Exception,))
             parser_type=ParserType.TREE_SITTER
         )
         
@@ -387,13 +404,16 @@ class TestLanguageRegistry:
             language_id="markdown",
             file_type=FileType.DOC,
             parser_type=ParserType.TREE_SITTER  # Deliberately requesting tree-sitter
+@handle_errors(error_types=(Exception,))
         )
         
+@handle_errors(error_types=(Exception,))
         markdown_parser = language_registry.get_parser(markdown_classification)
         assert markdown_parser is not None
         
     def test_custom_parser_prioritization(self, language_registry):
         """Test that custom parsers are prioritized over tree-sitter parsers when available."""
+@handle_errors(error_types=(Exception,))
         from unittest.mock import patch, MagicMock
         from parsers.types import ParserType, FileType
         

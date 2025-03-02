@@ -11,6 +11,7 @@ import threading
 import json
 import logging
 import platform
+import warnings
 import psutil
 import asyncio
 from typing import Dict, List, Any, Optional, Set, Callable, Union, Tuple
@@ -44,6 +45,7 @@ class ComponentHealth:
     response_time: float = 0.0
     details: Dict[str, Any] = field(default_factory=dict)
 
+@handle_errors(error_types=(Exception,))
     def to_dict(self) ->Dict[str, Any]:
         """Convert to dictionary."""
         result = asdict(self)
@@ -65,6 +67,7 @@ class SystemResources:
     open_files: int = 0
     open_connections: int = 0
     thread_count: int = 0
+@handle_errors(error_types=(Exception,))
 
     def to_dict(self) ->Dict[str, Any]:
         """Convert to dictionary."""
@@ -80,6 +83,7 @@ class DatabaseHealth:
     slow_queries: int = 0
     failed_queries: int = 0
     retried_operations: int = 0
+@handle_errors(error_types=(Exception,))
     last_successful_connection: Optional[datetime] = None
 
     def to_dict(self) ->Dict[str, Any]:
@@ -99,6 +103,7 @@ class HealthReport:
     components: Dict[str, ComponentHealth] = field(default_factory=dict)
     system_resources: SystemResources = field(default_factory=SystemResources)
     database: Dict[str, DatabaseHealth] = field(default_factory=dict)
+@handle_errors(error_types=(Exception,))
     recent_errors: List[Dict[str, Any]] = field(default_factory=list)
     recommendations: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -136,6 +141,7 @@ class HealthMonitor:
             self._health_checks: Dict[str, Callable[[], ComponentStatus]] = {}
             self._recent_response_times: Dict[str, List[float]] = {}
             self._recent_errors: Dict[str, int] = {}
+@handle_errors(error_types=(Exception,))
             self._recent_successes: Dict[str, int] = {}
             self._current_report = None
             os.makedirs(self._report_dir, exist_ok=True)
@@ -151,6 +157,7 @@ class HealthMonitor:
         with self._lock:
             self._components[name] = ComponentHealth(name=name)
             if health_check:
+@handle_errors(error_types=(Exception,))
                 self._health_checks[name] = health_check
             self._recent_response_times[name] = []
             self._recent_errors[name] = 0
@@ -159,6 +166,7 @@ class HealthMonitor:
     def register_database(self, name: str) ->None:
         """Register a database for health monitoring.
         
+@handle_errors(error_types=(Exception,))
         Args:
             name: Database name
         """
@@ -195,6 +203,7 @@ class HealthMonitor:
             else:
                 self._recent_successes[name] += 1
             total_ops = self._recent_errors[name] + self._recent_successes[name
+@handle_errors(error_types=(Exception,))
                 ]
             if total_ops > 0:
                 component.error_rate = self._recent_errors[name] / total_ops
@@ -230,6 +239,7 @@ class HealthMonitor:
                     query_response_time + 0.1 * query_response_time if 
                     db_health.query_response_time > 0 else query_response_time)
             if slow_query:
+@handle_errors(error_types=(Exception,))
                 db_health.slow_queries += 1
             if failed_query:
                 db_health.failed_queries += 1
@@ -253,6 +263,7 @@ class HealthMonitor:
             try:
                 self._resources.open_files = len(process.open_files())
             except (psutil.AccessDenied, psutil.Error):
+@handle_errors(error_types=(Exception,))
                 pass
             try:
                 self._resources.open_connections = len(process.connections())
@@ -308,6 +319,7 @@ class HealthMonitor:
         if self._resources.cpu_percent > self._alert_thresholds['cpu_percent']:
             alerts.append(f'High CPU usage: {self._resources.cpu_percent:.1f}%'
                 )
+@handle_errors(error_types=(Exception,))
         if self._resources.memory_percent > self._alert_thresholds[
             'memory_percent']:
             alerts.append(
@@ -340,6 +352,7 @@ class HealthMonitor:
             for component in self._components.values():
                 if component.status == ComponentStatus.UNHEALTHY:
                     system_status = ComponentStatus.UNHEALTHY
+@handle_errors(error_types=(Exception,))
                     break
                 elif component.status == ComponentStatus.DEGRADED and system_status != ComponentStatus.UNHEALTHY:
                     system_status = ComponentStatus.DEGRADED
@@ -358,6 +371,7 @@ class HealthMonitor:
             report: Health report to save (if None, generates a new report)
             
         Returns:
+@handle_errors(error_types=(Exception,))
             str: Path to saved report
         """
         if report is None:
@@ -369,6 +383,7 @@ class HealthMonitor:
             json.dump(report.to_dict(), f, indent=2)
         log(f'Health report saved to {filepath}', level='info')
         return filepath
+@handle_errors(error_types=(Exception,))
 
     def _reporter_loop(self) ->None:
         """Background thread to periodically check and report health."""
@@ -382,11 +397,37 @@ class HealthMonitor:
             self._stop_event.wait(self._check_interval)
         log('Health monitor reporter thread stopped', level='info')
 
-    def start_monitoring(self, check_interval: int=60) ->None:
-        """Start background health monitoring.
+    def start_monitoring(self, check_interval: int=60) -> None:
+        """Start the background monitoring thread.
         
         Args:
-            check_interval: Interval between health checks in seconds
+            check_interval: Seconds between health checks
+        """
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'start_monitoring' is deprecated, use 'start_monitoring_async' instead", DeprecationWarning, stacklevel=2)
+        
+@handle_async_errors(error_types=(Exception,))
+        with self._lock:
+            if self._reporter_thread and self._reporter_thread.is_alive():
+                log('Health monitoring already running', level='warning')
+                return
+            self._check_interval = check_interval
+            self._stop_event.clear()
+            self._reporter_thread = threading.Thread(target=self.
+                _reporter_loop, daemon=True, name='HealthMonitorReporter')
+            self._reporter_thread.start()
+            
+            log_message = f"Started health monitoring (interval: {check_interval}s)"
+            warnings.warn(f"'stop_monitoring' is deprecated, use 'stop_monitoring' instead", DeprecationWarning, stacklevel=2)
+            log(log_message, level='info')
+
+    async def start_monitoring_async(self, check_interval: int=60) -> None:
+        """Async version of start_monitoring.
+        
+        Args:
+@handle_errors(error_types=(Exception,))
+            check_interval: Seconds between health checks
         """
         with self._lock:
             if self._reporter_thread and self._reporter_thread.is_alive():
@@ -397,11 +438,18 @@ class HealthMonitor:
             self._reporter_thread = threading.Thread(target=self.
                 _reporter_loop, daemon=True, name='HealthMonitorReporter')
             self._reporter_thread.start()
-            log(f'Health monitoring started with {check_interval}s interval',
-                level='info')
+            
+            log_message = f"Started health monitoring (interval: {check_interval}s)"
+@handle_async_errors(error_types=(Exception,))
+            log(log_message, level='info')
 
-    def stop_monitoring(self) ->None:
-        """Stop the health monitoring system."""
+    def stop_monitoring(self) -> None:
+        """Stop the monitoring thread."""
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'stop_monitoring' is deprecated, use 'stop_monitoring_async' instead", DeprecationWarning, stacklevel=2)
+@handle_errors(error_types=(Exception,))
+        
         with self._lock:
             if self._reporter_thread:
                 self._stop_event.set()
@@ -416,6 +464,7 @@ class HealthMonitor:
             if self._reporter_thread:
                 self._stop_event.set()
                 loop = asyncio.get_event_loop()
+@handle_errors(error_types=(Exception,))
                 future = loop.create_future()
 
                 def thread_done():
@@ -448,6 +497,7 @@ class HealthMonitor:
 
 
 @contextmanager
+@handle_errors(error_types=(Exception,))
 def monitor_operation(name: str, component: str, health_monitor: Optional[
     'HealthMonitor']=None):
     """Context manager to monitor an operation.
@@ -481,6 +531,7 @@ def monitor_operation(name: str, component: str, health_monitor: Optional[
         raise
 
 
+@handle_errors(error_types=(Exception,))
 @contextmanager
 def monitor_database(db_name: str, operation: str, health_monitor: Optional
     ['HealthMonitor']=None):
@@ -530,6 +581,7 @@ global_health_monitor.register_component('db_neo4j')
 global_health_monitor.register_component('db_postgres')
 global_health_monitor.register_database('neo4j')
 global_health_monitor.register_database('postgres')
+@handle_errors(error_types=(Exception,))
 
 
 def get_health_status():

@@ -28,14 +28,17 @@ from utils.logger import log
 class Database:
     """Mock Database class for testing"""
     @staticmethod
+@handle_async_errors(error_types=(Exception,))
     async def connect():
         log("Mock database connected")
         return True
         
+@handle_async_errors(error_types=(Exception,))
     @staticmethod
     async def disconnect():
         log("Mock database disconnected")
         return True
+@handle_async_errors(error_types=(Exception,))
         
     @staticmethod
     async def query(query_string, params=None):
@@ -45,6 +48,7 @@ class Database:
 
 # Example fixtures - modify as needed for your specific tests
 @pytest.fixture
+@handle_errors(error_types=(Exception,))
 def sample_repo():
     """Create a temporary directory with sample files for testing."""
     temp_dir = tempfile.mkdtemp()
@@ -75,6 +79,7 @@ helloWorld();
         shutil.rmtree(temp_dir)
 
 
+@handle_errors(error_types=(Exception,))
 @pytest.fixture
 def mock_db():
     """Create a mock database for testing."""
@@ -88,6 +93,7 @@ def mock_db():
     
     return db
 
+@handle_errors(error_types=(Exception,))
 
 # Example test function that tests the integration between file processing and parsing
 def test_file_processing_and_parsing_integration(sample_repo):
@@ -117,6 +123,7 @@ def test_file_processing_and_parsing_integration(sample_repo):
     
     # Log success
     log(f"Successfully processed and parsed {python_file}", level="info")
+@handle_errors(error_types=(Exception,))
 
 
 # Example test that involves multiple components

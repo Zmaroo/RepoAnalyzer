@@ -24,6 +24,7 @@ class BaseFeatureExtractor(ABC):
             parser_type=language_registry.get_parser_type(language_id)))
 
     @abstractmethod
+@handle_errors(error_types=(Exception,))
     def extract_features(self, ast: Dict[str, Any], source_code: str
         ) ->ExtractedFeatures:
         """Extract features from existing AST."""

@@ -176,12 +176,14 @@ class FileProcessor:
                 log(f"Error processing doc file {rel_path}: {e}", level="error")
                 return None
 
+@handle_errors(error_types=(Exception,))
     def get_stats(self) -> Dict[str, int]:
         """Get processing statistics."""
         return {
             'processed_files': self._processed_files,
             'failed_files': self._failed_files
         }
+@handle_errors(error_types=(Exception,))
 
     def clear_cache(self):
         """Clear all caches"""
@@ -192,26 +194,32 @@ class FileProcessor:
 # Cache-enabled utility functions
 
 @cached_in_request
+@handle_async_errors(error_types=(Exception,))
 async def cached_read_file(file_path: str) -> Optional[str]:
     """Cached version of async_read_file to avoid redundant file I/O."""
     return await async_read_file(file_path)
 
+@handle_async_errors(error_types=(Exception,))
 @cached_in_request
 async def cached_classify_file(file_path: str):
     """Cached file classification to avoid redundant classification."""
     return get_file_classification(file_path)
+@handle_async_errors(error_types=(Exception,))
 
 @cached_in_request
 async def cached_parse_file(rel_path: str, content: str, classification):
     """Cached file parsing to avoid redundant parsing operations."""
+@handle_async_errors(error_types=(Exception,))
     return await unified_parser.parse_file(rel_path, content, classification)
 
 @cached_in_request
 async def cached_get_patterns(classification):
+@handle_async_errors(error_types=(Exception,))
     """Cached pattern retrieval to avoid redundant pattern loading."""
     return pattern_processor.get_patterns_for_file(classification)
 
 @cached_in_request
+@handle_async_errors(error_types=(Exception,))
 async def cached_embed_code(content: str):
     """Cached code embedding to avoid redundant embedding generation."""
     return await code_embedder.embed_async(content)

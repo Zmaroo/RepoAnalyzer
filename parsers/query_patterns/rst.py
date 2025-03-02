@@ -7,6 +7,7 @@ from parsers.types import QueryPattern, PatternCategory, PatternInfo
 # Language identifier
 LANGUAGE = "rst"
 
+@handle_errors(error_types=(Exception,))
 def extract_section(match: Match) -> Dict[str, Any]:
     """Extract section information."""
     return {
@@ -14,6 +15,7 @@ def extract_section(match: Match) -> Dict[str, Any]:
         "marker": match.group(1),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_directive(match: Match) -> Dict[str, Any]:
     """Extract directive information."""
@@ -238,6 +240,7 @@ RST_PATTERNS_FOR_LEARNING = {
 }
 
 # Update RST_PATTERNS with learning patterns
+@handle_errors(error_types=(Exception,))
 RST_PATTERNS[PatternCategory.LEARNING] = RST_PATTERNS_FOR_LEARNING
 
 def extract_rst_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

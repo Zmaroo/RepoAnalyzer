@@ -16,6 +16,7 @@ from .common import COMMON_PATTERNS
 # Language identifier
 LANGUAGE = "ocaml"
 
+@handle_errors(error_types=(Exception,))
 def extract_let_binding(match: Match) -> Dict[str, Any]:
     """Extract let binding information."""
     return {
@@ -23,6 +24,7 @@ def extract_let_binding(match: Match) -> Dict[str, Any]:
         "name": match.group(1),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_type_definition(match: Match) -> Dict[str, Any]:
     """Extract type definition information."""
@@ -372,6 +374,7 @@ OCAML_PATTERNS_FOR_LEARNING = {
 }
 
 # Update OCAML_PATTERNS with learning patterns
+@handle_errors(error_types=(Exception,))
 OCAML_PATTERNS[PatternCategory.LEARNING] = OCAML_PATTERNS_FOR_LEARNING
 
 def extract_ocaml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

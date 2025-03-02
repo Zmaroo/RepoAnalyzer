@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from utils.logger import log
 from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary
 from config import RedisConfig  # If we add Redis config later
+import warnings
 
 # Try to import redis; if not available, mark it accordingly
 try:
@@ -36,6 +37,7 @@ class CacheMetrics:
         self._log_interval = 3600  # Log stats every hour by default
         self._last_log_time = time.time()
     
+@handle_errors(error_types=(Exception,))
     def register_cache(self, cache_name: str):
         """Register a new cache instance for metrics tracking."""
         if cache_name not in self._metrics:
@@ -45,6 +47,7 @@ class CacheMetrics:
                 "sets": 0,
                 "evictions": 0
             }
+@handle_async_errors(error_types=(Exception,))
     
     async def increment(self, cache_name: str, metric: str, amount: int = 1):
         """Increment a metric for the specified cache."""
@@ -59,6 +62,7 @@ class CacheMetrics:
             current_time = time.time()
             if current_time - self._last_log_time > self._log_interval:
                 await self.log_stats()
+@handle_errors(error_types=(Exception,))
                 self._last_log_time = current_time
     
     def get_hit_rate(self, cache_name: str) -> float:
@@ -72,11 +76,15 @@ class CacheMetrics:
         
         if total == 0:
             return 0.0
+@handle_errors(error_types=(Exception,))
         
         return hits / total
     
     def get_metrics(self, cache_name: Optional[str] = None) -> Dict[str, MetricData]:
         """Get metrics for a specific cache or all caches."""
+        # Add deprecation warning
+        warnings.warn(f"'get_metrics' is deprecated, use 'get_metrics_async' instead", DeprecationWarning, stacklevel=2)
+        
         if cache_name:
             metrics = self._metrics.get(cache_name, {}).copy()
             # Add derived metrics
@@ -95,9 +103,16 @@ class CacheMetrics:
             if total_ops > 0:
                 result[name]["hit_rate"] = data.get("hits", 0) / total_ops
             else:
+@handle_async_errors(error_types=(Exception,))
                 result[name]["hit_rate"] = 0.0
         
         return result
+    
+@handle_async_errors(error_types=(Exception,))
+    async def get_metrics_async(self, cache_name: Optional[str] = None) -> Dict[str, MetricData]:
+        """Async version of get_metrics."""
+        async with self._lock:
+            return self.get_metrics(cache_name)
     
     async def log_stats(self):
         """Log current cache statistics."""
@@ -108,6 +123,7 @@ class CacheMetrics:
                 f"Cache metrics for {cache_name}: "
                 f"Hit rate: {hit_rate:.1f}%, "
                 f"Hits: {metrics.get('hits', 0)}, "
+@handle_async_errors(error_types=(Exception,))
                 f"Misses: {metrics.get('misses', 0)}, "
                 f"Sets: {metrics.get('sets', 0)}, "
                 f"Evictions: {metrics.get('evictions', 0)}",
@@ -131,23 +147,28 @@ class CacheMetrics:
 # Global metrics instance
 cache_metrics = CacheMetrics()
 
+@handle_errors(error_types=(Exception,))
 class CacheCoordinator:
     """Coordinates caching across different subsystems."""
     
     def __init__(self):
+@handle_async_errors(error_types=(Exception,))
         self._caches: Dict[str, 'UnifiedCache'] = {}
         self._lock = asyncio.Lock()
         
     def register_cache(self, name: str, cache: 'UnifiedCache'):
         """Register a cache instance."""
+@handle_async_errors(error_types=(Exception,))
         self._caches[name] = cache
         cache_metrics.register_cache(name)
         
     async def invalidate_all(self):
         """Invalidate all registered caches."""
+@handle_async_errors(error_types=(Exception,))
         async with self._lock:
             for cache in self._caches.values():
                 await cache.clear_async()
+@handle_async_errors(error_types=(Exception,))
                 
     async def invalidate_pattern(self, pattern: str):
         """Invalidate keys matching pattern across all caches."""
@@ -162,6 +183,7 @@ class CacheCoordinator:
     async def log_metrics(self):
         """Log metrics for all registered caches."""
         await cache_metrics.log_stats()
+@handle_async_errors(error_types=(Exception,))
 
 # Cache key usage tracking for adaptive TTL
 class KeyUsageTracker:
@@ -191,6 +213,7 @@ class KeyUsageTracker:
     
     def _prune_least_used(self):
         """Remove the least recently used keys to keep memory usage controlled."""
+@handle_async_errors(error_types=(Exception,))
         if not self._last_accessed:
             return
             
@@ -201,6 +224,7 @@ class KeyUsageTracker:
         for key, _ in keys_to_remove:
             if key in self._access_counts:
                 del self._access_counts[key]
+@handle_errors(error_types=(Exception,))
             if key in self._last_accessed:
                 del self._last_accessed[key]
     
@@ -223,6 +247,7 @@ class KeyUsageTracker:
         """
         access_count = self._access_counts.get(key, 0)
         
+@handle_errors(error_types=(Exception,))
         if access_count == 0:
             return default_ttl
             
@@ -359,6 +384,7 @@ class UnifiedCache:
         
         if self.use_redis:
             async with AsyncErrorBoundary(operation_name="clearing Redis cache pattern", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
+@handle_async_errors(error_types=(Exception,))
                 full_pattern = f"{self.name}:{pattern}"
                 keys = await asyncio.to_thread(self._redis.keys, full_pattern)
                 if keys:
@@ -456,6 +482,7 @@ class UnifiedCache:
 # Global instances
 cache_coordinator = CacheCoordinator()
 
+@handle_errors(error_types=(Exception,))
 def create_cache(name: str, ttl: int = 3600, adaptive_ttl: bool = True) -> UnifiedCache:
     """Create and register a new cache instance."""
     cache = UnifiedCache(name, ttl, adaptive_ttl=adaptive_ttl)
@@ -479,11 +506,17 @@ graph_cache = UnifiedCache("graph", ttl=3600)  # 1 hour
 ast_cache = UnifiedCache("ast", ttl=7200)  # 2 hours
 
 # Register caches with coordinator
-cache_coordinator = CacheCoordinator()
 cache_coordinator.register_cache("repositories", repository_cache)
 cache_coordinator.register_cache("search", search_cache)
 cache_coordinator.register_cache("embeddings", embedding_cache)
 cache_coordinator.register_cache("patterns", pattern_cache)
 cache_coordinator.register_cache("parsers", parser_cache)
 cache_coordinator.register_cache("graph", graph_cache)
-cache_coordinator.register_cache("ast", ast_cache) 
+cache_coordinator.register_cache("ast", ast_cache)
+
+@handle_errors(error_types=(Exception,))
+# Add a get_metrics function that triggers the deprecation warning
+def get_metrics():
+    """Deprecated function that will show the warning."""
+    warnings.warn(f"'get_metrics' is deprecated, use 'get_metrics_async' instead", DeprecationWarning, stacklevel=2)
+    return cache_metrics.get_metrics()

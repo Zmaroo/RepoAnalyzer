@@ -21,6 +21,7 @@ from utils.logger import log
 # Path to the test_parse directory
 TEST_PARSE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tests', 'test_parse')
 
+@handle_errors(error_types=(Exception,))
 def test_parse_directory():
     """Test parsing all files in the test_parse directory."""
     assert os.path.exists(TEST_PARSE_DIR), f"Test directory not found: {TEST_PARSE_DIR}"
@@ -66,6 +67,7 @@ def test_parse_directory():
     
     # Return for inspection
     return results
+@handle_errors(error_types=(Exception,))
 
 def test_parse_specific_files():
     """Test parsing specific file types in the test_parse directory."""

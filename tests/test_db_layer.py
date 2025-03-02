@@ -34,6 +34,7 @@ class TestDatabaseConnections:
     """Test database connection functionality."""
     
     @pytest.mark.asyncio
+@handle_async_errors(error_types=(Exception,))
     async def test_neo4j_connection(self, neo4j_mock):
         """Test connecting to Neo4j database."""
         # Create a database instance with the mock
@@ -56,6 +57,7 @@ class TestDatabaseConnections:
         # Verify the mock was called
         neo4j_mock.connect.assert_called_once()
     
+@handle_async_errors(error_types=(Exception,))
     @pytest.mark.asyncio
     async def test_postgres_connection(self, postgres_mock):
         """Test connecting to PostgreSQL database."""
@@ -79,6 +81,7 @@ class TestDatabaseConnections:
         
         # Verify the mock was called
         postgres_mock.connect.assert_called_once()
+@handle_async_errors(error_types=(Exception,))
     
     @pytest.mark.asyncio
     async def test_connection_failure_handling(self):
@@ -102,12 +105,14 @@ class TestDatabaseConnections:
             assert is_connected is False
 
 class TestRepositoryOperations:
+@handle_async_errors(error_types=(Exception,))
     """Test repository database operations."""
     
     @pytest.fixture
     async def repo_db(self, mock_databases):
         """Create a repository database with mock connections."""
         repos = db_init.get_repository_manager()
+@handle_async_errors(error_types=(Exception,))
         await repos.initialize()
         return repos
     
@@ -128,6 +133,7 @@ class TestRepositoryOperations:
         
         # Verify result
         assert result["id"] == repo_id
+@handle_async_errors(error_types=(Exception,))
         
         # Verify postgres was called
         postgres_mock.execute.assert_called_once()
@@ -152,6 +158,7 @@ class TestRepositoryOperations:
         
         # Verify result
         assert result["id"] == repo_data["id"]
+@handle_async_errors(error_types=(Exception,))
         assert result["url"] == repo_url
         
         # Verify postgres was called
@@ -168,6 +175,7 @@ class TestRepositoryOperations:
         await repo_db.delete_repository(repo_id)
         
         # Verify both databases were called
+@handle_async_errors(error_types=(Exception,))
         postgres_mock.execute.assert_called_once()
         neo4j_mock.execute.assert_called_once()
 
@@ -195,6 +203,7 @@ class TestGraphOperations:
         query = "MATCH (n:Node) WHERE n.name = $name RETURN n"
         params = {"name": "test"}
         results = await db.execute(query, params)
+@handle_async_errors(error_types=(Exception,))
         
         # Verify results
         assert results == expected_results
@@ -223,6 +232,7 @@ class TestGraphOperations:
         
         # Verify neo4j was called
         neo4j_mock.execute.assert_called_once()
+@handle_async_errors(error_types=(Exception,))
         
         # Verify the query contains MERGE
         query = neo4j_mock.execute.call_args[0][0]
@@ -241,6 +251,7 @@ class TestTransactions:
         neo4j_mock.begin_transaction.return_value = "tx-id-123"
         neo4j_mock.execute_in_transaction.return_value = [{"result": "success"}]
         
+@handle_async_errors(error_types=(Exception,))
         # Use transaction as context manager
         async with transaction as tx:
             result = await tx.execute("MATCH (n) RETURN n", {})
@@ -264,6 +275,7 @@ class TestTransactions:
         try:
             async with transaction as tx:
                 await tx.execute("MATCH (n) RETURN n", {})
+@handle_errors(error_types=(Exception,))
                 assert False, "Should have raised an exception"
         except Exception:
             pass  # Expected exception
@@ -291,6 +303,7 @@ class TestRetryManager:
             classification = manager.classify_error(error)
             assert classification == RetryClassification.RETRYABLE
         
+@handle_async_errors(error_types=(Exception,))
         # Test non-retryable errors
         non_retryable_errors = [
             ValueError("Invalid parameter"),
@@ -312,6 +325,7 @@ class TestRetryManager:
         mock_operation = AsyncMock(side_effect=[
             ConnectionError("First failure"),
             ConnectionError("Second failure"),
+@handle_async_errors(error_types=(Exception,))
             "Success"
         ])
         

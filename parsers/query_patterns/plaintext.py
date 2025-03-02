@@ -8,6 +8,7 @@ from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
 # Language identifier
 LANGUAGE = "plaintext"
 
+@handle_errors(error_types=(Exception,))
 def extract_list_item(match: Match) -> Dict[str, Any]:
     """Extract list item information."""
     return {
@@ -15,6 +16,7 @@ def extract_list_item(match: Match) -> Dict[str, Any]:
         "content": match.group(1),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_header(match: Match) -> Dict[str, Any]:
     """Extract header information."""
@@ -221,6 +223,7 @@ PLAINTEXT_PATTERNS_FOR_LEARNING = {
 }
 
 # Update PLAINTEXT_PATTERNS with learning patterns
+@handle_errors(error_types=(Exception,))
 PLAINTEXT_PATTERNS[PatternCategory.LEARNING] = PLAINTEXT_PATTERNS_FOR_LEARNING
 
 def extract_plaintext_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
@@ -414,6 +417,7 @@ PATTERN_RELATIONSHIPS = {
     "list_item": {
         "can_contain": ["url", "email"],
         "can_be_contained_by": ["document"]
+@handle_errors(error_types=(Exception,))
     }
 }
 
@@ -434,6 +438,7 @@ def extract_plaintext_features(node: dict) -> dict:
         },
         "documentation": {
             "headers": [],
+@handle_errors(error_types=(Exception,))
             "metadata": {}
         }
     }

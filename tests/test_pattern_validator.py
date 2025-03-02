@@ -40,6 +40,7 @@ class TestQueryPattern:
 class TestPatternValidator:
     """Tests for the PatternValidator class."""
     
+@handle_errors(error_types=(Exception,))
     def test_validate_pattern_definition_valid(self):
         """Test validation of a valid pattern definition."""
         # Create a valid pattern
@@ -52,6 +53,7 @@ class TestPatternValidator:
         
         errors = PatternValidator.validate_pattern_definition(pattern_name, definition)
         assert not errors, f"Expected no errors but got: {errors}"
+@handle_errors(error_types=(Exception,))
     
     def test_validate_pattern_definition_missing_pattern(self):
         """Test validation of a pattern definition with missing pattern."""
@@ -65,6 +67,7 @@ class TestPatternValidator:
         
         errors = PatternValidator.validate_pattern_definition(pattern_name, definition)
         assert errors
+@handle_errors(error_types=(Exception,))
         assert any("missing a pattern string" in error for error in errors)
     
     def test_validate_pattern_definition_invalid_regex(self):
@@ -78,6 +81,7 @@ class TestPatternValidator:
         )
         
         errors = PatternValidator.validate_pattern_definition(pattern_name, definition)
+@handle_errors(error_types=(Exception,))
         assert errors
         assert any("invalid regex" in error for error in errors)
     
@@ -91,6 +95,7 @@ class TestPatternValidator:
             description="Pattern with non-callable extract"
         )
         
+@handle_errors(error_types=(Exception,))
         errors = PatternValidator.validate_pattern_definition(pattern_name, definition)
         assert errors
         assert any("non-callable extract method" in error for error in errors)
@@ -104,6 +109,7 @@ class TestPatternValidator:
             query="(function_definition) @function",
             extract=lambda x: x,
             description="Valid query pattern"
+@handle_errors(error_types=(Exception,))
         )
         
         errors = PatternValidator.validate_query_pattern(pattern_name, definition)
@@ -118,6 +124,7 @@ class TestPatternValidator:
             query="",
             extract=lambda x: x,
             description="Invalid query pattern"
+@handle_errors(error_types=(Exception,))
         )
         
         errors = PatternValidator.validate_query_pattern(pattern_name, definition)
@@ -136,6 +143,7 @@ class TestPatternValidator:
                 pattern="(function_definition) @function",
                 query="(function_definition) @function",
                 extract=lambda x: x
+@handle_errors(error_types=(Exception,))
             )
         }
         
@@ -156,6 +164,7 @@ class TestPatternValidator:
         
         # Test name with spaces
         errors = PatternValidator.validate_pattern_naming("invalid pattern name")
+@handle_errors(error_types=(Exception,))
         assert errors
         assert any("contains spaces" in error for error in errors)
         
@@ -178,6 +187,7 @@ class TestPatternValidator:
                 pattern=r"class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:"
             )
         }
+@handle_errors(error_types=(Exception,))
         
         warnings = PatternValidator.check_duplicate_patterns(patterns)
         assert warnings
@@ -204,6 +214,7 @@ class TestPatternValidationFunctions:
             "javascript": {
                 "valid_pattern": TestPatternDefinition(
                     pattern=r"function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(",
+@handle_errors(error_types=(Exception,))
                     extract=lambda x: x
                 )
             }
@@ -218,6 +229,7 @@ class TestPatternValidationFunctions:
         """Test reporting validation results with errors."""
         # Create validation results with errors
         validation_results = {
+@handle_errors(error_types=(Exception,))
             "python": {
                 "invalid_pattern": ["Pattern 'invalid_pattern' is missing a pattern string"]
             }

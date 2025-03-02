@@ -65,6 +65,8 @@ class BaseParser(BaseParserInterface):
         Returns:
             Optional[Dict[str, Any]]: The cached AST if found, None otherwise
         """
+        import warnings
+        warnings.warn(f"{__name__}::_check_ast_cache is deprecated. Use async_check_ast_cache instead.", DeprecationWarning, stacklevel=2)
         import hashlib
         import asyncio
         from utils.cache import ast_cache
@@ -78,14 +80,15 @@ class BaseParser(BaseParserInterface):
                 return cached_ast
         return None
 
-    def _store_ast_in_cache(self, source_code: str, ast: Dict[str, Any]
-        ) ->None:
+    def _store_ast_in_cache(self, source_code: str, ast: Dict[str, Any]) ->None:
         """Store an AST in the cache.
         
         Args:
             source_code (str): The source code associated with the AST
             ast (Dict[str, Any]): The AST to cache
         """
+        import warnings
+        warnings.warn(f"{__name__}::_store_ast_in_cache is deprecated. Use async_store_ast_in_cache instead.", DeprecationWarning, stacklevel=2)
         import hashlib
         import asyncio
         from utils.cache import ast_cache
@@ -122,6 +125,7 @@ class BaseParser(BaseParserInterface):
                 .__dict__, errors=errors)
         return None
 
+@handle_errors(error_types=(Exception,))
     def cleanup(self):
         """Clean up parser resources."""
         self._initialized = False
@@ -172,12 +176,23 @@ class BaseParser(BaseParserInterface):
                 patterns.extend(doc_patterns)
         return patterns
 
-    def _extract_code_patterns(self, ast: Dict[str, Any], source_code: str
-        ) ->List[Dict[str, Any]]:
+    def _extract_code_patterns(self, ast: Dict[str, Any], source_code: str) ->List[Dict[str, Any]]:
         """Extract code patterns from AST. Override in subclasses for language-specific behavior."""
+        import warnings
+        warnings.warn(f"'_extract_code_patterns' is deprecated, use '_extract_code_patterns' instead", DeprecationWarning, stacklevel=2)
         return []
 
-    def _extract_doc_patterns(self, ast: Dict[str, Any], source_code: str
-        ) ->List[Dict[str, Any]]:
+
+    # Add deprecation warning
+
+    import warnings
+
+    warnings.warn(f"'_extract_doc_patterns' is deprecated, use '_extract_doc_patterns' instead", DeprecationWarning, stacklevel=2)
+    def _extract_doc_patterns(self, ast: Dict[str, Any], source_code: str) ->List[Dict[str, Any]]:
         """Extract documentation patterns from AST. Override in subclasses for language-specific behavior."""
+        import warnings
+        warnings.warn(f"'_extract_doc_patterns' is deprecated, use '_extract_doc_patterns' instead", DeprecationWarning, stacklevel=2)
         return []
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'_extract_code_patterns' is deprecated, use '_extract_code_patterns' instead", DeprecationWarning, stacklevel=2)

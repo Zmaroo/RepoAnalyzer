@@ -127,6 +127,7 @@ async def test_python_indexing_pipeline(mock_databases):
     
     log("Python indexing pipeline test completed successfully")
 
+@handle_errors(error_types=(Exception,))
 def check_pattern_coverage(result: ParserResult) -> Dict[str, Any]:
     """Check which patterns were matched in the file."""
     coverage = {}

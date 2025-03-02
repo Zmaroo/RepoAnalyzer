@@ -19,6 +19,7 @@ class PatternValidator:
     """Validates pattern definitions to ensure they are well-formed."""
     
     @staticmethod
+@handle_errors(error_types=(Exception,))
     def validate_pattern_definition(pattern_name: str, definition: PatternDefinition) -> List[str]:
         """
         Validate a pattern definition for completeness and correctness.
@@ -49,6 +50,7 @@ class PatternValidator:
         
         return errors
     
+@handle_errors(error_types=(Exception,))
     @staticmethod
     def validate_query_pattern(pattern_name: str, definition: QueryPattern) -> List[str]:
         """
@@ -72,6 +74,7 @@ class PatternValidator:
             errors.append(f"Query pattern '{pattern_name}' has non-callable extract method")
         
         return errors
+@handle_errors(error_types=(Exception,))
     
     @staticmethod
     def validate_language_patterns(language: str, patterns: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -96,6 +99,7 @@ class PatternValidator:
             if errors:
                 validation_results[pattern_name] = errors
         
+@handle_errors(error_types=(Exception,))
         return validation_results
     
     @staticmethod
@@ -121,6 +125,7 @@ class PatternValidator:
         # Check for snake_case: all lowercase with underscores
         if not pattern_name.islower() or (pattern_name.isalnum() and not pattern_name.islower()):
             errors.append(f"Pattern name '{pattern_name}' should use snake_case (all lowercase with underscores)")
+@handle_errors(error_types=(Exception,))
         
         return errors
 
@@ -152,6 +157,7 @@ class PatternValidator:
         return warnings
 
 
+@handle_errors(error_types=(Exception,))
 def validate_all_patterns(patterns_by_language: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, List[str]]]:
     """
     Validate all patterns across all languages.
@@ -181,6 +187,7 @@ def validate_all_patterns(patterns_by_language: Dict[str, Dict[str, Any]]) -> Di
     
     return validation_results
 
+@handle_errors(error_types=(Exception,))
 
 def report_validation_results(validation_results: Dict[str, Dict[str, List[str]]]) -> str:
     """

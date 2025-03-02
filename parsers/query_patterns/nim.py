@@ -8,6 +8,7 @@ from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
 # Language identifier
 LANGUAGE = "nim"
 
+@handle_errors(error_types=(Exception,))
 def extract_proc(match: Match) -> Dict[str, Any]:
     """Extract procedure information."""
     return {
@@ -17,6 +18,7 @@ def extract_proc(match: Match) -> Dict[str, Any]:
         "return_type": match.group(3),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_type(match: Match) -> Dict[str, Any]:
     """Extract type information."""
@@ -212,6 +214,7 @@ NIM_PATTERNS_FOR_LEARNING = {
 }
 
 # Update NIM_PATTERNS with learning patterns
+@handle_errors(error_types=(Exception,))
 NIM_PATTERNS[PatternCategory.LEARNING] = NIM_PATTERNS_FOR_LEARNING
 
 def extract_nim_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

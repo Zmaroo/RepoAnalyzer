@@ -20,6 +20,7 @@ class XmlParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(XML_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         self._initialized = True
         return True
@@ -141,6 +142,7 @@ class XmlParser(BaseParser):
         """Extract element patterns from the AST."""
         elements = []
         element_counts = Counter()
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict):
@@ -160,6 +162,7 @@ class XmlParser(BaseParser):
     def _extract_attribute_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract attribute patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         attributes = []
 
         def process_node(node):
@@ -183,6 +186,7 @@ class XmlParser(BaseParser):
 
     def _extract_namespace_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
+@handle_errors(error_types=(Exception,))
         """Extract namespace patterns from the AST."""
         namespaces = []
 

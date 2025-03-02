@@ -31,6 +31,7 @@ from utils.logger import log
 from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, AsyncErrorBoundary
 
 
+@handle_errors(error_types=(Exception,))
 def compute_offset(lines, line_no, col):
     """
     Compute the byte offset for a given (line, col) pair.
@@ -50,6 +51,7 @@ class OcamlParser(BaseParser):
         patterns_source = (OCAML_INTERFACE_PATTERNS if self.is_interface else
             OCAML_PATTERNS)
         self.patterns = self._compile_patterns(patterns_source)
+@handle_errors(error_types=(Exception,))
 
     def initialize(self) ->bool:
         """Initialize parser resources."""
@@ -196,6 +198,7 @@ class OcamlParser(BaseParser):
     def _extract_let_binding_patterns(self, ast: Dict[str, Any]) ->List[Dict
         [str, Any]]:
         """Extract let binding patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         bindings = []
 
         def process_node(node):
@@ -220,6 +223,7 @@ class OcamlParser(BaseParser):
 
     def _extract_type_patterns(self, ast: Dict[str, Any]) ->List[Dict[str, Any]
         ]:
+@handle_errors(error_types=(Exception,))
         """Extract type definition patterns from the AST."""
         types = []
 
@@ -237,6 +241,7 @@ class OcamlParser(BaseParser):
         return types
 
     def _extract_module_patterns(self, ast: Dict[str, Any]) ->List[Dict[str,
+@handle_errors(error_types=(Exception,))
         Any]]:
         """Extract module patterns from the AST."""
         modules = []
@@ -274,6 +279,7 @@ class OcamlParser(BaseParser):
 
     def _extract_naming_convention_patterns(self, ast: Dict[str, Any]) ->List[
         Dict[str, Any]]:
+@handle_errors(error_types=(Exception,))
         """Extract naming convention patterns from the AST."""
         values = []
         types = []
@@ -337,6 +343,7 @@ class OcamlParser(BaseParser):
             if dominant[1] > 0:
                 return dominant[0]
         return None
+@handle_errors(error_types=(Exception,))
 
     def _extract_documentation_patterns(self, ast: Dict[str, Any]) ->List[Dict
         [str, Any]]:

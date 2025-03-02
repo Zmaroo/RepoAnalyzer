@@ -27,6 +27,7 @@ class EditorconfigParser(BaseParser):
         self.property_pattern = re.compile('^\\s*([^=]+?)\\s*=\\s*(.*?)\\s*$')
         self.comment_pattern = re.compile('^\\s*[#;](.*)$')
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -156,6 +157,7 @@ class EditorconfigParser(BaseParser):
         str, Any]]:
         """Extract section patterns from the AST."""
         sections = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict) and node.get('type') == 'section':
@@ -174,6 +176,7 @@ class EditorconfigParser(BaseParser):
     def _extract_property_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract property patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         properties = []
 
         def process_node(node, current_section=None):
@@ -199,6 +202,7 @@ class EditorconfigParser(BaseParser):
         str, Any]]:
         """Extract style convention patterns from the AST."""
         style_patterns = []
+@handle_errors(error_types=(Exception,))
         indent_style = None
         indent_size = None
 

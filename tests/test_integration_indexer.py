@@ -84,6 +84,7 @@ class Args:
         self.deep_learning = kwargs.get("deep_learning", False)
 
 @pytest.fixture
+@handle_async_errors(error_types=(Exception,))
 async def setup_test_repo():
     """Create a test repository with sample files."""
     # Create temporary directory for test repository
@@ -108,6 +109,7 @@ async def setup_test_repo():
         shutil.rmtree(repo_dir)
         log("Test environment cleaned up", level="info")
 
+@handle_async_errors(error_types=(Exception,))
 @pytest.mark.asyncio
 async def test_repository_indexing(setup_test_repo):
     """Test the main repository indexing flow."""
@@ -172,6 +174,7 @@ async def test_repository_indexing(setup_test_repo):
     assert dependencies is not None, "Should get dependencies from graph"
     
     log("All indexer integration tests passed", level="info")
+@handle_async_errors(error_types=(Exception,))
     
 @pytest.mark.asyncio
 async def test_repository_search(setup_test_repo):
@@ -197,6 +200,7 @@ async def test_repository_search(setup_test_repo):
     
     # Test the search documentation function
     doc_results = await ai_assistant.search_documentation("test repository", repo_id)
+@handle_async_errors(error_types=(Exception,))
     log(f"Documentation search results: {doc_results}", level="info")
     
 # Mock version of main_async for testing

@@ -183,23 +183,28 @@ DOC_PATTERN_RULES = {
 }
 
 # Return a copy of the default thresholds
+@handle_errors(error_types=(Exception,))
 def get_default_thresholds() -> Dict[str, Any]:
     """Get a copy of the default threshold settings."""
     return DEFAULT_THRESHOLDS.copy()
 
+@handle_errors(error_types=(Exception,))
 # Get extraction policy for a specific pattern type
 def get_policy_for_pattern(pattern_type: PatternType) -> Dict[str, Any]:
     """Get the extraction policy for a specific pattern type."""
     return EXTRACTION_POLICIES.get(pattern_type, 
                                  EXTRACTION_POLICIES.get(PatternType.CODE_STRUCTURE))
+@handle_errors(error_types=(Exception,))
 
 # Get algorithm configuration for a specific algorithm
 def get_algorithm_config(algorithm_type: str) -> Dict[str, Any]:
     """Get the configuration for a graph algorithm."""
+@handle_errors(error_types=(Exception,))
     return GRAPH_ALGORITHMS.get(algorithm_type, GRAPH_ALGORITHMS["similarity"])
 
 # Get language-specific rules
 def get_language_rules(language: str) -> Dict[str, Any]:
+@handle_errors(error_types=(Exception,))
     """Get rules for a specific programming language."""
     return LANGUAGE_RULES.get(language.lower(), LANGUAGE_RULES["default"])
 

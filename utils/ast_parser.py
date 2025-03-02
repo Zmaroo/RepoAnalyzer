@@ -33,6 +33,7 @@ async def parse_files_for_cache(file_paths: List[str]) -> Dict[str, Any]:
         # Process files in parallel with a reasonable concurrency limit
         semaphore = asyncio.Semaphore(10)  # Limit concurrent parsing
         
+@handle_async_errors(error_types=(Exception,))
         async def process_file(file_path: str) -> Tuple[str, Optional[Dict[str, Any]]]:
             async with semaphore:
                 try:
@@ -117,6 +118,7 @@ async def parse_file_for_cache(file_path: str) -> Optional[Dict[str, Any]]:
         
         return parse_result.ast
 
+@handle_async_errors(error_types=(Exception,))
 async def get_ast_for_file(file_path: str, content: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Get AST for a file, using cache if available.

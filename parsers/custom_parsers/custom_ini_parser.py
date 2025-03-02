@@ -19,6 +19,7 @@ class IniParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(INI_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -156,6 +157,7 @@ class IniParser(BaseParser):
         str, Any]]:
         """Extract section patterns from the AST."""
         sections = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict) and node.get('type') == 'section':
@@ -180,6 +182,7 @@ class IniParser(BaseParser):
     def _extract_property_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract common property patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         property_categories = {}
 
         def collect_properties(node, categories=None):
@@ -226,6 +229,7 @@ class IniParser(BaseParser):
 
     def _extract_reference_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
+@handle_errors(error_types=(Exception,))
         """Extract reference patterns from the AST."""
         references = {}
 
@@ -260,6 +264,7 @@ class IniParser(BaseParser):
 
     def _extract_naming_convention_patterns(self, ast: Dict[str, Any]) ->List[
         Dict[str, Any]]:
+@handle_errors(error_types=(Exception,))
         """Extract naming convention patterns from the AST."""
         keys = []
         section_names = []

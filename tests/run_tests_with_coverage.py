@@ -11,6 +11,7 @@ import subprocess
 import argparse
 from pathlib import Path
 
+@handle_errors(error_types=(Exception,))
 def run_command(cmd, cwd=None):
     """Run a command and print its output."""
     print(f"Running: {' '.join(cmd)}")
@@ -23,6 +24,7 @@ def run_command(cmd, cwd=None):
         print(f"Error: {result.stderr}")
     
     return result.returncode
+@handle_errors(error_types=(Exception,))
 
 def ensure_coverage_installed():
     """Ensure coverage and pytest-cov are installed."""
@@ -32,6 +34,7 @@ def ensure_coverage_installed():
         print("Coverage tools already installed.")
     except ImportError:
         print("Installing coverage tools...")
+@handle_errors(error_types=(Exception,))
         subprocess.run([sys.executable, "-m", "pip", "install", "coverage", "pytest-cov"], check=True)
 
 def main():

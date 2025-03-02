@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
 import re
 
+@handle_errors(error_types=(Exception,))
 def extract_element(match: Match) -> Dict[str, Any]:
     """Extract element information."""
     return {
@@ -292,6 +293,7 @@ HTML_PATTERNS_FOR_LEARNING = {
 
 # Update the HTML_PATTERNS dictionary with the learning patterns
 HTML_PATTERNS[PatternCategory.LEARNING] = HTML_PATTERNS_FOR_LEARNING
+@handle_errors(error_types=(Exception,))
 
 def extract_html_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
     """

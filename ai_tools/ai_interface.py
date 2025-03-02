@@ -149,11 +149,13 @@ class AIAssistant:
             raise ProcessingError(f'Documentation search operation failed: {e}'
                 )
 
+@handle_errors(error_types=(Exception,))
     def get_available_docs(self, search_term: str, repo_id: int=None) ->list[
         dict]:
         """Find documentation that could be linked to a project."""
         from semantic.search import search_available_docs
         return search_available_docs(search_term, repo_id)
+@handle_errors(error_types=(Exception,))
 
     def share_documentation(self, doc_ids: list[int], target_repo_id: int
         ) ->dict:
@@ -423,6 +425,10 @@ class AIAssistant:
     @handle_errors(error_types=ProcessingError)
     def close(self) ->None:
         """[4.1.10] Cleanup all resources."""
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'close' is deprecated, use 'close_async' instead", DeprecationWarning, stacklevel=2)
+        
         with ErrorBoundary(operation_name='resource cleanup'):
             try:
                 self.graph_analysis.cleanup()
@@ -430,6 +436,7 @@ class AIAssistant:
                 self.reference_learning.cleanup()
                 log('All AI resources cleaned up.', level='debug')
             except Exception as e:
+@handle_async_errors(error_types=(Exception,))
                 raise ProcessingError(f'Error during AI resource cleanup: {e}')
 
     async def find_similar_code(self, query: str, repo_id: Optional[int]=

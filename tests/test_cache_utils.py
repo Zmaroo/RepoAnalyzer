@@ -27,12 +27,14 @@ import functools
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock the handle_async_errors decorator before importing the modules
+@handle_errors(error_types=(Exception,))
 def mock_handle_async_errors(*args, **kwargs):
     """Mock implementation of handle_async_errors that works for both usage patterns"""
     # If called with a function as the first argument, it's being used as @handle_async_errors
     if args and callable(args[0]):
         return args[0]
     # Otherwise, it's being used as @handle_async_errors(error_types, default_return)
+@handle_errors(error_types=(Exception,))
     else:
         def decorator(func):
             return func
@@ -84,11 +86,13 @@ class MockUnifiedCache:
         self.max_ttl = max_ttl
         self._cache = {}
         self._usage_tracker = MockKeyUsageTracker()
+@handle_async_errors(error_types=(Exception,))
     
     async def get_async(self, key: str, default: Any = None):
         """Get a value from the cache."""
         if key in self._cache and self._cache[key]["expires"] > time.time():
             return self._cache[key]["value"]
+@handle_async_errors(error_types=(Exception,))
         return default
     
     async def set_async(self, key: str, value: Any, ttl: Optional[int] = None):
@@ -96,14 +100,17 @@ class MockUnifiedCache:
         effective_ttl = ttl or self.default_ttl
         self._cache[key] = {
             "value": value,
+@handle_async_errors(error_types=(Exception,))
             "expires": time.time() + effective_ttl
         }
     
     async def exists_async(self, key: str) -> bool:
         """Check if a key exists in the cache."""
+@handle_async_errors(error_types=(Exception,))
         if key in self._cache and self._cache[key]["expires"] > time.time():
             return True
         return False
+@handle_async_errors(error_types=(Exception,))
     
     async def clear_async(self):
         """Clear the entire cache."""
@@ -113,10 +120,12 @@ class MockUnifiedCache:
         """Clear keys matching a pattern."""
         keys_to_remove = []
         for key in self._cache:
+@handle_async_errors(error_types=(Exception,))
             if pattern.replace("*", "") in key:
                 keys_to_remove.append(key)
         
         for key in keys_to_remove:
+@handle_async_errors(error_types=(Exception,))
             del self._cache[key]
     
     async def warmup(self, keys_values: Dict[str, Any], ttl: Optional[int] = None):
@@ -127,17 +136,20 @@ class MockUnifiedCache:
     async def warmup_from_function(self, keys: List[str], fetch_func: Callable[[List[str]], Awaitable[Dict[str, Any]]], ttl: Optional[int] = None):
         """Warm up the cache using a function to fetch values."""
         values = await fetch_func(keys)
+@handle_async_errors(error_types=(Exception,))
         await self.warmup(values, ttl)
 
 class MockCacheMetrics:
     """Mock implementation of CacheMetrics for testing."""
     
     def __init__(self):
+@handle_async_errors(error_types=(Exception,))
         self.metrics = {}
     
     async def increment(self, cache_name: str, event_type: str, count: int = 1):
         """Increment a metric counter."""
         key = f"{cache_name}:{event_type}"
+@handle_async_errors(error_types=(Exception,))
         if key not in self.metrics:
             self.metrics[key] = 0
         self.metrics[key] += count
@@ -152,11 +164,13 @@ class MockCacheMetrics:
         """Reset metrics."""
         if cache_name:
             keys_to_reset = [k for k in self.metrics if k.startswith(f"{cache_name}:")]
+@handle_async_errors(error_types=(Exception,))
             for key in keys_to_reset:
                 self.metrics[key] = 0
         else:
             self.metrics = {}
 
+@handle_errors(error_types=(Exception,))
 class MockKeyUsageTracker:
     """Mock implementation of KeyUsageTracker for testing."""
     
@@ -187,6 +201,7 @@ class MockRequestCache:
         self._cache = {}
         self._context_stack = []  # Stack to track nested contexts
 
+@handle_errors(error_types=(Exception,))
     def __enter__(self):
         """Enter a request context."""
         # Create a new context (empty dict) for this context level
@@ -197,11 +212,13 @@ class MockRequestCache:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit a request context."""
         if self._context_stack:
+@handle_errors(error_types=(Exception,))
             self._context_stack.pop()
         return False
 
     def get(self, key, default=None):
         """Get a value from the cache."""
+@handle_errors(error_types=(Exception,))
         if not self._context_stack:
             return default
         
@@ -212,11 +229,15 @@ class MockRequestCache:
         return default
 
     def set(self, key, value):
+@handle_errors(error_types=(Exception,))
         """Set a value in the cache."""
         if self._context_stack:
             # Set in the current (most recent) context
             self._context_stack[-1][key] = value
+@handle_errors(error_types=(Exception,))
+@handle_errors(error_types=(Exception,))
 
+@handle_errors(error_types=(Exception,))
     def exists(self, key):
         """Check if a key exists in the cache."""
         if not self._context_stack:
@@ -238,6 +259,7 @@ class MockRequestCache:
         def decorator(func):
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
+                warnings.warn(f"'wrapper' is deprecated, use 'wrapper' instead", DeprecationWarning, stacklevel=2)
                 # If not in a context, just execute the function
                 if not self._context_stack:
                     return func(*args, **kwargs)
@@ -256,10 +278,12 @@ class MockRequestCache:
                 # Call function and cache result
                 result = func(*args, **kwargs)
                 self.set(key, result)
+@handle_async_errors(error_types=(Exception,))
                 return result
             return wrapper
         return decorator
 
+@handle_errors(error_types=(Exception,))
 # Mock the create_cache factory function
 def mock_create_cache(name: str, ttl: int = 3600, use_redis: bool = False, 
                      adaptive_ttl: bool = False, min_ttl: int = 60, max_ttl: int = 86400):
@@ -275,10 +299,12 @@ class TestUnifiedCache:
     
     @pytest.mark.asyncio
     async def test_basic_operations(self):
+@handle_async_errors(error_types=(Exception,))
         """Test basic cache set/get operations."""
         cache = MockUnifiedCache("test_cache", ttl=60)
         
         # Test set and get
+@handle_errors(error_types=(Exception,))
         await cache.set_async("key1", "value1")
         value = await cache.get_async("key1")
         assert value == "value1"
@@ -301,6 +327,7 @@ class TestUnifiedCache:
         
         # Mock time.time to control the apparent passage of time
         current_time = time.time()
+@handle_async_errors(error_types=(Exception,))
         
         def mock_time():
             return current_time
@@ -320,6 +347,7 @@ class TestUnifiedCache:
         # Value should be expired
         value = await cache.get_async("key1")
         assert value is None
+@handle_async_errors(error_types=(Exception,))
     
     @pytest.mark.asyncio
     async def test_clear_cache(self):
@@ -337,6 +365,7 @@ class TestUnifiedCache:
         # Clear the cache
         await cache.clear_async()
         
+@handle_async_errors(error_types=(Exception,))
         # Verify values are gone
         assert await cache.get_async("key1") is None
         assert await cache.get_async("key2") is None
@@ -351,6 +380,8 @@ class TestUnifiedCache:
         await cache.set_async("user:2", "user data 2")
         await cache.set_async("post:1", "post data 1")
         
+@handle_async_errors(error_types=(Exception,))
+@handle_async_errors(error_types=(Exception,))
         # Clear only user keys
         await cache.clear_pattern_async("user:*")
         
@@ -372,6 +403,7 @@ class TestUnifiedCache:
         
         # Verify values were cached
         assert await cache.get_async("key1") == "value1"
+@handle_async_errors(error_types=(Exception,))
         assert await cache.get_async("key2") == "value2"
     
     @pytest.mark.asyncio
@@ -391,6 +423,7 @@ class TestUnifiedCache:
         
         # Verify values were cached
         assert await cache.get_async("key1") == "value_for_key1"
+@handle_async_errors(error_types=(Exception,))
         assert await cache.get_async("key2") == "value_for_key2"
 
 class TestCacheMetrics:
@@ -417,6 +450,7 @@ class TestCacheMetrics:
         assert cache_metrics["test_cache:misses"] == 1
     
     @pytest.mark.asyncio
+@handle_async_errors(error_types=(Exception,))
     async def test_reset_metrics(self):
         """Test resetting cache metrics."""
         metrics = MockCacheMetrics()
@@ -429,6 +463,7 @@ class TestCacheMetrics:
         await metrics.reset_metrics("cache1")
         
         # Check metrics
+@handle_errors(error_types=(Exception,))
         all_metrics = await metrics.get_metrics()
         assert all_metrics.get("cache1:hits", 0) == 0
         assert all_metrics["cache2:hits"] == 3
@@ -450,6 +485,7 @@ class TestKeyUsageTracker:
         
         # Record accesses
         await tracker.record_access("key1")
+@handle_errors(error_types=(Exception,))
         await tracker.record_access("key1")
         await tracker.record_access("key2")
         
@@ -464,6 +500,7 @@ class TestKeyUsageTracker:
         # No accesses yet
         ttl = tracker.get_adaptive_ttl("key1", 3600, 60, 86400)
         assert ttl == 3600
+@handle_errors(error_types=(Exception,))
         
         # Simulate some accesses
         tracker.access_counts["key1"] = 5
@@ -478,6 +515,7 @@ class TestKeyUsageTracker:
 
 class TestRequestCache:
     """Tests for the RequestCache class."""
+@handle_errors(error_types=(Exception,))
     
     def test_basic_operations(self):
         """Test basic request cache operations."""
@@ -495,8 +533,10 @@ class TestRequestCache:
         assert cache.get("key1") is None
     
     def test_context_manager(self):
+@handle_errors(error_types=(Exception,))
         """Test request cache as context manager."""
         cache = MockRequestCache()
+@handle_errors(error_types=(Exception,))
         
         # First context
         with cache:
@@ -527,10 +567,13 @@ class TestRequestCache:
             # Outer context can't see inner values
             assert cache.get("inner") is None
     
+@handle_errors(error_types=(Exception,))
     def test_cached_in_request_decorator(self):
+@handle_errors(error_types=(Exception,))
         """Test the cached_in_request decorator."""
         cache = MockRequestCache()
         
+@handle_errors(error_types=(Exception,))
         call_count = 0
         
         @cache.cached_in_request()
@@ -583,6 +626,7 @@ class TestRequestCache:
             assert call_count == 1
             
             # Different second arg, but same key - should use cache
+@handle_async_errors(error_types=(Exception,))
             result2 = multi_arg_function("a", "c")
             assert result2 == "a_b"  # Note: returns cached result
             assert call_count == 1
@@ -591,6 +635,7 @@ class TestRequestCache:
             result3 = multi_arg_function("d", "e")
             assert result3 == "d_e"
             assert call_count == 2
+@handle_async_errors(error_types=(Exception,))
 
 @pytest.mark.asyncio
 async def test_create_cache_factory():
@@ -611,6 +656,7 @@ async def test_create_cache_factory():
     assert custom_cache.name == "custom_cache"
     assert custom_cache.default_ttl == 300
     assert custom_cache.use_redis is True
+@handle_async_errors(error_types=(Exception,))
     assert custom_cache.adaptive_ttl is True
 
 @pytest.mark.asyncio
@@ -651,6 +697,7 @@ async def test_clear_cache_utils():
                 await clear_cache_files()
                 
                 # Verify the cache files were removed
+@handle_async_errors(error_types=(Exception,))
                 assert not pyc_file.exists(), "Cache file should be removed"
                 assert not pycache_dir.exists(), "Cache directory should be removed"
 

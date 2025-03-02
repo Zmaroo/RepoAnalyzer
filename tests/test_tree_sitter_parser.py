@@ -3,6 +3,7 @@
 import asyncio
 import pytest
 from unittest.mock import Mock, MagicMock, patch, AsyncMock
+import warnings
 
 from parsers.tree_sitter_parser import TreeSitterParser
 from parsers.types import FileType, ParserType
@@ -56,11 +57,13 @@ SAMPLE_AST = {
 }
 
 @pytest.fixture
+@handle_errors(error_types=(Exception,))
 def tree_sitter_parser():
     """Create a TreeSitterParser instance."""
     parser = TreeSitterParser(language_id="python", file_type=FileType.CODE)
     return parser
 
+@handle_errors(error_types=(Exception,))
 @pytest.fixture
 def mock_ast_cache():
     """Mock the AST cache for testing."""
@@ -68,6 +71,7 @@ def mock_ast_cache():
         mock_cache.get_async = AsyncMock()
         mock_cache.set_async = AsyncMock()
         yield mock_cache
+@handle_errors(error_types=(Exception,))
 
 @pytest.fixture
 def mock_tree_sitter():
@@ -77,6 +81,7 @@ def mock_tree_sitter():
         mock_tree = MagicMock()
         mock_language.parse.return_value = mock_tree
         mock_get_parser.return_value = mock_language
+@handle_errors(error_types=(Exception,))
         yield mock_tree
 
 @pytest.fixture
@@ -88,15 +93,27 @@ def mock_block_extractor():
 class TestTreeSitterParser:
     """Tests for the TreeSitterParser class."""
     
+    
+    # Add deprecation warning
+@handle_errors(error_types=(Exception,))
+    
+    import warnings
+    
+    warnings.warn(f"'test_initialization' is deprecated, use 'test_initialization' instead", DeprecationWarning, stacklevel=2)
     def test_initialization(self, tree_sitter_parser):
         """Test that the parser is initialized correctly."""
+        # Add deprecation warning
+        warnings.warn(f"'test_initialization' is deprecated, use 'test_initialization' instead", DeprecationWarning, stacklevel=2)
+        
         assert tree_sitter_parser.language_id == "python"
+@handle_errors(error_types=(Exception,))
         assert tree_sitter_parser.file_type == FileType.CODE
         assert tree_sitter_parser.parser_type == ParserType.TREE_SITTER
         assert tree_sitter_parser._language is None
         assert tree_sitter_parser._initialized is False
     
     def test_initialize(self, tree_sitter_parser, mock_tree_sitter):
+@handle_errors(error_types=(Exception,))
         """Test the initialize method."""
         result = tree_sitter_parser.initialize()
         assert result is True
@@ -110,6 +127,7 @@ class TestTreeSitterParser:
         
         # Call the method
         result = tree_sitter_parser._parse_source(SAMPLE_PYTHON_CODE)
+@handle_errors(error_types=(Exception,))
         
         # Verify cache was checked
         mock_ast_cache.get_async.assert_called_once()
@@ -128,11 +146,13 @@ class TestTreeSitterParser:
         tree_sitter_parser._language.parse.return_value = mock_tree
         
         # Call the method
+@handle_errors(error_types=(Exception,))
         with patch('parsers.tree_sitter_parser.asyncio.run', side_effect=lambda coroutine: None):
             result = tree_sitter_parser._parse_source(SAMPLE_PYTHON_CODE)
             
             # Check the result
             assert "root" in result
+@handle_errors(error_types=(Exception,))
             assert "tree" in result
 
     @pytest.mark.skip(reason="Skipping due to complexity with mocking error handling decorators")
@@ -176,6 +196,7 @@ class TestTreeSitterParser:
             
             # Call the method with a mock AST
             ast = {"root": MagicMock()}
+@handle_errors(error_types=(Exception,))
             result = tree_sitter_parser._process_pattern(ast, SAMPLE_PYTHON_CODE, pattern)
             
             # Check the result
@@ -207,6 +228,7 @@ class TestTreeSitterParser:
         
         # Set up the tree structure
         mock_root.children = [mock_error_node, mock_normal_node]
+@handle_errors(error_types=(Exception,))
         
         # Call the method
         result = tree_sitter_parser._get_syntax_errors_recursive(mock_root)
@@ -255,6 +277,7 @@ class TestTreeSitterParser:
         children_with_one_item.__len__ = MagicMock(return_value=1)
         children_with_one_item.__iter__ = MagicMock(return_value=iter([mock_leaf_node]))
         children_with_one_item.__getitem__ = MagicMock(side_effect=lambda idx: mock_leaf_node if idx == 0 else None)
+@handle_errors(error_types=(Exception,))
         mock_parent_node.children = children_with_one_item
         
         # Call the method on a parent node
@@ -265,6 +288,7 @@ class TestTreeSitterParser:
         assert result['start'] == (1, 0)
         assert result['end'] == (3, 0)
         assert result['text'] is None  # Text should be None for nodes with children
+@handle_errors(error_types=(Exception,))
         assert len(result['children']) == 1
     
     def test_get_supported_languages(self, tree_sitter_parser):
@@ -307,9 +331,14 @@ class TestTreeSitterParser:
         ]
         mock_function_query.captures.return_value = mock_function_captures
         
+@handle_errors(error_types=(Exception,))
         # Set up mock query for classes
         mock_class_query = MagicMock()
         # First capture is the class node itself
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'mock_query' is deprecated, use 'mock_query' instead", DeprecationWarning, stacklevel=2)
+        
         mock_class_captures = [
             ("class", mock_class_node),
             ("class.name", mock_class_name_node)
@@ -318,6 +347,8 @@ class TestTreeSitterParser:
         
         # Configure mock language to return the queries
         def mock_query(query_string):
+@handle_errors(error_types=(Exception,))
+            warnings.warn(f"'mock_query' is deprecated, use 'mock_query' instead", DeprecationWarning, stacklevel=2)
             if "function_definition" in query_string:
                 return mock_function_query
             elif "class_definition" in query_string:
@@ -362,4 +393,6 @@ class TestTreeSitterParser:
             assert class_pattern is not None
             assert class_pattern['metadata']['name'] == 'TestClass'
             assert class_pattern['language'] == 'python'
-            assert class_pattern['pattern_type'] == 'CLASS_DEFINITION' 
+            assert class_pattern['pattern_type'] == 'CLASS_DEFINITION'
+            
+            warnings.warn(f"'test_initialization' is deprecated, use 'test_initialization' instead", DeprecationWarning, stacklevel=2)

@@ -53,6 +53,7 @@ class PipelineTest:
         self.repo_id = None
         self.results = {}
     
+@handle_async_errors(error_types=(Exception,))
     async def setup(self):
         """Set up the test environment."""
         if self.clean_db:
@@ -98,6 +99,7 @@ class PipelineTest:
         print("Sample files for testing:")
         for ext, files in self.sample_files.items():
             print(f"  {ext}: {len(files)} files")
+@handle_async_errors(error_types=(Exception,))
     
     async def test_language_detection(self):
         """Test language detection from filenames and content."""
@@ -126,6 +128,7 @@ class PipelineTest:
                 })
         
         self.results['language_detection'] = results
+@handle_async_errors(error_types=(Exception,))
         return results
     
     async def test_parser_selection(self):
@@ -159,6 +162,7 @@ class PipelineTest:
                         'parser_type': f"ERROR: {str(e)}"
                     })
         
+@handle_async_errors(error_types=(Exception,))
         self.results['parser_selection'] = results
         return results
     
@@ -219,6 +223,7 @@ class PipelineTest:
                         'error': str(e),
                         'traceback': tb
                     })
+@handle_async_errors(error_types=(Exception,))
         
         self.results['parsing'] = results
         return results
@@ -312,6 +317,7 @@ class PipelineTest:
                         results['database']['neo4j'][ext] = "No parser available"
                 except Exception as e:
                     tb = traceback.format_exc()
+@handle_async_errors(error_types=(Exception,))
                     results['database']['error'] = {'message': str(e), 'traceback': tb}
         
         self.results['database_operations'] = results
@@ -353,6 +359,7 @@ class PipelineTest:
             
             driver.close()
         except Exception as e:
+@handle_async_errors(error_types=(Exception,))
             tb = traceback.format_exc()
             results['graph_projection']['error'] = {'message': str(e), 'traceback': tb}
         
@@ -382,6 +389,7 @@ class PipelineTest:
                 'results_count': len(doc_results),
                 'has_results': len(doc_results) > 0
             }
+@handle_async_errors(error_types=(Exception,))
         except Exception as e:
             tb = traceback.format_exc()
             results['semantic_search']['error'] = {'message': str(e), 'traceback': tb}
@@ -410,6 +418,7 @@ class PipelineTest:
                 duration = time.time() - start_time
                 success = 'error' not in str(result).lower()
                 status = '✅ Passed' if success else '❌ Failed'
+@handle_errors(error_types=(Exception,))
                 print(f"{status} in {duration:.2f} seconds")
             except Exception as e:
                 duration = time.time() - start_time
@@ -428,6 +437,7 @@ class PipelineTest:
         
         print("\nDetailed results are available in the self.results dictionary.")
 
+@handle_async_errors(error_types=(Exception,))
 async def main_async():
     """Run the pipeline tests asynchronously."""
     if not HAS_IMPORTS:
@@ -454,6 +464,7 @@ async def main_async():
     finally:
         # Clean up
         await close_db_pool()
+@handle_errors(error_types=(Exception,))
 
 def main():
     """Main entry point."""

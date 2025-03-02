@@ -45,6 +45,7 @@ class SchemaError(DatabaseError):
     """Schema management specific errors."""
     pass
 
+@handle_async_errors(error_types=(Exception,))
 async def drop_all_tables():
     """[6.6.4] Clean database state."""
     # Drop in correct order for foreign key constraints
@@ -58,6 +59,7 @@ async def drop_all_tables():
     await query("DROP TABLE IF EXISTS code_snippets CASCADE;")
     await query("DROP TABLE IF EXISTS repositories CASCADE;")
     log("✅ All existing database tables dropped!")
+@handle_async_errors(error_types=(Exception,))
 
 async def create_repositories_table():
     sql = """
@@ -74,6 +76,7 @@ async def create_repositories_table():
                 ON DELETE SET NULL
     );
     """
+@handle_async_errors(error_types=(Exception,))
     await query(sql)
 
 async def create_code_snippets_table():
@@ -97,6 +100,7 @@ async def create_code_snippets_table():
     sql_index = """
     CREATE INDEX IF NOT EXISTS idx_code_snippets_embedding 
     ON code_snippets USING ivfflat (embedding vector_cosine_ops);
+@handle_async_errors(error_types=(Exception,))
     """
     await query(sql_index)
 
@@ -123,6 +127,7 @@ async def create_repo_docs_table():
     # Vector similarity index
     sql_index = """
     CREATE INDEX IF NOT EXISTS idx_repo_docs_embedding 
+@handle_async_errors(error_types=(Exception,))
     ON repo_docs USING ivfflat (embedding vector_cosine_ops);
     """
     await query(sql_index)
@@ -135,6 +140,7 @@ async def create_repo_doc_relations_table():
         doc_id INTEGER REFERENCES repo_docs(id) ON DELETE CASCADE,
         is_primary BOOLEAN DEFAULT false,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+@handle_async_errors(error_types=(Exception,))
         PRIMARY KEY (repo_id, doc_id)
     );
     """
@@ -149,6 +155,7 @@ async def create_doc_versions_table():
         content TEXT NOT NULL,
         version INTEGER NOT NULL,
         changes_summary TEXT,
+@handle_async_errors(error_types=(Exception,))
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(doc_id, version)
     );
@@ -161,6 +168,7 @@ async def create_doc_clusters_table():
     CREATE TABLE IF NOT EXISTS doc_clusters (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
+@handle_async_errors(error_types=(Exception,))
         description TEXT,
         metadata JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -177,6 +185,7 @@ async def create_code_patterns_table():
         file_path TEXT NOT NULL,
         language TEXT NOT NULL,
         pattern_type TEXT NOT NULL,
+@handle_async_errors(error_types=(Exception,))
         elements JSONB NOT NULL,
         sample TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -193,6 +202,7 @@ async def create_doc_patterns_table():
         repo_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
         doc_type TEXT NOT NULL,
         pattern_type TEXT NOT NULL,
+@handle_async_errors(error_types=(Exception,))
         count INTEGER NOT NULL,
         samples TEXT[] NOT NULL,
         common_structure JSONB NOT NULL,

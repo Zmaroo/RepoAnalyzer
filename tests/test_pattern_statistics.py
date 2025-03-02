@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from analytics.pattern_statistics import PatternStatisticsManager, PatternMetrics
 from parsers.models import PatternType
 
+@handle_errors(error_types=(Exception,))
 def async_mock():
     """Create a mock for an async function that returns a coroutine."""
     mock = MagicMock()
@@ -26,6 +27,7 @@ def async_mock():
 
 class TestPatternStatistics(unittest.TestCase):
     """Test the Pattern Statistics system."""
+@handle_errors(error_types=(Exception,))
 
     def setUp(self):
         """Set up test fixtures."""
@@ -79,6 +81,7 @@ class TestPatternStatistics(unittest.TestCase):
                 compilation_time_ms=2.0,
                 matches_found=i,  # Varying match counts
                 memory_bytes=800
+@handle_errors(error_types=(Exception,))
             )
 
     def test_track_pattern_execution(self):
@@ -102,6 +105,7 @@ class TestPatternStatistics(unittest.TestCase):
         
         # Test derived metrics
         self.assertEqual(metrics.hit_ratio, 5.0)  # 5 matches / 1 execution
+@handle_errors(error_types=(Exception,))
         self.assertEqual(metrics.avg_execution_time_ms, 10.0)
         self.assertGreater(metrics.value_score, 0)
         
@@ -130,6 +134,7 @@ class TestPatternStatistics(unittest.TestCase):
         self.assertEqual(metrics.hit_ratio, 2.0)
         
         # Should have execution history
+@handle_errors(error_types=(Exception,))
         self.assertEqual(len(metrics.execution_times), 5)
         self.assertEqual(len(metrics.match_counts), 5)
         self.assertEqual(len(metrics.timestamps), 5)
@@ -155,6 +160,7 @@ class TestPatternStatistics(unittest.TestCase):
         self.assertGreater(len(analysis["most_valuable_patterns"]), 0)
         
         self.assertIn("performance_bottlenecks", analysis)
+@handle_errors(error_types=(Exception,))
         self.assertGreater(len(analysis["performance_bottlenecks"]), 0)
         
         self.assertIn("recommendations", analysis)
@@ -168,6 +174,7 @@ class TestPatternStatistics(unittest.TestCase):
         self.assertEqual(len(rankings), 4)
         
         # Should be sorted by value score (descending)
+@handle_errors(error_types=(Exception,))
         for i in range(1, len(rankings)):
             self.assertGreaterEqual(
                 rankings[i-1]["value_score"],
@@ -190,6 +197,7 @@ class TestPatternStatistics(unittest.TestCase):
         
         # Get metrics for a pattern that doesn't exist
         metrics = self.manager.get_pattern_metrics(
+@handle_errors(error_types=(Exception,))
             pattern_id="nonexistent_pattern",
             language="python",
             pattern_type=PatternType.CODE_STRUCTURE
@@ -209,6 +217,7 @@ class TestPatternStatistics(unittest.TestCase):
         python_stats = language_stats["python"]
         self.assertEqual(python_stats["pattern_count"], 3)  # 3 python patterns
         self.assertEqual(python_stats["total_executions"], 7)  # 1 + 1 + 5 executions
+@handle_errors(error_types=(Exception,))
         self.assertEqual(python_stats["total_matches"], 15)  # 5 + 0 + 10 matches
         
         # Check javascript stats
@@ -220,6 +229,7 @@ class TestPatternStatistics(unittest.TestCase):
     def test_get_recommendations(self):
         """Test generating optimization recommendations."""
         recommendations = self.manager.get_recommendations()
+@handle_errors(error_types=(Exception,))
         
         # Should have some recommendations
         self.assertGreater(len(recommendations), 0)
@@ -235,6 +245,7 @@ class TestPatternStatistics(unittest.TestCase):
         
         # Should have some recommendations (for patterns with good value scores)
         self.assertGreater(len(recommendations), 0)
+@handle_errors(error_types=(Exception,))
         
         # Each recommendation should have pattern_id, language, type, priority, and reason
         for rec in recommendations:
@@ -249,6 +260,7 @@ class TestPatternStatistics(unittest.TestCase):
         """Test generating visualizations."""
         # Mock plt.savefig to avoid actually creating a file
         mock_savefig.return_value = None
+@handle_errors(error_types=(Exception,))
         
         output_path = self.manager.generate_visualization("test_visualization.png")
         

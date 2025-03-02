@@ -22,9 +22,11 @@ from parsers.models import PatternMatch
 class TestBlockExtractor(unittest.TestCase):
     """Test cases for the TreeSitterBlockExtractor class."""
 
+@handle_errors(error_types=(Exception,))
     def setUp(self):
         """Set up the test environment."""
         self.extractor = TreeSitterBlockExtractor()
+@handle_errors(error_types=(Exception,))
 
     def test_extracted_block_dataclass(self):
         """Test the ExtractedBlock dataclass."""
@@ -42,16 +44,19 @@ class TestBlockExtractor(unittest.TestCase):
         self.assertEqual(block.end_point, (2, 8))
         self.assertEqual(block.node_type, "function_definition")
         self.assertEqual(block.metadata, {"name": "test"})
+@handle_errors(error_types=(Exception,))
         self.assertEqual(block.confidence, 0.9)
 
     def test_block_extractor_init(self):
         """Test the initialization of the TreeSitterBlockExtractor."""
+@handle_errors(error_types=(Exception,))
         extractor = TreeSitterBlockExtractor()
         self.assertEqual(extractor._language_parsers, {})
 
     def test_block_extractor_singleton(self):
         """Test that block_extractor is a singleton instance."""
         self.assertIsInstance(block_extractor, TreeSitterBlockExtractor)
+@handle_errors(error_types=(Exception,))
         # Create a new instance and verify it's different
         new_extractor = TreeSitterBlockExtractor()
         self.assertIsNot(block_extractor, new_extractor)
@@ -62,6 +67,7 @@ class TestBlockExtractor(unittest.TestCase):
             mock_parser = MagicMock()
             mock_get_parser.return_value = mock_parser
             
+@handle_errors(error_types=(Exception,))
             # Test parser initialization
             parser = self.extractor._initialize_parser("python")
             mock_get_parser.assert_called_once_with("python")
@@ -88,6 +94,7 @@ class TestBlockExtractor(unittest.TestCase):
                 metadata={"source": "heuristic"},
                 confidence=0.7
             )
+@handle_errors(error_types=(Exception,))
             mock_heuristic.return_value = expected_block
             
             result = self.extractor.extract_block("python", source_code, mock_match)
@@ -111,6 +118,7 @@ class TestBlockExtractor(unittest.TestCase):
             end_point=(2, 16),
             node_type="heuristic_block",
             metadata={"source": "heuristic"},
+@handle_errors(error_types=(Exception,))
             confidence=0.7
         )
         
@@ -133,6 +141,7 @@ class TestBlockExtractor(unittest.TestCase):
         
         result = self.extractor._extract_from_node("python", source_code, mock_node)
         
+@handle_errors(error_types=(Exception,))
         self.assertEqual(result.content, "def test():\n    print('Hello')\n    return True")
         self.assertEqual(result.start_point, (1, 0))
         self.assertEqual(result.end_point, (3, 12))
@@ -151,6 +160,7 @@ class TestBlockExtractor(unittest.TestCase):
         
         # Test Python-specific block types
         for block_type in ["function_definition", "class_definition", "if_statement"]:
+@handle_errors(error_types=(Exception,))
             mock_node = MagicMock()
             mock_node.type = block_type
             self.assertTrue(self.extractor._is_block_node("python", mock_node))
@@ -169,6 +179,7 @@ class TestBlockExtractor(unittest.TestCase):
             self.assertTrue(self.extractor._is_container_node("python", mock_node))
         
         # Test Python-specific container types
+@handle_errors(error_types=(Exception,))
         for container_type in ["module", "class_definition", "function_definition"]:
             mock_node = MagicMock()
             mock_node.type = container_type

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
 import re
 
+@handle_errors(error_types=(Exception,))
 def extract_header(match: Match) -> Dict[str, Any]:
     """Extract header information."""
     return {
@@ -12,6 +13,7 @@ def extract_header(match: Match) -> Dict[str, Any]:
         "title": match.group(1),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_section(match: Match) -> Dict[str, Any]:
     """Extract section information."""
@@ -187,6 +189,7 @@ ASCIIDOC_PATTERNS_FOR_LEARNING = {
 
 # Add the repository learning patterns to the main patterns
 ASCIIDOC_PATTERNS['REPOSITORY_LEARNING'] = ASCIIDOC_PATTERNS_FOR_LEARNING
+@handle_errors(error_types=(Exception,))
 
 # Function to extract patterns for repository learning
 def extract_asciidoc_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

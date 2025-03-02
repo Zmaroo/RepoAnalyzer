@@ -19,6 +19,7 @@ class PlaintextParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(PLAINTEXT_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -245,6 +246,7 @@ class PlaintextParser(BaseParser):
         str, Any]]:
         """Extract reference patterns from the AST."""
         references = {}
+@handle_errors(error_types=(Exception,))
 
         def collect_references(node):
             if isinstance(node, dict):

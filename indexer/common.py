@@ -13,6 +13,7 @@ from functools import wraps
 
 # Deprecated: Use handle_async_errors from utils.error_handling instead
 # Keeping this for backward compatibility but marking as deprecated
+@handle_errors(error_types=(Exception,))
 def async_handle_errors(async_func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
     """[DEPRECATED] Use handle_async_errors from utils.error_handling instead."""
     from utils.error_handling import handle_async_errors

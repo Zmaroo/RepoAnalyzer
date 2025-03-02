@@ -125,16 +125,19 @@ class TreeSitterParser(BaseParser):
             _convert_tree_to_dict(child) for child in node.children] if
             node.children else []}
 
+@handle_errors(error_types=(Exception,))
     def get_supported_languages(self) ->Set[str]:
         """Get set of supported languages."""
         return TREE_SITTER_LANGUAGES.copy()
 
-    def _extract_code_patterns(self, ast: Dict[str, Any], source_code: str
-        ) ->List[Dict[str, Any]]:
+    def _extract_code_patterns(self, ast: Dict[str, Any], source_code: str) ->List[Dict[str, Any]]:
         """
         Extract code patterns from AST using tree-sitter.
         This implementation overrides the base method to provide tree-sitter specific extraction.
         """
+        import warnings
+        warnings.warn(f"'_extract_code_patterns' is deprecated, use '_extract_code_patterns' instead", DeprecationWarning, stacklevel=2)
+        
         patterns = []
         with ErrorBoundary(error_types=(Exception,), operation_name=
             'extract_code_patterns_tree_sitter'):

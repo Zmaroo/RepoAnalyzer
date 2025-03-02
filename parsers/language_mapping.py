@@ -141,6 +141,7 @@ def normalize_language_name(language: str) ->str:
     return 'unknown'
 
 
+@handle_errors(error_types=(Exception,))
 def is_supported_language(language_id: str) ->bool:
     """
     Check if language is supported by any parser.
@@ -155,6 +156,7 @@ def is_supported_language(language_id: str) ->bool:
     return (normalized in TREE_SITTER_LANGUAGES or normalized in
         CUSTOM_PARSER_LANGUAGES)
 
+@handle_errors(error_types=(Exception,))
 
 def get_parser_type(language_id: str) ->ParserType:
     """
@@ -172,6 +174,7 @@ def get_parser_type(language_id: str) ->ParserType:
     elif normalized in TREE_SITTER_LANGUAGES:
         return ParserType.TREE_SITTER
     return ParserType.UNKNOWN
+@handle_errors(error_types=(Exception,))
 
 
 def get_fallback_parser_type(language_id: str) ->ParserType:
@@ -193,6 +196,7 @@ def get_fallback_parser_type(language_id: str) ->ParserType:
         } and normalized in CUSTOM_PARSER_LANGUAGES:
         return ParserType.TREE_SITTER
     else:
+@handle_errors(error_types=(Exception,))
         return ParserType.UNKNOWN
 
 
@@ -206,6 +210,7 @@ def get_file_type(language_id: str) ->FileType:
     Returns:
         FileType enum value
     """
+@handle_errors(error_types=(Exception,))
     normalized = normalize_language_name(language_id)
     return LANGUAGE_TO_FILE_TYPE.get(normalized, FileType.CODE)
 
@@ -220,6 +225,7 @@ def is_binary_extension(ext: str) ->bool:
     Returns:
         True if binary, False otherwise
     """
+@handle_errors(error_types=(Exception,))
     if not ext.startswith('.'):
         ext = f'.{ext}'
     return ext.lower() in BINARY_EXTENSIONS
@@ -255,6 +261,7 @@ def detect_language_from_filename(filename: str) ->Optional[str]:
             ):
             return 'yaml'
         elif filename_lower.endswith('.toml'):
+@handle_errors(error_types=(Exception,))
             return 'toml'
         elif filename_lower.endswith('.ini'):
             return 'ini'
@@ -301,6 +308,7 @@ def detect_language_from_content(content: str) ->Optional[str]:
         'def ' in sample and '(' in sample or 'class ' in sample and '(' in
         sample):
         return 'python'
+@handle_errors(error_types=(Exception,))
     if ('function ' in sample or 'const ' in sample or 'let ' in sample or 
         'import ' in sample and ' from ' in sample or 'export ' in sample or
         'module.exports ' in sample):
@@ -319,6 +327,7 @@ def get_language_features(language_id: str) ->LanguageFeatures:
         LanguageFeatures object with language capabilities
     """
     normalized = normalize_language_name(language_id)
+@handle_errors(error_types=(Exception,))
     extensions = {ext for ext, lang in EXTENSION_TO_LANGUAGE.items() if 
         lang == normalized}
     parser_type = get_parser_type(normalized)
@@ -333,6 +342,7 @@ def get_supported_languages() ->Dict[str, ParserType]:
     
     Returns:
         Dictionary with language IDs as keys and parser types as values
+@handle_errors(error_types=(Exception,))
     """
     languages = {}
     for lang in TREE_SITTER_LANGUAGES:
@@ -342,6 +352,7 @@ def get_supported_languages() ->Dict[str, ParserType]:
     return languages
 
 
+@handle_errors(error_types=(Exception,))
 def get_supported_extensions() ->Dict[str, str]:
     """
     Get a dictionary of all supported file extensions and their corresponding languages.
@@ -356,6 +367,7 @@ def get_extensions_for_language(language_id: str) ->Set[str]:
     """
     Get all file extensions associated with a language.
     
+@handle_errors(error_types=(Exception,))
     Args:
         language_id: The language to get extensions for
         
@@ -375,6 +387,7 @@ def get_suggested_alternatives(language_id: str) ->List[str]:
     Args:
         language_id: The language to find alternatives for
         
+@handle_errors(error_types=(Exception,))
     Returns:
         List of alternative language IDs
     """
@@ -406,6 +419,7 @@ def validate_language_mappings() ->List[str]:
         EXTENSION_TO_LANGUAGE.values() and lang not in LANGUAGE_ALIASES.
         values()]
     if custom_missing:
+@handle_errors(error_types=(Exception,))
         errors.append(
             f"Languages in CUSTOM_PARSER_LANGUAGES without extension mappings: {', '.join(custom_missing)}"
             )
@@ -431,6 +445,7 @@ def get_complete_language_info(language_id: str) ->Dict[str, Any]:
     """
     normalized = normalize_language_name(language_id)
     extensions = get_extensions_for_language(normalized)
+@handle_errors(error_types=(Exception,))
     parser_type = get_parser_type(normalized)
     fallback_type = get_fallback_parser_type(normalized)
     file_type = get_file_type(normalized)
@@ -457,6 +472,7 @@ def detect_language(file_path: str, content: Optional[str]=None) ->Tuple[
     Returns:
         Tuple of (language_id, confidence_score)
     """
+@handle_errors(error_types=(Exception,))
     filename = os.path.basename(file_path)
     language_by_filename = detect_language_from_filename(filename)
     if language_by_filename:

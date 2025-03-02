@@ -18,6 +18,7 @@ class MarkdownParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(MARKDOWN_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -143,6 +144,7 @@ class MarkdownParser(BaseParser):
         Any]]:
         """Extract header patterns from the AST."""
         headers = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict) and node.get('type') == 'header':
@@ -158,8 +160,10 @@ class MarkdownParser(BaseParser):
     def _extract_section_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract section patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         sections = []
 
+@handle_errors(error_types=(Exception,))
         def get_content_between(start_point, end_point):
             return f'Content from {start_point} to {end_point}'
 
@@ -178,6 +182,7 @@ class MarkdownParser(BaseParser):
         return sections
 
     def _extract_code_block_patterns(self, ast: Dict[str, Any]) ->List[Dict
+@handle_errors(error_types=(Exception,))
         [str, Any]]:
         """Extract code block patterns from the AST."""
         code_blocks = []

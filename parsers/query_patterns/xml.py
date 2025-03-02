@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
 import re
 
+@handle_errors(error_types=(Exception,))
 def extract_element(match: Match) -> Dict[str, Any]:
     """Extract element information."""
     return {
@@ -14,6 +15,7 @@ def extract_element(match: Match) -> Dict[str, Any]:
         "content": match.group(3) if match.group(3) else None,
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_attribute(match: Match) -> Dict[str, Any]:
     """Extract attribute information."""
@@ -233,6 +235,7 @@ XML_PATTERNS_FOR_LEARNING = {
 
 # Add the repository learning patterns to the main patterns
 XML_PATTERNS['REPOSITORY_LEARNING'] = XML_PATTERNS_FOR_LEARNING
+@handle_errors(error_types=(Exception,))
 
 # Function to extract patterns for repository learning
 def extract_xml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

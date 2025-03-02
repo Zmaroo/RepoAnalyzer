@@ -22,6 +22,7 @@ class HtmlParser(BaseParser):
         self.patterns = {name: re.compile(pattern.pattern, re.DOTALL) for 
             name, pattern in base_patterns.items()}
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -163,6 +164,7 @@ class HtmlParser(BaseParser):
         str, Any]]:
         """Extract element patterns from the AST."""
         elements = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict) and node.get('type') == 'element':
@@ -194,6 +196,7 @@ class HtmlParser(BaseParser):
 
     def _find_navigation_component(self, ast: Dict[str, Any]) ->Optional[Dict
         [str, Any]]:
+@handle_errors(error_types=(Exception,))
         """Find navigation component in AST."""
 
         def process_node(node):
@@ -218,6 +221,7 @@ class HtmlParser(BaseParser):
         return process_node(ast)
 
     def _find_form_component(self, ast: Dict[str, Any]) ->Optional[Dict[str,
+@handle_errors(error_types=(Exception,))
         Any]]:
         """Find form component in AST."""
 
@@ -242,6 +246,7 @@ class HtmlParser(BaseParser):
             return None
         return process_node(ast)
 
+@handle_errors(error_types=(Exception,))
     def _find_card_component(self, ast: Dict[str, Any]) ->Optional[Dict[str,
         Any]]:
         """Find card/panel component in AST."""
@@ -267,6 +272,7 @@ class HtmlParser(BaseParser):
             return None
         return process_node(ast)
 
+@handle_errors(error_types=(Exception,))
     def _extract_semantic_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract semantic patterns (accessibility, data attributes) from the AST."""
@@ -275,6 +281,7 @@ class HtmlParser(BaseParser):
         def collect_aria_attributes(node, attributes):
             if isinstance(node, dict):
                 if node.get('type') == 'element':
+@handle_errors(error_types=(Exception,))
                     for attr in node.get('attributes', []):
                         if attr.get('name', '').startswith('aria-'):
                             attributes.append(attr)
@@ -303,6 +310,7 @@ class HtmlParser(BaseParser):
                 join(attr.get('name', '') + '="' + attr.get('value', '') +
                 '"' for attr in data_attributes[:5]), 'attributes':
                 data_attributes})
+@handle_errors(error_types=(Exception,))
         return semantic_patterns
 
     def _extract_embedded_patterns(self, ast: Dict[str, Any]) ->List[Dict[

@@ -24,6 +24,7 @@ from utils.request_cache import (
 class TestRequestCache(unittest.TestCase):
     """Tests for the request-level cache system."""
     
+@handle_errors(error_types=(Exception,))
     def test_cache_basics(self):
         """Test basic cache operations."""
         cache = RequestCache()
@@ -53,6 +54,7 @@ class TestRequestCache(unittest.TestCase):
         cache.set("key3", "value3")
         cache.set("key4", "value4")
         self.assertEqual(cache.size(), 2)
+@handle_errors(error_types=(Exception,))
     
     def test_context_manager(self):
         """Test the request_cache_context context manager."""
@@ -70,6 +72,7 @@ class TestRequestCache(unittest.TestCase):
             self.assertEqual(cache.get("test_key"), "test_value")
         
         # Verify the cache is cleared after the context exits
+@handle_errors(error_types=(Exception,))
         self.assertIsNone(get_current_request_cache())
     
     def test_nested_contexts(self):
@@ -88,6 +91,7 @@ class TestRequestCache(unittest.TestCase):
                 self.assertIsNone(inner_cache.get("outer_key"))  # Should not have outer values
             
             # After inner context, outer should be active again
+@handle_errors(error_types=(Exception,))
             self.assertEqual(get_current_request_cache(), outer_cache)
             self.assertEqual(outer_cache.get("outer_key"), "outer_value")
     
@@ -95,6 +99,7 @@ class TestRequestCache(unittest.TestCase):
         """Test the cached_in_request decorator."""
         
         # Mock function to track calls
+@handle_errors(error_types=(Exception,))
         mock_fn = MagicMock(return_value="test_result")
         
         # Decorated function
@@ -126,11 +131,13 @@ class TestRequestCache(unittest.TestCase):
             self.assertEqual(mock_fn.call_count, 1)  # No additional calls
             
             # Different args should execute the function again
+@handle_errors(error_types=(Exception,))
             result3 = test_function("e", "f")
             self.assertEqual(result3, "result:e:f")
             self.assertEqual(mock_fn.call_count, 2)
     
     def test_cached_in_request_with_custom_key(self):
+@handle_errors(error_types=(Exception,))
         """Test the cached_in_request decorator with a custom key function."""
         
         mock_fn = MagicMock(return_value="test_result")
@@ -151,8 +158,10 @@ class TestRequestCache(unittest.TestCase):
             self.assertEqual(result2, "result:a:b1")  # Should get cached value from first call
             self.assertEqual(mock_fn.call_count, 1)  # No additional call
             
+@handle_errors(error_types=(Exception,))
             # Different x should execute the function again
             result3 = test_function("c", "d")
+@handle_errors(error_types=(Exception,))
             self.assertEqual(result3, "result:c:d")
             self.assertEqual(mock_fn.call_count, 2)
     

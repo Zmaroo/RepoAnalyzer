@@ -31,6 +31,7 @@ class RepositoryAccessTracker:
         self._access_timestamps = {}
         self._lock = asyncio.Lock()
     
+@handle_async_errors(error_types=(Exception,))
     async def record_access(self, repo_id: int, reason: str = "general"):
         """Record an access to a repository."""
         async with self._lock:
@@ -47,6 +48,7 @@ class RepositoryAccessTracker:
             # Keep only the last 20 access records
             if len(self._access_timestamps[repo_id]) > 20:
                 self._access_timestamps[repo_id] = self._access_timestamps[repo_id][-20:]
+@handle_async_errors(error_types=(Exception,))
     
     async def get_most_accessed(self, limit: int = 10) -> List[int]:
         """Get the most frequently accessed repositories."""
@@ -59,6 +61,7 @@ class RepositoryAccessTracker:
             )
             
             # Return just the repo IDs
+@handle_async_errors(error_types=(Exception,))
             return [repo_id for repo_id, _ in sorted_repos[:limit]]
     
     async def get_recently_accessed(self, limit: int = 10) -> List[int]:
@@ -262,6 +265,7 @@ async def get_repository_stats(repo_id: int) -> Dict[str, Any]:
         }
 
 # Initialize module
+@handle_errors(error_types=(Exception,))
 def initialize():
     """Initialize the repository module."""
     log("Repository management module initialized", level="info")

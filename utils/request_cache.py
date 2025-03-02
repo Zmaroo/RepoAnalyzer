@@ -25,6 +25,7 @@ class RequestCache:
         """Initialize an empty request cache."""
         self._cache: Dict[str, Any] = {}
         
+@handle_errors(error_types=(Exception,))
     def set(self, key: str, value: Any) -> None:
         """
         Store a value in the request cache.
@@ -34,6 +35,7 @@ class RequestCache:
             value: The value to store
         """
         self._cache[key] = value
+@handle_errors(error_types=(Exception,))
         
     def get(self, key: str, default: Any = None) -> Any:
         """
@@ -46,6 +48,7 @@ class RequestCache:
         Returns:
             The cached value or the default if not found
         """
+@handle_errors(error_types=(Exception,))
         return self._cache.get(key, default)
     
     def delete(self, key: str) -> None:
@@ -55,6 +58,7 @@ class RequestCache:
         Args:
             key: The cache key to remove
         """
+@handle_errors(error_types=(Exception,))
         if key in self._cache:
             del self._cache[key]
             
@@ -66,9 +70,11 @@ class RequestCache:
             key: The cache key to check
             
         Returns:
+@handle_errors(error_types=(Exception,))
             True if the key exists, False otherwise
         """
         return key in self._cache
+@handle_errors(error_types=(Exception,))
         
     def clear(self) -> None:
         """Clear all entries from the request cache."""
@@ -88,6 +94,7 @@ class RequestCache:
 _thread_local = threading.local()
 
 
+@handle_errors(error_types=(Exception,))
 def get_current_request_cache() -> Optional[RequestCache]:
     """
     Get the currently active request cache for this thread.
@@ -97,6 +104,7 @@ def get_current_request_cache() -> Optional[RequestCache]:
     """
     return getattr(_thread_local, 'current_cache', None)
 
+@handle_errors(error_types=(Exception,))
 
 def set_current_request_cache(cache: Optional[RequestCache]) -> None:
     """
@@ -110,6 +118,7 @@ def set_current_request_cache(cache: Optional[RequestCache]) -> None:
     else:
         _thread_local.current_cache = cache
 
+@handle_errors(error_types=(Exception,))
 
 @contextmanager
 def request_cache_context():
@@ -135,6 +144,7 @@ def request_cache_context():
         yield cache
     finally:
         set_current_request_cache(previous_cache)
+@handle_errors(error_types=(Exception,))
         cache.clear()
 
 
@@ -162,12 +172,14 @@ def cached_in_request(key_fn=None):
         async def expensive_async_operation(arg1, arg2):
             # This async result will be cached in the current request
             return await do_expensive_async_work(arg1, arg2)
+@handle_errors(error_types=(Exception,))
             
         # With custom key generation
         @cached_in_request(lambda repo_id, file_path: f"repo:{repo_id}:file:{file_path}")
         def process_file(repo_id, file_path):
             # Process with custom cache key
             return process_content(repo_id, file_path)
+@handle_errors(error_types=(Exception,))
     
     Returns:
         The decorated function
@@ -176,6 +188,7 @@ def cached_in_request(key_fn=None):
         """Generate a default cache key from function name and arguments."""
         arg_str = ':'.join(str(arg) for arg in args)
         kwarg_str = ':'.join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+@handle_async_errors(error_types=(Exception,))
         return f"fn:{fn_name}:{arg_str}:{kwarg_str}"
     
     # This is the actual decorator that will be returned
@@ -201,6 +214,7 @@ def cached_in_request(key_fn=None):
                     cache_key = key_fn(*args, **kwargs)
                 else:
                     # Use the default key function
+@handle_errors(error_types=(Exception,))
                     cache_key = default_key_fn(func.__name__, *args, **kwargs)
                 
                 # Check if result is already cached

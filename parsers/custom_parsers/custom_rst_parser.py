@@ -19,6 +19,7 @@ class RstParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(RST_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -166,6 +167,7 @@ class RstParser(BaseParser):
         """Extract section patterns from the AST."""
         section_levels = Counter()
         section_titles = {}
+@handle_errors(error_types=(Exception,))
 
         def process_node(node, level=0):
             if isinstance(node, dict):
@@ -199,6 +201,7 @@ class RstParser(BaseParser):
         str, Any]]:
         """Extract directive patterns from the AST."""
         directive_types = Counter()
+@handle_errors(error_types=(Exception,))
         directive_examples = {}
 
         def process_node(node):
@@ -225,6 +228,7 @@ class RstParser(BaseParser):
     def _extract_role_patterns(self, ast: Dict[str, Any]) ->List[Dict[str, Any]
         ]:
         """Extract role patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         role_types = Counter()
         role_examples = {}
 
@@ -249,6 +253,7 @@ class RstParser(BaseParser):
         return patterns
 
     def _extract_structure_patterns(self, ast: Dict[str, Any]) ->List[Dict[
+@handle_errors(error_types=(Exception,))
         str, Any]]:
         """Extract structural patterns from the AST."""
         type_counts = Counter()

@@ -21,6 +21,7 @@ class AsyncFileChangeHandler(FileSystemEventHandler):
         self.on_change = on_change
         self._tasks = set()
 
+@handle_errors(error_types=(Exception,))
     def on_modified(self, event):
         if not event.is_directory:
             task = asyncio.create_task(self._handle_change(event.src_path))
@@ -67,6 +68,7 @@ async def watch_directory(directory: str, repo_id: int, on_change):
             observer.join()
 
 
+@handle_errors(error_types=(Exception,))
 def is_pattern_relevant_file(file_path: str) ->bool:
     """
     Determine if a file is relevant for pattern extraction.

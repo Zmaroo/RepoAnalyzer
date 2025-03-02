@@ -31,6 +31,7 @@ def _normalize_language_name(language: str) -> str:
     """Normalize language name for pattern lookup."""
     return language.lower().replace(" ", "_").replace("-", "_")
 
+@handle_errors(error_types=(Exception,))
 def get_pattern_module(language_id: str) -> Optional[Any]:
     """
     Lazily load the pattern module for a given language.
@@ -48,6 +49,7 @@ def get_pattern_module(language_id: str) -> Optional[Any]:
     except ImportError:
         # Not found, return None
         return None
+@handle_errors(error_types=(Exception,))
 
 def _ensure_pattern_category_keys(patterns_dict: Dict[str, Any]) -> Dict[PatternCategory, Any]:
     """
@@ -83,6 +85,7 @@ def _ensure_pattern_category_keys(patterns_dict: Dict[str, Any]) -> Dict[Pattern
             # If conversion fails, log a warning but preserve the key for backward compatibility
             logger.warning(f"Could not convert key '{key}' to PatternCategory enum")
     
+@handle_errors(error_types=(Exception,))
     return result
 
 def get_patterns_for_language(language: str) -> Dict[str, Any]:
@@ -109,6 +112,7 @@ def get_patterns_for_language(language: str) -> Dict[str, Any]:
         return pattern_module.PATTERNS
     
     # No patterns found for this language
+@handle_errors(error_types=(Exception,))
     _pattern_registry[language_id] = {}
     return {}
 
@@ -123,6 +127,7 @@ def get_typed_patterns_for_language(language: str) -> Dict[PatternCategory, Dict
     Returns:
         Dictionary of patterns by category with PatternCategory enum keys
     """
+@handle_errors(error_types=(Exception,))
     patterns = get_patterns_for_language(language)
     # Type conversion handling is done inside _ensure_pattern_category_keys
     return _ensure_pattern_category_keys(patterns)
@@ -137,6 +142,7 @@ def register_common_patterns() -> Dict[str, Any]:
     try:
         # Import common patterns
         from parsers.query_patterns.common import COMMON_PATTERNS
+@handle_errors(error_types=(Exception,))
         return COMMON_PATTERNS
     except ImportError:
         logger.warning("Common patterns module not found")
@@ -156,9 +162,11 @@ def list_available_languages() -> Set[str]:
     
     # Iterate through files in the directory
     for filename in os.listdir(dir_path):
+@handle_errors(error_types=(Exception,))
         if filename.endswith(".py") and filename != "__init__.py" and filename != "common.py":
             language = filename[:-3]  # Remove .py extension
             languages.add(language)
+@handle_errors(error_types=(Exception,))
     
     return languages
 
@@ -173,10 +181,12 @@ def get_all_available_patterns() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dictionary of patterns by language
     """
+@handle_errors(error_types=(Exception,))
     patterns = {}
     for language in list_available_languages():
         language_patterns = get_patterns_for_language(language)
         if language_patterns:
+@handle_errors(error_types=(Exception,))
             patterns[language] = language_patterns
     
     return patterns

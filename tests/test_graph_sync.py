@@ -3,6 +3,7 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+import warnings
 
 from db.graph_sync import (
     GraphSyncCoordinator,
@@ -17,6 +18,7 @@ from db.neo4j_ops import (
 from utils.error_handling import Neo4jError, DatabaseError
 
 @pytest.fixture
+@handle_errors(error_types=(Exception,))
 def mock_driver():
     """Mock Neo4j driver."""
     with patch('db.graph_sync.driver') as mock:
@@ -24,6 +26,7 @@ def mock_driver():
         mock.run = AsyncMock()
         yield mock
 
+@handle_errors(error_types=(Exception,))
 @pytest.fixture
 def mock_graph_cache():
     """Mock graph cache."""
@@ -32,20 +35,26 @@ def mock_graph_cache():
         mock.set_async = AsyncMock()
         mock.clear_pattern_async = AsyncMock()
         yield mock
+@handle_errors(error_types=(Exception,))
 
 @pytest.fixture
 def mock_run_query():
     """Mock run_query function."""
+    # Add deprecation warning
+    import warnings
+    warnings.warn(f"'mock_run_query' is deprecated, use 'mock_run_query' instead", DeprecationWarning, stacklevel=2)
     with patch('db.graph_sync.run_query') as mock:
         # Use AsyncMock to ensure the mock returns an awaitable
         async_mock = AsyncMock()
         async_mock.return_value = [{"count": 10}]
         mock.side_effect = async_mock
+@handle_errors(error_types=(Exception,))
         yield mock
 
 @pytest.fixture
 def graph_sync_coordinator(mock_driver, mock_graph_cache, mock_run_query):
     """Create GraphSyncCoordinator with mocked dependencies."""
+@handle_async_errors(error_types=(Exception,))
     coordinator = GraphSyncCoordinator()
     return coordinator
 
@@ -60,6 +69,7 @@ async def test_ensure_projection(graph_sync_coordinator, mock_run_query, mock_gr
     
     # Verify the query was executed
     mock_run_query.assert_called()
+@handle_async_errors(error_types=(Exception,))
     
     # Check that cache was updated
     mock_graph_cache.set_async.assert_called()
@@ -77,6 +87,7 @@ async def test_invalidate_projection(graph_sync_coordinator, mock_graph_cache):
     await graph_sync_coordinator.invalidate_projection(repo_id)
     
     # Verify projection was removed
+@handle_async_errors(error_types=(Exception,))
     assert projection_name not in graph_sync_coordinator._active_projections
     
     # Check that cache was cleared
@@ -108,6 +119,7 @@ async def test_auto_reinvoke_projection_once(mock_run_query):
         
         # Test with no nodes
         mock_run_query.return_value = [{"count": 0}]
+@handle_async_errors(error_types=(Exception,))
         mock_graph_sync.ensure_projection.reset_mock()
         
         result = await auto_reinvoke_projection_once()
@@ -124,6 +136,7 @@ async def test_projection_error_handling(graph_sync_coordinator, mock_run_query)
     
     with pytest.raises(ProjectionError):
         await graph_sync_coordinator.ensure_projection(repo_id)
+@handle_async_errors(error_types=(Exception,))
     
     # Test with transaction error during invalidation
     mock_run_query.side_effect = DatabaseError("Transaction error")
@@ -142,6 +155,7 @@ async def test_projection_automatic_recreation(graph_sync_coordinator, mock_run_
         [],  # Empty result for exists query
         None  # Result for create query
     ]
+@handle_async_errors(error_types=(Exception,))
     
     result = await graph_sync_coordinator.ensure_projection(repo_id)
     assert result is True
@@ -167,4 +181,4 @@ async def test_multiple_projection_updates(graph_sync_coordinator):
         # Check all repos were processed
         assert mock_ensure.call_count == len(repo_ids)
         for repo_id in repo_ids:
-            assert repo_id not in graph_sync_coordinator._pending_updates 
+            assert repo_id not in graph_sync_coordinator._pending_updates

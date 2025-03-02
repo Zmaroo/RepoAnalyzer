@@ -24,6 +24,7 @@ except ImportError:
 # Default reference repository URL (a small, well-structured Python repository)
 DEFAULT_REF_REPO = "https://github.com/psf/requests.git"
 
+@handle_errors(error_types=(Exception,))
 def run_ref_repo_subprocess(ref_repo_url):
     """Run the reference repository analysis as a subprocess"""
     print(f"Testing reference repository analysis with: {ref_repo_url}")
@@ -60,6 +61,7 @@ def run_ref_repo_subprocess(ref_repo_url):
     except Exception as e:
         print(f"\n❌ Error running reference repo analysis: {e}")
         return False
+@handle_errors(error_types=(Exception,))
 
 def run_learn_patterns_subprocess(ref_repo_url):
     """Run the learning from reference repository as a subprocess"""
@@ -96,6 +98,7 @@ def run_learn_patterns_subprocess(ref_repo_url):
             
     except Exception as e:
         print(f"\n❌ Error running pattern learning: {e}")
+@handle_errors(error_types=(Exception,))
         return False
 
 def run_apply_patterns_subprocess():
@@ -147,6 +150,7 @@ class Args:
         self.watch = kwargs.get('watch', False)
         self.learn_ref = kwargs.get('learn_ref', None)
         self.multi_ref = kwargs.get('multi_ref', None)
+@handle_async_errors(error_types=(Exception,))
         self.apply_ref_patterns = kwargs.get('apply_ref_patterns', False)
         self.deep_learning = kwargs.get('deep_learning', False)
 
@@ -170,6 +174,7 @@ async def run_ref_repo_api(ref_repo_url):
     finally:
         # Ensure database connection is closed
         try:
+@handle_async_errors(error_types=(Exception,))
             await close_db_pool()
         except Exception:
             pass
@@ -193,6 +198,7 @@ async def run_learn_patterns_api(ref_repo_url):
         return False
     finally:
         # Ensure database connection is closed
+@handle_async_errors(error_types=(Exception,))
         try:
             await close_db_pool()
         except Exception:
@@ -216,6 +222,7 @@ async def run_apply_patterns_api():
         print(f"\n❌ Error during API pattern application test: {e}")
         return False
     finally:
+@handle_errors(error_types=(Exception,))
         # Ensure database connection is closed
         try:
             await close_db_pool()

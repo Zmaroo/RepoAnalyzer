@@ -21,6 +21,7 @@ class User:
     email: str
     created_at: datetime
     
+@handle_errors(error_types=(Exception,))
     def to_dict(self) -> Dict[str, any]:
         """Convert user to dictionary."""
         return {
@@ -37,6 +38,7 @@ class UserService:
         """Initialize service with database connection."""
         self.db = database
         self.cache: Dict[int, User] = {}
+@handle_async_errors(error_types=(Exception,))
         
     async def get_user(self, user_id: int) -> Optional[User]:
         """Get user by ID."""
@@ -60,6 +62,7 @@ class UserService:
         
         # Update cache
         self.cache[user_id] = user
+@handle_async_errors(error_types=(Exception,))
         return user
         
     async def create_user(self, name: str, email: str) -> User:
@@ -82,6 +85,7 @@ class UserService:
             created_at=datetime.now()
         )
         self.cache[user_id] = user
+@handle_errors(error_types=(Exception,))
         
         return user
         
@@ -92,6 +96,7 @@ class UserService:
 class UserAnalytics:
     """Analytics for user behavior."""
     
+@handle_async_errors(error_types=(Exception,))
     def __init__(self, user_service: UserService):
         """Initialize with user service."""
         self.user_service = user_service
@@ -106,6 +111,7 @@ class UserAnalytics:
             active_users.append(User(
                 id=user['id'],
                 name=user['name'],
+@handle_async_errors(error_types=(Exception,))
                 email=user['email'],
                 created_at=user['created_at']
             ))
@@ -119,6 +125,7 @@ class UserAnalytics:
             'inactive_users': len(await self.get_active_users(30))
         }
 
+@handle_async_errors(error_types=(Exception,))
 async def main():
     """Main entry point."""
     # Initialize services

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
 import re
 
+@handle_errors(error_types=(Exception,))
 def extract_mapping(match: Match) -> Dict[str, Any]:
     """Extract mapping information."""
     return {
@@ -16,6 +17,7 @@ def extract_mapping(match: Match) -> Dict[str, Any]:
         "value": match.group(3).strip(),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_sequence(match: Match) -> Dict[str, Any]:
     """Extract sequence information."""
@@ -24,6 +26,7 @@ def extract_sequence(match: Match) -> Dict[str, Any]:
         "indent": len(match.group(1)),
         "value": match.group(2).strip(),
         "line_number": match.string.count('\n', 0, match.start()) + 1
+@handle_errors(error_types=(Exception,))
     }
 
 def extract_anchor(match: Match) -> Dict[str, Any]:
@@ -249,6 +252,7 @@ YAML_PATTERNS_FOR_LEARNING = {
 }
 
 # Add the repository learning patterns to the main patterns
+@handle_errors(error_types=(Exception,))
 YAML_PATTERNS['REPOSITORY_LEARNING'] = YAML_PATTERNS_FOR_LEARNING
 
 # Function to extract patterns for repository learning

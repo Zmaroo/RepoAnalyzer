@@ -21,6 +21,7 @@ class AsciidocParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(ASCIIDOC_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -107,6 +108,7 @@ class AsciidocParser(BaseParser):
         Any]]:
         """Extract header patterns from the AST."""
         headers = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict) and node.get('type') == 'header':
@@ -121,8 +123,10 @@ class AsciidocParser(BaseParser):
     def _extract_section_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract section patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         sections = []
 
+@handle_errors(error_types=(Exception,))
         def get_content_between(start_point, end_point):
             return f'Content from {start_point} to {end_point}'
 
@@ -140,6 +144,7 @@ class AsciidocParser(BaseParser):
         return sections
 
     def _extract_list_patterns(self, ast: Dict[str, Any]) ->List[Dict[str, Any]
+@handle_errors(error_types=(Exception,))
         ]:
         """Extract list patterns from the AST."""
         lists = []

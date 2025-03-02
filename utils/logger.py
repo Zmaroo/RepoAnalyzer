@@ -20,6 +20,7 @@ class EnhancedLogger:
             "critical": logging.CRITICAL
         }
     
+@handle_errors(error_types=(Exception,))
     def _initialize_logger(self):
         """Initialize logging configuration."""
         try:
@@ -45,6 +46,7 @@ class EnhancedLogger:
             )
         except Exception as e:
             print(f"Error initializing logger: {e}")
+@handle_errors(error_types=(Exception,))
     
     def log(
         self,
@@ -72,18 +74,23 @@ class EnhancedLogger:
             # Log using standard logging
             logging.log(log_level, structured_message)
         except Exception as e:
+@handle_errors(error_types=(Exception,))
             print(f"Error logging message: {e}")
     
     def debug(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+@handle_errors(error_types=(Exception,))
         """Log debug message."""
         self.log(message, "debug", context)
     
+@handle_errors(error_types=(Exception,))
     def info(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Log info message."""
         self.log(message, "info", context)
+@handle_errors(error_types=(Exception,))
     
     def warning(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Log warning message."""
+@handle_errors(error_types=(Exception,))
         self.log(message, "warning", context)
     
     def error(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
@@ -98,6 +105,7 @@ class EnhancedLogger:
 logger = EnhancedLogger()
 
 # Convenience function
+@handle_errors(error_types=(Exception,))
 def log(message: str, level: str = "info", context: Optional[Dict[str, Any]] = None):
     """Global logging function."""
     logger.log(message, level, context)

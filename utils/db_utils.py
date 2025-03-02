@@ -13,6 +13,7 @@ from db.psql import query
 from db.schema import create_all_tables
 from db.neo4j_ops import run_query  # Import the Neo4j query function
 
+@handle_errors(error_types=(Exception,))
 def setup_logging(debug=False):
     # Get the Neo4j logger and set it to use our logger's handler
     neo4j_logger = logging.getLogger("neo4j")
@@ -22,6 +23,7 @@ def setup_logging(debug=False):
     if not debug:
         neo4j_logger.setLevel(logging.INFO)
     # If debug is True, it will use the default level from our logger.py
+@handle_errors(error_types=(Exception,))
 
 def clean_postgresql():
     log("Cleaning PostgreSQL database...", level="info")
@@ -36,6 +38,7 @@ def clean_postgresql():
         return True
     except Exception as e:
         log(f"Error cleaning PostgreSQL: {e}", level="error")
+@handle_errors(error_types=(Exception,))
         return False
 
 def clean_neo4j():
@@ -48,6 +51,7 @@ def clean_neo4j():
     except Exception as e:
         log(f"Error cleaning Neo4j: {e}", level="error")
         if "Connection refused" in str(e):
+@handle_errors(error_types=(Exception,))
             log("Neo4j database connection failed. Make sure Neo4j is running.", level="error")
         return False
 

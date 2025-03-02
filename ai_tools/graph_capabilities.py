@@ -181,6 +181,10 @@ class GraphAnalysis:
     @handle_errors(error_types=(Exception,))
     def close(self):
         """Closes Neo4j connections and graph projections."""
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'close' is deprecated, use 'close_async' instead", DeprecationWarning, stacklevel=2)
+        
         with ErrorBoundary(operation_name='Neo4j connection cleanup'):
             if hasattr(self, 'neo4j'):
                 try:

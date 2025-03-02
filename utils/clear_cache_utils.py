@@ -10,9 +10,11 @@ import shutil
 from typing import List
 from pathlib import Path
 
+@handle_errors(error_types=(Exception,))
 def get_project_root() -> Path:
     """Get the project root directory."""
     return Path(__file__).parent.parent
+@handle_errors(error_types=(Exception,))
 
 def find_cache_directories(start_path: Path) -> List[Path]:
     """Find all cache directories in the project."""
@@ -30,6 +32,7 @@ def find_cache_directories(start_path: Path) -> List[Path]:
                 dir_name == '.coverage' or
                 dir_name == 'test_outputs'):
                 cache_dirs.append(Path(root) / dir_name)
+@handle_errors(error_types=(Exception,))
     return cache_dirs
 
 def clear_cache_files(directory: Path = None) -> None:

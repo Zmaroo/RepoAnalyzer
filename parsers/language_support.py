@@ -21,6 +21,7 @@ class ParserAvailability:
     fallback_type: Optional[ParserType] = None
 
 
+@handle_errors(error_types=(Exception,))
 def get_parser_availability(language: str) ->ParserAvailability:
     """Get information about available parsers for a language."""
     normalized = normalize_language_name(language)
@@ -33,10 +34,12 @@ def get_parser_availability(language: str) ->ParserAvailability:
         file_type=parser_info['file_type'], fallback_type=parser_info.get(
         'fallback_parser_type'))
 
+@handle_errors(error_types=(Exception,))
 
 def determine_file_type(language: str) ->FileType:
     """Determine file type based on language."""
     return get_file_type(language)
+@handle_errors(error_types=(Exception,))
 
 
 def is_documentation_code(file_path: str, content: Optional[str]=None) ->Tuple[
@@ -170,10 +173,12 @@ class LanguageRegistry(ParserRegistryInterface):
             elif parser_type == ParserType.CUSTOM and language in CUSTOM_PARSER_CLASSES:
                 parser_cls = CUSTOM_PARSER_CLASSES.get(language)
                 if parser_cls:
+@handle_errors(error_types=(Exception,))
                     return parser_cls(language, file_type)
         return None
 
     def get_supported_languages(self) ->Dict[str, ParserType]:
+@handle_errors(error_types=(Exception,))
         """Get all supported languages and their parser types."""
         from parsers.language_mapping import get_supported_languages as get_langs
         return get_langs()

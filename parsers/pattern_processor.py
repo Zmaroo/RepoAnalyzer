@@ -109,6 +109,7 @@ class PatternProcessor:
             log(f'Loaded {len(patterns)} regex patterns for {language}',
                 level='debug')
 
+@handle_errors(error_types=(Exception,))
     def get_patterns_for_file(self, classification: FileClassification) ->dict:
         """
         Get patterns based on parser type and language.
@@ -124,11 +125,13 @@ class PatternProcessor:
         patterns = (self._tree_sitter_patterns if classification.
             parser_type == ParserType.TREE_SITTER else self._regex_patterns)
         return patterns.get(classification.language_id, {})
+@handle_errors(error_types=(Exception,))
 
     def validate_pattern(self, pattern: CompiledPattern, language: str) ->bool:
         """Validate pattern matches parser type."""
         is_tree_sitter = language in TREE_SITTER_LANGUAGES
         return is_tree_sitter == (pattern.definition.pattern_type ==
+@handle_errors(error_types=(Exception,))
             'tree-sitter')
 
     def process_node(self, source_code: str, pattern: CompiledPattern) ->List[

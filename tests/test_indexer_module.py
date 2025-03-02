@@ -45,6 +45,7 @@ class TestFileIndexer:
     """Test file indexing functionality."""
     
     @pytest.fixture
+@handle_errors(error_types=(Exception,))
     def sample_file_content(self):
         """Sample file content for testing."""
         return """
@@ -60,6 +61,7 @@ class TestFileIndexer:
                 return self.value
         """
     
+@handle_errors(error_types=(Exception,))
     @pytest.fixture
     def temp_file(self, sample_file_content):
         """Create a temporary file for testing."""
@@ -72,6 +74,7 @@ class TestFileIndexer:
         # Cleanup
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+@handle_async_errors(error_types=(Exception,))
     
     @pytest.mark.asyncio
     async def test_index_file(self, temp_file):
@@ -130,6 +133,7 @@ class TestFileIndexer:
         assert result.language == "python"
         assert result.pattern_count == 2
         assert "function_count" in result.metrics
+@handle_async_errors(error_types=(Exception,))
         assert result.metrics["function_count"] == 2
     
     @pytest.mark.asyncio
@@ -165,6 +169,7 @@ class TestFileIndexer:
         assert result.error is not None
 
 
+@handle_errors(error_types=(Exception,))
 class TestFolderIndexer:
     """Test folder indexing functionality."""
     
@@ -189,6 +194,7 @@ class TestFolderIndexer:
             f.write("def util_func():\n    return True")
         
         yield temp_dir
+@handle_async_errors(error_types=(Exception,))
         
         # Cleanup
         shutil.rmtree(temp_dir)
@@ -225,6 +231,7 @@ class TestFolderIndexer:
         # Verify the result
         assert result.success is True
         assert result.file_count >= 2  # At least 2 files (main.py and lib/utils.py)
+@handle_async_errors(error_types=(Exception,))
         assert result.folder_count >= 1  # At least 1 folder (lib)
         
         # Verify the file indexer was called for each file
@@ -270,6 +277,7 @@ class TestFolderIndexer:
         # The .git directory should be excluded
         for call in mock_file_indexer.index_file.call_args_list:
             file_info = call[0][0]
+@handle_errors(error_types=(Exception,))
             assert ".git" not in file_info.path
 
 
@@ -285,6 +293,7 @@ class TestRepositoryIndexer:
             "url": "https://github.com/test/repo",
             "name": "repo"
         }
+@handle_errors(error_types=(Exception,))
         mock_db.store_repository.return_value = {
             "id": "new_repo_id",
             "url": "https://github.com/test/new-repo",
@@ -296,6 +305,7 @@ class TestRepositoryIndexer:
     def mock_folder_indexer(self):
         """Create a mock folder indexer."""
         mock_indexer = AsyncMock()
+@handle_async_errors(error_types=(Exception,))
         mock_indexer.index_folder.return_value = IndexingResult(
             success=True,
             file_count=10,
@@ -322,6 +332,7 @@ class TestRepositoryIndexer:
         assert result.success is True
         assert result.repo_id == "test_repo_id"
         assert result.file_count == 10
+@handle_async_errors(error_types=(Exception,))
         assert result.folder_count == 5
         
         # Verify the database was called
@@ -355,6 +366,7 @@ class TestRepositoryIndexer:
         assert result.folder_count == 5
         
         # Verify the database was called
+@handle_errors(error_types=(Exception,))
         mock_repo_db.get_repository_by_url.assert_called_once_with(repo_url)
         mock_repo_db.store_repository.assert_called_once()
         
@@ -383,6 +395,7 @@ class TestCodeScanner:
         class FileHandler:
             def __init__(self, base_dir='.'):
                 self.base_dir = base_dir
+@handle_async_errors(error_types=(Exception,))
                 
             def get_full_path(self, filename):
                 return os.path.join(self.base_dir, filename)
@@ -406,6 +419,7 @@ class TestCodeScanner:
         # Verify the patterns
         assert len(patterns) > 0
         
+@handle_async_errors(error_types=(Exception,))
         # Check for functions
         function_patterns = [p for p in patterns if p.type == "function"]
         assert len(function_patterns) >= 2  # At least read_file and write_file

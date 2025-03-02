@@ -19,6 +19,7 @@ class TomlParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(TOML_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         self._initialized = True
         return True
@@ -152,6 +153,7 @@ class TomlParser(BaseParser):
         Any]]:
         """Extract table patterns from the AST."""
         tables = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict):
@@ -168,6 +170,7 @@ class TomlParser(BaseParser):
     def _extract_key_value_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract key-value patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         key_values = []
 
         def process_node(node):
@@ -184,6 +187,7 @@ class TomlParser(BaseParser):
 
     def _extract_array_patterns(self, ast: Dict[str, Any]) ->List[Dict[str,
         Any]]:
+@handle_errors(error_types=(Exception,))
         """Extract array patterns from the AST."""
         arrays = []
 

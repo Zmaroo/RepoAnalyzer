@@ -97,6 +97,7 @@ class ReferenceRepositoryLearning:
                     from utils.error_handling import ErrorBoundary
                     embedding_list = None
 
+@handle_errors(error_types=(Exception,))
                     def create_embedding():
                         nonlocal embedding_list
                         embedding = self.embedder.embed(pattern_text)

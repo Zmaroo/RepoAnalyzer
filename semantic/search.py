@@ -72,6 +72,7 @@ class SearchEngine:
         if not include_similar or not vector_results:
             return vector_results
         
+@handle_async_errors(error_types=(Exception,))
         async def enhance_result(result: Dict) -> Dict:
             similar_components, code_metrics = await asyncio.gather(
                 graph_analysis.find_similar_components(
@@ -223,8 +224,10 @@ class SearchEngine:
 search_engine = SearchEngine()
 
 # Convenience functions for backward compatibility
+@handle_async_errors(error_types=(Exception,))
 async def search_code(*args, **kwargs) -> List[Dict]:
     return await search_engine.search_code(*args, **kwargs)
+@handle_async_errors(error_types=(Exception,))
 
 async def search_docs(*args, **kwargs) -> List[Dict]:
     return await search_engine.search_docs(*args, **kwargs)

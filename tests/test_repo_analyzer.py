@@ -37,6 +37,7 @@ class Args:
         self.apply_ref_patterns = False
         self.deep_learning = False
 
+@handle_async_errors(error_types=(Exception,))
 async def analyze_repo():
     """Run the analyzer on the RepoAnalyzer project itself."""
     log("Starting analysis of the RepoAnalyzer project itself", level="info")
@@ -54,6 +55,7 @@ async def analyze_repo():
     finally:
         # Ensure database connection is closed
         await close_db_pool()
+@handle_errors(error_types=(Exception,))
 
 def main():
     """Main entry point."""

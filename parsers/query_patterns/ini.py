@@ -8,6 +8,7 @@ from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
 # Language identifier
 LANGUAGE = "ini"
 
+@handle_errors(error_types=(Exception,))
 def extract_section(match: Match) -> Dict[str, Any]:
     """Extract section information."""
     return {
@@ -15,6 +16,7 @@ def extract_section(match: Match) -> Dict[str, Any]:
         "name": match.group(1).strip(),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_property(match: Match) -> Dict[str, Any]:
     """Extract property information."""
@@ -199,6 +201,7 @@ INI_PATTERNS_FOR_LEARNING = {
 }
 
 # Update INI_PATTERNS with learning patterns
+@handle_errors(error_types=(Exception,))
 INI_PATTERNS[PatternCategory.LEARNING] = INI_PATTERNS_FOR_LEARNING
 
 def extract_ini_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

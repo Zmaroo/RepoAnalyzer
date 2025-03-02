@@ -77,6 +77,7 @@ async def store_code_in_neo4j(code_data: Dict) ->None:
     await _retry_manager.execute_with_retry(_do_store_neo4j)
 
 
+@handle_async_errors(error_types=(Exception,))
 async def store_doc_in_postgres(doc_data: Dict) ->int:
     """Store document data in PostgreSQL and return doc_id"""
     sql = """
@@ -172,6 +173,7 @@ async def upsert_doc(repo_id: int, file_path: str, content: str, doc_type:
             log(f'Upserted document {file_path}', level='info')
             return result
 
+@handle_async_errors(error_types=(Exception,))
 
 async def upsert_repository(repo_data: Dict) ->int:
     """[6.5.4] Store repository with transaction coordination."""
@@ -221,6 +223,7 @@ async def share_docs_with_repo(doc_ids: list, target_repo_id: int) ->dict:
             log(f"Shared {result['shared_docs']} docs with repo {target_repo_id}"
                 , level='info')
             return result
+@handle_async_errors(error_types=(Exception,))
 
 
 async def store_parsed_content(repo_id: int, file_path: str, ast: dict,

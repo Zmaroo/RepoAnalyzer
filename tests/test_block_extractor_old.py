@@ -9,6 +9,7 @@ from parsers.block_extractor import (
 )
 
 class TestTreeSitterBlockExtractor(unittest.TestCase):
+@handle_errors(error_types=(Exception,))
     def setUp(self):
         self.extractor = TreeSitterBlockExtractor()
         self.python_code = """
@@ -69,6 +70,7 @@ class TestClass {
 }
 """
 
+@handle_errors(error_types=(Exception,))
     @patch('parsers.block_extractor.get_parser')
     def test_extract_block_python(self, mock_get_parser):
         """Test extracting blocks from Python code."""
@@ -99,6 +101,7 @@ class TestClass {
         self.assertEqual(block.node_type, "function_definition")
         self.assertEqual(block.start_point, (2, 0))
         self.assertEqual(block.end_point, (5, 10))
+@handle_errors(error_types=(Exception,))
         
     @patch('parsers.block_extractor.get_parser')
     def test_extract_block_cpp(self, mock_get_parser):
@@ -129,6 +132,7 @@ class TestClass {
         self.assertIsNotNone(block)
         self.assertEqual(block.node_type, "function_definition")
         self.assertEqual(block.start_point, (3, 0))
+@handle_errors(error_types=(Exception,))
         self.assertEqual(block.end_point, (7, 1))
         
     @patch('parsers.block_extractor.get_parser')
@@ -159,6 +163,7 @@ class TestClass {
         # Assertions
         self.assertIsNotNone(block)
         self.assertEqual(block.node_type, "class_declaration")
+@handle_errors(error_types=(Exception,))
         self.assertEqual(block.start_point, (9, 0))
         self.assertEqual(block.end_point, (17, 1))
         
@@ -194,6 +199,7 @@ class TestClass {
             # Call the method
             blocks = self.extractor.get_child_blocks("python", self.python_code, mock_parent_node)
             
+@handle_errors(error_types=(Exception,))
             # Assertions
             self.assertEqual(len(blocks), 2)
             self.assertEqual(blocks[0].node_type, "function_definition")
@@ -210,6 +216,7 @@ class TestClass {
             metadata={"cached": True},
             confidence=1.0
         )
+@handle_errors(error_types=(Exception,))
         
         # Mock the extract method and manually set up caching
         # Note: We'll use a dictionary to simulate cache storage
@@ -237,6 +244,7 @@ class TestClass {
             # Second call with same params should retrieve from our simulated cache
             block2 = self.extractor._extract_from_node("python", "def test(): pass", test_node)
             
+@handle_errors(error_types=(Exception,))
             # Assertions
             self.assertEqual(block1, mock_block)
             self.assertEqual(block2, mock_block)
@@ -258,6 +266,7 @@ class TestClass {
         # Create an expected block result
         expected_block = ExtractedBlock(
             content="def test(): pass",
+@handle_errors(error_types=(Exception,))
             start_point=(0, 0),
             end_point=(0, 16),
             node_type="heuristic_block",

@@ -72,12 +72,14 @@ ENVIRONMENT_PATTERNS = {
     }
 }
 
+@handle_errors(error_types=(Exception,))
 def extract_comment(match: Match) -> Dict[str, Any]:
     """Extract comment information."""
     return {
         "content": match.group(1).strip(),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_variable(match: Match) -> Dict[str, Any]:
     """Extract variable information."""
@@ -247,6 +249,7 @@ ENV_PATTERNS_FOR_LEARNING = {
 
 # Add the repository learning patterns to the main patterns
 ENV_PATTERNS['REPOSITORY_LEARNING'] = ENV_PATTERNS_FOR_LEARNING
+@handle_errors(error_types=(Exception,))
 
 # Function to extract patterns for repository learning
 def extract_env_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

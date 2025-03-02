@@ -20,6 +20,7 @@ class JsonParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(JSON_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -227,6 +228,7 @@ class JsonParser(BaseParser):
         """Extract naming convention patterns from the AST."""
         patterns = []
         conventions = {}
+@handle_errors(error_types=(Exception,))
 
         def collect_conventions(node):
             if node.type == 'object' and node.metadata.get('naming_convention'
@@ -254,6 +256,7 @@ class JsonParser(BaseParser):
     def _extract_schema_patterns(self, ast: JsonNode) ->List[Dict[str, Any]]:
         """Extract schema patterns from the AST."""
         patterns = []
+@handle_errors(error_types=(Exception,))
         field_schemas = {}
 
         def collect_field_schemas(node, path=''):
@@ -288,6 +291,7 @@ class JsonParser(BaseParser):
     def _extract_common_field_patterns(self, ast: JsonNode) ->List[Dict[str,
         Any]]:
         """Extract common field patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         patterns = []
         common_fields = set()
 
@@ -376,6 +380,7 @@ class JsonParser(BaseParser):
             threshold]
 
     def _extract_nested_structure_patterns(self, ast: JsonNode) ->List[Dict
+@handle_errors(error_types=(Exception,))
         [str, Any]]:
         """Extract patterns from nested structures."""
         patterns = []

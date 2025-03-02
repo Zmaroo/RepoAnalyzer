@@ -60,9 +60,11 @@ TEST_FILES = {
     "rust": "test_rust_file.rs"
 }
 
+@handle_errors(error_types=(Exception,))
 def get_test_file_path(filename):
     """Get the full path to a test file."""
     return os.path.join(TEST_DIR, filename)
+@handle_errors(error_types=(Exception,))
 
 def read_test_file(filename):
     """Read the contents of a test file."""
@@ -73,6 +75,7 @@ def read_test_file(filename):
     
     with open(get_test_file_path(filename), 'r') as f:
         return f.read()
+@handle_errors(error_types=(Exception,))
 
 @pytest.fixture
 def feature_extractors():
@@ -97,9 +100,11 @@ def feature_extractors():
                     "custom": CustomFeatureExtractor(lang_id, FileType.CODE)
                 }
             
+@handle_errors(error_types=(Exception,))
             yield extractors
 
 @pytest.fixture
+@handle_errors(error_types=(Exception,))
 def mock_pattern_processor():
     """Mock the pattern processor to return patterns."""
     with patch("parsers.feature_extractor.pattern_processor") as mock_pp:
@@ -119,6 +124,7 @@ def mock_pattern_processor():
             }
         
         mock_pp.get_patterns_for_file.side_effect = get_patterns_for_file
+@handle_errors(error_types=(Exception,))
         mock_pp.validate_pattern.return_value = True
         yield mock_pp
 
@@ -126,6 +132,7 @@ def mock_pattern_processor():
 def parser_mocks():
     """Provide mock parser objects for testing."""
     mock_parser = MagicMock()
+@handle_errors(error_types=(Exception,))
     mock_parser.parse.return_value = MagicMock()
     return mock_parser
 
@@ -133,6 +140,7 @@ def parser_mocks():
 @pytest.fixture(autouse=True)
 def patch_initialize_parser():
     """Patch the _initialize_parser method to avoid tree-sitter initialization."""
+@handle_errors(error_types=(Exception,))
     with patch.object(TreeSitterFeatureExtractor, '_initialize_parser', return_value=None):
         with patch('parsers.language_mapping.get_parser_type', return_value=ParserType.TREE_SITTER):
             yield
@@ -153,6 +161,7 @@ def patch_feature_extractor():
                 'structure': {},
                 'documentation': {},
                 'semantics': {}
+@handle_errors(error_types=(Exception,))
             }
             yield
 
@@ -192,6 +201,7 @@ class TestFeatureExtractorIntegration:
                     
                     # Extract features
                     features = extractor.extract_features({"tree": MagicMock()}, source_code)
+@handle_errors(error_types=(Exception,))
                     
                     # Verify features
                     assert features is not None
@@ -238,6 +248,7 @@ class TestFeatureExtractorIntegration:
                 features = extractor.extract_features(mock_ast, source_code)
                 
                 # Verify features
+@handle_errors(error_types=(Exception,))
                 assert features is not None
                 assert isinstance(features, ExtractedFeatures)
                 assert "functions" in features.features
@@ -280,6 +291,7 @@ class TestFeatureExtractorWithRealAST:
                     # Process the query result
                     features = extractor._process_query_result(query_result)
                     
+@handle_errors(error_types=(Exception,))
                     # Verify the result
                     assert features is not None
                     assert "functions" in features
@@ -323,6 +335,7 @@ class TestFeatureExtractorWithRealAST:
                 # Verify features
                 assert features is not None
                 assert features["type"] == "function"
+@handle_errors(error_types=(Exception,))
                 assert features["text"] == "def test_function():"
                 assert features["start_byte"] == 0
                 assert features["end_byte"] == 20
@@ -342,6 +355,7 @@ def test_function():
     return "Hello, world!"
 
 # Test comment
+@handle_errors(error_types=(Exception,))
 class TestClass:
     '''This is a test class'''
     
@@ -400,6 +414,7 @@ class TestClass:
                     
                     mock_extract.return_value = ExtractedFeatures(
                         features={},
+@handle_errors(error_types=(Exception,))
                         documentation=doc,
                         metrics=ComplexityMetrics()
                     )

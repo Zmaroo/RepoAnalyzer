@@ -79,6 +79,7 @@ class ProcessingCoordinator:
                 await asyncio.gather(*self._tasks, return_exceptions=True)
                 raise
 
+@handle_errors(error_types=(Exception,))
     def cleanup(self):
         """Cleanup all processing resources."""
         self.file_processor.clear_cache()
@@ -151,10 +152,12 @@ async def process_repository_indexing(repo_path: str, repo_id: int,
 
 
 @cached_in_request
+@handle_async_errors(error_types=(Exception,))
 async def get_processable_files(repo_path: str) ->List[str]:
     """Get processable files from a repository path with caching."""
     return get_files(repo_path, {FileType.CODE, FileType.DOC})
 
+@handle_async_errors(error_types=(Exception,))
 
 async def index_active_project() ->None:
     """[2.5] Index the currently active project (working directory)."""
@@ -164,6 +167,7 @@ async def index_active_project() ->None:
     repo_id = await get_or_create_repo(repo_name, repo_type='active')
     log(f'Active project repo: {repo_name} (id: {repo_id}) at {repo_path}')
     await process_repository_indexing(repo_path, repo_id, repo_type='active')
+@handle_errors(error_types=(Exception,))
 
 
 def index_active_project_sync() ->None:

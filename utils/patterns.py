@@ -8,6 +8,7 @@ import asyncio
 from typing import Dict, List, Tuple, Any
 from utils.logger import log
 
+@handle_async_errors(error_types=(Exception,))
 async def get_common_patterns(limit: int = 50) -> Dict[str, str]:
     """
     Get most commonly used patterns.
@@ -27,6 +28,7 @@ async def get_common_patterns(limit: int = 50) -> Dict[str, str]:
         "from_import": r"from\s+([a-zA-Z_][a-zA-Z0-9_\.]*)\s+import",
         "variable_assignment": r"([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"
     }
+@handle_async_errors(error_types=(Exception,))
 
 async def get_language_patterns(language: str) -> Dict[str, str]:
     """
@@ -59,6 +61,7 @@ async def get_language_patterns(language: str) -> Dict[str, str]:
         log(f"No patterns available for language '{language}'", level="warning")
         return {}
         
+@handle_async_errors(error_types=(Exception,))
     return patterns[language.lower()]
 
 async def get_pattern_complexity(min_complexity: float = 0.0) -> Dict[str, Tuple[str, float]]:
@@ -88,6 +91,7 @@ async def get_pattern_complexity(min_complexity: float = 0.0) -> Dict[str, Tuple
             for name, (pattern, complexity) in patterns_with_complexity.items()
             if complexity >= min_complexity
         }
+@handle_async_errors(error_types=(Exception,))
     
     return patterns_with_complexity
 

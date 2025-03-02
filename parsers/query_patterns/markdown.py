@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
 import re
 
+@handle_errors(error_types=(Exception,))
 def extract_header(match: Match) -> Dict[str, Any]:
     """Extract header information."""
     return {
@@ -15,6 +16,7 @@ def extract_header(match: Match) -> Dict[str, Any]:
         "content": match.group(2),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_list_item(match: Match) -> Dict[str, Any]:
     """Extract list item information."""
@@ -144,6 +146,7 @@ PATTERN_RELATIONSHIPS = {
     "code_block": {
         "can_be_contained_by": ["document"]
     }
+@handle_errors(error_types=(Exception,))
 }
 
 def extract_markdown_features(ast: dict) -> dict:
@@ -168,6 +171,7 @@ def extract_markdown_features(ast: dict) -> dict:
             "metadata": {},
             "comments": [],
             "blockquotes": []
+@handle_errors(error_types=(Exception,))
         }
     }
     
@@ -227,22 +231,27 @@ def extract_markdown_features(ast: dict) -> dict:
             process_node(child)
     
     process_node(ast)
+@handle_errors(error_types=(Exception,))
     return features
 
 # Helper functions for specific feature extraction
 def extract_markdown_headings(ast: dict) -> list:
+@handle_errors(error_types=(Exception,))
     """Extract all headings with enhanced metadata."""
     features = extract_markdown_features(ast)
     return features["syntax"]["headers"]
 
+@handle_errors(error_types=(Exception,))
 def extract_markdown_code_blocks(ast: dict) -> list:
     """Extract all code blocks with enhanced metadata."""
     features = extract_markdown_features(ast)
     return features["syntax"]["code_blocks"]
+@handle_errors(error_types=(Exception,))
 
 def extract_markdown_links(ast: dict) -> list:
     """Extract all links with enhanced metadata."""
     features = extract_markdown_features(ast)
+@handle_errors(error_types=(Exception,))
     return features["semantics"]["links"]
 
 def extract_markdown_lists(ast: dict) -> list:
@@ -338,6 +347,7 @@ MARKDOWN_PATTERNS_FOR_LEARNING = {
 }
 
 # Update the MARKDOWN_PATTERNS dictionary
+@handle_errors(error_types=(Exception,))
 MARKDOWN_PATTERNS = {
     # ... existing patterns ...
 }

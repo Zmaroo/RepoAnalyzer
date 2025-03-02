@@ -20,6 +20,7 @@ class CobaltParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(COBALT_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -152,6 +153,7 @@ class CobaltParser(BaseParser):
         str, Any]]:
         """Extract function patterns from the AST."""
         functions = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict) and node.get('type') == 'function':
@@ -167,6 +169,7 @@ class CobaltParser(BaseParser):
     def _extract_class_patterns(self, ast: Dict[str, Any]) ->List[Dict[str,
         Any]]:
         """Extract class patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         classes = []
 
         def process_node(node):

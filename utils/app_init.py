@@ -22,9 +22,11 @@ from utils.health_monitor import HealthMonitor
 _shutdown_handlers: List[Callable] = []
 _cleanup_handlers = {}
 
+@handle_errors(error_types=(Exception,))
 def register_shutdown_handler(handler: Callable) -> None:
     """Register a function to be called during application shutdown."""
     _shutdown_handlers.append(handler)
+@handle_errors(error_types=(Exception,))
 
 def _cleanup_on_exit() -> None:
     """Handle all cleanup operations on application exit."""
@@ -40,6 +42,7 @@ def _cleanup_on_exit() -> None:
     # Clean up async tasks
     cleanup_tasks()
     
+@handle_errors(error_types=(Exception,))
     log("Cleanup completed", level="info")
 
 def db_cleanup() -> None:
@@ -49,6 +52,7 @@ def db_cleanup() -> None:
         loop = asyncio.get_event_loop()
         loop.run_until_complete(close_db_pool())
         log("Database pool closed", level="info")
+@handle_errors(error_types=(Exception,))
     except Exception as e:
         log(f"Error closing database pool: {e}", level="error")
 
@@ -67,6 +71,7 @@ def neo4j_projections_cleanup() -> None:
         else:
             # Otherwise run it in the event loop
             loop.run_until_complete(projections.close())
+@handle_errors(error_types=(Exception,))
             log("Neo4j projections closed", level="info")
     except Exception as e:
         log(f"Error closing Neo4j projections: {e}", level="error")
@@ -74,6 +79,7 @@ def neo4j_projections_cleanup() -> None:
 def error_reporting_cleanup() -> None:
     """Stop periodic error reporting during application shutdown."""
     try:
+@handle_errors(error_types=(Exception,))
         ErrorAudit.stop_periodic_reporting()
         log("Error reporting stopped", level="info")
     except Exception as e:
@@ -90,6 +96,7 @@ def health_monitor_cleanup() -> None:
         else:
             # Otherwise run it in the event loop
             loop = asyncio.get_event_loop()
+@handle_async_errors(error_types=(Exception,))
             loop.run_until_complete(health_monitor.stop_monitoring_async())
             
         log("Health monitoring stopped", level="info")
@@ -129,6 +136,7 @@ async def _initialize_components():
         register_shutdown_handler(health_monitor_cleanup)
         
         # Initialize other components here
+@handle_errors(error_types=(Exception,))
         # ...
         
         log("Application components initialized successfully", level="info")

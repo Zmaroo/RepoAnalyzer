@@ -13,6 +13,7 @@ from parsers.types import ExtractedFeatures, FeatureCategory
 import logging
 
 
+@handle_errors(error_types=(Exception,))
 def get_graph_sync():
     """Get the graph_sync instance.
     
@@ -97,6 +98,7 @@ class DatabaseOperationManager:
         from db.retry_utils import DatabaseRetryManager, RetryConfig
         self.retry_manager = DatabaseRetryManager(config=RetryConfig(
             max_retries=max_retries, base_delay=retry_delay))
+@handle_async_errors(error_types=(Exception,))
 
     async def execute_with_retry(self, operation_func, *args, **kwargs):
         """
@@ -116,6 +118,7 @@ class DatabaseOperationManager:
             DatabaseError: If all retries fail
         """
         return await self.retry_manager.execute_with_retry(operation_func,
+@handle_async_errors(error_types=(Exception,))
             *args, **kwargs)
 
     async def run_query_with_retry(self, query, params=None):
@@ -155,6 +158,7 @@ class DatabaseOperationManager:
 
 db_manager = DatabaseOperationManager()
 
+@handle_async_errors(error_types=(Exception,))
 
 async def run_query_with_retry(query, params=None):
     """Run a Cypher query with retry logic using the database operation manager.
@@ -184,6 +188,7 @@ async def run_query(query, params=None):
         Results from the query.
         
     Raises:
+@handle_async_errors(error_types=(Exception,))
         Neo4jError: If a non-retryable error occurs.
         DatabaseError: For other database-related errors.
     """
@@ -270,6 +275,11 @@ class Neo4jTools:
     @handle_errors(error_types=DatabaseError)
     def close(self):
         """Close Neo4j connection."""
+        # Add deprecation warning
+        import warnings
+        warnings.warn(f"'close' is deprecated, use 'close_async' instead", DeprecationWarning, stacklevel=2)
+@handle_errors(error_types=(Exception,))
+        
         if self.driver:
             self.driver.close()
             logging.info('Neo4j driver closed.')
@@ -623,6 +633,7 @@ class GraphProjectionManager:
 
 
 projection_manager = GraphProjectionManager()
+@handle_async_errors(error_types=(Exception,))
 
 
 async def setup_graph_projections():
@@ -655,6 +666,7 @@ async def auto_reinvoke_projection_once(repo_id=None):
 class Neo4jProjections:
     """[6.2.9] Neo4j graph projections and algorithms for pattern analysis."""
     _instance = None
+@handle_errors(error_types=(Exception,))
 
     def __new__(cls):
         if cls._instance is None:
@@ -667,6 +679,7 @@ class Neo4jProjections:
             self.active_projections = set()
             self._initialized = True
             try:
+@handle_errors(error_types=(Exception,))
                 from utils.app_init import register_shutdown_handler
                 register_shutdown_handler(self._sync_shutdown_handler)
                 log('Graph projections cleanup registered with shutdown handler'

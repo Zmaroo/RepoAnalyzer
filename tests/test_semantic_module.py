@@ -47,10 +47,12 @@ class TestEmbeddingModels:
     """Test various embedding models."""
     
     @pytest.fixture
+@handle_errors(error_types=(Exception,))
     def sample_text(self):
         """Sample text for embedding tests."""
         return "This is a sample text for testing embeddings."
     
+@handle_errors(error_types=(Exception,))
     @pytest.fixture
     def sample_code(self):
         """Sample code for embedding tests."""
@@ -59,6 +61,7 @@ class TestEmbeddingModels:
             print("Hello, world!")
             return 42
         """
+@handle_async_errors(error_types=(Exception,))
     
     @pytest.mark.asyncio
     async def test_openai_embedding(self, sample_text):
@@ -88,6 +91,7 @@ class TestEmbeddingModels:
             mock_client.embeddings.create.assert_called_once()
             call_args = mock_client.embeddings.create.call_args[1]
             assert call_args["model"] == "text-embedding-ada-002"
+@handle_async_errors(error_types=(Exception,))
             assert call_args["input"] == sample_text
     
     @pytest.mark.asyncio
@@ -113,6 +117,7 @@ class TestEmbeddingModels:
             assert embedding[0] == 0.1
             assert embedding[4] == 0.5
             
+@handle_async_errors(error_types=(Exception,))
             # Verify the model was called
             mock_model.assert_called_once_with(sample_text)
     
@@ -137,6 +142,7 @@ class TestEmbeddingModels:
         # Verify the generator was called
         mock_generator.get_embedding.assert_called_once_with(sample_text)
 
+@handle_errors(error_types=(Exception,))
 
 class TestEmbeddingManager:
     """Test the embedding manager."""
@@ -157,6 +163,7 @@ class TestEmbeddingManager:
         # Create the manager
         manager = EmbeddingManager(
             text_embedder=text_embedder,
+@handle_async_errors(error_types=(Exception,))
             code_embedder=code_embedder
         )
         
@@ -172,6 +179,7 @@ class TestEmbeddingManager:
         
         # Verify the embedding
         assert len(embedding) == 5
+@handle_async_errors(error_types=(Exception,))
         assert embedding[0] == 0.1
         assert embedding[4] == 0.5
         
@@ -187,6 +195,7 @@ class TestEmbeddingManager:
         embedding = await embedding_manager.get_code_embedding(code)
         
         # Verify the embedding
+@handle_async_errors(error_types=(Exception,))
         assert len(embedding) == 5
         assert embedding[0] == 0.5
         assert embedding[4] == 0.1
@@ -205,6 +214,7 @@ class TestEmbeddingManager:
         
         # Verify the embeddings are the same
         assert embedding1 == embedding2
+@handle_errors(error_types=(Exception,))
         
         # Verify the text embedder was called only once
         embedding_manager.text_embedder.get_embedding.assert_called_once_with(text)
@@ -223,6 +233,7 @@ class TestVectorStore:
         mock_backend.store_vector.return_value = "vector_id_1"
         mock_backend.get_vector.return_value = ([0.1, 0.2, 0.3, 0.4, 0.5], {"metadata": "test"})
         mock_backend.search_vectors.return_value = [
+@handle_async_errors(error_types=(Exception,))
             ("vector_id_1", 0.95, {"metadata": "test1"}),
             ("vector_id_2", 0.85, {"metadata": "test2"})
         ]
@@ -238,6 +249,7 @@ class TestVectorStore:
         # Setup
         vector = [0.1, 0.2, 0.3, 0.4, 0.5]
         metadata = {"text": "Sample text", "source": "test"}
+@handle_async_errors(error_types=(Exception,))
         
         # Store the vector
         vector_id = await vector_store.store(vector, metadata)
@@ -254,6 +266,7 @@ class TestVectorStore:
         # Setup
         vector_id = "vector_id_1"
         
+@handle_async_errors(error_types=(Exception,))
         # Retrieve the vector
         vector, metadata = await vector_store.get(vector_id)
         
@@ -274,6 +287,7 @@ class TestVectorStore:
         # Search for similar vectors
         results = await vector_store.search(query_vector, top_k=2)
         
+@handle_errors(error_types=(Exception,))
         # Verify the results
         assert len(results) == 2
         assert results[0][0] == "vector_id_1"
@@ -291,6 +305,7 @@ class TestSimilarityFunctions:
         """Test cosine similarity calculation."""
         # Setup
         vec1 = np.array([1, 0, 0, 0])
+@handle_errors(error_types=(Exception,))
         vec2 = np.array([0, 1, 0, 0])
         vec3 = np.array([1, 1, 0, 0])
         
@@ -307,6 +322,7 @@ class TestSimilarityFunctions:
     
     def test_euclidean_distance(self):
         """Test euclidean distance calculation."""
+@handle_errors(error_types=(Exception,))
         # Setup
         vec1 = np.array([0, 0, 0])
         vec2 = np.array([1, 0, 0])

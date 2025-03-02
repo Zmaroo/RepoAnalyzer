@@ -24,12 +24,14 @@ if repo_root not in sys.path:
 from tests.mocks.db_mock import mock_db_factory, patch_postgres, patch_neo4j, reset_mock_factory
 
 @pytest.fixture(scope="session", autouse=True)
+@handle_errors(error_types=(Exception,))
 def setup_logging():
     """Configure logging for tests."""
     logging.basicConfig(level=logging.DEBUG)
     yield
     logging.basicConfig(level=logging.INFO)
 
+@handle_async_errors(error_types=(Exception,))
 @pytest_asyncio.fixture
 async def mock_databases():
     """Set up mock implementations of PostgreSQL and Neo4j databases.
@@ -85,10 +87,12 @@ async def mock_databases():
     
     # Reset the factory for the next test
     mock_db_factory.reset_all()
+@handle_async_errors(error_types=(Exception,))
 
 @pytest_asyncio.fixture
 async def postgres_mock(mock_databases):
     """Convenience fixture to access the PostgreSQL mock directly."""
+@handle_async_errors(error_types=(Exception,))
     return mock_databases.get_postgres_mock()
 
 @pytest_asyncio.fixture

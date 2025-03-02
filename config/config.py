@@ -51,6 +51,7 @@ class FileConfig:
     ignore_patterns: list = field(default_factory=lambda : ['*.tmp', '*.log'])
 
     @classmethod
+@handle_errors(error_types=(Exception,))
     def create(cls):
         return cls()
 

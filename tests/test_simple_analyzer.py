@@ -23,6 +23,7 @@ from db.upsert_ops import upsert_repository
 from utils.logger import log
 from ai_tools.ai_interface import ai_assistant
 
+@handle_async_errors(error_types=(Exception,))
 async def analyze_repo():
     """Analyze the repository directly using core components."""
     log("Starting simple analysis of the RepoAnalyzer project itself", level="info")
@@ -68,6 +69,7 @@ async def analyze_repo():
         log(f"Error during analysis: {e}", level="error")
         import traceback
         log(traceback.format_exc(), level="error")
+@handle_errors(error_types=(Exception,))
 
 def main():
     """Main entry point."""

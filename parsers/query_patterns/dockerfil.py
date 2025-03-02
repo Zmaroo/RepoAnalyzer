@@ -57,6 +57,7 @@ RUN_PATTERN = {
 }
 
 # Avoid circular imports by providing static functions
+@handle_errors(error_types=(Exception,))
 def extract_dockerfile_patterns_for_learning(content):
     """Extract patterns from Dockerfile content for repository learning."""
     from parsers.pattern_processor import pattern_processor

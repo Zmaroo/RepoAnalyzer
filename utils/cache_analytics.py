@@ -38,6 +38,7 @@ class CacheAnalytics:
         # Dictionary to store warmup functions for each cache
         self._warmup_funcs: Dict[str, WarmupFunc] = {}
     
+@handle_errors(error_types=(Exception,))
     def register_warmup_function(self, cache_name: str, func: WarmupFunc) -> None:
         """Register a function to warm up a specific cache.
         
@@ -47,6 +48,7 @@ class CacheAnalytics:
         """
         self._warmup_funcs[cache_name] = func
         log(f"Registered warmup function for cache: {cache_name}", level="info")
+@handle_async_errors(error_types=(Exception,))
     
     async def start_monitoring(
         self, 
@@ -251,6 +253,7 @@ class CacheAnalytics:
                 return False
             except Exception as e:
                 log(f"Unexpected error warming up cache {cache_name}: {e}", level="error")
+@handle_async_errors(error_types=(Exception,))
                 return False
     
     async def optimize_ttl_values(self):
@@ -279,6 +282,7 @@ class CacheAnalytics:
 cache_analytics = CacheAnalytics()
 
 # Example warmup function for demonstration
+@handle_async_errors(error_types=(Exception,))
 async def example_warmup_function(keys: List[str]) -> Dict[str, Any]:
     """Example function to fetch data for cache warmup.
     
@@ -300,6 +304,7 @@ async def example_warmup_function(keys: List[str]) -> Dict[str, Any]:
 # Register example warmup function (for demonstration)
 # cache_analytics.register_warmup_function("query", example_warmup_function)
 
+@handle_async_errors(error_types=(Exception,))
 # Async initialization function
 async def initialize_cache_analytics(
     auto_start: bool = True,
@@ -319,6 +324,7 @@ async def initialize_cache_analytics(
             warmup_interval=warmup_interval
         )
     return cache_analytics
+@handle_errors(error_types=(Exception,))
 
 # Synchronous convenience function
 def start_cache_analytics():

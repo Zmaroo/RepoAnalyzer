@@ -23,6 +23,7 @@ class GraphqlParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(GRAPHQL_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         """Initialize parser resources."""
         self._initialized = True
@@ -209,6 +210,7 @@ class GraphqlParser(BaseParser):
         ]:
         """Extract type patterns from the AST."""
         types = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict) and node.get('type') == 'type':
@@ -228,6 +230,7 @@ class GraphqlParser(BaseParser):
     def _extract_interface_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract interface patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         interfaces = []
 
         def process_node(node):
@@ -249,6 +252,7 @@ class GraphqlParser(BaseParser):
         Any]]:
         """Extract schema patterns from the AST."""
         query_elements = []
+@handle_errors(error_types=(Exception,))
         mutation_elements = []
         subscription_elements = []
 
@@ -295,6 +299,7 @@ class GraphqlParser(BaseParser):
 
     def _extract_naming_patterns(self, ast: Dict[str, Any]) ->List[Dict[str,
         Any]]:
+@handle_errors(error_types=(Exception,))
         """Extract naming convention patterns from the AST."""
         type_names = []
         field_names = []

@@ -14,6 +14,7 @@ from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
 # Language identifier
 LANGUAGE = "ocaml_interface"
 
+@handle_errors(error_types=(Exception,))
 def extract_val_declaration(match: Match) -> Dict[str, Any]:
     """Extract value declaration information."""
     return {
@@ -172,6 +173,7 @@ OCAML_INTERFACE_PATTERNS_FOR_LEARNING = {
 
 # Update OCAML_INTERFACE_PATTERNS with learning patterns
 OCAML_INTERFACE_PATTERNS[PatternCategory.LEARNING] = OCAML_INTERFACE_PATTERNS_FOR_LEARNING
+@handle_errors(error_types=(Exception,))
 
 def extract_ocaml_interface_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
     """

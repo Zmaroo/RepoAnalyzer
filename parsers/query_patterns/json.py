@@ -8,6 +8,7 @@ from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
 import re
 import json
 
+@handle_errors(error_types=(Exception,))
 def extract_object(node: Dict) -> Dict[str, Any]:
     """Extract object information."""
     return {
@@ -15,6 +16,7 @@ def extract_object(node: Dict) -> Dict[str, Any]:
         "path": node["path"],
         "keys": [child["key"] for child in node.get("children", [])]
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_array(node: Dict) -> Dict[str, Any]:
     """Extract array information."""
@@ -171,6 +173,7 @@ JSON_PATTERNS_FOR_LEARNING = {
 }
 
 # Update JSON_PATTERNS with learning patterns
+@handle_errors(error_types=(Exception,))
 JSON_PATTERNS[PatternCategory.LEARNING] = JSON_PATTERNS_FOR_LEARNING
 
 def extract_json_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

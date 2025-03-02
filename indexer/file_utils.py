@@ -23,6 +23,7 @@ from utils.error_handling import handle_errors, ErrorBoundary
 # Global config instance
 file_config = FileConfig.create()
 
+@handle_errors(error_types=(Exception,))
 def should_ignore(file_path: str) -> bool:
     """
     Check if file should be ignored based on patterns.
@@ -107,6 +108,7 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
     except Exception as e:
         log(f"Error classifying file {file_path}: {e}", level="error")
         return None
+@handle_errors(error_types=(Exception,))
 
 def get_files(base_path: str, file_types: Set = None) -> List[str]:
     """
@@ -140,6 +142,7 @@ def get_files(base_path: str, file_types: Set = None) -> List[str]:
         return files
     except Exception as e:
         log(f"Error getting files: {e}", level="error")
+@handle_errors(error_types=(Exception,))
         return []
 
 def get_relative_path(file_path: str, base_path: str) -> str:
@@ -156,6 +159,7 @@ def get_relative_path(file_path: str, base_path: str) -> str:
     try:
         return os.path.relpath(file_path, base_path)
     except Exception as e:
+@handle_errors(error_types=(Exception,))
         log(f"Error getting relative path: {e}", level="error")
         return file_path
 

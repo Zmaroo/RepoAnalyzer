@@ -3,6 +3,7 @@ import os
 from tree_sitter_language_pack import get_binding, get_language, get_parser
 
 
+@handle_errors(error_types=(Exception,))
 def inspect_file(file_path, language_name):
     print(f"\nInspecting {language_name} file: {file_path}")
     
@@ -16,6 +17,7 @@ def inspect_file(file_path, language_name):
     # Parse file
     tree = parser.parse(content)
     
+@handle_errors(error_types=(Exception,))
     # Function to traverse tree and collect node types
     def traverse(node, level=0):
         node_types = set()

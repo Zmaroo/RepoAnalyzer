@@ -80,6 +80,10 @@ def handle_errors(error_types: Tuple[Type[Exception], ...] = (Exception,)):
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs) -> Any:
+            # Add deprecation warning
+            import warnings
+            warnings.warn(f"'wrapper' is deprecated, use 'wrapper' instead", DeprecationWarning, stacklevel=2)
+            
             try:
                 return func(*args, **kwargs)
             except error_types as e:
@@ -87,7 +91,6 @@ def handle_errors(error_types: Tuple[Type[Exception], ...] = (Exception,)):
                 log(f"Error in {func.__name__}: {str(e)}", level="error")
                 # Record the error for audit purposes
                 ErrorAudit.record_error(e, func.__name__, error_types)
-                return None
         return wrapper
     return decorator
 
@@ -231,7 +234,7 @@ def handle_async_errors(func=None, error_types=Exception, default_return=None):
                         return None
                         
             return wrapper
-        return decorator
+            return decorator
 
 @contextmanager
 def ErrorBoundary(operation_name: str, error_types: Tuple[Type[Exception], ...] = (Exception,)):

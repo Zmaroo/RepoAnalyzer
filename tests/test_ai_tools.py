@@ -37,6 +37,7 @@ class TestAIAssistant:
     """Test the AIAssistant interface."""
     
     @pytest.mark.asyncio
+@handle_async_errors(error_types=(Exception,))
     async def test_initialization(self):
         """Test AIAssistant initialization."""
         assistant = AIAssistant()
@@ -49,6 +50,7 @@ class TestAIAssistant:
         assistant.close()
     
     @pytest.mark.asyncio
+@handle_async_errors(error_types=(Exception,))
     @patch('ai_tools.code_understanding.CodeUnderstanding.get_code_context')
     async def test_get_code_context(self, mock_get_context):
         """Test getting code context."""
@@ -71,6 +73,7 @@ class TestAIAssistant:
         # Cleanup
         assistant.close()
     
+@handle_async_errors(error_types=(Exception,))
     @pytest.mark.asyncio
     @patch('ai_tools.reference_repository_learning.ReferenceRepoLearning.learn_from_repository')
     async def test_learn_from_reference_repo(self, mock_learn):
@@ -99,6 +102,7 @@ class TestAIAssistant:
 class TestReferenceRepoLearning:
     """Test the Reference Repository Learning component."""
     
+@handle_async_errors(error_types=(Exception,))
     @pytest.mark.asyncio
     @patch('db.neo4j_ops.run_query')
     @patch('db.psql.query')
@@ -122,6 +126,7 @@ class TestReferenceRepoLearning:
             
             # Verify
             assert result is not None
+@handle_async_errors(error_types=(Exception,))
             mock_psql.assert_called_once()
             mock_extract_code.assert_called_once()
     
@@ -148,6 +153,7 @@ class TestReferenceRepoLearning:
             # Verify
             assert len(patterns) == 2
             mock_query.assert_called()
+@handle_async_errors(error_types=(Exception,))
 
 class TestCodeUnderstanding:
     """Test the Code Understanding component."""
@@ -171,6 +177,7 @@ class TestCodeUnderstanding:
             # Verify
             assert result is not None
             mock_embed.assert_called_once()
+@handle_async_errors(error_types=(Exception,))
 
 class TestGraphAnalysis:
     """Test the Graph Analysis component."""

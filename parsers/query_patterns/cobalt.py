@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from parsers.types import FileType, QueryPattern, PatternCategory
 import re
 
+@handle_errors(error_types=(Exception,))
 def extract_function(match: Match) -> Dict[str, Any]:
     """Extract function information."""
     return {
@@ -13,6 +14,7 @@ def extract_function(match: Match) -> Dict[str, Any]:
         "return_type": match.group(3) if match.lastindex >= 3 else None,
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
+@handle_errors(error_types=(Exception,))
 
 def extract_class(match: Match) -> Dict[str, Any]:
     """Extract class information."""
@@ -212,6 +214,7 @@ COBALT_PATTERNS_FOR_LEARNING = {
 
 # Add the repository learning patterns to the main patterns
 COBALT_PATTERNS['REPOSITORY_LEARNING'] = COBALT_PATTERNS_FOR_LEARNING
+@handle_errors(error_types=(Exception,))
 
 # Function to extract patterns for repository learning
 def extract_cobalt_patterns_for_learning(content: str) -> List[Dict[str, Any]]:

@@ -50,6 +50,7 @@ NON_RETRYABLE_ERROR_PATTERNS = ['syntax error', 'constraint', 'invalid',
     'index error', 'out of bounds', 'null', 'undefined']
 
 
+@handle_errors(error_types=(Exception,))
 def is_retryable_error(error: Exception) ->bool:
     """
     Determine if an error is retryable based on its error message.
@@ -72,6 +73,7 @@ def is_retryable_error(error: Exception) ->bool:
     return isinstance(error, (Neo4jError, TransactionError, ConnectionError,
         OSError))
 
+@handle_errors(error_types=(Exception,))
 
 def classify_error(error: Exception) ->Exception:
     """
@@ -106,6 +108,7 @@ class RetryConfig:
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
+@handle_errors(error_types=(Exception,))
         self.jitter_factor = jitter_factor
 
     def calculate_delay(self, attempt: int) ->float:
@@ -206,6 +209,7 @@ class DatabaseRetryManager:
         if error_boundary.error:
             log(f'Unexpected error in retry mechanism: {error_boundary.error}',
                 level='error')
+@handle_errors(error_types=(Exception,))
             raise DatabaseError(
                 f'Retry mechanism failed: {str(error_boundary.error)}')
 
@@ -221,8 +225,10 @@ class DatabaseRetryManager:
             base_delay: Override default base delay
             max_delay: Override default max delay
             
+@handle_errors(error_types=(Exception,))
         Returns:
             Callable: Decorated function with retry logic
+@handle_async_errors(error_types=(Exception,))
         """
 
         def decorator(func):
@@ -246,6 +252,7 @@ class DatabaseRetryManager:
 
 
 default_retry_manager = DatabaseRetryManager()
+@handle_errors(error_types=(Exception,))
 
 
 def with_retry(max_retries: Optional[int]=None, base_delay: Optional[float]

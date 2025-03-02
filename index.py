@@ -246,6 +246,7 @@ def main():
         sys.exit(1)
 
 
+@handle_errors(error_types=(Exception,))
 def _handle_shutdown_wrapper(loop):
     """Wrapper to handle async shutdown with a timeout to prevent hanging."""
     try:

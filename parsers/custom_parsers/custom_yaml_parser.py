@@ -25,6 +25,7 @@ class YamlParser(BaseParser):
             parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(YAML_PATTERNS)
 
+@handle_errors(error_types=(Exception,))
     def initialize(self) ->bool:
         self._initialized = True
         return True
@@ -180,6 +181,7 @@ class YamlParser(BaseParser):
         str, Any]]:
         """Extract mapping patterns from the AST."""
         mappings = []
+@handle_errors(error_types=(Exception,))
 
         def process_node(node):
             if isinstance(node, dict):
@@ -195,6 +197,7 @@ class YamlParser(BaseParser):
     def _extract_sequence_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract sequence patterns from the AST."""
+@handle_errors(error_types=(Exception,))
         sequences = []
 
         def process_node(node):
@@ -212,6 +215,7 @@ class YamlParser(BaseParser):
         str, Any]]:
         """Extract anchor and alias patterns from the AST."""
         references = []
+@handle_errors(error_types=(Exception,))
         anchor_pattern = re.compile('&([a-zA-Z0-9_-]+)\\s')
         alias_pattern = re.compile('\\*([a-zA-Z0-9_-]+)')
 
@@ -219,6 +223,7 @@ class YamlParser(BaseParser):
             for match in anchor_pattern.finditer(content):
                 references.append({'type': 'anchor', 'name': match.group(1),
                     'content': match.group(0)})
+@handle_errors(error_types=(Exception,))
             for match in alias_pattern.finditer(content):
                 references.append({'type': 'alias', 'name': match.group(1),
                     'content': match.group(0)})
@@ -232,6 +237,7 @@ class YamlParser(BaseParser):
         process_node(ast)
         return references
 
+@handle_errors(error_types=(Exception,))
     def _extract_comment_patterns(self, ast: Dict[str, Any]) ->List[Dict[
         str, Any]]:
         """Extract comment patterns from the AST."""

@@ -29,6 +29,7 @@ class BaseParserInterface(ABC):
     feature_extractor: Any = None  # Will hold an instance of a feature extractor
     
     @abstractmethod
+@handle_errors(error_types=(Exception,))
     def initialize(self) -> bool:
         """Initialize parser resources."""
         pass
@@ -38,10 +39,12 @@ class BaseParserInterface(ABC):
         """Parse source code into AST."""
         pass
     
+@handle_errors(error_types=(Exception,))
     @abstractmethod
     def parse(self, source_code: str) -> Optional[ParserResult]:
         """Parse source code and return structured results."""
         pass
+@handle_errors(error_types=(Exception,))
     
     @abstractmethod
     def cleanup(self):
@@ -50,10 +53,12 @@ class BaseParserInterface(ABC):
 
 @dataclass
 class ParserRegistryInterface(ABC):
+@handle_errors(error_types=(Exception,))
     """Abstract interface for language registry."""
     
     @abstractmethod
     def get_parser(self, classification: Any) -> Optional[BaseParserInterface]:
+@handle_errors(error_types=(Exception,))
         """Get a parser for the given file classification."""
         pass
     
