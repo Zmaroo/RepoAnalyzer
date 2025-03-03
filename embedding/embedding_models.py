@@ -78,6 +78,10 @@ class CodeEmbedder(BaseEmbedder):
     
     def __init__(self):
         super().__init__('microsoft/graphcodebert-base')
+    
+    async def embed_code(self, code: str) -> Optional[np.ndarray]:
+        """Alias for embed_async to maintain compatibility with tests."""
+        return await self.embed_async(code)
 
 class DocEmbedder(BaseEmbedder):
     """Documentation-specific embedding model."""

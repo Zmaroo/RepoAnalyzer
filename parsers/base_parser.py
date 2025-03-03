@@ -59,7 +59,7 @@ class BaseParser(BaseParserInterface):
         """
         return []
 
-    def _check_ast_cache(self, source_code: str) -> Optional[Dict[str, Any]]:
+    async def _check_ast_cache(self, source_code: str) -> Optional[Dict[str, Any]]:
         """Check if an AST for this source code is already cached.
         
         Args:
@@ -69,7 +69,6 @@ class BaseParser(BaseParserInterface):
             Optional[Dict[str, Any]]: The cached AST if found, None otherwise
         """
         import hashlib
-        import asyncio
         from utils.cache import ast_cache
         
         # Create a unique cache key based on language and source code hash
@@ -78,14 +77,14 @@ class BaseParser(BaseParserInterface):
         
         with ErrorBoundary(f"check_ast_cache_{self.language_id}", error_types=(Exception,)):
             # Try to get from cache
-            cached_ast = asyncio.run(ast_cache.get_async(cache_key))
+            cached_ast = await ast_cache.get_async(cache_key)
             if cached_ast:
                 log(f"AST cache hit for {self.language_id}", level="debug")
                 return cached_ast
         
         return None
             
-    def _store_ast_in_cache(self, source_code: str, ast: Dict[str, Any]) -> None:
+    async def _store_ast_in_cache(self, source_code: str, ast: Dict[str, Any]) -> None:
         """Store an AST in the cache.
         
         Args:
@@ -93,7 +92,6 @@ class BaseParser(BaseParserInterface):
             ast (Dict[str, Any]): The AST to cache
         """
         import hashlib
-        import asyncio
         from utils.cache import ast_cache
         
         # Create a unique cache key based on language and source code hash
@@ -102,10 +100,10 @@ class BaseParser(BaseParserInterface):
         
         with ErrorBoundary(f"store_ast_in_cache_{self.language_id}", error_types=(Exception,)):
             # Store in cache asynchronously
-            asyncio.run(ast_cache.set_async(cache_key, ast))
+            await ast_cache.set_async(cache_key, ast)
             log(f"AST cached for {self.language_id}", level="debug")
 
-    def parse(self, source_code: str) -> Optional[ParserResult]:
+    async def parse(self, source_code: str) -> Optional[ParserResult]:
         """[2.2] Unified parsing pipeline."""
         with ErrorBoundary("parse_source", error_types=(Exception,)):
             # [2.2.1] Initialize Parser
@@ -115,15 +113,15 @@ class BaseParser(BaseParserInterface):
 
             # [2.2.2] Generate AST
             # First check if we have a cached AST
-            cached_ast = self._check_ast_cache(source_code)
+            cached_ast = await self._check_ast_cache(source_code)
             if cached_ast:
                 ast = cached_ast
             else:
                 # If not in cache, parse the source
-                ast = self._parse_source(source_code)
+                ast = await self._parse_source(source_code)
                 if ast:
                     # Cache the AST for future use
-                    self._store_ast_in_cache(source_code, ast)
+                    await self._store_ast_in_cache(source_code, ast)
             
             if not ast:
                 return None

@@ -30,7 +30,7 @@ from parsers.language_mapping import (
     get_parser_info_for_language, 
     get_complete_language_info
 )
-from utils.error_handling import handle_async_errors, ParsingError, ErrorBoundary
+from utils.error_handling import handle_async_errors, ParsingError, AsyncErrorBoundary
 from utils.encoding import encode_query_pattern
 from utils.logger import log
 from utils.cache import parser_cache
@@ -47,7 +47,7 @@ class UnifiedParser:
         if cached_result:
             return ParserResult(**cached_result)
         
-        async with ErrorBoundary(f"parse_file_{file_path}", error_types=(ParsingError, Exception)):
+        async with AsyncErrorBoundary(f"parse_file_{file_path}", error_types=(ParsingError, Exception)):
             # Use the improved language detection with confidence score
             language_id, confidence = detect_language(file_path, content)
             if confidence < 0.6:
@@ -70,7 +70,7 @@ class UnifiedParser:
 
             # Check if just the AST is already cached (implemented in tree_sitter_parser.py)
             # The parse method will automatically use the AST cache if available
-            parse_result = parser.parse(content)
+            parse_result = await parser.parse(content)
             if not parse_result or not parse_result.success:
                 return None
 

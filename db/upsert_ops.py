@@ -168,23 +168,29 @@ async def store_doc_in_neo4j(doc_data: Dict) -> None:
 async def upsert_code_snippet(code_data: Dict) -> None:
     """[6.5.2] Store code with transaction coordination."""
     async with AsyncErrorBoundary("code upsert", error_types=(PostgresError, Neo4jError)):
-        async with transaction_scope() as txn:
-            try:
-                # PostgreSQL storage
-                await store_code_in_postgres(code_data)
-                
-                # Neo4j storage
-                if code_data.get('ast'):
-                    await neo4j.store_code_node(code_data)
+        try:
+            # Directly use transaction_scope in the async with statement
+            async with transaction_scope() as txn:
+                try:
+                    # PostgreSQL storage
+                    await store_code_in_postgres(code_data)
                     
-            except Exception as e:
-                log("Failed to upsert code", level="error", context={
-                    "operation": "upsert_code_snippet",
-                    "repo_id": code_data.get("repo_id"),
-                    "file_path": code_data.get("file_path"),
-                    "error": str(e)
-                })
-                raise
+                    # Neo4j storage
+                    if code_data.get('ast'):
+                        await neo4j.store_code_node(code_data)
+                        
+                except Exception as e:
+                    log("Failed to upsert code", level="error", context={
+                        "operation": "upsert_code_snippet",
+                        "repo_id": code_data.get("repo_id"),
+                        "file_path": code_data.get("file_path"),
+                        "error": str(e)
+                    })
+                    raise
+        except Exception as e:
+            # Handle any issues with the transaction itself
+            log(f"Error in transaction_scope: {e}", level="error")
+            raise
 
 @handle_async_errors(error_types=[Neo4jError, DatabaseError])
 async def upsert_doc(

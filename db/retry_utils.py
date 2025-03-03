@@ -40,11 +40,12 @@ class NonRetryableNeo4jError(NonRetryableError, Neo4jError):
 
 # Common error patterns to identify retryable vs. non-retryable errors
 RETRYABLE_ERROR_PATTERNS = [
-    'connection', 'timeout', 'deadlock', 'lock', 'unavailable', 
-    'temporary', 'overloaded', 'too busy', 'refused', 'reset',
-    'broken pipe', 'closed connection', 'connection abort',
-    'connectivity', 'socket', 'network', 'unreachable',
-    'operation interrupted', 'concurrent', 'temporary failure'
+    'connection refused', 'timeout', 'timed out', 'temporarily unavailable',
+    'deadlock', 'connection reset', 'broken pipe', 'overloaded',
+    'too many connections', 'resource temporarily unavailable',
+    'connection lost', 'network error', 'server unavailable',
+    'service unavailable', 'connection error', 'socket error',
+    'connection was reset'
 ]
 
 NON_RETRYABLE_ERROR_PATTERNS = [
@@ -165,7 +166,6 @@ class DatabaseRetryManager:
         """
         self.config = config or RetryConfig()
     
-    @handle_async_errors(error_types=[DatabaseError, Neo4jError, PostgresError, RetryableError, NonRetryableError])
     async def execute_with_retry(
         self,
         operation_func: Callable,
@@ -223,7 +223,10 @@ class DatabaseRetryManager:
                     if isinstance(classified_error, NonRetryableError):
                         error_msg = f"Non-retryable error in '{operation_name}': {str(e)}"
                         log(error_msg, level="error")
-                        raise DatabaseError(error_msg) from e
+                        # Wrap the NonRetryableError in a DatabaseError for backward compatibility
+                        db_error = DatabaseError(error_msg)
+                        db_error.__cause__ = e
+                        raise db_error
                     
                     # Handle retryable error
                     attempt += 1

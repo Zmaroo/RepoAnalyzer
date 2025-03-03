@@ -123,8 +123,10 @@ class TransactionCoordinator:
             log(f"Error cleaning up transactions: {error_boundary.error}", level="error")
             raise TransactionError(f"Transaction cleanup failed: {str(error_boundary.error)}")
 
-@handle_async_errors(error_types=[PostgresError, Neo4jError, TransactionError, CacheError, Exception])
+from utils.error_handling import handle_async_errors
+
 @asynccontextmanager
+@handle_async_errors(error_types=(PostgresError, Neo4jError, TransactionError, CacheError, Exception))
 async def transaction_scope(invalidate_cache: bool = True):
     """
     Context manager for coordinated transactions.
@@ -135,17 +137,29 @@ async def transaction_scope(invalidate_cache: bool = True):
         # Transactions will be automatically committed or rolled back
     """
     coordinator = TransactionCoordinator()
-    with ErrorBoundary(error_types=[PostgresError, Neo4jError, TransactionError, CacheError, Exception],
-                       error_message="Transaction scope error") as error_boundary:
+    try:
         async with coordinator._lock:
-            await coordinator._start_postgres()
-            await coordinator._start_neo4j()
-            yield coordinator
-            await coordinator._commit_all()
-            if invalidate_cache:
-                await coordinator._invalidate_caches()
-    
-    if error_boundary.error:
-        log(f"Transaction scope error: {error_boundary.error}", level="error")
-        await coordinator._rollback_all()
-        raise TransactionError(f"Transaction scope failed: {str(error_boundary.error)}") 
+            try:
+                await coordinator._start_postgres()
+                await coordinator._start_neo4j()
+                try:
+                    yield coordinator
+                    await coordinator._commit_all()
+                    if invalidate_cache:
+                        await coordinator._invalidate_caches()
+                except Exception as e:
+                    log(f"Transaction scope error: {e}", level="error")
+                    await coordinator._rollback_all()
+                    raise TransactionError(f"Transaction scope failed: {str(e)}")
+            except (PostgresError, Neo4jError, TransactionError, CacheError, Exception) as e:
+                log(f"Error in transaction_scope: {e}", level="error")
+                # Record the error for audit purposes
+                from utils.error_handling import ErrorAudit
+                ErrorAudit.record_error(e, "transaction_scope", (PostgresError, Neo4jError, TransactionError, CacheError, Exception))
+                raise
+    finally:
+        # Ensure resources are cleaned up
+        try:
+            await coordinator._cleanup()
+        except Exception as e:
+            log(f"Error cleaning up transaction resources: {e}", level="error") 

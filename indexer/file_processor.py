@@ -18,7 +18,7 @@ Flow:
    - Request-level caching for improved performance
 """
 
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Set, Tuple, Any
 from tree_sitter_language_pack import SupportedLanguage
 from indexer.file_utils import get_file_classification
 from parsers.types import FileType, ParserType
@@ -41,6 +41,8 @@ from indexer.common import async_read_file
 import asyncio
 from embedding.embedding_models import code_embedder, doc_embedder
 from utils.request_cache import cached_in_request
+from parsers.file_classification import classify_file
+from parsers.models import FileClassification
 
 class FileProcessor:
     """[2.1] Coordinates file processing and database storage."""
@@ -97,20 +99,23 @@ class FileProcessor:
     @handle_async_errors
     async def _process_code_file(self, repo_id: int, rel_path: str, content: str, classification) -> Optional[Dict]:
         """[2.3] Process and store code file with embeddings."""
-        with AsyncErrorBoundary(f"processing code file {rel_path}"):
+        async with AsyncErrorBoundary(f"processing code file {rel_path}"):
             try:
                 # Parse file - use cached parser to avoid redundant parsing
-                with AsyncErrorBoundary(f"Error parsing {rel_path}"):
+                async with AsyncErrorBoundary(f"Error parsing {rel_path}"):
                     parse_result = await cached_parse_file(rel_path, content, classification)
                     if not parse_result:
                         # Try alternative language if primary parsing fails
                         for alt_language in get_suggested_alternatives(classification.language_id):
                             log(f"Trying alternative language {alt_language} for {rel_path}", level="debug")
-                            alt_classification = classification._replace(
+                            alt_classification = FileClassification(
+                                file_type=classification.file_type,
                                 language_id=alt_language,
-                                parser_type=classification.parser_type  # Keep same parser type initially
+                                parser_type=classification.parser_type,
+                                file_path=classification.file_path,
+                                is_binary=classification.is_binary
                             )
-                            parse_result = await unified_parser.parse_file(rel_path, content, alt_classification)
+                            parse_result = await unified_parser.parse_file(rel_path, content)
                             if parse_result:
                                 log(f"Successfully parsed {rel_path} as {alt_language}", level="info")
                                 break
@@ -123,11 +128,11 @@ class FileProcessor:
                 patterns = await cached_get_patterns(classification)
                 
                 # Generate embedding - use cached embedder to avoid redundant embedding generation
-                with AsyncErrorBoundary(f"Error generating embedding for {rel_path}"):
+                async with AsyncErrorBoundary(f"Error generating embedding for {rel_path}"):
                     embedding = await cached_embed_code(content)
                 
                 # Store with embedding
-                with AsyncErrorBoundary(f"Error storing {rel_path} in database"):
+                async with AsyncErrorBoundary(f"Error storing {rel_path} in database"):
                     await upsert_code_snippet({
                         'repo_id': repo_id,
                         'file_path': rel_path,
@@ -150,15 +155,15 @@ class FileProcessor:
     @handle_async_errors
     async def _process_doc_file(self, repo_id: int, rel_path: str, content: str, classification) -> Optional[Dict]:
         """[2.4] Process and store documentation file with embeddings."""
-        with AsyncErrorBoundary(f"processing doc file {rel_path}"):
+        async with AsyncErrorBoundary(f"processing doc file {rel_path}"):
             try:
                 # Generate embedding - use cached embedder to avoid redundant embedding generation
-                with AsyncErrorBoundary(f"Error generating embedding for doc {rel_path}"):
+                async with AsyncErrorBoundary(f"Error generating embedding for doc {rel_path}"):
                     embedding = await cached_embed_doc(content)
                 
                 doc_type = classification.language_id
                 
-                with AsyncErrorBoundary(f"Error storing doc {rel_path} in database"):
+                async with AsyncErrorBoundary(f"Error storing doc {rel_path} in database"):
                     await upsert_doc(
                         repo_id=repo_id,
                         file_path=rel_path,
@@ -202,9 +207,34 @@ async def cached_classify_file(file_path: str):
     return get_file_classification(file_path)
 
 @cached_in_request
-async def cached_parse_file(rel_path: str, content: str, classification):
+async def cached_parse_file(rel_path: str, content: str, classification=None):
     """Cached file parsing to avoid redundant parsing operations."""
-    return await unified_parser.parse_file(rel_path, content, classification)
+    from parsers.types import ParserResult
+    result = await unified_parser.parse_file(rel_path, content)
+    
+    # If the result is a dictionary without a 'success' property,
+    # transform it into a proper ParserResult
+    if isinstance(result, dict):
+        if 'success' not in result:
+            result = ParserResult(
+                success=True,
+                ast=result.get('ast', {}),
+                features=result.get('features', {}),
+                documentation=result.get('documentation', {}),
+                complexity=result.get('complexity', {}),
+                statistics=result.get('statistics', {})
+            )
+        else:
+            # Convert dict with success to ParserResult
+            result = ParserResult(
+                success=result.get('success', True),
+                ast=result.get('ast', {}),
+                features=result.get('features', {}),
+                documentation=result.get('documentation', {}),
+                complexity=result.get('complexity', {}),
+                statistics=result.get('statistics', {})
+            )
+    return result
 
 @cached_in_request
 async def cached_get_patterns(classification):

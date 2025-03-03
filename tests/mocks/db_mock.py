@@ -488,6 +488,10 @@ class MockDatabaseFactory:
         # Register with the module-level variables in db modules
         self._register_mocks()
     
+    def __iter__(self):
+        """Make this class iterable to support unpacking."""
+        return iter([self.pg_mock, self.neo4j_mock])
+        
     def _handle_neo4j_query(self, query, *args, **kwargs):
         """Handle Neo4j queries and return appropriate results."""
         # Parse parameters from either positional or keyword arguments
@@ -542,14 +546,16 @@ class MockDatabaseFactory:
         
         # Try to import the database modules
         try:
-            from db.psql import _pool
+            # Ensure db.psql is imported before modifying it
+            import db.psql
             sys.modules['db.psql']._pool = self.pg_mock
         except (ImportError, AttributeError) as e:
             log(f"Could not mock PostgreSQL pool: {e}", level="warning")
             
         try:
-            from db.neo4j_ops import _driver
-            sys.modules['db.neo4j_ops']._driver = self.neo4j_mock
+            # Ensure db.connection is imported before modifying it
+            import db.connection
+            sys.modules['db.connection'].driver = self.neo4j_mock
         except (ImportError, AttributeError) as e:
             log(f"Could not mock Neo4j driver: {e}", level="warning")
     
@@ -708,7 +714,7 @@ def patch_neo4j():
         return NonRetryableNeo4jError(str(error))
     
     patches = [
-        patch('db.neo4j_ops.driver', neo4j_driver),
+        patch('db.connection.driver', neo4j_driver),  # Patch at the source instead of db.neo4j_ops.driver
         patch('db.neo4j_ops.run_query', AsyncMock(side_effect=mock_run_query)),
         patch('db.retry_utils.is_retryable_error', MagicMock(side_effect=lambda e: "connection reset" in str(e).lower() or "timeout" in str(e).lower())),
     ]

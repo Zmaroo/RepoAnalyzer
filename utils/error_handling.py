@@ -74,9 +74,20 @@ ERROR_CATEGORIES = {
     Exception: "general"
 }
 
-# The handle_errors function can't use its own decorator since it would create a circular reference
-def handle_errors(error_types: Tuple[Type[Exception], ...] = (Exception,)):
-    """Decorator for handling errors."""
+def handle_errors(error_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]] = (Exception,)):
+    """
+    Decorator for handling errors.
+    
+    Args:
+        error_types: Exception type(s) to catch. Can be a single exception type,
+                    a tuple of exception types, or a list of exception types.
+    """
+    # Ensure error_types is a tuple for the except clause
+    if isinstance(error_types, list):
+        error_types = tuple(error_types)
+    elif not isinstance(error_types, tuple) and isinstance(error_types, type):
+        error_types = (error_types,)
+        
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs) -> Any:
@@ -92,63 +103,78 @@ def handle_errors(error_types: Tuple[Type[Exception], ...] = (Exception,)):
     return decorator
 
 @asynccontextmanager
-async def AsyncErrorBoundary(operation: str, error_types: Tuple[Type[Exception], ...] = (Exception,)):
-    """Async context manager for error boundaries.
+async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True):
+    """
+    Async context manager for error boundaries.
     
     This context manager provides a way to handle errors in asynchronous code blocks without
     cluttering the code with multiple try/except blocks. It logs the error with information
     about which operation was being performed when the error occurred.
     
-    Unlike the handle_async_errors decorator, this doesn't return a default value or swallow
-    the exception - it just logs the error and then re-raises it. This is useful when you 
-    want to log errors but still need them to propagate up the call stack.
-    
     Args:
-        operation: A string describing the operation being performed. This appears in the
-                 error log to help identify where the error occurred.
-        error_types: A tuple of exception types to catch. By default, it catches all exceptions,
-                    but you can narrow it to specific error types.
+        operation_name: A name describing the operation (used for logging)
+        error_types: A tuple of exception types to catch. Can also be a list or a single exception type.
+        error_message: An optional custom error message prefix
+        reraise: Whether to re-raise the exception (default True)
     
     Yields:
-        Control to the context body.
-    
-    Raises:
-        Any exceptions caught that match error_types will be logged and then re-raised.
-    
-    Example:
-        ```python
-        async def process_data(data):
-            async with AsyncErrorBoundary("data processing", error_types=(ValueError, TypeError)):
-                # If any ValueError or TypeError occurs in this block:
-                # 1. It will be logged with the operation name "data processing"
-                # 2. The exception will still be raised after logging
-                result = await validate_data(data)
-                processed = await transform_data(result)
-                return processed
-        ```
+        A simple namespace object with an 'error' attribute that will be None or
+        contain the caught exception.
     """
+    # Ensure error_types is a tuple for the except clause
+    if isinstance(error_types, list):
+        error_types = tuple(error_types)
+    elif not isinstance(error_types, tuple) and isinstance(error_types, type):
+        error_types = (error_types,)
+    
+    # Create a simple container for the error
+    class ErrorContainer:
+        def __init__(self):
+            self.error = None
+    
+    error_container = ErrorContainer()
+    
+    # Use the error_message if provided, otherwise use operation_name
+    msg_prefix = error_message if error_message else f"Error in {operation_name}"
+    
     try:
-        yield
+        yield error_container
     except error_types as e:
         from utils.logger import log
-        log(f"Error in {operation}: {str(e)}", level="error")
+        log(f"{msg_prefix}: {str(e)}", level="error")
+        
         # Record the error for audit purposes
-        ErrorAudit.record_error(e, operation, error_types)
-        raise
+        ErrorAudit.record_error(e, operation_name or "unknown", error_types)
+        
+        # Store the error
+        error_container.error = e
+        
+        # Re-raise if requested
+        if reraise:
+            raise
 
-def handle_async_errors(error_types=Exception, default_return=None):
+def handle_async_errors(func=None, error_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]] = Exception, default_return=None):
     """
     Decorator for async functions to handle specified exceptions.
     
     Args:
-        error_types: Exception type or tuple of exception types to catch
+        func: The function to decorate (when used directly as @handle_async_errors)
+        error_types: Exception type(s) to catch. Can be a single exception type,
+                    a tuple of exception types, or a list of exception types.
         default_return: Value to return if an exception occurs
         
     Returns:
-        Decorator function
+        Decorated function or decorator function depending on how it's called
         
     Example:
         ```python
+        # Direct usage
+        @handle_async_errors
+        async def process_data_async(data):
+            # Process the data
+            return await async_process(data)
+            
+        # With parameters
         @handle_async_errors(error_types=(ValueError, TypeError))
         async def process_data_async(data):
             # Process the data
@@ -156,11 +182,73 @@ def handle_async_errors(error_types=Exception, default_return=None):
         ```
     """
     import inspect
+    import asyncio
     from typing import List, Dict, Optional, Awaitable, get_type_hints
-
-    def decorator(func):
+    
+    # Ensure error_types is a tuple for the except clause
+    if isinstance(error_types, list):
+        error_types = tuple(error_types)
+    elif not isinstance(error_types, tuple) and isinstance(error_types, type):
+        error_types = (error_types,)
+    
+    # Handle direct application of decorator
+    if func is not None and callable(func):
+        # For async generators, we should just return the original function
+        # to avoid breaking the asynccontextmanager protocol
+        if inspect.isasyncgenfunction(func):
+            return func
+        
+        # Define wrapper for regular async functions
         @wraps(func)
-        @handle_async_errors  # Recursive application to ensure proper error handling
+        async def direct_wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except error_types as e:
+                from utils.logger import log
+                log(f"Error in {func.__name__}: {e}", level="error")
+                
+                # Record the error for audit purposes
+                ErrorAudit.record_error(e, func.__name__, error_types)
+                
+                # Determine appropriate return value
+                if default_return is not None:
+                    return default_return
+                else:
+                    # Try to determine an appropriate return type
+                    try:
+                        signature = inspect.signature(func)
+                        return_type = signature.return_annotation
+                        
+                        # Handle different return types
+                        if return_type == bool:
+                            return False
+                        elif return_type in (int, float):
+                            return 0
+                        elif return_type == str:
+                            return ""
+                        elif return_type == list or str(return_type).startswith("typing.List"):
+                            return []
+                        elif return_type == dict or str(return_type).startswith("typing.Dict"):
+                            return {}
+                        elif return_type == set or str(return_type).startswith("typing.Set"):
+                            return set()
+                        elif return_type == tuple or str(return_type).startswith("typing.Tuple"):
+                            return ()
+                        else:
+                            return None
+                    except (ValueError, TypeError):
+                        return None
+                    
+        return direct_wrapper
+        
+    # Handle parameterized decorator
+    def decorator(func):
+        # For async generators, we should just return the original function
+        # to avoid breaking the asynccontextmanager protocol
+        if inspect.isasyncgenfunction(func):
+            return func
+            
+        @wraps(func)
         async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
@@ -204,19 +292,55 @@ def handle_async_errors(error_types=Exception, default_return=None):
                     return None
                     
         return wrapper
+        
     return decorator
 
 @contextmanager
-def ErrorBoundary(operation_name: str, error_types: Tuple[Type[Exception], ...] = (Exception,)):
-    """Context manager for error handling."""
+def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True):
+    """
+    Context manager for error handling.
+    
+    Args:
+        operation_name: A name describing the operation (used for logging)
+        error_types: A tuple of exception types to catch. Can also be a list or a single exception type.
+        error_message: An optional custom error message prefix
+        reraise: Whether to re-raise the exception (default True)
+    
+    Yields:
+        A simple namespace object with an 'error' attribute that will be None or
+        contain the caught exception.
+    """
+    # Ensure error_types is a tuple for the except clause
+    if isinstance(error_types, list):
+        error_types = tuple(error_types)
+    elif not isinstance(error_types, tuple) and isinstance(error_types, type):
+        error_types = (error_types,)
+    
+    # Create a simple container for the error
+    class ErrorContainer:
+        def __init__(self):
+            self.error = None
+    
+    error_container = ErrorContainer()
+    
+    # Use the error_message if provided, otherwise use operation_name
+    msg_prefix = error_message if error_message else f"Error in {operation_name}"
+    
     try:
-        yield
+        yield error_container
     except error_types as e:
         from utils.logger import log
-        log(f"Error in {operation_name}: {str(e)}", level="error")
+        log(f"{msg_prefix}: {str(e)}", level="error")
+        
         # Record the error for audit purposes
-        ErrorAudit.record_error(e, operation_name, error_types)
-        raise
+        ErrorAudit.record_error(e, operation_name or "unknown", error_types)
+        
+        # Store the error
+        error_container.error = e
+        
+        # Re-raise if requested
+        if reraise:
+            raise
 
 # New class for exception auditing
 class ErrorAudit:
@@ -245,16 +369,30 @@ class ErrorAudit:
     _all_functions: Set[str] = set()
     
     @classmethod
-    def record_error(cls, error: Exception, location: str, handled_types: Union[Type[Exception], Tuple[Type[Exception], ...]] = (Exception,)):
+    def record_error(cls, error: Exception, operation_name: str, handled_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]]) -> None:
         """
-        Record an error occurrence for auditing.
+        Record an error for audit purposes.
         
         Args:
-            error: The exception that occurred
-            location: Where the error occurred (function name or operation description)
-            handled_types: What exception types were being handled
+            error: The exception that was caught
+            operation_name: The name of the operation where the error occurred
+            handled_types: The type(s) of exceptions that were handled. Can be a single exception type,
+                          a tuple of exception types, or a list of exception types.
         """
         with cls._lock:
+            # Ensure handled_types is a tuple
+            if isinstance(handled_types, list):
+                handled_types = tuple(handled_types)
+            elif not isinstance(handled_types, tuple) and not isinstance(handled_types, type):
+                try:
+                    # Try to convert to tuple if it's an iterable but not a tuple
+                    handled_types = tuple(handled_types)
+                except (TypeError, ValueError):
+                    handled_types = (Exception,)
+            elif isinstance(handled_types, type):
+                # Convert single type to tuple
+                handled_types = (handled_types,)
+            
             error_type = type(error).__name__
             if error_type not in cls._errors:
                 cls._errors[error_type] = []
@@ -266,19 +404,30 @@ class ErrorAudit:
                     category = cat
                     break
             
-            # Convert single exception type to a tuple for consistent handling
-            if not isinstance(handled_types, tuple):
-                handled_types = (handled_types,)
-            
             # Record the error with context
             cls._errors[error_type].append({
                 "message": str(error),
-                "location": location,
+                "location": operation_name,
                 "category": category,
                 "timestamp": datetime.now().isoformat(),
                 "handled_by": [t.__name__ for t in handled_types],
                 "traceback": traceback.format_exc()
             })
+        
+        # Get the current file and line number
+        frame = inspect.currentframe()
+        try:
+            frame = frame.f_back  # Get the caller's frame
+            file_path = frame.f_code.co_filename
+            line_number = frame.f_lineno
+        except (AttributeError, ValueError):
+            file_path = "unknown"
+            line_number = 0
+        finally:
+            del frame  # Avoid reference cycles
+        
+        # Register the error
+        cls.register_raw_exception_handler(file_path, line_number)
     
     @classmethod
     def register_decorated_function(cls, func_name: str):

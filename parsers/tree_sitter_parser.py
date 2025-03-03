@@ -36,14 +36,14 @@ class TreeSitterParser(BaseParser):
         return False
 
     @handle_errors(error_types=(LookupError, TreeSitterError))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """[3.1] Generate AST using tree-sitter with caching."""
         # Create a unique cache key based on language and source code hash
         source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
         cache_key = f"ast:{self.language_id}:{source_hash}"
         
         # First try to get from cache
-        cached_ast = asyncio.run(ast_cache.get_async(cache_key))
+        cached_ast = await ast_cache.get_async(cache_key)
         if cached_ast and "tree" in cached_ast:
             log(f"AST cache hit for {self.language_id}", level="debug")
             
@@ -80,8 +80,9 @@ class TreeSitterParser(BaseParser):
                 "tree": ast_dict["tree"]
             }
             
-            # Store in cache asynchronously
-            asyncio.run(ast_cache.set_async(cache_key, cache_data))
+            # Cache the AST for future use
+            cache_data = {"tree": ast_dict["tree"], "metadata": {"language": self.language_id}}
+            await ast_cache.set_async(cache_key, cache_data)
             log(f"AST cached for {self.language_id}", level="debug")
             
             return ast_dict
