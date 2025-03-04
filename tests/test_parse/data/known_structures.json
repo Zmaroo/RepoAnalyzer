@@ -1,0 +1,81 @@
+{
+    "python": {
+        "sample_types.py": {
+            "ast_structure": {
+                "type": "module",
+                "functions": [
+                    {
+                        "name": "process_data",
+                        "type": "async_function",
+                        "decorators": ["@validate_input"],
+                        "params": ["data", "config"]
+                    }
+                ],
+                "classes": [
+                    {
+                        "name": "DataProcessor",
+                        "methods": ["__init__", "process", "validate"],
+                        "decorators": ["@dataclass"]
+                    }
+                ],
+                "imports": [
+                    {"module": "typing", "names": ["List", "Dict", "Optional"]},
+                    {"module": "dataclasses", "names": ["dataclass"]}
+                ]
+            },
+            "patterns": {
+                "async_functions": 1,
+                "decorators": 2,
+                "type_annotations": true,
+                "dataclasses": 1
+            }
+        }
+    },
+    "javascript": {
+        "app.js": {
+            "ast_structure": {
+                "type": "program",
+                "functions": [
+                    {
+                        "name": "processData",
+                        "type": "arrow_function",
+                        "async": true
+                    }
+                ],
+                "imports": [
+                    {"type": "es6_import", "source": "react"}
+                ]
+            },
+            "patterns": {
+                "es6_features": true,
+                "async_functions": 1,
+                "jsx_elements": 2
+            }
+        }
+    },
+    "cpp": {
+        "sample.cpp": {
+            "ast_structure": {
+                "type": "translation_unit",
+                "classes": [
+                    {
+                        "name": "DataProcessor",
+                        "templates": ["typename T"],
+                        "methods": ["process", "validate"]
+                    }
+                ],
+                "functions": [
+                    {
+                        "name": "processData",
+                        "templates": ["class T"]
+                    }
+                ]
+            },
+            "patterns": {
+                "templates": 2,
+                "class_methods": 2,
+                "preprocessor_directives": true
+            }
+        }
+    }
+} 
