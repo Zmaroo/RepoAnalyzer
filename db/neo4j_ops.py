@@ -31,6 +31,7 @@ from parsers.types import (
     FeatureCategory
 )
 from utils.async_runner import submit_async_task, get_loop
+from utils.app_init import register_shutdown_handler
 
 # Create a function to get the graph_sync instance to avoid circular imports
 async def get_graph_sync():
@@ -45,8 +46,10 @@ async def run_query(query: str, params: Optional[Dict[str, Any]] = None) -> List
     session = await connection_manager.get_session()
     try:
         async with AsyncErrorBoundary("neo4j_query_execution"):
-            result = await session.run(query, params or {})
-            data = await result.data()
+            future = submit_async_task(session.run(query, params or {}))
+            result = await asyncio.wrap_future(future)
+            future = submit_async_task(result.data())
+            data = await asyncio.wrap_future(future)
             return data
     except Exception as e:
         error_msg = str(e).lower()
@@ -61,6 +64,7 @@ class Neo4jTools:
     
     def __init__(self):
         self._pending_tasks: Set[asyncio.Future] = set()
+        self._initialized = False
         with ErrorBoundary(
             error_types=DatabaseError,
             operation_name="Neo4j tools initialization",
@@ -73,10 +77,27 @@ class Neo4jTools:
                 asyncio.get_event_loop().run_until_complete(future)
             finally:
                 self._pending_tasks.remove(future)
+        
+        # Register cleanup handler
+        register_shutdown_handler(self.cleanup)
+    
+    async def initialize(self):
+        """Initialize Neo4j tools."""
+        if not self._initialized:
+            try:
+                # Any tool-specific initialization can go here
+                self._initialized = True
+                log("Neo4j tools initialized", level="info")
+            except Exception as e:
+                log(f"Error initializing Neo4j tools: {e}", level="error")
+                raise
 
     @handle_async_errors(error_types=DatabaseError)
     async def store_code_node(self, code_data: dict) -> None:
         """Store code node with transaction coordination."""
+        if not self._initialized:
+            await self.initialize()
+            
         async with AsyncErrorBoundary(
             "Neo4j node storage",
             error_types=(Neo4jError, TransactionError),
@@ -102,6 +123,9 @@ class Neo4jTools:
     @handle_async_errors(error_types=DatabaseError)
     async def update_code_relationships(self, repo_id: int, relationships: list) -> None:
         """Update code relationships with graph synchronization."""
+        if not self._initialized:
+            await self.initialize()
+            
         async with AsyncErrorBoundary(
             "Neo4j relationship update",
             error_types=DatabaseError,
@@ -122,12 +146,20 @@ class Neo4jTools:
             await graph_sync.invalidate_projection(repo_id)
             await graph_sync.ensure_projection(repo_id)
 
-    @handle_async_errors(error_types=DatabaseError)
-    async def close(self):
-        """Clean up any pending tasks."""
-        if self._pending_tasks:
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-            self._pending_tasks.clear()
+    async def cleanup(self):
+        """Clean up all resources."""
+        try:
+            # Clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("Neo4j tools cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up Neo4j tools: {e}", level="error")
 
     @handle_async_errors(error_types=DatabaseError)
     async def store_node_with_features(
@@ -138,6 +170,9 @@ class Neo4jTools:
         features: ExtractedFeatures
     ) -> None:
         """[6.2.3] Store node with all its features and relationships."""
+        if not self._initialized:
+            await self.initialize()
+            
         # Create base node
         query = """
         MERGE (n:Content {repo_id: $repo_id, file_path: $file_path})
@@ -161,6 +196,9 @@ class Neo4jTools:
     @handle_async_errors(error_types=DatabaseError)
     async def store_pattern_node(self, pattern_data: dict) -> None:
         """[6.2.6] Store code pattern node for reference repository learning."""
+        if not self._initialized:
+            await self.initialize()
+            
         async with AsyncErrorBoundary(
             "Neo4j pattern node storage",
             error_types=(Neo4jError, TransactionError),
@@ -208,6 +246,9 @@ class Neo4jTools:
     @handle_async_errors(error_types=DatabaseError)
     async def link_patterns_to_repository(self, repo_id: int, pattern_ids: List[int], is_reference: bool = True) -> None:
         """[6.2.7] Link patterns to a repository with appropriate relationship type."""
+        if not self._initialized:
+            await self.initialize()
+            
         rel_type = "REFERENCE_PATTERN" if is_reference else "APPLIED_PATTERN"
         
         query = """
@@ -225,6 +266,9 @@ class Neo4jTools:
     @handle_async_errors(error_types=DatabaseError)
     async def find_similar_patterns(self, repo_id: int, file_path: str, limit: int = 5) -> List[Dict[str, Any]]:
         """[6.2.8] Find patterns similar to a given file."""
+        if not self._initialized:
+            await self.initialize()
+            
         # Get language of the file
         lang_query = """
         MATCH (c:Code {repo_id: $repo_id, file_path: $file_path})
@@ -255,6 +299,21 @@ class Neo4jTools:
             "language": language,
             "limit": limit
         })
+
+# Create global instance
+neo4j_tools = Neo4jTools()
+
+# Register cleanup handler
+async def cleanup_neo4j():
+    """Cleanup Neo4j resources."""
+    try:
+        await neo4j_tools.cleanup()
+        await default_retry_manager.cleanup()
+        log("Neo4j resources cleaned up", level="info")
+    except Exception as e:
+        log(f"Error cleaning up Neo4j resources: {e}", level="error")
+
+register_shutdown_handler(cleanup_neo4j)
 
 @handle_async_errors(error_types=(DatabaseError, Neo4jError))
 async def create_schema_indexes_and_constraints():

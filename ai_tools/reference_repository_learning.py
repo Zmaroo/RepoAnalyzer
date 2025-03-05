@@ -18,12 +18,23 @@ Flow:
    - DatabaseError: Storage operations
 """
 
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Set
 import asyncio
 import numpy as np
 from utils.logger import log
-from db.neo4j_ops import run_query, Neo4jProjections, Neo4jTools
-from db.psql import query
+from db.connection import connection_manager
+from db.transaction import transaction_scope
+from db.upsert_ops import coordinator as upsert_coordinator
+from db.graph_sync import graph_sync
+from db.neo4j_ops import Neo4jTools, run_query
+from db.psql import query, execute
+from db.retry_utils import (
+    with_retry,
+    RetryableError,
+    NonRetryableError,
+    DatabaseRetryManager,
+    RetryConfig
+)
 from embedding.embedding_models import code_embedder, DocEmbedder
 from utils.error_handling import (
     handle_errors,
@@ -32,7 +43,9 @@ from utils.error_handling import (
     DatabaseError,
     ErrorBoundary,
     AsyncErrorBoundary,
-    TransactionError
+    TransactionError,
+    ErrorSeverity,
+    Neo4jError
 )
 from parsers.models import (
     FileType,
@@ -46,8 +59,6 @@ from parsers.types import (
 )
 from ai_tools.code_understanding import CodeUnderstanding
 import os
-from db.graph_sync import graph_sync
-from neo4j.exceptions import Neo4jError
 from utils.async_runner import submit_async_task
 
 
@@ -56,11 +67,14 @@ class ReferenceRepositoryLearning:
     
     def __init__(self):
         with ErrorBoundary("model initialization", error_types=ProcessingError):
-            self.graph_projections = Neo4jProjections()
             self.code_understanding = CodeUnderstanding()
             self.embedder = code_embedder
             self.doc_embedder = DocEmbedder()
             self.neo4j_tools = Neo4jTools()
+            self._retry_manager = DatabaseRetryManager(
+                RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
+            )
+            self._pending_tasks: Set[asyncio.Future] = set()
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def learn_from_repository(self, reference_repo_id: int) -> Dict[str, Any]:
@@ -72,94 +86,96 @@ class ReferenceRepositoryLearning:
             # Extract documentation patterns
             doc_patterns = await self._extract_doc_patterns(reference_repo_id)
             
-            # Identify architecture patterns
+            # Extract architecture patterns
             arch_patterns = await self._extract_architecture_patterns(reference_repo_id)
             
-            # Store patterns in database for later retrieval
-            pattern_ids = await self._store_patterns(reference_repo_id, code_patterns, doc_patterns, arch_patterns)
-            
-            # Create pattern graph projection for analysis
-            # Use the new graph_sync module instead of directly calling graph_projections
-            await graph_sync.ensure_pattern_projection(reference_repo_id)
-            
-            # Run pattern similarity analysis using Neo4j projections
-            similarity_results = await self.graph_projections.run_pattern_similarity(f"pattern-repo-{reference_repo_id}")
-            
-            # Find pattern clusters
-            pattern_clusters = await self.graph_projections.find_pattern_clusters(f"pattern-repo-{reference_repo_id}")
-            
-            return {
-                "code_patterns": len(code_patterns),
-                "doc_patterns": len(doc_patterns),
-                "architecture_patterns": len(arch_patterns),
-                "pattern_similarities": len(similarity_results),
-                "pattern_clusters": len(pattern_clusters),
-                "repository_id": reference_repo_id
-            }
+            # Store patterns using transaction coordination
+            async with transaction_scope() as txn:
+                await txn.track_repo_change(reference_repo_id)
+                
+                # Store patterns in database
+                pattern_ids = await self._store_patterns(reference_repo_id, code_patterns, doc_patterns, arch_patterns)
+                
+                # Create pattern graph projection
+                await graph_sync.ensure_pattern_projection(reference_repo_id)
+                
+                # Run pattern similarity analysis
+                similarity_results = await self.neo4j_tools.find_similar_patterns(reference_repo_id, limit=10)
+                
+                # Find pattern clusters using graph projections
+                pattern_clusters = await graph_sync.compare_repository_structures(reference_repo_id, reference_repo_id)
+                
+                return {
+                    "code_patterns": len(code_patterns),
+                    "doc_patterns": len(doc_patterns),
+                    "architecture_patterns": len(arch_patterns),
+                    "pattern_similarities": len(similarity_results),
+                    "pattern_clusters": len(pattern_clusters.get("similarities", [])),
+                    "repository_id": reference_repo_id
+                }
     
     @handle_async_errors(error_types=ProcessingError)
     async def _extract_code_patterns(self, repo_id: int) -> List[Dict[str, Any]]:
         """Extract code patterns from repository."""
         patterns = []
         
-        # Get all code files
-        files_query = """
-            SELECT file_path, file_content, language 
-            FROM file_metadata 
-            WHERE repo_id = $repo_id AND file_type = 'CODE'
-        """
-        files = await query(files_query, {"repo_id": repo_id})
-        
-        # Process files to extract patterns
-        for file in files:
-            # Get code structure from Neo4j
-            structure_query = """
-                MATCH (f:Code {repo_id: $repo_id, file_path: $file_path})-[:CONTAINS]->(n)
-                RETURN n.type as node_type, n.name as name, COUNT(n) as count
-                ORDER BY count DESC
-                LIMIT 20
+        # Get all code files using transaction scope
+        async with transaction_scope() as txn:
+            files_query = """
+                SELECT file_path, file_content, language 
+                FROM code_snippets 
+                WHERE repo_id = $1 AND file_content IS NOT NULL
             """
-            structure = await run_query(structure_query, {
-                "repo_id": repo_id,
-                "file_path": file["file_path"]
-            })
+            files = await query(files_query, (repo_id,))
             
-            # Extract common patterns based on structure
-            if structure:
-                common_nodes = [node for node in structure if node["count"] > 3]
-                if common_nodes:
-                    # Create embedding for this pattern
-                    pattern_text = file["file_content"][:1000]  # First 1000 chars as sample
-                    from utils.error_handling import ErrorBoundary
-                    
-                    # Default value in case of error
-                    embedding_list = None
-                    
-                    # Define a function to create embedding with specific error handling
-                    def create_embedding():
-                        nonlocal embedding_list
-                        embedding = self.embedder.embed(pattern_text)
-                        embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else None
-                    
-                    # Use ErrorBoundary with specific error types
-                    try:
-                        with ErrorBoundary("pattern embedding", 
-                                        error_types=(ValueError, ImportError, ProcessingError)):
-                            create_embedding()
-                    except Exception:
-                        # Error has been logged by ErrorBoundary
-                        # embedding_list remains None
-                        pass
+            # Process files to extract patterns
+            for file in files:
+                # Get code structure from Neo4j
+                structure_query = """
+                    MATCH (f:Code {repo_id: $repo_id, file_path: $file_path})-[:CONTAINS]->(n)
+                    RETURN n.type as node_type, n.name as name, COUNT(n) as count
+                    ORDER BY count DESC
+                    LIMIT 20
+                """
+                structure = await run_query(structure_query, {
+                    "repo_id": repo_id,
+                    "file_path": file["file_path"]
+                })
+                
+                # Extract common patterns based on structure
+                if structure:
+                    common_nodes = [node for node in structure if node["count"] > 3]
+                    if common_nodes:
+                        # Create embedding for this pattern
+                        pattern_text = file["file_content"][:1000]  # First 1000 chars as sample
                         
-                    pattern = {
-                        "file_path": file["file_path"],
-                        "language": file["language"],
-                        "pattern_type": "code_structure",
-                        "elements": common_nodes,
-                        "sample": pattern_text,
-                        "embedding": embedding_list
-                    }
-                    patterns.append(pattern)
+                        # Default value in case of error
+                        embedding_list = None
+                        
+                        # Define a function to create embedding with specific error handling
+                        def create_embedding():
+                            nonlocal embedding_list
+                            embedding = self.embedder.embed(pattern_text)
+                            embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else None
+                        
+                        # Use ErrorBoundary with specific error types
+                        try:
+                            with ErrorBoundary("pattern embedding", 
+                                            error_types=(ValueError, ImportError, ProcessingError),
+                                            severity=ErrorSeverity.WARNING):
+                                create_embedding()
+                        except Exception as e:
+                            log(f"Error creating embedding: {e}", level="error")
+                            
+                        pattern = {
+                            "file_path": file["file_path"],
+                            "language": file["language"],
+                            "pattern_type": "code_structure",
+                            "elements": common_nodes,
+                            "sample": pattern_text,
+                            "embedding": embedding_list
+                        }
+                        patterns.append(pattern)
         
         return patterns
     
@@ -168,46 +184,47 @@ class ReferenceRepositoryLearning:
         """Extract documentation patterns from repository."""
         patterns = []
         
-        # Get all documentation
-        docs_query = """
-            SELECT d.doc_id, d.title, d.content, d.doc_type, f.file_path 
-            FROM documentation d
-            JOIN file_metadata f ON d.file_id = f.file_id
-            WHERE f.repo_id = $repo_id
-        """
-        docs = await query(docs_query, {"repo_id": repo_id})
-        
-        # Analyze documentation structure and patterns
-        doc_types = {}
-        for doc in docs:
-            doc_type = doc["doc_type"]
-            if doc_type not in doc_types:
-                doc_types[doc_type] = []
-            doc_types[doc_type].append(doc)
-        
-        # Extract patterns for each documentation type
-        for doc_type, type_docs in doc_types.items():
-            if len(type_docs) > 3:  # Only consider if we have enough examples
-                # Create combined embedding for these doc samples
-                sample_texts = [doc["content"][:500] for doc in type_docs[:3]]
-                combined_text = "\n".join(sample_texts)
-                
-                try:
-                    embedding = self.doc_embedder.embed(combined_text)
-                    embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else None
-                except Exception as e:
-                    log(f"Error creating embedding for doc pattern: {e}", level="error")
-                    embedding_list = None
-                
-                pattern = {
-                    "doc_type": doc_type,
-                    "pattern_type": "documentation",
-                    "count": len(type_docs),
-                    "samples": sample_texts,
-                    "common_structure": self._analyze_doc_structure(type_docs),
-                    "embedding": embedding_list
-                }
-                patterns.append(pattern)
+        # Get all documentation using transaction scope
+        async with transaction_scope() as txn:
+            docs_query = """
+                SELECT d.doc_id, d.title, d.content, d.doc_type, f.file_path 
+                FROM repo_docs d
+                JOIN repo_doc_relations r ON d.id = r.doc_id
+                WHERE r.repo_id = $1
+            """
+            docs = await query(docs_query, (repo_id,))
+            
+            # Analyze documentation structure and patterns
+            doc_types = {}
+            for doc in docs:
+                doc_type = doc["doc_type"]
+                if doc_type not in doc_types:
+                    doc_types[doc_type] = []
+                doc_types[doc_type].append(doc)
+            
+            # Extract patterns for each documentation type
+            for doc_type, type_docs in doc_types.items():
+                if len(type_docs) > 3:  # Only consider if we have enough examples
+                    # Create combined embedding for these doc samples
+                    sample_texts = [doc["content"][:500] for doc in type_docs[:3]]
+                    combined_text = "\n".join(sample_texts)
+                    
+                    try:
+                        embedding = self.doc_embedder.embed(combined_text)
+                        embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else None
+                    except Exception as e:
+                        log(f"Error creating doc embedding: {e}", level="error")
+                        embedding_list = None
+                    
+                    pattern = {
+                        "doc_type": doc_type,
+                        "pattern_type": "documentation",
+                        "count": len(type_docs),
+                        "samples": sample_texts,
+                        "common_structure": self._analyze_doc_structure(type_docs),
+                        "embedding": embedding_list
+                    }
+                    patterns.append(pattern)
         
         return patterns
     
@@ -248,7 +265,7 @@ class ReferenceRepositoryLearning:
             # Get dependencies between components
             graph_name = f"code-repo-{repo_id}"
             try:
-                dependencies = await self.graph_projections.get_component_dependencies(graph_name)
+                dependencies = await self.neo4j_tools.get_component_dependencies(graph_name)
                 if dependencies:
                     pattern = {
                         "pattern_type": "component_dependencies",
@@ -323,162 +340,103 @@ class ReferenceRepositoryLearning:
         """Store extracted patterns in database and Neo4j."""
         pattern_ids = []
         
-        # Store code patterns
-        for pattern in code_patterns:
-            # Store in PostgreSQL
-            pattern_query = """
-                INSERT INTO code_patterns (
-                    repo_id, file_path, language, pattern_type, elements, sample
-                ) VALUES (
-                    $repo_id, $file_path, $language, $pattern_type, $elements, $sample
-                )
-                ON CONFLICT (repo_id, file_path, pattern_type)
-                DO UPDATE SET
-                    elements = $elements,
-                    sample = $sample
-                RETURNING pattern_id
-            """
-            result = await query(pattern_query, {
-                "repo_id": repo_id,
-                "file_path": pattern["file_path"],
-                "language": pattern["language"],
-                "pattern_type": pattern["pattern_type"],
-                "elements": pattern["elements"],
-                "sample": pattern["sample"]
-            })
-            
-            if result and result[0]:
-                pattern_id = result[0]["pattern_id"]
-                pattern_ids.append(pattern_id)
-                
-                # Store in Neo4j
-                pattern_node = {
+        async with transaction_scope() as txn:
+            # Store code patterns
+            for pattern in code_patterns:
+                # Store in PostgreSQL using upsert coordinator
+                pattern_data = {
                     "repo_id": repo_id,
-                    "pattern_id": pattern_id,
-                    "pattern_type": pattern["pattern_type"],
-                    "language": pattern["language"],
                     "file_path": pattern["file_path"],
-                    "embedding": pattern.get("embedding"),
-                    "elements": pattern["elements"]
+                    "language": pattern["language"],
+                    "pattern_type": pattern["pattern_type"],
+                    "elements": pattern["elements"],
+                    "sample": pattern["sample"],
+                    "embedding": pattern["embedding"]
                 }
                 
-                await self.neo4j_tools.store_pattern_node(pattern_node)
-        
-        # Store documentation patterns
-        for pattern in doc_patterns:
-            # Store in PostgreSQL
-            pattern_query = """
-                INSERT INTO doc_patterns (
-                    repo_id, doc_type, pattern_type, count, samples, common_structure
-                ) VALUES (
-                    $repo_id, $doc_type, $pattern_type, $count, $samples, $common_structure
+                # Use upsert coordinator to store pattern
+                pattern_id = await upsert_coordinator.store_parsed_content(
+                    repo_id=repo_id,
+                    file_path=pattern["file_path"],
+                    ast={"elements": pattern["elements"]},
+                    features=ExtractedFeatures(pattern_data)
                 )
-                ON CONFLICT (repo_id, doc_type, pattern_type)
-                DO UPDATE SET
-                    count = $count,
-                    samples = $samples,
-                    common_structure = $common_structure
-                RETURNING pattern_id
-            """
-            result = await query(pattern_query, {
-                "repo_id": repo_id,
-                "doc_type": pattern["doc_type"],
-                "pattern_type": pattern["pattern_type"],
-                "count": pattern["count"],
-                "samples": pattern["samples"],
-                "common_structure": pattern["common_structure"]
-            })
-            
-            if result and result[0]:
-                pattern_id = result[0]["pattern_id"]
-                pattern_ids.append(pattern_id)
                 
-                # Store in Neo4j
-                pattern_node = {
-                    "repo_id": repo_id,
-                    "pattern_id": pattern_id,
-                    "pattern_type": pattern["pattern_type"],
-                    "doc_type": pattern["doc_type"],
-                    "count": pattern["count"],
-                    "embedding": pattern.get("embedding"),
-                    "common_structure": pattern["common_structure"]
-                }
-                
-                await self.neo4j_tools.store_pattern_node(pattern_node)
-        
-        # Store architecture patterns
-        for pattern in arch_patterns:
-            if pattern["pattern_type"] == "architecture":
-                # Store in PostgreSQL
-                pattern_query = """
-                    INSERT INTO arch_patterns (
-                        repo_id, pattern_type, directory_structure, top_level_dirs
-                    ) VALUES (
-                        $repo_id, $pattern_type, $directory_structure, $top_level_dirs
-                    )
-                    ON CONFLICT (repo_id, pattern_type)
-                    DO UPDATE SET
-                        directory_structure = $directory_structure,
-                        top_level_dirs = $top_level_dirs
-                    RETURNING pattern_id
-                """
-                result = await query(pattern_query, {
-                    "repo_id": repo_id,
-                    "pattern_type": pattern["pattern_type"],
-                    "directory_structure": pattern["directory_structure"],
-                    "top_level_dirs": pattern["top_level_dirs"]
-                })
-                
-                if result and result[0]:
-                    pattern_id = result[0]["pattern_id"]
+                if pattern_id:
                     pattern_ids.append(pattern_id)
                     
-                    # Store in Neo4j
-                    pattern_node = {
+                    # Store pattern node in Neo4j
+                    await self.neo4j_tools.store_pattern_node({
                         "repo_id": repo_id,
                         "pattern_id": pattern_id,
+                        "pattern_type": pattern["pattern_type"],
+                        "language": pattern["language"],
+                        "file_path": pattern["file_path"],
+                        "embedding": pattern["embedding"],
+                        "elements": pattern["elements"]
+                    })
+            
+            # Store documentation patterns
+            for pattern in doc_patterns:
+                # Store in PostgreSQL using upsert coordinator
+                doc_id = await upsert_coordinator.upsert_doc(
+                    repo_id=repo_id,
+                    file_path=f"patterns/{pattern['doc_type']}/pattern_{len(pattern_ids)}.md",
+                    content="\n".join(pattern["samples"]),
+                    doc_type=pattern["doc_type"],
+                    metadata={
+                        "pattern_type": pattern["pattern_type"],
+                        "count": pattern["count"],
+                        "common_structure": pattern["common_structure"]
+                    }
+                )
+                
+                if doc_id:
+                    pattern_ids.append(doc_id)
+            
+            # Store architecture patterns
+            for pattern in arch_patterns:
+                if pattern["pattern_type"] == "architecture":
+                    # Store in PostgreSQL
+                    arch_data = {
+                        "repo_id": repo_id,
                         "pattern_type": pattern["pattern_type"],
                         "directory_structure": pattern["directory_structure"],
                         "top_level_dirs": pattern["top_level_dirs"]
                     }
                     
-                    await self.neo4j_tools.store_pattern_node(pattern_node)
-                    
-            elif pattern["pattern_type"] == "component_dependencies":
-                # Store in PostgreSQL
-                pattern_query = """
-                    INSERT INTO arch_patterns (
-                        repo_id, pattern_type, dependencies
-                    ) VALUES (
-                        $repo_id, $pattern_type, $dependencies
+                    # Use upsert coordinator
+                    pattern_id = await upsert_coordinator.store_parsed_content(
+                        repo_id=repo_id,
+                        file_path="architecture/structure.json",
+                        ast=arch_data,
+                        features=ExtractedFeatures(arch_data)
                     )
-                    ON CONFLICT (repo_id, pattern_type)
-                    DO UPDATE SET
-                        dependencies = $dependencies
-                    RETURNING pattern_id
-                """
-                result = await query(pattern_query, {
-                    "repo_id": repo_id,
-                    "pattern_type": pattern["pattern_type"],
-                    "dependencies": pattern["dependencies"]
-                })
-                
-                if result and result[0]:
-                    pattern_id = result[0]["pattern_id"]
-                    pattern_ids.append(pattern_id)
                     
-                    # Store in Neo4j
-                    pattern_node = {
+                    if pattern_id:
+                        pattern_ids.append(pattern_id)
+                
+                elif pattern["pattern_type"] == "component_dependencies":
+                    # Store in PostgreSQL
+                    dep_data = {
                         "repo_id": repo_id,
-                        "pattern_id": pattern_id,
                         "pattern_type": pattern["pattern_type"],
                         "dependencies": pattern["dependencies"]
                     }
                     
-                    await self.neo4j_tools.store_pattern_node(pattern_node)
-        
-        # Link patterns to repository
-        await self.neo4j_tools.link_patterns_to_repository(repo_id, pattern_ids, is_reference=True)
+                    # Use upsert coordinator
+                    pattern_id = await upsert_coordinator.store_parsed_content(
+                        repo_id=repo_id,
+                        file_path="architecture/dependencies.json",
+                        ast=dep_data,
+                        features=ExtractedFeatures(dep_data)
+                    )
+                    
+                    if pattern_id:
+                        pattern_ids.append(pattern_id)
+            
+            # Link patterns to repository
+            await self.neo4j_tools.link_patterns_to_repository(repo_id, pattern_ids, is_reference=True)
         
         return pattern_ids
     
@@ -490,80 +448,95 @@ class ReferenceRepositoryLearning:
     ) -> Dict[str, Any]:
         """[4.4.3] Apply learned patterns to a target project."""
         async with AsyncErrorBoundary("applying reference patterns"):
-            # Get patterns from reference repository
-            code_patterns = await self._get_code_patterns(reference_repo_id)
-            doc_patterns = await self._get_doc_patterns(reference_repo_id)
-            arch_patterns = await self._get_arch_patterns(reference_repo_id)
-            
-            # Analyze target repository
-            target_analysis = await self.code_understanding.analyze_codebase(target_repo_id)
-            
-            # Use the new graph_sync comparison feature
-            comparison_results = await graph_sync.compare_repository_structures(
-                active_repo_id=target_repo_id,
-                reference_repo_id=reference_repo_id
-            )
-            
-            # Log comparison results
-            log(f"Repository structure comparison complete with {comparison_results.get('similarity_count', 0)} similarities found", 
-                level="info")
-            
-            # Generate recommendations using comparison results
-            code_recommendations = await self._generate_enhanced_code_recommendations(
-                code_patterns, target_repo_id, target_analysis, comparison_results
-            )
-            
-            doc_recommendations = self._generate_doc_recommendations(
-                doc_patterns, target_repo_id
-            )
-            
-            arch_recommendations = self._generate_arch_recommendations(
-                arch_patterns, target_repo_id, target_analysis
-            )
-            
-            # Link applied patterns to target repository in Neo4j
-            pattern_ids = [
-                rec["pattern_id"] for rec in code_recommendations + doc_recommendations + arch_recommendations
-                if "pattern_id" in rec
-            ]
-            if pattern_ids:
-                await self.neo4j_tools.link_patterns_to_repository(
-                    target_repo_id, pattern_ids, is_reference=False
+            async with transaction_scope() as txn:
+                await txn.track_repo_change(target_repo_id)
+                
+                # Get patterns from reference repository
+                code_patterns = await self._get_code_patterns(reference_repo_id)
+                doc_patterns = await self._get_doc_patterns(reference_repo_id)
+                arch_patterns = await self._get_arch_patterns(reference_repo_id)
+                
+                # Analyze target repository
+                target_analysis = await self.code_understanding.analyze_codebase(target_repo_id)
+                
+                # Use graph sync for repository comparison
+                comparison_results = await graph_sync.compare_repository_structures(
+                    active_repo_id=target_repo_id,
+                    reference_repo_id=reference_repo_id
                 )
-            
-            return {
-                "code_recommendations": code_recommendations,
-                "doc_recommendations": doc_recommendations,
-                "arch_recommendations": arch_recommendations,
-                "reference_repo_id": reference_repo_id,
-                "target_repo_id": target_repo_id,
-                "applied_patterns": len(pattern_ids),
-                "similarity_score": comparison_results.get("similarity_count", 0) / 20 if comparison_results.get("similarity_count") else 0
-            }
+                
+                # Log comparison results
+                log(f"Repository structure comparison complete with {comparison_results.get('similarity_count', 0)} similarities found", 
+                    level="info")
+                
+                # Generate recommendations using comparison results
+                code_recommendations = await self._generate_enhanced_code_recommendations(
+                    code_patterns, target_repo_id, target_analysis, comparison_results
+                )
+                
+                doc_recommendations = self._generate_doc_recommendations(
+                    doc_patterns, target_repo_id
+                )
+                
+                arch_recommendations = self._generate_arch_recommendations(
+                    arch_patterns, target_repo_id, target_analysis
+                )
+                
+                # Link applied patterns to target repository in Neo4j
+                pattern_ids = [
+                    rec["pattern_id"] for rec in code_recommendations + doc_recommendations + arch_recommendations
+                    if "pattern_id" in rec
+                ]
+                if pattern_ids:
+                    await self.neo4j_tools.link_patterns_to_repository(
+                        target_repo_id, pattern_ids, is_reference=False
+                    )
+                
+                return {
+                    "code_recommendations": code_recommendations,
+                    "doc_recommendations": doc_recommendations,
+                    "arch_recommendations": arch_recommendations,
+                    "reference_repo_id": reference_repo_id,
+                    "target_repo_id": target_repo_id,
+                    "applied_patterns": len(pattern_ids),
+                    "similarity_score": comparison_results.get("similarity_count", 0) / 20 if comparison_results.get("similarity_count") else 0
+                }
     
     @handle_async_errors(error_types=DatabaseError)
     async def _get_code_patterns(self, repo_id: int) -> List[Dict]:
         """Get code patterns from database."""
-        patterns_query = """
-            SELECT * FROM code_patterns WHERE repo_id = $repo_id
-        """
-        return await query(patterns_query, {"repo_id": repo_id})
+        async with transaction_scope() as txn:
+            patterns_query = """
+                SELECT p.*, c.file_path, c.language
+                FROM code_patterns p
+                JOIN code_snippets c ON c.id = p.code_id
+                WHERE c.repo_id = $1
+            """
+            return await query(patterns_query, (repo_id,))
     
     @handle_async_errors(error_types=DatabaseError)
     async def _get_doc_patterns(self, repo_id: int) -> List[Dict]:
         """Get documentation patterns from database."""
-        patterns_query = """
-            SELECT * FROM doc_patterns WHERE repo_id = $repo_id
-        """
-        return await query(patterns_query, {"repo_id": repo_id})
+        async with transaction_scope() as txn:
+            patterns_query = """
+                SELECT d.*, r.repo_id
+                FROM repo_docs d
+                JOIN repo_doc_relations r ON d.id = r.doc_id
+                WHERE r.repo_id = $1 AND d.doc_type = 'pattern'
+            """
+            return await query(patterns_query, (repo_id,))
     
     @handle_async_errors(error_types=DatabaseError)
     async def _get_arch_patterns(self, repo_id: int) -> List[Dict]:
         """Get architecture patterns from database."""
-        patterns_query = """
-            SELECT * FROM arch_patterns WHERE repo_id = $repo_id
-        """
-        return await query(patterns_query, {"repo_id": repo_id})
+        async with transaction_scope() as txn:
+            patterns_query = """
+                SELECT c.*
+                FROM code_snippets c
+                WHERE c.repo_id = $1 
+                AND c.file_path LIKE 'architecture/%'
+            """
+            return await query(patterns_query, (repo_id,))
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def _generate_enhanced_code_recommendations(
@@ -599,66 +572,70 @@ class ReferenceRepositoryLearning:
                         "recommendation": f"Apply {pattern['pattern_type']} pattern from {reference_file} to {active_file}",
                         "similarity": similarity_score,
                         "confidence": 0.85,  # Higher confidence with graph-based similarity
-                        "sample": pattern["sample"],
-                        "pattern_id": pattern["pattern_id"]
+                        "sample": pattern.get("sample"),
+                        "pattern_id": pattern.get("id")
                     }
                     recommendations.append(recommendation)
         
         # If no recommendations from graph comparison, fall back to Neo4j similarity
         if not recommendations:
             # Get target repository files
-            files_query = """
-                SELECT file_path, language FROM file_metadata 
-                WHERE repo_id = $repo_id AND file_type = 'CODE'
-            """
-            files = await query(files_query, {"repo_id": target_repo_id})
-            
-            # For each file, find matching patterns using Neo4j
-            for file in files:
-                # Get recommendations for this file
-                pattern_recs = await self.neo4j_tools.find_similar_patterns(
-                    target_repo_id, file["file_path"], limit=3
-                )
+            async with transaction_scope() as txn:
+                files_query = """
+                    SELECT file_path, language 
+                    FROM code_snippets 
+                    WHERE repo_id = $1
+                """
+                files = await query(files_query, (target_repo_id,))
                 
-                for pattern in pattern_recs:
-                    # Check if pattern is from one of our reference patterns
-                    if any(p["pattern_id"] == pattern["pattern_id"] for p in patterns):
-                        recommendation = {
-                            "pattern_type": pattern["pattern_type"],
-                            "language": pattern["language"],
-                            "target_file": file["file_path"],
-                            "recommendation": f"Consider using this {pattern['language']} pattern",
-                            "sample": pattern["sample"],
-                            "confidence": 0.75,  # Default confidence
-                            "pattern_id": pattern["pattern_id"]
-                        }
-                        recommendations.append(recommendation)
+                # For each file, find matching patterns using Neo4j
+                for file in files:
+                    # Get recommendations for this file
+                    pattern_recs = await self.neo4j_tools.find_similar_patterns(
+                        target_repo_id, file["file_path"], limit=3
+                    )
+                    
+                    for pattern in pattern_recs:
+                        # Check if pattern is from one of our reference patterns
+                        if any(p["id"] == pattern["pattern_id"] for p in patterns):
+                            recommendation = {
+                                "pattern_type": pattern["pattern_type"],
+                                "language": pattern["language"],
+                                "target_file": file["file_path"],
+                                "recommendation": f"Consider using this {pattern['language']} pattern",
+                                "sample": pattern.get("sample"),
+                                "confidence": 0.75,  # Default confidence
+                                "pattern_id": pattern["pattern_id"]
+                            }
+                            recommendations.append(recommendation)
         
         # If still no recommendations, fall back to language matching
         if not recommendations:
-            languages_query = """
-                SELECT DISTINCT language FROM file_metadata 
-                WHERE repo_id = $repo_id AND language IS NOT NULL
-            """
-            languages = await query(languages_query, {"repo_id": target_repo_id})
-            target_languages = [lang["language"] for lang in languages]
-            
-            # Filter patterns by target languages
-            filtered_patterns = [
-                p for p in patterns if p["language"] in target_languages
-            ]
-            
-            # Generate recommendations
-            for pattern in filtered_patterns[:5]:  # Limit to 5 general recommendations
-                recommendation = {
-                    "pattern_type": pattern["pattern_type"],
-                    "language": pattern["language"],
-                    "recommendation": f"Consider using this {pattern['language']} pattern",
-                    "sample": pattern["sample"],
-                    "confidence": 0.7,  # Lower confidence for language-only matching
-                    "pattern_id": pattern["pattern_id"]
-                }
-                recommendations.append(recommendation)
+            async with transaction_scope() as txn:
+                languages_query = """
+                    SELECT DISTINCT language 
+                    FROM code_snippets 
+                    WHERE repo_id = $1 AND language IS NOT NULL
+                """
+                languages = await query(languages_query, (target_repo_id,))
+                target_languages = [lang["language"] for lang in languages]
+                
+                # Filter patterns by target languages
+                filtered_patterns = [
+                    p for p in patterns if p["language"] in target_languages
+                ]
+                
+                # Generate recommendations
+                for pattern in filtered_patterns[:5]:  # Limit to 5 general recommendations
+                    recommendation = {
+                        "pattern_type": pattern["pattern_type"],
+                        "language": pattern["language"],
+                        "recommendation": f"Consider using this {pattern['language']} pattern",
+                        "sample": pattern.get("sample"),
+                        "confidence": 0.7,  # Lower confidence for language-only matching
+                        "pattern_id": pattern.get("id")
+                    }
+                    recommendations.append(recommendation)
         
         return recommendations
     
@@ -738,7 +715,7 @@ class ReferenceRepositoryLearning:
             pattern_graph_name = f"pattern-repo-{repo_id}"
             
             # Run pattern similarity analysis
-            future = submit_async_task(self.graph_projections.run_pattern_similarity(pattern_graph_name))
+            future = submit_async_task(self.neo4j_tools.find_similar_patterns(repo_id, limit=10))
             tasks.add(future)
             try:
                 similarity_results = await asyncio.wrap_future(future)
@@ -746,7 +723,7 @@ class ReferenceRepositoryLearning:
                 tasks.remove(future)
             
             # Find pattern clusters
-            future = submit_async_task(self.graph_projections.find_pattern_clusters(pattern_graph_name))
+            future = submit_async_task(graph_sync.compare_repository_structures(repo_id, repo_id))
             tasks.add(future)
             try:
                 pattern_clusters = await asyncio.wrap_future(future)
@@ -754,10 +731,10 @@ class ReferenceRepositoryLearning:
                 tasks.remove(future)
             
             return {
-                "pattern_similarities": similarity_results,
-                "pattern_clusters": pattern_clusters,
+                "pattern_similarities": len(similarity_results),
+                "pattern_clusters": len(pattern_clusters.get("similarities", [])),
                 "total_similarities": len(similarity_results),
-                "total_clusters": len(pattern_clusters)
+                "total_clusters": len(pattern_clusters.get("similarities", []))
             }
         finally:
             # Clean up any remaining tasks

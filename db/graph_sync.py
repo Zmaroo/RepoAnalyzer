@@ -77,6 +77,7 @@ from utils.error_handling import (
     ErrorSeverity
 )
 from utils.async_runner import submit_async_task
+from utils.app_init import register_shutdown_handler
 
 # Cache for graph states
 graph_cache = create_cache("graph_state", ttl=300)
@@ -95,10 +96,26 @@ class GraphSyncCoordinator:
         self._pending_tasks: Set[asyncio.Future] = set()
         self._update_task = None
         self._projections: Dict[str, Dict[str, bool]] = {}
+        self._initialized = False
+        register_shutdown_handler(self.cleanup)
+    
+    async def initialize(self):
+        """Initialize the graph sync coordinator."""
+        if not self._initialized:
+            try:
+                # Any coordinator-specific initialization can go here
+                self._initialized = True
+                log("Graph sync coordinator initialized", level="info")
+            except Exception as e:
+                log(f"Error initializing graph sync coordinator: {e}", level="error")
+                raise
     
     @handle_async_errors(error_types=(Neo4jError, ProjectionError, Exception))
     async def ensure_projection(self, repo_id: int) -> bool:
         """Ensures graph projection exists and is up to date."""
+        if not self._initialized:
+            await self.initialize()
+            
         projection_name = f"code-repo-{repo_id}"
         
         async with self._lock:
@@ -539,11 +556,38 @@ class GraphSyncCoordinator:
         finally:
             await session.close()
     
-    async def cleanup(self) -> None:
-        """Clean up any pending tasks."""
-        if self._pending_tasks:
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-            self._pending_tasks.clear()
+    async def cleanup(self):
+        """Clean up all resources."""
+        try:
+            # Cancel any pending tasks
+            if self._update_task and not self._update_task.done():
+                self._update_task.cancel()
+                try:
+                    await self._update_task
+                except asyncio.CancelledError:
+                    pass
+            
+            # Clean up any remaining tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clear all projections
+            for projection_name in self._active_projections:
+                try:
+                    await self._drop_projection(projection_name)
+                except Exception as e:
+                    log(f"Error dropping projection {projection_name}: {e}", level="error")
+            
+            self._active_projections.clear()
+            self._projections.clear()
+            self._initialized = False
+            
+            log("Graph sync coordinator cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up graph sync coordinator: {e}", level="error")
 
 # Create singleton instance of GraphSyncCoordinator
 _graph_sync = GraphSyncCoordinator()
@@ -555,6 +599,8 @@ async def get_graph_sync() -> GraphSyncCoordinator:
     Returns:
         GraphSyncCoordinator: The singleton graph sync coordinator instance
     """
+    if not _graph_sync._initialized:
+        await _graph_sync.initialize()
     return _graph_sync
 
 # For backward compatibility and direct access

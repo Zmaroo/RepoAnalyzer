@@ -2,25 +2,39 @@
 
 from typing import Dict, List, Any, Optional, Union, Tuple
 from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
+from parsers.types import FileType, ParserType, PatternCategory, ParserResult, ParserConfig
 from parsers.models import JsonNode, PatternType
 from parsers.query_patterns.json import JSON_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 import json
 import re
 from collections import Counter
+import asyncio
 
 class JsonParser(BaseParser):
     """Parser for JSON files with enhanced documentation and structure analysis."""
 
-    def __init__(self, language_id: str = "json", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
+    def __init__(self, language_id: str, file_type: FileType = FileType.CONFIG):
+        super().__init__(language_id, file_type)
+        self._initialized = False
+        self._pending_tasks: set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(JSON_PATTERNS)
+        register_shutdown_handler(self.cleanup)
 
-    def initialize(self) -> bool:
+    async def initialize(self) -> bool:
         """Initialize parser resources."""
-        self._initialized = True
+        if not self._initialized:
+            try:
+                # No special initialization needed yet
+                self._initialized = True
+                log("JSON parser initialized", level="info")
+                return True
+            except Exception as e:
+                log(f"Error initializing JSON parser: {e}", level="error")
+                raise
         return True
 
     def _create_node(
@@ -119,38 +133,40 @@ class JsonParser(BaseParser):
             )
 
     @handle_errors(error_types=(ParsingError,))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Optional[Dict[str, Any]]:
         """Parse JSON content into AST structure with caching support."""
-        lines = source_code.splitlines()
-        line_count = len(lines)
-        
-        with ErrorBoundary(operation_name="JSON parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
-            try:
-                # Note: We don't need to check cache here as BaseParser.parse() already does this
-                # This method will only be called for cache misses
-                
-                data = json.loads(source_code)
-                ast = self._process_json_value(data, "")
-                
-                # Set document root position
-                ast.start_point = [0, 0]
-                ast.end_point = [line_count - 1, len(lines[-1]) if lines else 0]
-                
-                # Analyze structure
-                self._analyze_structure(ast)
-                
-                return ast.__dict__
-                
-            except json.JSONDecodeError as e:
-                log(f"Error parsing JSON: {e}", level="error")
-                return self._create_node(
-                    "document",
-                    [0, 0],
-                    [line_count - 1, len(lines[-1]) if lines else 0],
-                    error=str(e),
-                    children=[]
-                ).__dict__
+        if not self._initialized:
+            await self.initialize()
             
+        try:
+            # Note: We don't need to check cache here as BaseParser.parse() already does this
+            # This method will only be called for cache misses
+            
+            future = submit_async_task(json.loads(source_code))
+            self._pending_tasks.add(future)
+            try:
+                data = await asyncio.wrap_future(future)
+            finally:
+                self._pending_tasks.remove(future)
+            
+            ast = self._process_json_value(data, "")
+            
+            # Set document root position
+            ast.start_point = [0, 0]
+            ast.end_point = [len(source_code.splitlines()), 0]
+            
+            # Analyze structure
+            self._analyze_structure(ast)
+            
+            return ast.__dict__
+            
+        except json.JSONDecodeError as e:
+            log(f"Error parsing JSON: {e}", level="error")
+            return None
+        except Exception as e:
+            log(f"Unexpected error parsing JSON: {e}", level="error")
+            return None
+
     def _analyze_structure(self, node: JsonNode) -> None:
         """Analyze JSON structure for insights."""
         if node.type == "object":
@@ -214,7 +230,7 @@ class JsonParser(BaseParser):
         return conventions
 
     @handle_errors(error_types=(ProcessingError,))
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract JSON patterns from the source code for repository learning.
         
@@ -226,10 +242,15 @@ class JsonParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(operation_name="JSON pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        if not self._initialized:
+            await self.initialize()
+            
+        try:
+            # Parse the source first to get a structured representation
+            future = submit_async_task(self._parse_source(source_code))
+            self._pending_tasks.add(future)
             try:
-                # Parse the source first to get a structured representation
-                ast_dict = self._parse_source(source_code)
+                ast_dict = await asyncio.wrap_future(future)
                 ast = JsonNode(**ast_dict)
                 
                 # Extract structure patterns
@@ -251,6 +272,9 @@ class JsonParser(BaseParser):
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error extracting JSON patterns: {e}", level="error")
                 
+        except Exception as e:
+            log(f"Error extracting JSON patterns: {e}", level="error")
+            
         return patterns
         
     def _extract_structure_patterns(self, ast: JsonNode) -> List[Dict[str, Any]]:
@@ -566,4 +590,19 @@ class JsonParser(BaseParser):
         for child in array_node.children:
             type_counter[child.type] += 1
             
-        return dict(type_counter) 
+        return dict(type_counter)
+
+    async def cleanup(self):
+        """Clean up JSON parser resources."""
+        try:
+            # Cancel and clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("JSON parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up JSON parser: {e}", level="error") 

@@ -8,6 +8,7 @@ determining the appropriate parser type, and extracting language information.
 import os
 import re
 from typing import Dict, Optional, Tuple, List, Set
+import asyncio
 
 from parsers.models import FileClassification
 from parsers.types import ParserType, FileType
@@ -32,8 +33,30 @@ from parsers.language_mapping import (
     is_binary_extension
 )
 from utils.logger import log
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 
-def classify_file(file_path: str, content: Optional[str] = None) -> FileClassification:
+# Track initialization state and tasks
+_initialized = False
+_pending_tasks: Set[asyncio.Future] = set()
+
+@handle_async_errors(error_types=(Exception,))
+async def initialize():
+    """Initialize file classification resources."""
+    global _initialized
+    if not _initialized:
+        try:
+            async with AsyncErrorBoundary("file_classification_initialization"):
+                # No special initialization needed yet
+                _initialized = True
+                log("File classification initialized", level="info")
+        except Exception as e:
+            log(f"Error initializing file classification: {e}", level="error")
+            raise
+
+@handle_async_errors(error_types=(Exception,))
+async def classify_file(file_path: str, content: Optional[str] = None) -> FileClassification:
     """
     Classify a file based on its path and optionally its content.
     
@@ -44,28 +67,51 @@ def classify_file(file_path: str, content: Optional[str] = None) -> FileClassifi
     Returns:
         FileClassification object with parser type and language information
     """
-    # Use the enhanced language detection with confidence score
-    language_id, confidence = detect_language(file_path, content)
-    
-    # Log detection confidence if it's low
-    if confidence < 0.5:
-        log(f"Low confidence ({confidence:.2f}) language detection for {file_path}: {language_id}", level="debug")
-    
-    # Get parser info for the detected language
-    parser_info = get_parser_info_for_language(language_id)
-    
-    # Create classification
-    classification = FileClassification(
-        file_path=file_path,
-        language_id=parser_info["language_id"],
-        parser_type=parser_info["parser_type"],
-        file_type=parser_info["file_type"],
-        is_binary=_is_likely_binary(file_path, content),
-    )
-    
-    return classification
+    if not _initialized:
+        await initialize()
+        
+    async with AsyncErrorBoundary("classify_file"):
+        # Use the enhanced language detection with confidence score
+        future = submit_async_task(detect_language(file_path, content))
+        _pending_tasks.add(future)
+        try:
+            language_id, confidence = await asyncio.wrap_future(future)
+        finally:
+            _pending_tasks.remove(future)
+        
+        # Log detection confidence if it's low
+        if confidence < 0.5:
+            log(f"Low confidence ({confidence:.2f}) language detection for {file_path}: {language_id}", level="debug")
+        
+        # Get parser info for the detected language
+        future = submit_async_task(get_parser_info_for_language(language_id))
+        _pending_tasks.add(future)
+        try:
+            parser_info = await asyncio.wrap_future(future)
+        finally:
+            _pending_tasks.remove(future)
+        
+        # Check if file is binary
+        future = submit_async_task(_is_likely_binary(file_path, content))
+        _pending_tasks.add(future)
+        try:
+            is_binary = await asyncio.wrap_future(future)
+        finally:
+            _pending_tasks.remove(future)
+        
+        # Create classification
+        classification = FileClassification(
+            file_path=file_path,
+            language_id=parser_info["language_id"],
+            parser_type=parser_info["parser_type"],
+            file_type=parser_info["file_type"],
+            is_binary=is_binary,
+        )
+        
+        return classification
 
-def _is_likely_binary(file_path: str, content: Optional[str] = None) -> bool:
+@handle_async_errors(error_types=(Exception,))
+async def _is_likely_binary(file_path: str, content: Optional[str] = None) -> bool:
     """
     Determine if a file is likely binary.
     
@@ -90,7 +136,8 @@ def _is_likely_binary(file_path: str, content: Optional[str] = None) -> bool:
     
     return False
 
-def get_supported_languages() -> Dict[str, ParserType]:
+@handle_async_errors(error_types=(Exception,))
+async def get_supported_languages() -> Dict[str, ParserType]:
     """
     Get a dictionary of all supported languages and their parser types.
     Returns:
@@ -98,9 +145,15 @@ def get_supported_languages() -> Dict[str, ParserType]:
     """
     # Use the function from language_mapping.py
     from parsers.language_mapping import get_supported_languages as get_langs
-    return get_langs()
+    future = submit_async_task(get_langs())
+    _pending_tasks.add(future)
+    try:
+        return await asyncio.wrap_future(future)
+    finally:
+        _pending_tasks.remove(future)
 
-def get_supported_extensions() -> Dict[str, str]:
+@handle_async_errors(error_types=(Exception,))
+async def get_supported_extensions() -> Dict[str, str]:
     """
     Get a dictionary of all supported file extensions and their corresponding languages.
     Returns:
@@ -108,4 +161,28 @@ def get_supported_extensions() -> Dict[str, str]:
     """
     # Use the function from language_mapping.py
     from parsers.language_mapping import get_supported_extensions as get_exts
-    return get_exts() 
+    future = submit_async_task(get_exts())
+    _pending_tasks.add(future)
+    try:
+        return await asyncio.wrap_future(future)
+    finally:
+        _pending_tasks.remove(future)
+
+async def cleanup():
+    """Clean up file classification resources."""
+    global _initialized
+    try:
+        # Clean up any pending tasks
+        if _pending_tasks:
+            for task in _pending_tasks:
+                task.cancel()
+            await asyncio.gather(*[asyncio.wrap_future(f) for f in _pending_tasks], return_exceptions=True)
+            _pending_tasks.clear()
+        
+        _initialized = False
+        log("File classification cleaned up", level="info")
+    except Exception as e:
+        log(f"Error cleaning up file classification: {e}", level="error")
+
+# Register cleanup handler
+register_shutdown_handler(cleanup) 

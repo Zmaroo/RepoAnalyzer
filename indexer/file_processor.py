@@ -27,6 +27,7 @@ from parsers.unified_parser import unified_parser
 from parsers.pattern_processor import pattern_processor
 from parsers.language_mapping import get_suggested_alternatives
 from db.upsert_ops import upsert_code_snippet, upsert_doc
+from db.transaction import transaction_scope
 from indexer.file_utils import get_relative_path, is_processable_file
 from utils.logger import log
 from utils.error_handling import (
@@ -37,31 +38,49 @@ from utils.error_handling import (
     ErrorSeverity
 )
 import aiofiles
-from utils.async_runner import get_loop
+from utils.async_runner import get_loop, submit_async_task, cleanup_tasks
 from indexer.common import async_read_file
 import asyncio
 from embedding.embedding_models import code_embedder, doc_embedder
 from utils.request_cache import cached_in_request
 from parsers.file_classification import classify_file
 from parsers.models import FileClassification
+from utils.app_init import register_shutdown_handler
 
 class FileProcessor:
     """[2.1] Coordinates file processing and database storage."""
     
     def __init__(self):
-        self._language_registry = language_registry  # USES: parsers/language_support.py
-        self._pattern_processor = pattern_processor  # Use the global pattern processor instance
-        self._loop = get_loop()  # Get managed event loop
-        self._semaphore = asyncio.Semaphore(10)  # Limit concurrent file operations
+        self._language_registry = language_registry
+        self._pattern_processor = pattern_processor
+        self._loop = get_loop()
+        self._semaphore = asyncio.Semaphore(10)
         self._processed_files = 0
         self._failed_files = 0
+        self._pending_tasks: Set[asyncio.Future] = set()
+        self._initialized = False
+        register_shutdown_handler(self.cleanup)
     
-    @handle_async_errors
+    async def initialize(self):
+        """Initialize the processor."""
+        if not self._initialized:
+            try:
+                # Initialize any processor-specific resources
+                self._initialized = True
+                log("FileProcessor initialized", level="info")
+            except Exception as e:
+                log(f"Error initializing FileProcessor: {e}", level="error")
+                raise
+    
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def process_file(self, file_path: str, repo_id: int, base_path: str) -> Optional[Dict]:
         """[2.2] Process a single file using the managed event loop."""
-        async with self._semaphore:  # Control concurrent operations
+        if not self._initialized:
+            await self.initialize()
+            
+        async with self._semaphore:
             try:
-                # Use cached file reader to avoid redundant I/O for the same file
+                # Use cached file reader to avoid redundant I/O
                 content = await cached_read_file(file_path)
                 if content is None:
                     self._failed_files += 1
@@ -71,38 +90,46 @@ class FileProcessor:
                 # Get relative path for storage
                 rel_path = get_relative_path(file_path, base_path)
                 
-                # Process based on file type - use cached classification to avoid redundant work
+                # Process based on file type
                 classification = await cached_classify_file(file_path)
                 if not classification:
                     log(f"Could not classify file: {file_path}", level="debug")
                     return None
                     
-                if classification.file_type == FileType.CODE:
-                    result = await self._process_code_file(repo_id, rel_path, content, classification)
-                elif classification.file_type == FileType.DOC:
-                    result = await self._process_doc_file(repo_id, rel_path, content, classification)
-                else:
-                    log(f"Skipping file {rel_path} with type {classification.file_type}", level="debug")
-                    return None
-                
-                if result:
-                    self._processed_files += 1
-                    return result
-                else:
-                    self._failed_files += 1
-                    return None
+                async with transaction_scope() as txn:
+                    await txn.track_repo_change(repo_id)
+                    
+                    if classification.file_type == FileType.CODE:
+                        result = await self._process_code_file(repo_id, rel_path, content, classification)
+                    elif classification.file_type == FileType.DOC:
+                        result = await self._process_doc_file(repo_id, rel_path, content, classification)
+                    else:
+                        log(f"Skipping file {rel_path} with type {classification.file_type}", level="debug")
+                        return None
+                    
+                    if result:
+                        self._processed_files += 1
+                        return result
+                    else:
+                        self._failed_files += 1
+                        return None
                     
             except Exception as e:
                 self._failed_files += 1
                 log(f"Error in file processor: {e}", level="error")
                 return None
+            finally:
+                # Clean up any pending tasks
+                if self._pending_tasks:
+                    await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                    self._pending_tasks.clear()
     
-    @handle_async_errors
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def _process_code_file(self, repo_id: int, rel_path: str, content: str, classification) -> Optional[Dict]:
         """[2.3] Process and store code file with embeddings."""
         async with AsyncErrorBoundary(f"processing code file {rel_path}", severity=ErrorSeverity.ERROR):
             try:
-                # Parse file - use cached parser to avoid redundant parsing
+                # Parse file
                 async with AsyncErrorBoundary(f"Error parsing {rel_path}", severity=ErrorSeverity.ERROR):
                     parse_result = await cached_parse_file(rel_path, content, classification)
                     if not parse_result:
@@ -128,7 +155,7 @@ class FileProcessor:
                 # Get patterns for the file if needed for feature extraction
                 patterns = await cached_get_patterns(classification)
                 
-                # Generate embedding - use cached embedder to avoid redundant embedding generation
+                # Generate embedding
                 async with AsyncErrorBoundary(f"Error generating embedding for {rel_path}", severity=ErrorSeverity.ERROR):
                     embedding = await cached_embed_code(content)
                 
@@ -153,12 +180,12 @@ class FileProcessor:
                 log(f"Error processing code file {rel_path}: {e}", level="error")
                 return None
     
-    @handle_async_errors
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def _process_doc_file(self, repo_id: int, rel_path: str, content: str, classification) -> Optional[Dict]:
         """[2.4] Process and store documentation file with embeddings."""
         async with AsyncErrorBoundary(f"processing doc file {rel_path}", severity=ErrorSeverity.ERROR):
             try:
-                # Generate embedding - use cached embedder to avoid redundant embedding generation
+                # Generate embedding
                 async with AsyncErrorBoundary(f"Error generating embedding for doc {rel_path}", severity=ErrorSeverity.ERROR):
                     embedding = await cached_embed_doc(content)
                 
@@ -189,6 +216,24 @@ class FileProcessor:
             'failed_files': self._failed_files
         }
 
+    async def cleanup(self):
+        """Clean up all resources."""
+        try:
+            # Clear caches
+            self.clear_cache()
+            
+            # Cancel and clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("FileProcessor cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up FileProcessor: {e}", level="error")
+    
     def clear_cache(self):
         """Clear all caches"""
         # Each parser manages its own cache

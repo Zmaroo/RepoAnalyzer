@@ -13,9 +13,193 @@ from utils.logger import log
 from typing import Optional, Set, Dict, List, Tuple, Any
 import os
 import re
+import asyncio
 from parsers.types import FileType, ParserType
 from parsers.models import LanguageFeatures
-from utils.error_handling import ErrorBoundary
+from utils.error_handling import ErrorBoundary, AsyncErrorBoundary, handle_async_errors
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
+
+# Track initialization state and tasks
+_initialized = False
+_pending_tasks: Set[asyncio.Future] = set()
+
+@handle_async_errors(error_types=(Exception,))
+async def initialize():
+    """Initialize language mapping resources."""
+    global _initialized
+    if not _initialized:
+        try:
+            async with AsyncErrorBoundary("language_mapping_initialization"):
+                # Validate mappings
+                future = submit_async_task(validate_language_mappings())
+                _pending_tasks.add(future)
+                try:
+                    errors = await asyncio.wrap_future(future)
+                    if errors:
+                        for error in errors:
+                            log(error, level="warning")
+                finally:
+                    _pending_tasks.remove(future)
+                
+                _initialized = True
+                log("Language mapping initialized", level="info")
+        except Exception as e:
+            log(f"Error initializing language mapping: {e}", level="error")
+            raise
+
+@handle_async_errors(error_types=(Exception,))
+async def detect_language(file_path: str, content: Optional[str] = None) -> Tuple[str, float]:
+    """
+    Comprehensive language detection using multiple methods with confidence score.
+    
+    Args:
+        file_path: Path to the file
+        content: Optional content for content-based detection
+        
+    Returns:
+        Tuple of (language_id, confidence_score)
+    """
+    if not _initialized:
+        await initialize()
+        
+    async with AsyncErrorBoundary("detect_language"):
+        # Start with filename-based detection
+        filename = os.path.basename(file_path)
+        future = submit_async_task(detect_language_from_filename(filename))
+        _pending_tasks.add(future)
+        try:
+            language_by_filename = await asyncio.wrap_future(future)
+        finally:
+            _pending_tasks.remove(future)
+        
+        if language_by_filename:
+            return language_by_filename, 0.9  # High confidence for extension matches
+        
+        # Try content-based detection if content is provided
+        if content:
+            future = submit_async_task(detect_language_from_content(content))
+            _pending_tasks.add(future)
+            try:
+                language_by_content = await asyncio.wrap_future(future)
+                if language_by_content:
+                    return language_by_content, 0.7  # Medium-high confidence for content matches
+            finally:
+                _pending_tasks.remove(future)
+        
+        # Try shebang detection for script files
+        if content and content.startswith('#!'):
+            match = SHEBANG_PATTERN.match(content)
+            if match and match.group(1).lower() in SHEBANG_MAP:
+                return SHEBANG_MAP[match.group(1).lower()], 0.8  # High confidence for shebang
+        
+        # Fall back to plaintext with low confidence
+        return "plaintext", 0.1
+
+@handle_async_errors(error_types=(Exception,))
+async def get_complete_language_info(language_id: str) -> Dict[str, Any]:
+    """
+    Get comprehensive information about a language from all relevant mappings.
+    
+    Args:
+        language_id: The language identifier
+        
+    Returns:
+        Dictionary with all available information about the language
+    """
+    if not _initialized:
+        await initialize()
+        
+    async with AsyncErrorBoundary("get_language_info"):
+        normalized = normalize_language_name(language_id)
+        
+        # Get extensions for this language
+        future = submit_async_task(get_extensions_for_language(normalized))
+        _pending_tasks.add(future)
+        try:
+            extensions = await asyncio.wrap_future(future)
+        finally:
+            _pending_tasks.remove(future)
+        
+        # Get parser type information
+        parser_type = get_parser_type(normalized)
+        fallback_type = get_fallback_parser_type(normalized)
+        
+        # Get file type
+        file_type = get_file_type(normalized)
+        
+        # Get aliases
+        aliases = [alias for alias, norm in LANGUAGE_ALIASES.items() if norm == normalized]
+        
+        # Get MIME types
+        mime_types = MIME_TYPES.get(normalized, set())
+        
+        return {
+            "canonical_name": normalized,
+            "extensions": extensions,
+            "parser_type": parser_type,
+            "fallback_parser_type": fallback_type,
+            "file_type": file_type,
+            "aliases": aliases,
+            "mime_types": mime_types,
+            "is_tree_sitter_supported": normalized in TREE_SITTER_LANGUAGES,
+            "is_custom_parser_supported": normalized in CUSTOM_PARSER_LANGUAGES
+        }
+
+@handle_async_errors(error_types=(Exception,))
+async def get_parser_info_for_language(language_id: str) -> Dict[str, Any]:
+    """
+    Get parser-specific information for a language.
+    
+    Args:
+        language_id: The language identifier
+        
+    Returns:
+        Dictionary with parser information for the language
+    """
+    if not _initialized:
+        await initialize()
+        
+    async with AsyncErrorBoundary("get_parser_info"):
+        normalized = normalize_language_name(language_id)
+        parser_type = get_parser_type(normalized)
+        fallback = get_fallback_parser_type(normalized)
+        
+        info = {
+            "language_id": normalized,
+            "parser_type": parser_type,
+            "fallback_parser_type": fallback,
+            "file_type": get_file_type(normalized)
+        }
+        
+        # Add tree-sitter specific info if applicable
+        if normalized in TREE_SITTER_LANGUAGES:
+            info["tree_sitter_available"] = True
+        
+        # Add custom parser info if applicable
+        if normalized in CUSTOM_PARSER_LANGUAGES:
+            info["custom_parser_available"] = True
+        
+        return info
+
+async def cleanup():
+    """Clean up language mapping resources."""
+    global _initialized
+    try:
+        # Clean up any pending tasks
+        if _pending_tasks:
+            for task in _pending_tasks:
+                task.cancel()
+            await asyncio.gather(*[asyncio.wrap_future(f) for f in _pending_tasks], return_exceptions=True)
+            _pending_tasks.clear()
+        
+        _initialized = False
+        log("Language mapping cleaned up", level="info")
+    except Exception as e:
+        log(f"Error cleaning up language mapping: {e}", level="error")
+
+# Register cleanup handler
+register_shutdown_handler(cleanup)
 
 # Language support mappings
 # --------------------------
@@ -738,79 +922,6 @@ def validate_language_mappings() -> List[str]:
             errors.append(f"Language '{lang}' has file type mapping but no parser support")
     
     return errors
-
-def get_complete_language_info(language_id: str) -> Dict[str, Any]:
-    """
-    Get comprehensive information about a language from all relevant mappings.
-    
-    Args:
-        language_id: The language identifier
-        
-    Returns:
-        Dictionary with all available information about the language
-    """
-    normalized = normalize_language_name(language_id)
-    
-    # Get extensions for this language
-    extensions = get_extensions_for_language(normalized)
-    
-    # Get parser type information
-    parser_type = get_parser_type(normalized)
-    fallback_type = get_fallback_parser_type(normalized)
-    
-    # Get file type
-    file_type = get_file_type(normalized)
-    
-    # Get aliases
-    aliases = [alias for alias, norm in LANGUAGE_ALIASES.items() if norm == normalized]
-    
-    # Get MIME types
-    mime_types = MIME_TYPES.get(normalized, set())
-    
-    return {
-        "canonical_name": normalized,
-        "extensions": extensions,
-        "parser_type": parser_type,
-        "fallback_parser_type": fallback_type,
-        "file_type": file_type,
-        "aliases": aliases,
-        "mime_types": mime_types,
-        "is_tree_sitter_supported": normalized in TREE_SITTER_LANGUAGES,
-        "is_custom_parser_supported": normalized in CUSTOM_PARSER_LANGUAGES
-    }
-
-def detect_language(file_path: str, content: Optional[str] = None) -> Tuple[str, float]:
-    """
-    Comprehensive language detection using multiple methods with confidence score.
-    
-    Args:
-        file_path: Path to the file
-        content: Optional content for content-based detection
-        
-    Returns:
-        Tuple of (language_id, confidence_score)
-    """
-    # Start with filename-based detection
-    filename = os.path.basename(file_path)
-    language_by_filename = detect_language_from_filename(filename)
-    
-    if language_by_filename:
-        return language_by_filename, 0.9  # High confidence for extension matches
-    
-    # Try content-based detection if content is provided
-    if content:
-        language_by_content = detect_language_from_content(content)
-        if language_by_content:
-            return language_by_content, 0.7  # Medium-high confidence for content matches
-    
-    # Try shebang detection for script files
-    if content and content.startswith('#!'):
-        match = SHEBANG_PATTERN.match(content)
-        if match and match.group(1).lower() in SHEBANG_MAP:
-            return SHEBANG_MAP[match.group(1).lower()], 0.8  # High confidence for shebang
-    
-    # Fall back to plaintext with low confidence
-    return "plaintext", 0.1
 
 def get_parser_info_for_language(language_id: str) -> Dict[str, Any]:
     """

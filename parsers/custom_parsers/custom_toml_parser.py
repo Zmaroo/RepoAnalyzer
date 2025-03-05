@@ -1,120 +1,156 @@
 """Custom parser for TOML with enhanced documentation features."""
 
 from typing import Dict, List, Any, Optional
+import asyncio
+import tomli
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.toml import TOML_PATTERNS
 from parsers.models import TomlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
-import tomli
-from collections import Counter
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
+import re
 
 class TomlParser(BaseParser):
     """Parser for TOML files."""
     
     def __init__(self, language_id: str = "toml", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
+        self._initialized = False
+        self._pending_tasks: set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(TOML_PATTERNS)
+        register_shutdown_handler(self.cleanup)
     
-    def initialize(self) -> bool:
-        self._initialized = True
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize parser resources."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary("TOML parser initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    log("TOML parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing TOML parser: {e}", level="error")
+                raise
         return True
-    
+
     def _create_node(
-        self, node_type: str, start_point: List[int],
-        end_point: List[int], **kwargs
+        self,
+        node_type: str,
+        start_point: List[int],
+        end_point: List[int],
+        **kwargs
     ) -> TomlNode:
+        """Create a standardized TOML AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
         return TomlNode(**node_dict)
-    
-    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> TomlNode:
-        value_data = self._create_node(
-            "value", start_point,
-            [start_point[0], start_point[1] + len(str(value))],
-            path='.'.join(path),
-            value_type=type(value).__name__,
-            value=value
-        )
-        if isinstance(value, dict):
-            value_data.type = "table"
-            value_data.metadata["keys"] = list(value.keys())
-            for key, val in value.items():
-                child = self._process_value(
-                    val, path + [key],
-                    [start_point[0], start_point[1] + len(key) + 1]
-                )
-                value_data.children.append(child)
-        elif isinstance(value, list):
-            value_data.type = "array"
-            value_data.metadata["length"] = len(value)
-            for i, item in enumerate(value):
-                child = self._process_value(
-                    item, path + [f"[{i}]"],
-                    [start_point[0], start_point[1] + i]
-                )
-                value_data.children.append(child)
-        return value_data
-    
+
     @handle_errors(error_types=(ParsingError,))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse TOML content into AST structure.
         
         This method supports AST caching through the BaseParser.parse() method.
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
+        if not self._initialized:
+            await self.initialize()
+            
         with ErrorBoundary(operation_name="TOML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
-                    "document", [0, 0],
+                    "document",
+                    [0, 0],
                     [len(lines) - 1, len(lines[-1]) if lines else 0]
                 )
-                current_comments = []
+                
+                # Process comments first
+                current_comment_block = []
                 for i, line in enumerate(lines):
                     line_start = [i, 0]
                     line_end = [i, len(line)]
-                    matched = False
-                    for category in TOML_PATTERNS.values():
-                        for pattern_name, pattern_obj in category.items():
-                            if match := self.patterns[pattern_name].match(line):
-                                node = self._create_node(
-                                    pattern_name, line_start, line_end,
-                                    **pattern_obj.extract(match)
-                                )
-                                if current_comments:
-                                    node.metadata["comments"] = current_comments
-                                    current_comments = []
-                                ast.children.append(node)
-                                matched = True
-                                break
-                        if matched:
-                            break
-                    if not matched and line.strip():
-                        current_comments.append(line)
+                    if comment_match := re.match(r'^\s*#\s*(.*)$', line):
+                        current_comment_block.append(comment_match.group(1).strip())
+                        continue
+                    if line.strip() and current_comment_block:
+                        node = self._create_node(
+                            "comment_block",
+                            [i - len(current_comment_block), 0],
+                            [i - 1, len(current_comment_block[-1])],
+                            content="\n".join(current_comment_block)
+                        )
+                        ast.children.append(node)
+                        current_comment_block = []
+                
+                # Parse TOML structure
                 try:
-                    data = tomli.loads(source_code)
-                    root_value = self._process_value(data, [], [0, 0])
-                    ast.children.append(root_value)
-                except (tomli.TOMLDecodeError, ValueError) as e:
-                    log(f"Error parsing TOML content: {e}", level="error")
-                    return TomlNode(
-                        type="document", start_point=[0, 0], end_point=[0, 0],
-                        error=str(e), children=[]
-                    ).__dict__
+                    future = submit_async_task(tomli.loads(source_code))
+                    self._pending_tasks.add(future)
+                    try:
+                        data = await asyncio.wrap_future(future)
+                        root_node = self._process_value(data, [], [0, 0])
+                        ast.children.append(root_node)
+                    finally:
+                        self._pending_tasks.remove(future)
+                except tomli.TOMLDecodeError as e:
+                    log(f"Error parsing TOML structure: {e}", level="error")
+                    ast.metadata["parse_error"] = str(e)
+                
+                # Handle any remaining comments
+                if current_comment_block:
+                    ast.metadata["trailing_comments"] = current_comment_block
+                
                 return ast.__dict__
+                
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing TOML content: {e}", level="error")
                 return TomlNode(
                     type="document", start_point=[0, 0], end_point=[0, 0],
                     error=str(e), children=[]
                 ).__dict__
+    
+    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> TomlNode:
+        """Process a TOML value into a node structure."""
+        node = self._create_node(
+            type(value).__name__,
+            start_point,
+            [start_point[0], start_point[1] + len(str(value))],
+            path='.'.join(path)
+        )
+        
+        if isinstance(value, dict):
+            node.type = "table"
+            for key, val in value.items():
+                child = self._process_value(
+                    val,
+                    path + [str(key)],
+                    [start_point[0], start_point[1] + 1]
+                )
+                child.key = key
+                node.children.append(child)
+        elif isinstance(value, list):
+            node.type = "array"
+            for i, item in enumerate(value):
+                child = self._process_value(
+                    item,
+                    path + [f"[{i}]"],
+                    [start_point[0], start_point[1] + 1]
+                )
+                node.children.append(child)
+        else:
+            node.type = "value"
+            node.value = value
             
-    @handle_errors(error_types=(ProcessingError,))
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """
-        Extract configuration patterns from TOML files for repository learning.
+        return node
+    
+    @handle_errors(error_types=(ParsingError, ProcessingError))
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+        """Extract patterns from TOML files for repository learning.
         
         Args:
             source_code: The content of the TOML file
@@ -122,71 +158,105 @@ class TomlParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
-        patterns = []
-        
+        if not self._initialized:
+            await self.initialize()
+            
         with ErrorBoundary(operation_name="TOML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                # Parse the source to get a structured representation
-                ast = self._parse_source(source_code)
+                patterns = []
                 
-                # Extract table structure patterns
+                # Parse the source first to get a structured representation
+                future = submit_async_task(self._parse_source(source_code))
+                self._pending_tasks.add(future)
+                try:
+                    ast = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
+                
+                # Extract table patterns
                 table_patterns = self._extract_table_patterns(ast)
                 for table in table_patterns:
                     patterns.append({
                         'name': f'toml_table_{table["name"]}',
                         'content': table["content"],
-                        'pattern_type': PatternType.CONFIGURATION,
+                        'pattern_type': PatternType.CODE_STRUCTURE,
                         'language': self.language_id,
-                        'confidence': 0.85,
+                        'confidence': 0.9,
                         'metadata': {
                             'type': 'table',
                             'name': table["name"],
-                            'key_count': table.get("key_count", 0)
+                            'keys': table.get("keys", [])
                         }
                     })
                 
-                # Extract key-value patterns
-                kv_patterns = self._extract_key_value_patterns(ast)
-                for kv in kv_patterns:
-                    patterns.append({
-                        'name': f'toml_key_value_{kv["key"]}',
-                        'content': kv["content"],
-                        'pattern_type': PatternType.CONFIGURATION,
-                        'language': self.language_id,
-                        'confidence': 0.8,
-                        'metadata': {
-                            'type': 'key_value',
-                            'key': kv["key"],
-                            'value_type': kv.get("value_type", "unknown")
-                        }
-                    })
-                    
                 # Extract array patterns
                 array_patterns = self._extract_array_patterns(ast)
                 for array in array_patterns:
                     patterns.append({
-                        'name': f'toml_array_{array["name"]}',
+                        'name': f'toml_array_{array["type"]}',
                         'content': array["content"],
-                        'pattern_type': PatternType.CONFIGURATION,
+                        'pattern_type': PatternType.CODE_STRUCTURE,
                         'language': self.language_id,
-                        'confidence': 0.75,
+                        'confidence': 0.85,
                         'metadata': {
                             'type': 'array',
-                            'name': array["name"],
-                            'item_count': array.get("item_count", 0)
+                            'item_type': array["item_type"],
+                            'length': array["length"]
                         }
                     })
-                    
-                # Extract naming convention patterns
-                naming_patterns = self._extract_naming_patterns(source_code)
-                for pattern in naming_patterns:
-                    patterns.append(pattern)
-                    
-            except (ValueError, KeyError, TypeError) as e:
-                log(f"Error extracting TOML patterns: {e}", level="error")
                 
-        return patterns
-        
+                # Extract value patterns
+                value_patterns = self._extract_value_patterns(ast)
+                for value in value_patterns:
+                    patterns.append({
+                        'name': f'toml_value_{value["type"]}',
+                        'content': value["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
+                        'language': self.language_id,
+                        'confidence': 0.8,
+                        'metadata': {
+                            'type': 'value',
+                            'value_type': value["type"],
+                            'examples': value.get("examples", [])
+                        }
+                    })
+                
+                # Extract comment patterns
+                comment_patterns = self._extract_comment_patterns(ast)
+                for comment in comment_patterns:
+                    patterns.append({
+                        'name': f'toml_comment_{comment["type"]}',
+                        'content': comment["content"],
+                        'pattern_type': PatternType.DOCUMENTATION,
+                        'language': self.language_id,
+                        'confidence': 0.7,
+                        'metadata': {
+                            'type': 'comment',
+                            'style': comment["type"]
+                        }
+                    })
+                
+                return patterns
+                
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting patterns from TOML file: {str(e)}", level="error")
+                return []
+    
+    async def cleanup(self):
+        """Clean up TOML parser resources."""
+        try:
+            # Cancel and clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("TOML parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up TOML parser: {e}", level="error")
+
     def _extract_table_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract table patterns from the AST."""
         tables = []
@@ -205,25 +275,6 @@ class TomlParser(BaseParser):
                     
         process_node(ast)
         return tables
-        
-    def _extract_key_value_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract key-value patterns from the AST."""
-        key_values = []
-        
-        def process_node(node):
-            if isinstance(node, dict):
-                if node.get('type') == 'key_value':
-                    key_values.append({
-                        'key': node.get('key', 'unknown'),
-                        'content': f"{node.get('key', '')} = {node.get('value', '')}",
-                        'value_type': type(node.get('value', '')).__name__
-                    })
-                
-                for child in node.get('children', []):
-                    process_node(child)
-                    
-        process_node(ast)
-        return key_values
         
     def _extract_array_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract array patterns from the AST."""
@@ -244,43 +295,46 @@ class TomlParser(BaseParser):
         process_node(ast)
         return arrays
         
-    def _extract_naming_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """Extract naming convention patterns from the source code."""
-        patterns = []
+    def _extract_value_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract value patterns from the AST."""
+        values = []
         
-        # Extract snake_case vs camelCase naming convention
-        snake_case_keys = 0
-        camel_case_keys = 0
+        def process_node(node):
+            if isinstance(node, dict):
+                if node.get('type') == 'value':
+                    values.append({
+                        'type': node.get('path', 'unknown'),
+                        'content': f"{node.get('path', '')} = {node.get('value', '')}",
+                        'examples': []
+                    })
+                
+                for child in node.get('children', []):
+                    process_node(child)
+                    
+        process_node(ast)
+        return values
         
-        import re
-        snake_case_pattern = re.compile(r'^\s*([a-z][a-z0-9_]*[a-z0-9])\s*=')
-        camel_case_pattern = re.compile(r'^\s*([a-z][a-zA-Z0-9]*[a-zA-Z0-9])\s*=')
+    def _extract_comment_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract comment patterns from the AST."""
+        comments = []
         
-        for line in source_code.splitlines():
-            if snake_match := snake_case_pattern.match(line):
-                if '_' in snake_match.group(1):
-                    snake_case_keys += 1
-            if camel_match := camel_case_pattern.match(line):
-                if not '_' in camel_match.group(1) and any(c.isupper() for c in camel_match.group(1)):
-                    camel_case_keys += 1
-        
-        # Determine the dominant naming convention
-        if snake_case_keys > 0 or camel_case_keys > 0:
-            dominant_style = 'snake_case' if snake_case_keys >= camel_case_keys else 'camelCase'
-            confidence = 0.5 + 0.3 * (max(snake_case_keys, camel_case_keys) / max(1, snake_case_keys + camel_case_keys))
-            
-            patterns.append({
-                'name': f'toml_naming_convention',
-                'content': f"Naming convention: {dominant_style}",
-                'pattern_type': PatternType.NAMING_CONVENTION,
-                'language': self.language_id,
-                'confidence': confidence,
-                'metadata': {
-                    'type': 'naming_convention',
-                    'convention': dominant_style,
-                    'snake_case_count': snake_case_keys,
-                    'camel_case_count': camel_case_keys
-                }
-            })
-            
-        return patterns 
+        def process_node(node):
+            if isinstance(node, dict):
+                if node.get('type') == 'comment_block':
+                    comments.append({
+                        'type': 'block',
+                        'content': node.get('content', ''),
+                        'examples': []
+                    })
+                elif node.get('type') == 'comment':
+                    comments.append({
+                        'type': 'inline',
+                        'content': node.get('content', ''),
+                        'examples': []
+                    })
+                
+                for child in node.get('children', []):
+                    process_node(child)
+                    
+        process_node(ast)
+        return comments 

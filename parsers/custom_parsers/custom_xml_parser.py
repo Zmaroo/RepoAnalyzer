@@ -2,12 +2,15 @@
 
 from typing import Dict, List, Any, Optional
 import xml.etree.ElementTree as ET
+import asyncio
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.xml import XML_PATTERNS
 from parsers.models import XmlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 from collections import Counter
 import re
 
@@ -16,10 +19,24 @@ class XmlParser(BaseParser):
     
     def __init__(self, language_id: str = "xml", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.MARKUP, parser_type=ParserType.CUSTOM)
+        self._initialized = False
+        self._pending_tasks: set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(XML_PATTERNS)
+        register_shutdown_handler(self.cleanup)
     
-    def initialize(self) -> bool:
-        self._initialized = True
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize parser resources."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary("XML parser initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    log("XML parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing XML parser: {e}", level="error")
+                raise
         return True
     
     def _create_node(
@@ -30,36 +47,47 @@ class XmlParser(BaseParser):
         return XmlNode(**node_dict)
     
     def _process_element(self, element: ET.Element, path: List[str], start_point: List[int]) -> XmlNode:
+        """Process an XML element into a node structure."""
         tag = element.tag
         if '}' in tag:
-            namespace, tag = tag.split('}', 1)
-            namespace = namespace[1:]
-        else:
-            namespace = None
-        element_data = self._create_node(
-            "element", start_point,
+            # Handle namespaced tags
+            tag = tag.split('}', 1)[1]
+            
+        node = self._create_node(
+            "element",
+            start_point,
             [start_point[0], start_point[1] + len(str(element))],
             tag=tag,
+            path='.'.join(path),
             attributes=dict(element.attrib),
             text=element.text.strip() if element.text else None,
-            metadata={"namespace": namespace, "path": '.'.join(path + [tag])}
+            tail=element.tail.strip() if element.tail else None,
+            children=[]
         )
+        
+        # Process child elements
         for child in element:
+            child_path = path + [child.tag]
             child_node = self._process_element(
-                child, path + [tag],
-                [start_point[0], start_point[1] + len(str(child))]
+                child,
+                child_path,
+                [start_point[0], start_point[1] + 1]
             )
-            element_data.children.append(child_node)
-        return element_data
+            node.children.append(child_node)
+            
+        return node
     
     @handle_errors(error_types=(ParsingError,))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse XML content into AST structure.
         
         This method supports AST caching through the BaseParser.parse() method.
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
+        if not self._initialized:
+            await self.initialize()
+            
         with ErrorBoundary(operation_name="XML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
@@ -79,9 +107,14 @@ class XmlParser(BaseParser):
                                 )
                                 ast.children.append(node)
                 try:
-                    root = ET.fromstring(source_code)
-                    root_node = self._process_element(root, [], [0, 0])
-                    ast.children.append(root_node)
+                    future = submit_async_task(ET.fromstring(source_code))
+                    self._pending_tasks.add(future)
+                    try:
+                        root = await asyncio.wrap_future(future)
+                        root_node = self._process_element(root, [], [0, 0])
+                        ast.children.append(root_node)
+                    finally:
+                        self._pending_tasks.remove(future)
                 except ET.ParseError as e:
                     log(f"Error parsing XML structure: {e}", level="error")
                     return XmlNode(
@@ -95,11 +128,10 @@ class XmlParser(BaseParser):
                     type="document", start_point=[0, 0], end_point=[0, 0],
                     error=str(e), children=[]
                 ).__dict__
-            
-    @handle_errors(error_types=(ProcessingError,))
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """
-        Extract patterns from XML files for repository learning.
+    
+    @handle_errors(error_types=(ParsingError, ProcessingError))
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+        """Extract patterns from XML files for repository learning.
         
         Args:
             source_code: The content of the XML file
@@ -107,72 +139,104 @@ class XmlParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
-        patterns = []
-        
+        if not self._initialized:
+            await self.initialize()
+            
         with ErrorBoundary(operation_name="XML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                # Parse the source first to get a structured representation
-                ast = self._parse_source(source_code)
+                patterns = []
                 
-                # Extract structure patterns (elements, attributes, nesting)
+                # Parse the source first to get a structured representation
+                future = submit_async_task(self._parse_source(source_code))
+                self._pending_tasks.add(future)
+                try:
+                    ast = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
+                
+                # Extract element patterns
                 element_patterns = self._extract_element_patterns(ast)
                 for element in element_patterns:
                     patterns.append({
-                        'name': f'xml_element_{element["tag"]}',
+                        'name': f'xml_element_{element["type"]}',
                         'content': element["content"],
-                        'pattern_type': PatternType.STRUCTURE,
+                        'pattern_type': PatternType.CODE_STRUCTURE,
                         'language': self.language_id,
-                        'confidence': 0.85,
+                        'confidence': 0.8,
                         'metadata': {
                             'type': 'element',
                             'tag': element["tag"],
-                            'child_count': element["child_count"],
-                            'has_attributes': element["has_attributes"]
+                            'attributes': element["attributes"]
                         }
                     })
                 
                 # Extract attribute patterns
                 attribute_patterns = self._extract_attribute_patterns(ast)
-                for attr in attribute_patterns:
+                for attribute in attribute_patterns:
                     patterns.append({
-                        'name': f'xml_attribute_{attr["name"]}',
-                        'content': attr["content"],
-                        'pattern_type': PatternType.ATTRIBUTE,
+                        'name': f'xml_attribute_{attribute["type"]}',
+                        'content': attribute["content"],
+                        'pattern_type': PatternType.CODE_STRUCTURE,
                         'language': self.language_id,
-                        'confidence': 0.8,
+                        'confidence': 0.75,
                         'metadata': {
                             'type': 'attribute',
-                            'name': attr["name"],
-                            'element': attr["element"],
-                            'value_type': attr["value_type"]
+                            'name': attribute["name"],
+                            'value_type': attribute["value_type"]
                         }
                     })
-                    
+                
                 # Extract namespace patterns
                 namespace_patterns = self._extract_namespace_patterns(ast)
-                for ns in namespace_patterns:
+                for namespace in namespace_patterns:
                     patterns.append({
-                        'name': f'xml_namespace_{ns["prefix"] or "default"}',
-                        'content': ns["content"],
-                        'pattern_type': PatternType.NAMESPACE,
+                        'name': f'xml_namespace_{namespace["type"]}',
+                        'content': namespace["content"],
+                        'pattern_type': PatternType.CODE_REFERENCE,
                         'language': self.language_id,
                         'confidence': 0.9,
                         'metadata': {
                             'type': 'namespace',
-                            'prefix': ns["prefix"],
-                            'uri': ns["uri"]
+                            'prefix': namespace["prefix"],
+                            'uri': namespace["uri"]
                         }
                     })
-                    
-                # Extract naming convention patterns
-                naming_patterns = self._extract_naming_patterns(source_code)
-                for pattern in naming_patterns:
-                    patterns.append(pattern)
-                    
-            except (ValueError, KeyError, TypeError) as e:
-                log(f"Error extracting XML patterns: {e}", level="error")
                 
-        return patterns
+                # Extract comment patterns
+                comment_patterns = self._extract_comment_patterns(ast)
+                for comment in comment_patterns:
+                    patterns.append({
+                        'name': f'xml_comment_{comment["type"]}',
+                        'content': comment["content"],
+                        'pattern_type': PatternType.DOCUMENTATION,
+                        'language': self.language_id,
+                        'confidence': 0.7,
+                        'metadata': {
+                            'type': 'comment',
+                            'style': comment["type"]
+                        }
+                    })
+                
+                return patterns
+                
+            except (ValueError, KeyError, TypeError, ET.ParseError) as e:
+                log(f"Error extracting patterns from XML file: {str(e)}", level="error")
+                return []
+    
+    async def cleanup(self):
+        """Clean up XML parser resources."""
+        try:
+            # Cancel and clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("XML parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up XML parser: {e}", level="error")
         
     def _extract_element_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract element patterns from the AST."""

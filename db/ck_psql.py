@@ -5,10 +5,17 @@ This module provides utilities for checking PostgreSQL database tables and their
 
 import asyncio
 from pprint import pprint
-from utils.error_handling import handle_async_errors, ErrorBoundary, PostgresError, ErrorSeverity
+from utils.error_handling import (
+    handle_async_errors,
+    ErrorBoundary,
+    PostgresError,
+    ErrorSeverity
+)
 from utils.logger import log
 from db.psql import query
 from db.connection import connection_manager
+from utils.async_runner import submit_async_task, get_loop
+from utils.app_init import register_shutdown_handler
 
 @handle_async_errors(error_types=[PostgresError])
 async def check_all_postgres_tables():
@@ -27,6 +34,7 @@ async def check_all_postgres_tables():
         "Document Clusters": "SELECT * FROM doc_clusters ORDER BY id;"
     }
     
+    tasks = []
     try:
         # Initialize PostgreSQL connection
         await connection_manager.initialize_postgres()
@@ -37,20 +45,38 @@ async def check_all_postgres_tables():
                 error_message=f"Error querying {table_name}",
                 severity=ErrorSeverity.ERROR
             ) as error_boundary:
-                records = await query(sql)
+                future = submit_async_task(query(sql))
+                tasks.append((table_name, future))
+        
+        # Wait for all queries to complete
+        for table_name, future in tasks:
+            try:
+                records = await asyncio.wrap_future(future)
                 print(f"{table_name}:")
                 print("-" * len(table_name))
                 print(f"Total entries: {len(records)}")
                 for record in records:
                     pprint(dict(record))
                 print("\n")
-            
-            if error_boundary.error:
-                log(f"Error querying {table_name}: {error_boundary.error}", level="error")
-                print(f"Error querying {table_name}: {error_boundary.error}")
+            except Exception as e:
+                log(f"Error querying {table_name}: {e}", level="error")
+                print(f"Error querying {table_name}: {e}")
     finally:
         # Close all connections
-        await connection_manager.close()
+        await connection_manager.cleanup()
+
+# Register cleanup handler
+async def cleanup_check():
+    """Cleanup check utility resources."""
+    try:
+        await connection_manager.cleanup()
+        log("Check utility resources cleaned up", level="info")
+    except Exception as e:
+        log(f"Error cleaning up check utility resources: {e}", level="error")
+
+register_shutdown_handler(cleanup_check)
 
 if __name__ == "__main__":
-    asyncio.run(check_all_postgres_tables())
+    loop = get_loop()
+    future = submit_async_task(check_all_postgres_tables())
+    loop.run_until_complete(future)

@@ -2,13 +2,16 @@
 Custom parser for the Cobalt programming language.
 """
 
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Optional, TYPE_CHECKING, Set
+import asyncio
 from parsers.base_parser import BaseParser
 from parsers.models import CobaltNode, PatternType
 from parsers.query_patterns.cobalt import COBALT_PATTERNS
 from parsers.types import PatternCategory, FileType, ParserType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 import re
 
 class CobaltParser(BaseParser):
@@ -18,11 +21,35 @@ class CobaltParser(BaseParser):
         super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         # Use the shared helper from BaseParser to compile the regex patterns.
         self.patterns = self._compile_patterns(COBALT_PATTERNS)
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
+        register_shutdown_handler(self.cleanup)
     
-    def initialize(self) -> bool:
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
         """Initialize parser resources."""
-        self._initialized = True
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary("Cobalt parser initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    log("Cobalt parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing Cobalt parser: {e}", level="error")
+                raise
         return True
+
+    async def cleanup(self) -> None:
+        """Clean up parser resources."""
+        if self._pending_tasks:
+            log(f"Cleaning up {len(self._pending_tasks)} pending Cobalt parser tasks", level="info")
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._pending_tasks.clear()
+        self._initialized = False
 
     def _create_node(
         self,
@@ -36,104 +63,24 @@ class CobaltParser(BaseParser):
         return CobaltNode(**node_dict)
 
     @handle_errors(error_types=(ParsingError,))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse Cobalt content into AST structure.
         
         This method supports AST caching through the BaseParser.parse() method.
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
+        if not self._initialized:
+            await self.initialize()
+
         with ErrorBoundary(operation_name="Cobalt parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
-                lines = source_code.splitlines()
-                ast = self._create_node(
-                    "module",
-                    [0, 0],
-                    [len(lines) - 1, len(lines[-1]) if lines else 0]
-                )
-                
-                current_doc = []
-                current_scope = [ast]
-                
-                for i, line in enumerate(lines):
-                    line_start = [i, 0]
-                    line_end = [i, len(line)]
-                    
-                    # Process docstrings.
-                    if doc_match := self.patterns['docstring'].match(line):
-                        current_doc.append(doc_match.group(1))
-                        continue
-                        
-                    # Process regular comments.
-                    if comment_match := self.patterns['comment'].match(line):
-                        current_scope[-1].children.append(
-                            self._create_node(
-                                "comment",
-                                line_start,
-                                line_end,
-                                content=comment_match.group(1)
-                            )
-                        )
-                        continue
-                    
-                    # Handle scope openings.
-                    if line.strip().endswith("{"):
-                        # Look for declarations that open new scopes.
-                        for pattern_name in ['function', 'class', 'namespace']:
-                            if pattern_name in self.patterns and (match := self.patterns[pattern_name].match(line)):
-                                node_data = COBALT_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
-                                node = self._create_node(
-                                    pattern_name,
-                                    line_start,
-                                    None,  # End point to be set when scope closes.
-                                    **node_data
-                                )
-                                if current_doc:
-                                    node.metadata["documentation"] = "\n".join(current_doc)
-                                    current_doc = []
-                                current_scope[-1].children.append(node)
-                                current_scope.append(node)
-                                break
-                    
-                    elif line.strip() == "}":
-                        if len(current_scope) > 1:
-                            current_scope[-1].end_point = line_end
-                            current_scope.pop()
-                        continue
-                    
-                    # Flush accumulated docstrings before declarations.
-                    if current_doc and not line.strip().startswith("///"):
-                        current_scope[-1].children.append(
-                            self._create_node(
-                                "docstring",
-                                [i - len(current_doc), 0],
-                                [i - 1, len(current_doc[-1])],
-                                content="\n".join(current_doc)
-                            )
-                        )
-                        current_doc = []
-                    
-                    # Process other declarations.
-                    for pattern_name, pattern in self.patterns.items():
-                        if pattern_name in ['docstring', 'comment', 'function', 'class', 'namespace']:
-                            continue
-                        
-                        if match := pattern.match(line):
-                            category = next(
-                                cat for cat, patterns in COBALT_PATTERNS.items()
-                                if pattern_name in patterns
-                            )
-                            node_data = COBALT_PATTERNS[category][pattern_name].extract(match)
-                            node = self._create_node(
-                                pattern_name,
-                                line_start,
-                                line_end,
-                                **node_data
-                            )
-                            current_scope[-1].children.append(node)
-                            break
-                
-                return ast.__dict__
+                future = submit_async_task(self._parse_content, source_code)
+                self._pending_tasks.add(future)
+                try:
+                    return await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
                 
             except (ValueError, KeyError, TypeError, StopIteration) as e:
                 log(f"Error parsing Cobalt content: {e}", level="error")
@@ -144,9 +91,101 @@ class CobaltParser(BaseParser):
                     error=str(e),
                     children=[]
                 ).__dict__
+
+    def _parse_content(self, source_code: str) -> Dict[str, Any]:
+        """Internal method to parse Cobalt content synchronously."""
+        lines = source_code.splitlines()
+        ast = self._create_node(
+            "module",
+            [0, 0],
+            [len(lines) - 1, len(lines[-1]) if lines else 0]
+        )
+        
+        current_doc = []
+        current_scope = [ast]
+        
+        for i, line in enumerate(lines):
+            line_start = [i, 0]
+            line_end = [i, len(line)]
             
+            # Process docstrings.
+            if doc_match := self.patterns['docstring'].match(line):
+                current_doc.append(doc_match.group(1))
+                continue
+                
+            # Process regular comments.
+            if comment_match := self.patterns['comment'].match(line):
+                current_scope[-1].children.append(
+                    self._create_node(
+                        "comment",
+                        line_start,
+                        line_end,
+                        content=comment_match.group(1)
+                    )
+                )
+                continue
+            
+            # Handle scope openings.
+            if line.strip().endswith("{"):
+                # Look for declarations that open new scopes.
+                for pattern_name in ['function', 'class', 'namespace']:
+                    if pattern_name in self.patterns and (match := self.patterns[pattern_name].match(line)):
+                        node_data = COBALT_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
+                        node = self._create_node(
+                            pattern_name,
+                            line_start,
+                            None,  # End point to be set when scope closes.
+                            **node_data
+                        )
+                        if current_doc:
+                            node.metadata["documentation"] = "\n".join(current_doc)
+                            current_doc = []
+                        current_scope[-1].children.append(node)
+                        current_scope.append(node)
+                        break
+            
+            elif line.strip() == "}":
+                if len(current_scope) > 1:
+                    current_scope[-1].end_point = line_end
+                    current_scope.pop()
+                continue
+            
+            # Flush accumulated docstrings before declarations.
+            if current_doc and not line.strip().startswith("///"):
+                current_scope[-1].children.append(
+                    self._create_node(
+                        "docstring",
+                        [i - len(current_doc), 0],
+                        [i - 1, len(current_doc[-1])],
+                        content="\n".join(current_doc)
+                    )
+                )
+                current_doc = []
+            
+            # Process other declarations.
+            for pattern_name, pattern in self.patterns.items():
+                if pattern_name in ['docstring', 'comment', 'function', 'class', 'namespace']:
+                    continue
+                
+                if match := pattern.match(line):
+                    category = next(
+                        cat for cat, patterns in COBALT_PATTERNS.items()
+                        if pattern_name in patterns
+                    )
+                    node_data = COBALT_PATTERNS[category][pattern_name].extract(match)
+                    node = self._create_node(
+                        pattern_name,
+                        line_start,
+                        line_end,
+                        **node_data
+                    )
+                    current_scope[-1].children.append(node)
+                    break
+        
+        return ast.__dict__
+
     @handle_errors(error_types=(ProcessingError,))
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract code patterns from Cobalt files for repository learning.
         
@@ -156,58 +195,75 @@ class CobaltParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
+        if not self._initialized:
+            await self.initialize()
+
         patterns = []
         
         with ErrorBoundary(operation_name="Cobalt pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
-                ast = self._parse_source(source_code)
+                ast = await self._parse_source(source_code)
                 
-                # Extract function patterns
-                function_patterns = self._extract_function_patterns(ast)
-                for function in function_patterns:
-                    patterns.append({
-                        'name': f'function_{function["name"]}',
-                        'content': function["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.85,
-                        'metadata': {
-                            'type': 'function',
-                            'name': function["name"],
-                            'params': function.get("params", [])
-                        }
-                    })
-                
-                # Extract class patterns
-                class_patterns = self._extract_class_patterns(ast)
-                for class_pattern in class_patterns:
-                    patterns.append({
-                        'name': f'class_{class_pattern["name"]}',
-                        'content': class_pattern["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.8,
-                        'metadata': {
-                            'type': 'class',
-                            'name': class_pattern["name"],
-                            'methods': class_pattern.get("methods", [])
-                        }
-                    })
-                    
-                # Extract error handling patterns
-                error_patterns = self._extract_error_handling_patterns(ast)
-                for error_pattern in error_patterns:
-                    patterns.append(error_pattern)
-                    
-                # Extract naming convention patterns
-                naming_patterns = self._extract_naming_patterns(ast)
-                for naming in naming_patterns:
-                    patterns.append(naming)
+                # Extract patterns asynchronously
+                future = submit_async_task(self._extract_all_patterns, ast)
+                self._pending_tasks.add(future)
+                try:
+                    patterns = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
                     
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error extracting Cobalt patterns: {e}", level="error")
                 
+        return patterns
+
+    def _extract_all_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract all patterns from the AST synchronously."""
+        patterns = []
+        
+        # Extract function patterns
+        function_patterns = self._extract_function_patterns(ast)
+        for function in function_patterns:
+            patterns.append({
+                'name': f'function_{function["name"]}',
+                'content': function["content"],
+                'pattern_type': PatternType.CODE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.85,
+                'metadata': {
+                    'type': 'function',
+                    'name': function["name"],
+                    'params': function.get("params", [])
+                }
+            })
+        
+        # Extract class patterns
+        class_patterns = self._extract_class_patterns(ast)
+        for class_pattern in class_patterns:
+            patterns.append({
+                'name': f'class_{class_pattern["name"]}',
+                'content': class_pattern["content"],
+                'pattern_type': PatternType.CODE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.8,
+                'metadata': {
+                    'type': 'class',
+                    'name': class_pattern["name"],
+                    'methods': class_pattern.get("methods", [])
+                }
+            })
+            
+        # Extract error handling patterns
+        error_patterns = self._extract_error_handling_patterns(ast)
+        for error_pattern in error_patterns:
+            patterns.append(error_pattern)
+            
+        # Extract naming convention patterns
+        naming_patterns = self._extract_naming_patterns(ast)
+        for naming in naming_patterns:
+            patterns.append(naming)
+            
         return patterns
         
     def _extract_function_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

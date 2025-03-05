@@ -7,6 +7,11 @@ import os
 import importlib
 import logging
 from typing import Dict, Any, Optional, Set, List, Union, cast
+import asyncio
+from utils.logger import log
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 
 # Import types needed for type annotations
 from parsers.types import PatternCategory, QueryPattern, PatternInfo
@@ -20,12 +25,28 @@ _pattern_registries: Dict[str, Dict[str, Any]] = {}
 
 # Flag to track initialization
 _initialized = False
+_pending_tasks: Set[asyncio.Future] = set()
+_pattern_cache: Dict[str, Dict[str, Any]] = {}
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
 # Import core pattern validation functionality
 from parsers.pattern_validator import validate_all_patterns, report_validation_results
+
+# Import all language pattern modules
+from . import (
+    ada, asm, asciidoc, bash, bibtex, c, clojure, cmake, cobalt,
+    commonlisp, cpp, csharp, css, cuda, dart, dockerfil, editorconfig,
+    elisp, elixir, elm, env, erlang, fish, fortran, gdscript, gitignore,
+    gleam, go, graphql, groovy, hack, haxe, hcl, html, ini, java,
+    javascript, json, julia, kotlin, latex, lua, make, markdown, matlab,
+    nim, nix, objc, ocaml, ocaml_interface, pascal, perl, php, plaintext,
+    powershell, prisma, proto, purescript, python, qmldir, qmljs, r,
+    racket, requirements, rst, ruby, rust, scala, scheme, shell, solidity,
+    sql, squirrel, starlark, svelte, swift, tcl, toml, tsx, typescript,
+    verilog, vhdl, vue, xml, yaml, zig
+)
 
 def _normalize_language_name(language: str) -> str:
     """Normalize language name for pattern lookup."""
@@ -197,8 +218,102 @@ def validate_loaded_patterns() -> str:
     validation_results = validate_all_patterns(patterns_by_language)
     return report_validation_results(validation_results)
 
-# Initialize when imported, but don't load all patterns
-initialize_pattern_system()
+@handle_async_errors(error_types=(Exception,))
+async def initialize_patterns():
+    """Initialize all pattern resources."""
+    global _initialized
+    
+    if _initialized:
+        return
+    
+    try:
+        async with AsyncErrorBoundary("pattern initialization"):
+            # Initialize commonly used language patterns first
+            common_languages = {'python', 'javascript', 'typescript', 'java', 'cpp'}
+            for language in common_languages:
+                module = globals().get(language)
+                if module and hasattr(module, 'initialize'):
+                    future = submit_async_task(module.initialize())
+                    _pending_tasks.add(future)
+                    try:
+                        await asyncio.wrap_future(future)
+                    finally:
+                        _pending_tasks.remove(future)
+            
+            _initialized = True
+            log("Query patterns initialized", level="info")
+    except Exception as e:
+        log(f"Error initializing query patterns: {e}", level="error")
+        raise
+
+async def get_patterns_for_language(language_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get all patterns for a specific language.
+    
+    Args:
+        language_id: The language identifier
+        
+    Returns:
+        Dictionary of patterns or None if language not supported
+    """
+    if not _initialized:
+        await initialize_patterns()
+    
+    # Check cache first
+    if language_id in _pattern_cache:
+        return _pattern_cache[language_id]
+    
+    # Try to get patterns from the language module
+    module = globals().get(language_id)
+    if module:
+        if hasattr(module, 'get_patterns'):
+            future = submit_async_task(module.get_patterns())
+            _pending_tasks.add(future)
+            try:
+                patterns = await asyncio.wrap_future(future)
+                _pattern_cache[language_id] = patterns
+                return patterns
+            finally:
+                _pending_tasks.remove(future)
+        elif hasattr(module, 'PATTERNS'):
+            _pattern_cache[language_id] = module.PATTERNS
+            return module.PATTERNS
+    
+    return None
+
+async def cleanup_patterns():
+    """Clean up all pattern resources."""
+    global _initialized
+    
+    try:
+        # Clean up all language modules that have cleanup functions
+        cleanup_tasks = []
+        
+        for module_name, module in globals().items():
+            if isinstance(module, type(asyncio)) and hasattr(module, 'cleanup'):
+                future = submit_async_task(module.cleanup())
+                cleanup_tasks.append(future)
+        
+        # Wait for all cleanup tasks
+        await asyncio.gather(*[asyncio.wrap_future(f) for f in cleanup_tasks], return_exceptions=True)
+        
+        # Clean up any remaining pending tasks
+        if _pending_tasks:
+            for task in _pending_tasks:
+                task.cancel()
+            await asyncio.gather(*[asyncio.wrap_future(f) for f in _pending_tasks], return_exceptions=True)
+            _pending_tasks.clear()
+        
+        # Clear pattern cache
+        _pattern_cache.clear()
+        
+        _initialized = False
+        log("Query patterns cleaned up", level="info")
+    except Exception as e:
+        log(f"Error cleaning up query patterns: {e}", level="error")
+
+# Register cleanup handler
+register_shutdown_handler(cleanup_patterns)
 
 # Expose key functions
 __all__ = [
@@ -206,4 +321,6 @@ __all__ = [
     'get_patterns_for_language',
     'get_typed_patterns_for_language',
     'list_available_languages',
+    'initialize_patterns',
+    'cleanup_patterns'
 ]

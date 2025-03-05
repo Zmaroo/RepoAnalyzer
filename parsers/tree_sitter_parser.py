@@ -6,11 +6,13 @@ import asyncio
 from tree_sitter_language_pack import get_parser, get_language, SupportedLanguage
 from utils.logger import log
 from parsers.base_parser import BaseParser
-from utils.error_handling import handle_errors, ProcessingError, ErrorBoundary
+from utils.error_handling import handle_errors, handle_async_errors, ProcessingError, ErrorBoundary, AsyncErrorBoundary, ErrorSeverity
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from parsers.models import PatternMatch, ProcessedPattern
-from parsers.types import FileType, ParserType
+from parsers.types import FileType, ParserType, FeatureCategory, ParserResult
 from utils.cache import cache_coordinator
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 
 class TreeSitterError(ProcessingError):
     """Tree-sitter specific errors."""
@@ -22,148 +24,204 @@ class TreeSitterParser(BaseParser):
     def __init__(self, language_id: str, file_type: FileType):
         super().__init__(language_id, file_type, parser_type=ParserType.TREE_SITTER)
         self._language = None
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
         
         # Initialize the block extractor
         from parsers.block_extractor import block_extractor
         self.block_extractor = block_extractor
         
-    def initialize(self) -> bool:
-        with ErrorBoundary(f"initialize_tree_sitter_{self.language_id}", error_types=(Exception,)):
-            self._language = get_parser(self.language_id)
-            self._initialized = True
-            return True
-        
-        return False
+        register_shutdown_handler(self.cleanup)
+    
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize parser resources."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary(f"tree-sitter {self.language_id} initialization"):
+                    self._language = get_parser(self.language_id)
+                    if not self._language:
+                        raise TreeSitterError(f"Failed to get tree-sitter parser for {self.language_id}")
+                    self._initialized = True
+                    log(f"Tree-sitter {self.language_id} parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing tree-sitter {self.language_id} parser: {e}", level="error")
+                raise
+        return True
 
     @handle_errors(error_types=(LookupError, TreeSitterError))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """[3.1] Generate AST using tree-sitter with caching."""
-        # Create a unique cache key based on language and source code hash
-        source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
-        cache_key = f"ast:{self.language_id}:{source_hash}"
-        
-        # First try to get from cache
-        cached_ast = await cache_coordinator.get_async(cache_key)
-        if cached_ast and "tree" in cached_ast:
-            log(f"AST cache hit for {self.language_id}", level="debug")
+        """Generate AST using tree-sitter with caching."""
+        if not self._initialized:
+            await self.initialize()
             
-            # For methods that need the root node, we'll need to generate it
-            # But for most pattern processing, the tree dictionary is sufficient
-            if self._language:
-                with ErrorBoundary("regenerate_root_node_from_cache", error_types=(Exception,)):
-                    # If needed, regenerate the root node
-                    tree = self._language.parse(source_code.encode("utf8"))
-                    root_node = tree.root_node
+        async with AsyncErrorBoundary(f"tree-sitter {self.language_id} parsing"):
+            try:
+                # Create a unique cache key based on language and source code hash
+                source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
+                cache_key = f"ast:{self.language_id}:{source_hash}"
+                
+                # First try to get from cache
+                future = submit_async_task(cache_coordinator.get_async(cache_key))
+                self._pending_tasks.add(future)
+                try:
+                    cached_ast = await asyncio.wrap_future(future)
+                    if cached_ast and "tree" in cached_ast:
+                        log(f"AST cache hit for {self.language_id}", level="debug")
+                        return cached_ast
+                finally:
+                    self._pending_tasks.remove(future)
+                
+                # If not in cache, generate the AST
+                future = submit_async_task(self._parse_content, source_code)
+                self._pending_tasks.add(future)
+                try:
+                    ast_dict = await asyncio.wrap_future(future)
                     
-                    # Return both the cached tree and the fresh root node
-                    return {
-                        "root": root_node,
-                        "tree": cached_ast["tree"]
-                    }
-                # Fall back to just using the cached tree if ErrorBoundary caught an exception
-                return cached_ast
-            return cached_ast
-        
-        # If not in cache, generate the AST
-        with ErrorBoundary("generate_ast", error_types=(Exception,)):
-            tree = self._language.parse(source_code.encode("utf8"))
-            root_node = tree.root_node
-            
-            # Full AST with root node (not serializable for caching)
-            ast_dict = {
-                "root": root_node,
-                "tree": self._convert_tree_to_dict(root_node)
-            }
-            
-            # Only cache the tree part since the root node is not serializable
-            cache_data = {
-                "tree": ast_dict["tree"]
-            }
-            
-            # Cache the AST for future use
-            cache_data = {"tree": ast_dict["tree"], "metadata": {"language": self.language_id}}
-            await cache_coordinator.set_async(cache_key, cache_data)
-            log(f"AST cached for {self.language_id}", level="debug")
-            
-            return ast_dict
-        
-        log(f"Error in tree-sitter parsing for {self.language_id}", level="error")
-        return {}
+                    # Cache the AST for future use
+                    cache_data = {"tree": ast_dict["tree"], "metadata": {"language": self.language_id}}
+                    future = submit_async_task(cache_coordinator.set_async(cache_key, cache_data))
+                    self._pending_tasks.add(future)
+                    try:
+                        await asyncio.wrap_future(future)
+                        log(f"AST cached for {self.language_id}", level="debug")
+                    finally:
+                        self._pending_tasks.remove(future)
+                    
+                    return ast_dict
+                finally:
+                    self._pending_tasks.remove(future)
+                    
+            except Exception as e:
+                log(f"Error in tree-sitter parsing for {self.language_id}: {e}", level="error")
+                raise
 
-    def _process_pattern(
-        self, 
-        ast: Dict[str, Any], 
-        source_code: str,
-        pattern: ProcessedPattern
-    ) -> List[PatternMatch]:
-        """Process tree-sitter specific patterns."""
-        if not pattern:
-            return []
+    def _parse_content(self, source_code: str) -> Dict[str, Any]:
+        """Internal synchronous parsing method."""
+        tree = self._language.parse(source_code.encode("utf8"))
+        root_node = tree.root_node
         
-        # Check if we need to generate a root node because we're using a cached AST
-        if "root" not in ast and "tree" in ast:
-            log(f"Regenerating root node for pattern processing", level="debug")
-            with ErrorBoundary(f"regenerate_root_node_{self.language_id}", error_types=(Exception,)):
-                tree = self._language.parse(source_code.encode("utf8"))
-                root_node = tree.root_node
-                ast["root"] = root_node
+        # Full AST with root node (not serializable for caching)
+        ast_dict = {
+            "root": root_node,
+            "tree": self._convert_tree_to_dict(root_node)
+        }
         
-        # If still no root node, we can't process the pattern
-        if "root" not in ast:
-            log(f"No root node available for pattern processing", level="warning")
-            return []
-        
-        with ErrorBoundary(f"process_pattern_{pattern.pattern_name}", error_types=(Exception,)):
-            query = self._language.query(pattern.pattern_name)
-            matches = []
-            for capture in query.captures(ast["root"]):
-                capture_name, node = capture
+        return ast_dict
+
+    @handle_async_errors(error_types=(Exception,))
+    async def parse(self, source_code: str) -> Optional[ParserResult]:
+        """Parse source code and return structured results."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary(f"tree-sitter {self.language_id} parsing"):
+            try:
+                # Parse the source
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return None
                 
-                # Extract the actual text content using the block extractor for more precise extraction
-                extracted_block = self.block_extractor.extract_block(
-                    self.language_id, source_code, node)
+                # Extract features asynchronously
+                future = submit_async_task(self._extract_features, ast, source_code)
+                self._pending_tasks.add(future)
+                try:
+                    features = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
                 
-                text = node.text.decode('utf8')  # Default text extraction
-                if extracted_block:
-                    # Use the more precisely extracted text if available
-                    text = extracted_block.content
-                
-                match = PatternMatch(
-                    text=text,
-                    start=node.start_point,
-                    end=node.end_point,
-                    metadata={
-                        "capture": capture_name,
-                        "type": node.type
-                    }
+                return ParserResult(
+                    success=True,
+                    ast=ast,
+                    features=features,
+                    documentation=features.get(FeatureCategory.DOCUMENTATION.value, {}),
+                    complexity=features.get(FeatureCategory.SYNTAX.value, {}).get("metrics", {}),
+                    statistics=self.stats
                 )
-                matches.append(match)
-            return matches
+            except Exception as e:
+                log(f"Error in tree-sitter {self.language_id} parser: {e}", level="error")
+                return None
+
+    def _extract_features(self, ast: Dict[str, Any], source_code: str) -> Dict[str, Dict[str, Any]]:
+        """Extract features from the AST."""
+        features = {}
         
-        return []
+        # Extract syntax features
+        syntax_features = self._extract_syntax_features(ast, source_code)
+        if syntax_features:
+            features[FeatureCategory.SYNTAX.value] = syntax_features
+        
+        # Extract semantic features
+        semantic_features = self._extract_semantic_features(ast, source_code)
+        if semantic_features:
+            features[FeatureCategory.SEMANTICS.value] = semantic_features
+        
+        # Extract documentation features
+        doc_features = self._extract_documentation_features(ast, source_code)
+        if doc_features:
+            features[FeatureCategory.DOCUMENTATION.value] = doc_features
+        
+        # Extract structural features
+        structure_features = self._extract_structure_features(ast, source_code)
+        if structure_features:
+            features[FeatureCategory.STRUCTURE.value] = structure_features
+        
+        return features
 
-    def _get_syntax_errors(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract syntax errors from tree-sitter node."""
-        if "root" not in ast:
-            # For a cached AST, we might not have the root node
-            # We'll need to skip syntax error detection
-            log("Cannot check syntax errors without root node", level="debug")
-            return []
-        return self._get_syntax_errors_recursive(ast["root"])
+    def _extract_syntax_features(self, ast: Dict[str, Any], source_code: str) -> Dict[str, Any]:
+        """Extract syntax features from the AST."""
+        features = {}
+        
+        # Extract basic syntax metrics
+        metrics = self._extract_syntax_metrics(ast)
+        if metrics:
+            features["metrics"] = metrics
+        
+        # Extract syntax patterns
+        patterns = self._extract_syntax_patterns(ast, source_code)
+        if patterns:
+            features["patterns"] = patterns
+        
+        return features
 
-    def _get_syntax_errors_recursive(self, node) -> List[Dict[str, Any]]:
-        """Recursively collect syntax errors."""
-        errors = []
-        if node.has_error:
-            errors.append({
-                'type': node.type,
-                'start': node.start_point,
-                'end': node.end_point,
-                'is_missing': node.is_missing
-            })
-        for child in node.children:
-            errors.extend(self._get_syntax_errors_recursive(child))
-        return errors
+    def _extract_semantic_features(self, ast: Dict[str, Any], source_code: str) -> Dict[str, Any]:
+        """Extract semantic features from the AST."""
+        features = {}
+        
+        # Extract type information
+        types = self._extract_type_info(ast)
+        if types:
+            features["types"] = types
+        
+        # Extract variable usage
+        variables = self._extract_variable_usage(ast)
+        if variables:
+            features["variables"] = variables
+        
+        return features
+
+    def _extract_documentation_features(self, ast: Dict[str, Any], source_code: str) -> Dict[str, Any]:
+        """Extract documentation features from the AST."""
+        features = {}
+        
+        # Extract comments and docstrings
+        docs = self._extract_comments_and_docs(ast, source_code)
+        if docs:
+            features["documentation"] = docs
+        
+        return features
+
+    def _extract_structure_features(self, ast: Dict[str, Any], source_code: str) -> Dict[str, Any]:
+        """Extract structural features from the AST."""
+        features = {}
+        
+        # Extract module structure
+        structure = self._extract_module_structure(ast)
+        if structure:
+            features["structure"] = structure
+        
+        return features
 
     def _convert_tree_to_dict(self, node) -> Dict[str, Any]:
         """Convert tree-sitter node to dict."""
@@ -178,149 +236,20 @@ class TreeSitterParser(BaseParser):
     def get_supported_languages(self) -> Set[str]:
         """Get set of supported languages."""
         return TREE_SITTER_LANGUAGES.copy()
-        
-    def _extract_code_patterns(self, ast: Dict[str, Any], source_code: str) -> List[Dict[str, Any]]:
-        """
-        Extract code patterns from AST using tree-sitter.
-        This implementation overrides the base method to provide tree-sitter specific extraction.
-        """
-        patterns = []
-        
-        with ErrorBoundary("extract_code_patterns_tree_sitter", error_types=(Exception,)):
-            # Ensure we have a root node
-            if "root" not in ast and self._language:
-                # Regenerate the root node if needed
-                tree = self._language.parse(source_code.encode("utf8"))
-                ast["root"] = tree.root_node
+
+    async def cleanup(self):
+        """Clean up parser resources."""
+        try:
+            if self._pending_tasks:
+                log(f"Cleaning up {len(self._pending_tasks)} pending tree-sitter {self.language_id} tasks", level="info")
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
             
-            if "root" not in ast:
-                return patterns
-                
-            root_node = ast["root"]
-            
-            # Extract function definitions
-            try:
-                # Create a language-specific query for functions
-                function_query = """
-                    (function_definition) @function
-                """
-                
-                # Adjust query based on language
-                if self.language_id == "python":
-                    function_query = """
-                        (function_definition
-                          name: (identifier) @function.name
-                          body: (block) @function.body) @function
-                    """
-                elif self.language_id in ["javascript", "typescript"]:
-                    function_query = """
-                        (function_declaration
-                          name: (identifier) @function.name
-                          body: (statement_block) @function.body) @function
-                    """
-                elif self.language_id in ["cpp", "c"]:
-                    function_query = """
-                        (function_definition
-                          declarator: (function_declarator
-                            declarator: (identifier) @function.name)
-                          body: (compound_statement) @function.body) @function
-                    """
-                
-                # Execute the query
-                query = self._language.query(function_query)
-                
-                for capture in query.captures(root_node):
-                    capture_name, node = capture
-                    
-                    if capture_name == "function":
-                        # Extract the function using the block extractor
-                        block = self.block_extractor.extract_block(
-                            self.language_id, source_code, node)
-                        
-                        if block and block.content:
-                            # Try to find the function name
-                            function_name = "unnamed_function"
-                            for name_capture in query.captures(node):
-                                name_capture_name, name_node = name_capture
-                                if name_capture_name == "function.name":
-                                    function_name = name_node.text.decode('utf8')
-                                    break
-                            
-                            patterns.append({
-                                'name': f'function_{function_name}',
-                                'content': block.content,
-                                'pattern_type': 'FUNCTION_DEFINITION',
-                                'language': self.language_id,
-                                'confidence': 0.95,
-                                'metadata': {
-                                    'type': 'function',
-                                    'name': function_name,
-                                    'node_type': node.type
-                                }
-                            })
-            except Exception as e:
-                log(f"Error extracting function patterns: {str(e)}", level="error")
-            
-            # Extract class definitions
-            try:
-                # Create a language-specific query for classes
-                class_query = """
-                    (class_definition) @class
-                """
-                
-                # Adjust query based on language
-                if self.language_id == "python":
-                    class_query = """
-                        (class_definition
-                          name: (identifier) @class.name
-                          body: (block) @class.body) @class
-                    """
-                elif self.language_id in ["javascript", "typescript"]:
-                    class_query = """
-                        (class_declaration
-                          name: (identifier) @class.name
-                          body: (class_body) @class.body) @class
-                    """
-                elif self.language_id in ["cpp", "c"]:
-                    class_query = """
-                        (class_specifier
-                          name: (type_identifier) @class.name
-                          body: (field_declaration_list) @class.body) @class
-                    """
-                
-                # Execute the query
-                query = self._language.query(class_query)
-                
-                for capture in query.captures(root_node):
-                    capture_name, node = capture
-                    
-                    if capture_name == "class":
-                        # Extract the class using the block extractor
-                        block = self.block_extractor.extract_block(
-                            self.language_id, source_code, node)
-                        
-                        if block and block.content:
-                            # Try to find the class name
-                            class_name = "unnamed_class"
-                            for name_capture in query.captures(node):
-                                name_capture_name, name_node = name_capture
-                                if name_capture_name == "class.name":
-                                    class_name = name_node.text.decode('utf8')
-                                    break
-                            
-                            patterns.append({
-                                'name': f'class_{class_name}',
-                                'content': block.content,
-                                'pattern_type': 'CLASS_DEFINITION',
-                                'language': self.language_id,
-                                'confidence': 0.95,
-                                'metadata': {
-                                    'type': 'class',
-                                    'name': class_name,
-                                    'node_type': node.type
-                                }
-                            })
-            except Exception as e:
-                log(f"Error extracting class patterns: {str(e)}", level="error")
-        
-        return patterns 
+            self._initialized = False
+            self._language = None
+            log(f"Tree-sitter {self.language_id} parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up tree-sitter {self.language_id} parser: {e}", level="error") 

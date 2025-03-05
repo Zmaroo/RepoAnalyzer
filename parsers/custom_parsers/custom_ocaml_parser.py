@@ -21,7 +21,8 @@ Standalone parsing functions have been removed in favor of the classes below.
 """
 
 import re
-from typing import Dict, List, Any, Optional
+import asyncio
+from typing import Dict, List, Any, Optional, Set
 from collections import Counter
 from parsers.base_parser import BaseParser
 from parsers.query_patterns.ocaml import OCAML_PATTERNS
@@ -29,7 +30,9 @@ from parsers.query_patterns.ocaml_interface import OCAML_INTERFACE_PATTERNS
 from parsers.models import OcamlNode, PatternType
 from parsers.types import FileType, ParserType, PatternCategory
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 
 def compute_offset(lines, line_no, col):
     """
@@ -47,11 +50,35 @@ class OcamlParser(BaseParser):
         # Use the shared helper from BaseParser to compile regex patterns.
         patterns_source = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
         self.patterns = self._compile_patterns(patterns_source)
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
+        register_shutdown_handler(self.cleanup)
     
-    def initialize(self) -> bool:
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
         """Initialize parser resources."""
-        self._initialized = True
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary("OCaml parser initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    log("OCaml parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing OCaml parser: {e}", level="error")
+                raise
         return True
+
+    async def cleanup(self) -> None:
+        """Clean up parser resources."""
+        if self._pending_tasks:
+            log(f"Cleaning up {len(self._pending_tasks)} pending OCaml parser tasks", level="info")
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._pending_tasks.clear()
+        self._initialized = False
 
     def _create_node(
         self,
@@ -65,84 +92,90 @@ class OcamlParser(BaseParser):
         return OcamlNode(**node_dict)
 
     @handle_errors(error_types=(ParsingError,))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse OCaml content into AST structure.
         
         This method supports AST caching through the BaseParser.parse() method.
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(operation_name="OCaml parsing", error_types=(ParsingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
+        if not self._initialized:
+            await self.initialize()
+
+        with ErrorBoundary(operation_name="OCaml parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
-                lines = source_code.splitlines()
-                ast = self._create_node(
-                    "ocaml_module" if not self.is_interface else "ocaml_interface",
-                    [0, 0],
-                    [len(lines) - 1, len(lines[-1]) if lines else 0]
-                )
-
-                # Use the original patterns dictionary for extraction.
-                patterns = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
-                current_doc = []
-                
-                for i, line in enumerate(lines):
-                    line_start = [i, 0]
-                    line_end = [i, len(line)]
-                    
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    # Process documentation
-                    if doc_match := self.patterns['doc_comment'].match(line):
-                        node = self._create_node(
-                            "doc_comment",
-                            line_start,
-                            line_end,
-                            **patterns["documentation"]["doc_comment"]["extract"](doc_match)
-                        )
-                        current_doc.append(node)
-                        continue
-
-                    # Process declarations
-                    for category in ["syntax", "structure", "semantics"]:
-                        for pattern_name, pattern_info in patterns[category].items():
-                            if match := self.patterns[pattern_name].match(line):
-                                node = self._create_node(
-                                    pattern_name,
-                                    line_start,
-                                    line_end,
-                                    **pattern_info["extract"](match)
-                                )
-                                if current_doc:
-                                    node.metadata["documentation"] = current_doc
-                                    current_doc = []
-                                ast.children.append(node)
-                                break
-
-                # Add any remaining documentation
-                if current_doc:
-                    ast.metadata["trailing_documentation"] = current_doc
-
-                return ast.__dict__
+                future = submit_async_task(self._parse_content, source_code)
+                self._pending_tasks.add(future)
+                try:
+                    return await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
                 
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error parsing OCaml content: {e}", level="error")
-                raise ParsingError(f"Failed to parse OCaml content: {str(e)}") from e
-                
-        # This code runs when the ErrorBoundary catches an exception
-        if error_boundary.error:
-            log(f"Error in OCaml parser: {error_boundary.error}", level="error")
-            return OcamlNode(
-                type="ocaml_module" if not self.is_interface else "ocaml_interface",
-                start_point=[0, 0],
-                end_point=[0, 0],
-                error=str(error_boundary.error),
-                children=[]
-            ).__dict__
+                return OcamlNode(
+                    type="module",
+                    start_point=[0, 0],
+                    end_point=[0, 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
+
+    def _parse_content(self, source_code: str) -> Dict[str, Any]:
+        """Internal method to parse OCaml content synchronously."""
+        lines = source_code.splitlines()
+        ast = self._create_node(
+            "module",
+            [0, 0],
+            [len(lines) - 1, len(lines[-1]) if lines else 0]
+        )
+
+        current_doc = []
+        patterns = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
+        
+        for i, line in enumerate(lines):
+            line_start = [i, 0]
+            line_end = [i, len(line)]
+            
+            line = line.strip()
+            if not line:
+                continue
+
+            # Process documentation
+            if doc_match := self.patterns['doc_comment'].match(line):
+                node = self._create_node(
+                    "doc_comment",
+                    line_start,
+                    line_end,
+                    **patterns["documentation"]["doc_comment"]["extract"](doc_match)
+                )
+                current_doc.append(node)
+                continue
+
+            # Process declarations
+            for category in ["syntax", "structure", "semantics"]:
+                for pattern_name, pattern_info in patterns[category].items():
+                    if match := self.patterns[pattern_name].match(line):
+                        node = self._create_node(
+                            pattern_name,
+                            line_start,
+                            line_end,
+                            **pattern_info["extract"](match)
+                        )
+                        if current_doc:
+                            node.metadata["documentation"] = current_doc
+                            current_doc = []
+                        ast.children.append(node)
+                        break
+
+        # Add any remaining documentation
+        if current_doc:
+            ast.metadata["trailing_documentation"] = current_doc
+
+        return ast.__dict__
 
     @handle_errors(error_types=(ProcessingError,))
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract code patterns from OCaml files for repository learning.
         
@@ -152,100 +185,112 @@ class OcamlParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
+        if not self._initialized:
+            await self.initialize()
+
         patterns = []
         
-        with ErrorBoundary(operation_name="OCaml pattern extraction", error_types=(ProcessingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
+        with ErrorBoundary(operation_name="OCaml pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
-                ast_dict = self._parse_source(source_code)
+                ast = await self._parse_source(source_code)
                 
-                # Extract let binding patterns
-                let_binding_patterns = self._extract_let_binding_patterns(ast_dict)
-                for binding in let_binding_patterns:
-                    patterns.append({
-                        'name': f'ocaml_binding_{binding["name"]}',
-                        'content': binding["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.9,
-                        'metadata': {
-                            'type': 'ocaml_binding',
-                            'name': binding["name"],
-                            'is_recursive': binding.get("is_recursive", False)
-                        }
-                    })
-                
-                # Extract type definition patterns
-                type_patterns = self._extract_type_patterns(ast_dict)
-                for type_pattern in type_patterns:
-                    patterns.append({
-                        'name': f'ocaml_type_{type_pattern["name"]}',
-                        'content': type_pattern["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.85,
-                        'metadata': {
-                            'type': 'ocaml_type',
-                            'name': type_pattern["name"]
-                        }
-                    })
-                    
-                # Extract module structure patterns
-                module_patterns = self._extract_module_patterns(ast_dict)
-                for module_pattern in module_patterns:
-                    patterns.append({
-                        'name': f'ocaml_module_{module_pattern["name"]}',
-                        'content': module_pattern["content"],
-                        'pattern_type': PatternType.MODULE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.9,
-                        'metadata': {
-                            'type': 'ocaml_module',
-                            'name': module_pattern["name"],
-                            'elements': module_pattern.get("elements", [])
-                        }
-                    })
-                    
-                # Extract naming convention patterns
-                naming_patterns = self._extract_naming_convention_patterns(ast_dict)
-                for naming in naming_patterns:
-                    patterns.append({
-                        'name': f'ocaml_naming_{naming["convention"]}',
-                        'content': naming["content"],
-                        'pattern_type': PatternType.NAMING_CONVENTION,
-                        'language': self.language_id,
-                        'confidence': 0.85,
-                        'metadata': {
-                            'type': 'naming_convention',
-                            'convention': naming["convention"],
-                            'examples': naming.get("examples", [])
-                        }
-                    })
-                    
-                # Extract documentation patterns
-                doc_patterns = self._extract_documentation_patterns(ast_dict)
-                for doc in doc_patterns:
-                    patterns.append({
-                        'name': f'ocaml_documentation_{doc["type"]}',
-                        'content': doc["content"],
-                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.8,
-                        'metadata': {
-                            'type': 'documentation',
-                            'doc_type': doc["type"],
-                            'examples': doc.get("examples", [])
-                        }
-                    })
+                # Extract patterns asynchronously
+                future = submit_async_task(self._extract_all_patterns, ast)
+                self._pending_tasks.add(future)
+                try:
+                    patterns = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
                     
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error extracting OCaml patterns: {e}", level="error")
-                raise ProcessingError(f"Failed to extract OCaml patterns: {str(e)}") from e
                 
-        # This code runs when the ErrorBoundary catches an exception
-        if error_boundary.error:
-            log(f"Error in OCaml pattern extraction: {error_boundary.error}", level="error")
-                
+        return patterns
+
+    def _extract_all_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract all patterns from the AST synchronously."""
+        patterns = []
+        
+        # Extract let binding patterns
+        let_patterns = self._extract_let_binding_patterns(ast)
+        for binding in let_patterns:
+            patterns.append({
+                'name': f'ocaml_binding_{binding["name"]}',
+                'content': binding["content"],
+                'pattern_type': PatternType.CODE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.9,
+                'metadata': {
+                    'type': 'let_binding',
+                    'name': binding["name"],
+                    'is_recursive': binding.get("is_recursive", False)
+                }
+            })
+        
+        # Extract type patterns
+        type_patterns = self._extract_type_patterns(ast)
+        for type_pattern in type_patterns:
+            patterns.append({
+                'name': f'ocaml_type_{type_pattern["name"]}',
+                'content': type_pattern["content"],
+                'pattern_type': PatternType.CODE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.85,
+                'metadata': {
+                    'type': 'ocaml_type',
+                    'name': type_pattern["name"]
+                }
+            })
+            
+        # Extract module patterns
+        module_patterns = self._extract_module_patterns(ast)
+        for module_pattern in module_patterns:
+            patterns.append({
+                'name': f'ocaml_module_{module_pattern["name"]}',
+                'content': module_pattern["content"],
+                'pattern_type': PatternType.MODULE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.9,
+                'metadata': {
+                    'type': 'ocaml_module',
+                    'name': module_pattern["name"],
+                    'elements': module_pattern.get("elements", [])
+                }
+            })
+            
+        # Extract naming convention patterns
+        naming_patterns = self._extract_naming_convention_patterns(ast)
+        for naming in naming_patterns:
+            patterns.append({
+                'name': f'ocaml_naming_{naming["convention"]}',
+                'content': naming["content"],
+                'pattern_type': PatternType.NAMING_CONVENTION,
+                'language': self.language_id,
+                'confidence': 0.85,
+                'metadata': {
+                    'type': 'naming_convention',
+                    'convention': naming["convention"],
+                    'examples': naming.get("examples", [])
+                }
+            })
+            
+        # Extract documentation patterns
+        doc_patterns = self._extract_documentation_patterns(ast)
+        for doc in doc_patterns:
+            patterns.append({
+                'name': f'ocaml_doc_{doc["type"]}',
+                'content': doc["content"],
+                'pattern_type': PatternType.DOCUMENTATION,
+                'language': self.language_id,
+                'confidence': 0.95,
+                'metadata': {
+                    'type': 'documentation',
+                    'doc_type': doc["type"],
+                    'examples': doc.get("examples", [])
+                }
+            })
+            
         return patterns
         
     def _extract_let_binding_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -281,7 +326,7 @@ class OcamlParser(BaseParser):
         return ""
         
     def _extract_type_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract type definition patterns from the AST."""
+        """Extract type patterns from the AST."""
         types = []
         
         def process_node(node):
@@ -311,43 +356,16 @@ class OcamlParser(BaseParser):
                 module_name = node.get('name', '')
                 
                 if module_name:
-                    # Collect module elements (let bindings, types, etc.)
-                    elements = []
-                    for child in node.get('children', []):
-                        if isinstance(child, dict) and child.get('type') in ['let_binding', 'type_definition']:
-                            elements.append({
-                                'type': child.get('type'),
-                                'name': child.get('name', '')
-                            })
-                    
                     modules.append({
                         'name': module_name,
                         'content': f"module {module_name}",
-                        'elements': elements
+                        'elements': [child.get('type') for child in node.get('children', [])]
                     })
             
             # Process children recursively
             if isinstance(node, dict):
                 for child in node.get('children', []):
                     process_node(child)
-        
-        # Also create a module pattern for the entire file
-        file_elements = []
-        for child in ast.get('children', []):
-            if isinstance(child, dict):
-                node_type = child.get('type')
-                if node_type in ['let_binding', 'type_definition', 'module_declaration', 'open_statement']:
-                    file_elements.append({
-                        'type': node_type,
-                        'name': child.get('name', '')
-                    })
-        
-        if file_elements:
-            modules.append({
-                'name': 'file_structure',
-                'content': "File structure: " + ", ".join(f"{e['type']} {e['name']}" for e in file_elements[:3]),
-                'elements': file_elements
-            })
                 
         process_node(ast)
         return modules
@@ -411,83 +429,71 @@ class OcamlParser(BaseParser):
                     'content': f"Module naming convention: {module_convention} (e.g., {', '.join(modules[:3])})",
                     'examples': modules[:5]
                 })
-        
+                
         return patterns
         
     def _analyze_naming_convention(self, names: List[str]) -> Optional[str]:
-        """Analyze the naming convention of a list of names."""
+        """Analyze naming convention from a list of names."""
         if not names:
             return None
             
-        # OCaml conventions
-        camel_case = sum(1 for name in names 
-                        if re.match(r'^[a-z][a-zA-Z0-9]*$', name) 
-                        and any(c.isupper() for c in name))
-                        
-        snake_case = sum(1 for name in names 
-                        if re.match(r'^[a-z][a-z0-9_]*$', name) 
-                        and '_' in name)
-                        
-        lowercase = sum(1 for name in names 
-                       if re.match(r'^[a-z][a-z0-9]*$', name)
-                       and not any(c.isupper() for c in name)
-                       and '_' not in name)
-                       
-        uppercase_first = sum(1 for name in names 
-                             if re.match(r'^[A-Z][a-zA-Z0-9_]*$', name))
-        
-        # Determine dominant convention
-        conventions = {
-            'camelCase': camel_case,
-            'snake_case': snake_case,
-            'lowercase': lowercase,
-            'CapitalizedWord': uppercase_first
+        convention_patterns = {
+            'camelCase': r'^[a-z][a-zA-Z0-9]*$',
+            'snake_case': r'^[a-z][a-z0-9_]*$',
+            'PascalCase': r'^[A-Z][a-zA-Z0-9]*$',
+            'UPPER_CASE': r'^[A-Z][A-Z0-9_]*$'
         }
         
-        if any(conventions.values()):
-            dominant = max(conventions.items(), key=lambda x: x[1])
-            if dominant[1] > 0:
-                return dominant[0]
+        # Count occurrences of each convention
+        conventions = {}
+        for name in names:
+            for conv_name, pattern in convention_patterns.items():
+                if re.match(pattern, name):
+                    if conv_name == 'camelCase' and not any(c.isupper() for c in name):
+                        continue  # Skip if it doesn't have any uppercase chars
+                    if conv_name == 'snake_case' and '_' not in name:
+                        continue  # Skip if it doesn't have underscores
+                    if conv_name == 'UPPER_CASE' and '_' not in name:
+                        continue  # Skip if it doesn't have underscores
+                        
+                    conventions[conv_name] = conventions.get(conv_name, 0) + 1
+        
+        # Return the dominant convention if we have enough examples
+        if conventions:
+            dominant_convention = max(conventions.items(), key=lambda x: x[1])
+            if dominant_convention[1] >= 2:
+                return dominant_convention[0]
                 
         return None
         
     def _extract_documentation_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract documentation patterns from the AST."""
-        doc_patterns = {}
+        patterns = []
         
         def process_node(node):
             if isinstance(node, dict):
-                # Check for documentation nodes
-                if node_type := node.get('type'):
-                    if node_type == 'doc_comment':
-                        content = node.get('content', '')
-                        if content:
-                            doc_patterns.setdefault('doc_comment', []).append(content)
-                    elif node.get('metadata', {}).get('documentation'):
-                        # Check if this node has associated documentation
-                        node_docs = node['metadata']['documentation']
-                        for doc in node_docs:
-                            if isinstance(doc, dict) and doc.get('type') == 'doc_comment':
-                                content = doc.get('content', '')
-                                target_type = node.get('type', 'unknown')
-                                key = f"{target_type}_doc"
-                                if content:
-                                    doc_patterns.setdefault(key, []).append(content)
+                # Process node documentation
+                docs = node.get('metadata', {}).get('documentation', [])
+                if docs:
+                    doc_type = node.get('type', 'unknown')
+                    patterns.append({
+                        'type': f"{doc_type}_doc",
+                        'content': "\n".join(d.get('content', '') for d in docs),
+                        'examples': [d.get('content', '') for d in docs]
+                    })
+                
+                # Process trailing documentation
+                trailing_docs = node.get('metadata', {}).get('trailing_documentation', [])
+                if trailing_docs:
+                    patterns.append({
+                        'type': 'trailing_doc',
+                        'content': "\n".join(d.get('content', '') for d in trailing_docs),
+                        'examples': [d.get('content', '') for d in trailing_docs]
+                    })
                 
                 # Process children recursively
                 for child in node.get('children', []):
                     process_node(child)
-        
-        process_node(ast)
-        
-        # Convert documentation patterns to result format
-        results = []
-        for doc_type, examples in doc_patterns.items():
-            if examples:
-                results.append({
-                    'type': doc_type,
-                    'content': f"{doc_type.replace('_', ' ')} style: " + examples[0][:50] + ("..." if len(examples[0]) > 50 else ""),
-                    'examples': examples[:5]
-                })
                 
-        return results 
+        process_node(ast)
+        return patterns 

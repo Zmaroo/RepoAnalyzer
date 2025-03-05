@@ -1,15 +1,18 @@
 """Feature extraction implementations."""
 
-from typing import Dict, Any, List, Optional, Union, Generator, Tuple, Callable, TypeVar, cast, Awaitable
+from typing import Dict, Any, List, Optional, Union, Generator, Tuple, Callable, TypeVar, cast, Awaitable, Set
 from tree_sitter import Node, Query, QueryError, Parser, Language, TreeCursor
 from .types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, ExtractedFeatures, PatternCategory
 from parsers.models import QueryResult, FileClassification
 from parsers.language_support import language_registry
 from utils.logger import log
-from utils.error_handling import ErrorBoundary
+from utils.error_handling import ErrorBoundary, AsyncErrorBoundary, handle_async_errors
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 from parsers.pattern_processor import PatternProcessor, PatternMatch, pattern_processor
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from abc import ABC, abstractmethod
+import asyncio
 
 # Define a type for extractor functions
 # Support both sync and async extractors
@@ -20,25 +23,59 @@ class BaseFeatureExtractor(ABC):
     
     def __init__(self, language_id: str, file_type: FileType):
         # [3.2.0.1] Initialize Base Extractor
-        # USES: [pattern_processor.py] pattern_processor.get_patterns_for_file()
         self.language_id = language_id
         self.file_type = file_type
-        self._patterns = pattern_processor.get_patterns_for_file(
-            FileClassification(
-                file_type=file_type,
-                language_id=language_id,
-                parser_type=language_registry.get_parser_type(language_id)
-            )
-        )
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
+        register_shutdown_handler(self.cleanup)
+        self._patterns = None
+    
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize feature extractor resources."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary("feature_extractor_initialization"):
+                    # Get patterns for this file type
+                    future = submit_async_task(pattern_processor.get_patterns_for_file(
+                        FileClassification(
+                            file_type=self.file_type,
+                            language_id=self.language_id,
+                            parser_type=language_registry.get_parser_type(self.language_id)
+                        )
+                    ))
+                    self._pending_tasks.add(future)
+                    try:
+                        self._patterns = await asyncio.wrap_future(future)
+                    finally:
+                        self._pending_tasks.remove(future)
+                    
+                    self._initialized = True
+                    return True
+            except Exception as e:
+                log(f"Error initializing feature extractor: {e}", level="error")
+                raise
+        return True
     
     @abstractmethod
-    def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
+    async def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
         """Extract features from existing AST."""
         pass
-
-# FILE: parsers/feature_extractor.py
-# PROVIDES: Feature extraction for both parser types
-# RETURNS: ExtractedFeatures
+    
+    async def cleanup(self):
+        """Clean up feature extractor resources."""
+        try:
+            # Clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log(f"Feature extractor cleaned up for {self.language_id}", level="info")
+        except Exception as e:
+            log(f"Error cleaning up feature extractor: {e}", level="error")
 
 class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     """[3.2.1] Tree-sitter specific feature extraction."""
@@ -53,27 +90,55 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
         self._language_registry = language_registry
         self._parser = None
         self._queries = {}
-        self._initialize_parser()
     
-    def _initialize_parser(self):
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self):
+        """Initialize tree-sitter feature extractor."""
+        if not await super().initialize():
+            return False
+            
+        try:
+            async with AsyncErrorBoundary("tree_sitter_feature_extractor_initialization"):
+                # Initialize parser
+                future = submit_async_task(self._initialize_parser())
+                self._pending_tasks.add(future)
+                try:
+                    await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
+                
+                # Load patterns
+                future = submit_async_task(self._load_patterns())
+                self._pending_tasks.add(future)
+                try:
+                    await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
+                
+                return True
+        except Exception as e:
+            log(f"Error initializing tree-sitter feature extractor: {e}", level="error")
+            return False
+    
+    async def _initialize_parser(self):
         """Initialize tree-sitter parser."""
         self._parser = Parser()
-        self._language = self._language_registry.get_language(self.language_id)
+        self._language = await self._language_registry.get_language(self.language_id)
         self._parser.set_language(self._language)
-        self._load_patterns()
     
-    def _load_patterns(self):
+    async def _load_patterns(self):
         """Load patterns from central pattern processor."""
         for category in PatternCategory:
             category_name = category.value
             if category_name in self._patterns:
                 for pattern in self._patterns[category_name].values():
                     if pattern_processor.validate_pattern(pattern, self.language_id):
-                        self._compile_pattern(pattern, category_name, "")
+                        await self._compile_pattern(pattern, category_name, "")
     
-    def _compile_pattern(self, pattern_def: Union[str, Dict[str, Any]], category: str, name: str) -> None:
+    @handle_async_errors(error_types=(Exception,))
+    async def _compile_pattern(self, pattern_def: Union[str, Dict[str, Any]], category: str, name: str) -> None:
         """Compile a Tree-sitter query pattern and store in queries dict."""
-        with ErrorBoundary(f"compile_pattern_{category}_{name}", error_types=(Exception,)):
+        async with AsyncErrorBoundary(f"compile_pattern_{category}_{name}", error_types=(Exception,)):
             if isinstance(pattern_def, str):
                 query_str = pattern_def
                 extractor_func: Optional[ExtractorFn] = None
@@ -86,25 +151,40 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                     extractor_func = None
             
             # Create and configure query
-            query = self._language.query(query_str)
-            query.set_timeout_micros(self.QUERY_TIMEOUT_MICROS)
-            query.set_match_limit(self.QUERY_MATCH_LIMIT)
-            
-            self._queries.setdefault(category, {})[name] = {
-                'query': query,
-                'extract': extractor_func
-            }
+            future = submit_async_task(self._language.query(query_str))
+            self._pending_tasks.add(future)
+            try:
+                query = await asyncio.wrap_future(future)
+                query.set_timeout_micros(self.QUERY_TIMEOUT_MICROS)
+                query.set_match_limit(self.QUERY_MATCH_LIMIT)
+                
+                self._queries.setdefault(category, {})[name] = {
+                    'query': query,
+                    'extract': extractor_func
+                }
+            finally:
+                self._pending_tasks.remove(future)
     
-    def _process_query_result(self, result: QueryResult) -> Dict[str, Any]:
+    @handle_async_errors(error_types=(Exception,))
+    async def _process_query_result(self, result: QueryResult) -> Dict[str, Any]:
         """Process a single query result."""
-        with ErrorBoundary(f"process_query_result_{result.pattern_name}", error_types=(Exception,)):
-            node_features = self._extract_node_features(result.node)
+        async with AsyncErrorBoundary(f"process_query_result_{result.pattern_name}", error_types=(Exception,)):
+            future = submit_async_task(self._extract_node_features(result.node))
+            self._pending_tasks.add(future)
+            try:
+                node_features = await asyncio.wrap_future(future)
+            finally:
+                self._pending_tasks.remove(future)
             
             # Add capture information
-            node_features['captures'] = {
-                name: self._extract_node_features(node)
-                for name, node in result.captures.items()
-            }
+            node_features['captures'] = {}
+            for name, node in result.captures.items():
+                future = submit_async_task(self._extract_node_features(node))
+                self._pending_tasks.add(future)
+                try:
+                    node_features['captures'][name] = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
             
             # Add metadata
             node_features.update(result.metadata)
@@ -113,7 +193,7 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
         
         return {}
     
-    def _extract_node_features(self, node: Node) -> Dict[str, Any]:
+    async def _extract_node_features(self, node: Node) -> Dict[str, Any]:
         """Extract features from a node."""
         return {
             'type': node.type,
@@ -129,9 +209,13 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             'named_child_count': node.named_child_count
         }
     
-    def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
+    @handle_async_errors(error_types=(Exception,))
+    async def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
         """[3.2.1.2] Extract features from Tree-sitter AST."""
-        with ErrorBoundary("extract_features_tree_sitter", error_types=(Exception,)):
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("extract_features_tree_sitter", error_types=(Exception,)):
             # Check if we have a valid AST with a tree structure
             tree = None
             root_node = None
@@ -142,10 +226,15 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             else:
                 # If we don't have a root node or need to create a new tree
                 # [3.2.1.3] Parse Tree and Extract Features
-                tree = self._parser.parse(bytes(source_code, "utf8"))
-                if not tree:
-                    raise ValueError("Failed to parse source code")
-                root_node = tree.root_node
+                future = submit_async_task(self._parser.parse(bytes(source_code, "utf8")))
+                self._pending_tasks.add(future)
+                try:
+                    tree = await asyncio.wrap_future(future)
+                    if not tree:
+                        raise ValueError("Failed to parse source code")
+                    root_node = tree.root_node
+                finally:
+                    self._pending_tasks.remove(future)
                 
             features = {category: {} for category in PatternCategory}
             
@@ -159,27 +248,30 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                     matches = []
                     
                     # Process matches
-                    for match in query.matches(root_node):
-                        with ErrorBoundary(f"process_match_{pattern_name}", error_types=(Exception,)):
-                            result = QueryResult(
-                                pattern_name=pattern_name,
-                                node=match.pattern_node,
-                                captures={c.name: c.node for c in match.captures}
-                            )
-                            if extractor_func:
-                                # Handle both sync and async extractors
-                                metadata = extractor_func(result)
-                                if hasattr(metadata, '__await__'):
-                                    # This is an async function, but we're in a sync context
-                                    # Let's handle this gracefully by logging an error
-                                    log(f"Warning: Async extractor used in sync context for pattern {pattern_name}", level="warning")
-                                    # We can't await here, so just set empty metadata
-                                    result.metadata = {}
-                                else:
-                                    result.metadata = metadata
-                            processed = self._process_query_result(result)
-                            if processed:
-                                matches.append(processed)
+                    future = submit_async_task(query.matches(root_node))
+                    self._pending_tasks.add(future)
+                    try:
+                        query_matches = await asyncio.wrap_future(future)
+                        for match in query_matches:
+                            async with AsyncErrorBoundary(f"process_match_{pattern_name}", error_types=(Exception,)):
+                                result = QueryResult(
+                                    pattern_name=pattern_name,
+                                    node=match.pattern_node,
+                                    captures={c.name: c.node for c in match.captures}
+                                )
+                                if extractor_func:
+                                    # Handle both sync and async extractors
+                                    metadata = extractor_func(result)
+                                    if hasattr(metadata, '__await__'):
+                                        # This is an async function
+                                        result.metadata = await metadata
+                                    else:
+                                        result.metadata = metadata
+                                processed = await self._process_query_result(result)
+                                if processed:
+                                    matches.append(processed)
+                    finally:
+                        self._pending_tasks.remove(future)
                             
                     if matches:
                         category_features[pattern_name] = matches
@@ -190,19 +282,16 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             # RETURNS: [models.py] ExtractedFeatures
             return ExtractedFeatures(
                 features=features,
-                documentation=self._extract_documentation(features),
-                metrics=self._calculate_metrics(features, source_code)
+                documentation=await self._extract_documentation(features),
+                metrics=await self._calculate_metrics(features, source_code)
             )
         
         # Return empty features on error
         return ExtractedFeatures()
 
-    def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
-        """Extract documentation features from parsed content.
-        
-        This extracts docstrings, comments, TODOs, and other documentation elements
-        from the parsed features.
-        """
+    @handle_async_errors(error_types=(Exception,))
+    async def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
+        """Extract documentation features from parsed content."""
         doc_features = features.get(PatternCategory.DOCUMENTATION.value, {})
         
         # Initialize Documentation object
@@ -236,37 +325,38 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             
         return documentation
     
-    def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
+    @handle_async_errors(error_types=(Exception,))
+    async def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
         """Calculate complexity metrics from extracted features."""
         metrics = ComplexityMetrics()
         
         # Calculate basic complexity metrics
         metrics.loc = len(source_code.splitlines())
-        metrics.cyclomatic_complexity = self._calculate_cyclomatic_complexity(features)
+        
+        # Calculate cyclomatic complexity
+        future = submit_async_task(self._calculate_cyclomatic_complexity(features))
+        self._pending_tasks.add(future)
+        try:
+            metrics.cyclomatic_complexity = await asyncio.wrap_future(future)
+        finally:
+            self._pending_tasks.remove(future)
         
         # Calculate maintainability metrics
-        metrics.halstead_metrics = self._calculate_halstead_metrics(features)
-        metrics.maintainability_index = self._calculate_maintainability_index(metrics)
+        future = submit_async_task(self._calculate_halstead_metrics(features))
+        self._pending_tasks.add(future)
+        try:
+            metrics.halstead_metrics = await asyncio.wrap_future(future)
+        finally:
+            self._pending_tasks.remove(future)
+        
+        future = submit_async_task(self._calculate_maintainability_index(metrics))
+        self._pending_tasks.add(future)
+        try:
+            metrics.maintainability_index = await asyncio.wrap_future(future)
+        finally:
+            self._pending_tasks.remove(future)
         
         return metrics
-
-    def _register_language_patterns(self) -> None:
-        """Register pattern queries for the current language."""
-        if self.language_id in self._patterns:
-            for category_name, patterns in self._patterns[self.language_id].items():
-                # Register each pattern in the cache
-                for pattern_name, pattern in patterns.items():
-                    if hasattr(pattern, 'pattern_type') and pattern.pattern_type == ParserType.TREE_SITTER.value:
-                        pattern_def = getattr(pattern, 'definition', pattern)
-                        self._compile_pattern(pattern_def, category_name, pattern_name)
-                        
-        # Register common patterns
-        if 'common' in self._patterns:
-            for category_name, patterns in self._patterns['common'].items():
-                for pattern_name, pattern in patterns.items():
-                    if hasattr(pattern, 'pattern_type') and pattern.pattern_type == ParserType.TREE_SITTER.value:
-                        pattern_def = getattr(pattern, 'definition', pattern)
-                        self._compile_pattern(pattern_def, category_name, pattern_name)
 
 class CustomFeatureExtractor(BaseFeatureExtractor):
     """[3.2.2] Custom parser feature extraction."""

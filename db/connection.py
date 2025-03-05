@@ -24,6 +24,7 @@ from utils.error_handling import (
 )
 from utils.async_runner import submit_async_task, get_loop
 from db.retry_utils import DatabaseRetryManager, RetryConfig
+from utils.app_init import register_shutdown_handler
 
 class ConnectionManager:
     """Manages all database connections and their lifecycle."""
@@ -43,6 +44,9 @@ class ConnectionManager:
         # PostgreSQL
         self._pool = None
         self._pg_initialized = False
+        
+        # Register cleanup handler
+        register_shutdown_handler(self.cleanup)
     
     @property
     def driver(self):
@@ -74,7 +78,10 @@ class ConnectionManager:
                 self._driver = AsyncGraphDatabase.driver(
                     Neo4jConfig.uri,
                     auth=(Neo4jConfig.user, Neo4jConfig.password),
-                    database=Neo4jConfig.database
+                    database=Neo4jConfig.database,
+                    max_connection_lifetime=Neo4jConfig.max_connection_lifetime,
+                    max_connection_pool_size=Neo4jConfig.max_connection_pool_size,
+                    connection_timeout=Neo4jConfig.connection_timeout
                 )
                 
                 # Verify connection
@@ -116,8 +123,9 @@ class ConnectionManager:
                     database=PostgresConfig.database,
                     host=PostgresConfig.host,
                     port=PostgresConfig.port,
-                    min_size=5,
-                    max_size=20
+                    min_size=PostgresConfig.min_pool_size,
+                    max_size=PostgresConfig.max_pool_size,
+                    timeout=PostgresConfig.connection_timeout
                 ))
                 self._pending_tasks.add(future)
                 try:
@@ -284,7 +292,7 @@ class ConnectionManager:
         finally:
             self._pending_tasks.remove(future)
     
-    async def close(self) -> None:
+    async def cleanup(self) -> None:
         """Close all database connections and cleanup resources."""
         async with self._lock:
             try:

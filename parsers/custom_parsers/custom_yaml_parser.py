@@ -7,12 +7,15 @@ structured data and patterns.
 
 from typing import Dict, List, Any, Optional, Tuple
 import yaml
+import asyncio
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.yaml import YAML_PATTERNS
 from parsers.models import YamlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 from collections import Counter
 import re
 
@@ -21,10 +24,24 @@ class YamlParser(BaseParser):
     
     def __init__(self, language_id: str = "yaml", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
+        self._initialized = False
+        self._pending_tasks: set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(YAML_PATTERNS)
+        register_shutdown_handler(self.cleanup)
     
-    def initialize(self) -> bool:
-        self._initialized = True
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize parser resources."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary("YAML parser initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    log("YAML parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing YAML parser: {e}", level="error")
+                raise
         return True
     
     def _create_node(
@@ -66,13 +83,16 @@ class YamlParser(BaseParser):
         return node
     
     @handle_errors(error_types=(ParsingError,))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse YAML content into AST structure.
         
         This method supports AST caching through the BaseParser.parse() method.
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
+        if not self._initialized:
+            await self.initialize()
+            
         with ErrorBoundary(operation_name="YAML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
@@ -96,7 +116,13 @@ class YamlParser(BaseParser):
                         ast.children.append(node)
                         current_comment_block = []
                 try:
-                    data = yaml.safe_load(source_code)
+                    future = submit_async_task(yaml.safe_load(source_code))
+                    self._pending_tasks.add(future)
+                    try:
+                        data = await asyncio.wrap_future(future)
+                    finally:
+                        self._pending_tasks.remove(future)
+                        
                     if data is not None:
                         root_node = self._process_value(data, [], [0, 0])
                         ast.children.append(root_node)
@@ -109,7 +135,7 @@ class YamlParser(BaseParser):
                 if current_comment_block:
                     ast.metadata["trailing_comments"] = current_comment_block
                 return ast.__dict__
-            except (ValueError, KeyError, TypeError) as e:  # Use specific error types instead of broad Exception
+            except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing YAML content: {e}", level="error")
                 return YamlNode(
                     type="document", start_point=[0, 0], end_point=[0, 0],
@@ -117,7 +143,7 @@ class YamlParser(BaseParser):
                 ).__dict__
             
     @handle_errors(error_types=(ParsingError, ProcessingError))
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """Extract patterns from YAML files for repository learning.
         
         Args:
@@ -126,12 +152,20 @@ class YamlParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
+        if not self._initialized:
+            await self.initialize()
+            
         with ErrorBoundary(operation_name="YAML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 patterns = []
                 
                 # Parse the source first to get a structured representation
-                ast = self._parse_source(source_code)
+                future = submit_async_task(self._parse_source(source_code))
+                self._pending_tasks.add(future)
+                try:
+                    ast = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
                 
                 # Extract mapping patterns
                 mapping_patterns = self._extract_mapping_patterns(ast)
@@ -213,9 +247,24 @@ class YamlParser(BaseParser):
                 
                 return patterns
                 
-            except (ValueError, KeyError, TypeError, yaml.YAMLError) as e:  # Use specific error types instead of broad Exception
+            except (ValueError, KeyError, TypeError, yaml.YAMLError) as e:
                 log(f"Error extracting patterns from YAML file: {str(e)}", level="error")
                 return []
+                
+    async def cleanup(self):
+        """Clean up YAML parser resources."""
+        try:
+            # Cancel and clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("YAML parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up YAML parser: {e}", level="error")
         
     def _extract_mapping_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract mapping patterns from the AST."""

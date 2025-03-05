@@ -18,6 +18,7 @@ from utils.error_handling import (
 from db.retry_utils import DatabaseRetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
+from utils.app_init import register_shutdown_handler
 
 # Initialize retry manager for database operations
 _retry_manager = DatabaseRetryManager(RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0))
@@ -127,4 +128,16 @@ async def execute_parallel_queries(
             raise DatabaseError(f"Failed to execute parallel query {i}: {str(result)}")
     
     return results
+
+# Register cleanup handler
+async def cleanup_psql():
+    """Cleanup PostgreSQL resources."""
+    try:
+        # Any PostgreSQL-specific cleanup can go here
+        await _retry_manager.cleanup()
+        log("PostgreSQL resources cleaned up", level="info")
+    except Exception as e:
+        log(f"Error cleaning up PostgreSQL resources: {e}", level="error")
+
+register_shutdown_handler(cleanup_psql)
 

@@ -1,25 +1,41 @@
 """Custom parser for reStructuredText with enhanced documentation and pattern extraction features."""
 
 from typing import Dict, List, Any, Optional
+import asyncio
 from parsers.base_parser import BaseParser
 from parsers.models import RstNode, PatternType
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.rst import RST_PATTERNS
 from utils.logger import log
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 import re
 from collections import Counter
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 
 class RstParser(BaseParser):
     """Parser for reStructuredText files with enhanced pattern extraction capabilities."""
     
     def __init__(self, language_id: str = "rst", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
+        self._initialized = False
+        self._pending_tasks: set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(RST_PATTERNS)
+        register_shutdown_handler(self.cleanup)
     
-    def initialize(self) -> bool:
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
         """Initialize parser resources."""
-        self._initialized = True
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary("RST parser initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    log("RST parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing RST parser: {e}", level="error")
+                raise
         return True
 
     def _create_node(
@@ -42,13 +58,16 @@ class RstParser(BaseParser):
         return levels.get(char, 99)
 
     @handle_errors(error_types=(ParsingError,))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse RST content into AST structure.
         
         This method supports AST caching through the BaseParser.parse() method.
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
+        if not self._initialized:
+            await self.initialize()
+            
         with ErrorBoundary(operation_name="RST parsing", error_types=(ParsingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
             try:
                 lines = source_code.splitlines()
@@ -60,82 +79,151 @@ class RstParser(BaseParser):
 
                 current_content = []
                 section_stack = []
-
+                in_code_block = False
+                code_block_content = []
+                code_block_lang = None
+                current_list = None
+                list_indent = 0
+                
                 for i, line in enumerate(lines):
                     line_start = [i, 0]
                     line_end = [i, len(line)]
                     
-                    # Process section underlines when current content exists.
-                    if self.patterns.get('section') and self.patterns['section'].match(line) and current_content:
-                        section_title = current_content[-1]
-                        section_level = self._get_section_level(line[0])
-                        
-                        node = self._create_node(
-                            "section",
-                            [i - 1, 0],
-                            line_end,
-                            title=section_title,
-                            level=section_level
-                        )
-                        
-                        while section_stack and section_stack[-1].metadata.get('level', 0) >= section_level:
-                            section_stack.pop()
-                        
-                        if section_stack:
-                            section_stack[-1].children.append(node)
-                        else:
-                            ast.children.append(node)
-                        
-                        section_stack.append(node)
-                        current_content = []
+                    # Handle code blocks
+                    if line.startswith('.. code-block::'):
+                        if not in_code_block:
+                            in_code_block = True
+                            code_block_lang = line.split('::')[1].strip()
+                            code_block_start = i
                         continue
-
-                    # Process other patterns.
-                    matched = False
-                    for category in RST_PATTERNS.values():
-                        for pattern_name, pattern_obj in category.items():
-                            if match := self.patterns[pattern_name].match(line):
-                                node = self._create_node(
-                                    pattern_name,
-                                    line_start,
-                                    line_end,
-                                    **pattern_obj.extract(match)
-                                )
-                                
-                                if section_stack:
-                                    section_stack[-1].children.append(node)
-                                else:
-                                    ast.children.append(node)
-                                    
-                                matched = True
-                                break
-                        if matched:
-                            break
-
-                    if not matched and line.strip():
-                        current_content.append(line)
-
+                    elif in_code_block and not line.strip():
+                        in_code_block = False
+                        node = self._create_node(
+                            "code_block",
+                            [code_block_start, 0],
+                            line_end,
+                            language=code_block_lang,
+                            content='\n'.join(code_block_content)
+                        )
+                        ast.children.append(node)
+                        code_block_content = []
+                        code_block_lang = None
+                        continue
+                    
+                    if in_code_block:
+                        if line.startswith('    '):
+                            code_block_content.append(line[4:])
+                        continue
+                    
+                    # Handle sections
+                    if i > 0 and line and all(c == line[0] for c in line):
+                        prev_line = lines[i - 1].strip()
+                        if prev_line and len(line) >= len(prev_line):
+                            level = self._get_section_level(line[0])
+                            while section_stack and section_stack[-1]['level'] >= level:
+                                section_stack.pop()
+                            
+                            section = self._create_node(
+                                "section",
+                                [i - 1, 0],
+                                line_end,
+                                title=prev_line,
+                                level=level,
+                                children=[]
+                            )
+                            
+                            if section_stack:
+                                section_stack[-1]['node'].children.append(section)
+                            else:
+                                ast.children.append(section)
+                            
+                            section_stack.append({'level': level, 'node': section})
+                            continue
+                    
+                    # Handle directives
+                    if line.startswith('.. '):
+                        directive_match = re.match(r'^\.\. ([^:]+):: (.*)$', line)
+                        if directive_match:
+                            directive_type = directive_match.group(1)
+                            directive_content = directive_match.group(2)
+                            node = self._create_node(
+                                "directive",
+                                line_start,
+                                line_end,
+                                directive_type=directive_type,
+                                content=directive_content
+                            )
+                            ast.children.append(node)
+                            continue
+                    
+                    # Handle lists
+                    list_match = re.match(r'^(\s*)([\*\-\+]|\d+\.)\s+(.+)$', line)
+                    if list_match:
+                        indent = len(list_match.group(1))
+                        marker = list_match.group(2)
+                        content = list_match.group(3)
+                        
+                        if current_list is None or indent < list_indent:
+                            current_list = self._create_node(
+                                "list",
+                                line_start,
+                                line_end,
+                                ordered=marker[-1] == '.',
+                                items=[]
+                            )
+                            ast.children.append(current_list)
+                            list_indent = indent
+                            
+                        item = self._create_node(
+                            "list_item",
+                            line_start,
+                            line_end,
+                            content=content,
+                            indent=indent
+                        )
+                        current_list.items.append(item)
+                        continue
+                    else:
+                        current_list = None
+                    
+                    # Handle paragraphs
+                    if line.strip():
+                        if not current_content:
+                            current_content = [line]
+                        else:
+                            current_content.append(line)
+                    elif current_content:
+                        node = self._create_node(
+                            "paragraph",
+                            [i - len(current_content), 0],
+                            [i - 1, len(current_content[-1])],
+                            content='\n'.join(current_content)
+                        )
+                        ast.children.append(node)
+                        current_content = []
+                
+                # Handle any remaining content
+                if current_content:
+                    node = self._create_node(
+                        "paragraph",
+                        [len(lines) - len(current_content), 0],
+                        [len(lines) - 1, len(current_content[-1])],
+                        content='\n'.join(current_content)
+                    )
+                    ast.children.append(node)
+                
                 return ast.__dict__
                 
-            except (ValueError, KeyError, TypeError, IndexError) as e:
+            except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing RST content: {e}", level="error")
-                raise ParsingError(f"Failed to parse RST content: {str(e)}") from e
-                
-        # This code runs when the ErrorBoundary catches an exception
-        if error_boundary.error:
-            log(f"Error in RST parser: {error_boundary.error}", level="error")
-            return RstNode(
-                type="document",
-                start_point=[0, 0],
-                end_point=[0, 0],
-                error=str(error_boundary.error),
-                children=[]
-            ).__dict__
-
-    @handle_errors(error_types=(ProcessingError,))
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """
-        Extract documentation patterns from reStructuredText files for repository learning.
+                return RstNode(
+                    type="document", start_point=[0, 0], end_point=[0, 0],
+                    error=str(e), children=[]
+                ).__dict__
+    
+    @handle_errors(error_types=(ParsingError, ProcessingError))
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+        """Extract patterns from RST files for repository learning.
         
         Args:
             source_code: The content of the RST file
@@ -143,87 +231,104 @@ class RstParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
-        patterns = []
-        
-        with ErrorBoundary(operation_name="RST pattern extraction", error_types=(ProcessingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
+        if not self._initialized:
+            await self.initialize()
+            
+        with ErrorBoundary(operation_name="RST pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                # Parse the source first to get a structured representation
-                ast_dict = self._parse_source(source_code)
+                patterns = []
                 
-                # Extract section structure patterns
-                section_patterns = self._extract_section_patterns(ast_dict)
+                # Parse the source first to get a structured representation
+                future = submit_async_task(self._parse_source(source_code))
+                self._pending_tasks.add(future)
+                try:
+                    ast = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
+                
+                # Extract section patterns
+                section_patterns = self._extract_section_patterns(ast)
                 for section in section_patterns:
                     patterns.append({
-                        'name': f'rst_section_{section["name"]}',
+                        'name': f'rst_section_{section["level"]}',
                         'content': section["content"],
-                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'pattern_type': PatternType.DOCUMENTATION,
                         'language': self.language_id,
                         'confidence': 0.9,
                         'metadata': {
-                            'type': 'rst_section',
-                            'section_level': section.get("level", 1),
-                            'section_count': section.get("count", 1)
+                            'type': 'section',
+                            'level': section["level"],
+                            'title': section["title"]
                         }
                     })
                 
                 # Extract directive patterns
-                directive_patterns = self._extract_directive_patterns(ast_dict)
+                directive_patterns = self._extract_directive_patterns(ast)
                 for directive in directive_patterns:
                     patterns.append({
                         'name': f'rst_directive_{directive["type"]}',
                         'content': directive["content"],
-                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'pattern_type': PatternType.DOCUMENTATION,
                         'language': self.language_id,
                         'confidence': 0.85,
                         'metadata': {
-                            'type': 'rst_directive',
-                            'directive_type': directive["type"],
-                            'directives': directive.get("items", [])
+                            'type': 'directive',
+                            'directive_type': directive["type"]
                         }
                     })
                 
-                # Extract role patterns
-                role_patterns = self._extract_role_patterns(ast_dict)
-                for role in role_patterns:
+                # Extract code block patterns
+                code_block_patterns = self._extract_code_block_patterns(ast)
+                for code_block in code_block_patterns:
                     patterns.append({
-                        'name': f'rst_role_{role["type"]}',
-                        'content': role["content"],
-                        'pattern_type': PatternType.DOCUMENTATION_REFERENCE,
-                        'language': self.language_id,
+                        'name': f'rst_code_block_{code_block["language"] or "unknown"}',
+                        'content': code_block["content"],
+                        'pattern_type': PatternType.CODE_SNIPPET,
+                        'language': code_block["language"] or self.language_id,
                         'confidence': 0.8,
                         'metadata': {
-                            'type': 'rst_role',
-                            'role_type': role["type"],
-                            'roles': role.get("items", [])
+                            'type': 'code_block',
+                            'language': code_block["language"]
                         }
                     })
                 
-                # Extract structural patterns
-                structure_patterns = self._extract_structure_patterns(ast_dict)
-                for structure in structure_patterns:
+                # Extract list patterns
+                list_patterns = self._extract_list_patterns(ast)
+                for list_pattern in list_patterns:
                     patterns.append({
-                        'name': f'rst_structure_{structure["type"]}',
-                        'content': structure["content"],
-                        'pattern_type': PatternType.DOCUMENTATION_STRUCTURE,
+                        'name': f'rst_list_{list_pattern["type"]}',
+                        'content': list_pattern["content"],
+                        'pattern_type': PatternType.DOCUMENTATION,
                         'language': self.language_id,
-                        'confidence': 0.85,
+                        'confidence': 0.75,
                         'metadata': {
-                            'type': 'document_structure',
-                            'structure_type': structure["type"],
-                            'count': structure.get("count", 1)
+                            'type': 'list',
+                            'ordered': list_pattern["ordered"],
+                            'depth': list_pattern["depth"]
                         }
                     })
-                    
-            except (ValueError, KeyError, TypeError, AttributeError) as e:
-                log(f"Error extracting RST patterns: {e}", level="error")
-                raise ProcessingError(f"Failed to extract RST patterns: {str(e)}") from e
                 
-        # This code runs when the ErrorBoundary catches an exception
-        if error_boundary.error:
-            log(f"Error in RST pattern extraction: {error_boundary.error}", level="error")
+                return patterns
                 
-        return patterns
-        
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error extracting patterns from RST file: {str(e)}", level="error")
+                return []
+    
+    async def cleanup(self):
+        """Clean up RST parser resources."""
+        try:
+            # Cancel and clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("RST parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up RST parser: {e}", level="error")
+
     def _extract_section_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract section patterns from the AST."""
         # Count sections by level
@@ -311,24 +416,24 @@ class RstParser(BaseParser):
         
         return patterns
         
-    def _extract_role_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract role patterns from the AST."""
-        # Count roles by type
-        role_types = Counter()
-        role_examples = {}
+    def _extract_code_block_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract code block patterns from the AST."""
+        # Count code blocks by language
+        code_block_languages = Counter()
+        code_block_contents = {}
         
         def process_node(node):
             if isinstance(node, dict):
-                if node.get('type') == 'role':
-                    role_type = node.get('role_type', 'unknown')
-                    role_content = node.get('content', '')
-                    role_types[role_type] += 1
+                if node.get('type') == 'code_block':
+                    language = node.get('language', 'unknown')
+                    content = node.get('content', '')
+                    code_block_languages[language] += 1
                     
-                    if role_type not in role_examples:
-                        role_examples[role_type] = []
+                    if language not in code_block_contents:
+                        code_block_contents[language] = []
                     
-                    if role_content:
-                        role_examples[role_type].append(role_content)
+                    if content:
+                        code_block_contents[language].append(content)
                 
                 # Process children recursively
                 for child in node.get('children', []):
@@ -336,78 +441,63 @@ class RstParser(BaseParser):
         
         process_node(ast)
         
-        # Create patterns for each role type
+        # Create patterns for each code block language
         patterns = []
         
-        for role_type, count in role_types.items():
+        for language, count in code_block_languages.items():
             patterns.append({
-                'type': role_type,
-                'content': f"Document uses {count} '{role_type}' roles",
-                'items': role_examples.get(role_type, [])[:3]  # Include up to 3 examples
+                'language': language,
+                'content': f"Document uses {count} code blocks in {language}",
+                'count': count,
+                'items': code_block_contents.get(language, [])[:3]  # Include up to 3 examples
             })
         
         return patterns
         
-    def _extract_structure_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract structural patterns from the AST."""
-        # Count different node types
-        type_counts = Counter()
+    def _extract_list_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract list patterns from the AST."""
+        # Count lists by type and depth
+        list_types = Counter()
+        list_depths = Counter()
+        list_contents = {}
         
-        def process_node(node):
+        def process_node(node, depth=0):
             if isinstance(node, dict):
-                node_type = node.get('type')
-                if node_type:
-                    type_counts[node_type] += 1
+                if node.get('type') == 'list':
+                    list_type = 'ordered' if node.get('ordered', False) else 'unordered'
+                    list_types[list_type] += 1
+                    list_depths[depth] += 1
+                    
+                    if list_type not in list_contents:
+                        list_contents[list_type] = []
+                    
+                    for item in node.get('items', []):
+                        if isinstance(item, dict) and item.get('type') == 'list_item':
+                            content = item.get('content', '')
+                            if content:
+                                list_contents[list_type].append(content)
                 
                 # Process children recursively
                 for child in node.get('children', []):
-                    process_node(child)
+                    process_node(child, depth + 1)
         
         process_node(ast)
         
-        # Create patterns for significant structure elements
+        # Create patterns for each list type and depth
         patterns = []
         
-        # Document overview pattern
-        structure_elements = []
-        for node_type, count in type_counts.most_common():
-            if node_type not in ['document', 'section'] and count >= 2:
-                structure_elements.append(f"{count} {node_type}{'s' if count > 1 else ''}")
-        
-        if structure_elements:
+        for list_type, count in list_types.items():
             patterns.append({
-                'type': 'document_composition',
-                'content': f"Document structure: {', '.join(structure_elements)}",
-                'count': len(structure_elements)
+                'type': list_type,
+                'content': f"Document uses {count} {list_type} lists",
+                'count': count
             })
         
-        # Look for specific structural patterns
-        if type_counts.get('field', 0) >= 3:
+        for depth, count in list_depths.items():
             patterns.append({
-                'type': 'field_list',
-                'content': f"Document uses field lists ({type_counts['field']} fields)",
-                'count': type_counts['field']
-            })
-            
-        if type_counts.get('admonition', 0) >= 2:
-            patterns.append({
-                'type': 'admonitions',
-                'content': f"Document uses admonitions ({type_counts['admonition']} instances)",
-                'count': type_counts['admonition']
-            })
-            
-        if type_counts.get('reference', 0) >= 3:
-            patterns.append({
-                'type': 'references',
-                'content': f"Document uses many references ({type_counts['reference']} instances)",
-                'count': type_counts['reference']
-            })
-            
-        if type_counts.get('include', 0) >= 2:
-            patterns.append({
-                'type': 'modular_documentation',
-                'content': f"Document uses modular structure with includes ({type_counts['include']} instances)",
-                'count': type_counts['include']
+                'type': f'depth_{depth}',
+                'content': f"Document uses {count} lists at depth {depth}",
+                'count': count
             })
         
         return patterns 

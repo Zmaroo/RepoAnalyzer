@@ -1,6 +1,7 @@
 """Custom parser for Nim with enhanced documentation and pattern extraction features."""
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
+import asyncio
 import re
 from parsers.base_parser import BaseParser
 from parsers.models import NimNode, PatternType
@@ -8,7 +9,9 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.nim import NIM_PATTERNS
 from utils.logger import log
 from collections import Counter
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 
 class NimParser(BaseParser):
     """Parser for Nim files with enhanced pattern extraction capabilities."""
@@ -16,11 +19,35 @@ class NimParser(BaseParser):
     def __init__(self, language_id: str = "nim", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         self.patterns = self._compile_patterns(NIM_PATTERNS)
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
+        register_shutdown_handler(self.cleanup)
     
-    def initialize(self) -> bool:
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
         """Initialize parser resources."""
-        self._initialized = True
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary("Nim parser initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    log("Nim parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing Nim parser: {e}", level="error")
+                raise
         return True
+
+    async def cleanup(self) -> None:
+        """Clean up parser resources."""
+        if self._pending_tasks:
+            log(f"Cleaning up {len(self._pending_tasks)} pending Nim parser tasks", level="info")
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._pending_tasks.clear()
+        self._initialized = False
 
     def _create_node(
         self,
@@ -48,100 +75,107 @@ class NimParser(BaseParser):
         return param_nodes
 
     @handle_errors(error_types=(ParsingError,))
-    def _parse_source(self, source_code: str) -> Dict[str, Any]:
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
         """Parse Nim content into AST structure.
         
         This method supports AST caching through the BaseParser.parse() method.
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(operation_name="Nim parsing", error_types=(ParsingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
+        if not self._initialized:
+            await self.initialize()
+
+        with ErrorBoundary(operation_name="Nim parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
-                lines = source_code.splitlines()
-                ast = self._create_node(
-                    "module",
-                    [0, 0],
-                    [len(lines) - 1, len(lines[-1]) if lines else 0]
-                )
-
-                current_doc = []
-                
-                for i, line in enumerate(lines):
-                    line_start = [i, 0]
-                    line_end = [i, len(line)]
-                    
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    # Process documentation
-                    if doc_match := self.patterns['docstring'].match(line):
-                        node = self._create_node(
-                            "docstring",
-                            line_start,
-                            line_end,
-                            **NIM_PATTERNS[PatternCategory.DOCUMENTATION]['docstring'].extract(doc_match)
-                        )
-                        current_doc.append(node)
-                        continue
-
-                    # Process procedures
-                    if proc_match := self.patterns['proc'].match(line):
-                        node = self._create_node(
-                            "proc",
-                            line_start,
-                            line_end,
-                            **NIM_PATTERNS[PatternCategory.SYNTAX]['proc'].extract(proc_match)
-                        )
-                        node.metadata["parameters"] = self._process_parameters(node.metadata.get("parameters", ""))
-                        if current_doc:
-                            node.metadata["documentation"] = current_doc
-                            current_doc = []
-                        ast.children.append(node)
-                        continue
-
-                    # Process other patterns
-                    for pattern_name, category in [
-                        ('type', PatternCategory.SYNTAX),
-                        ('import', PatternCategory.STRUCTURE),
-                        ('variable', PatternCategory.SEMANTICS)
-                    ]:
-                        if match := self.patterns[pattern_name].match(line):
-                            node = self._create_node(
-                                pattern_name,
-                                line_start,
-                                line_end,
-                                **NIM_PATTERNS[category][pattern_name].extract(match)
-                            )
-                            if current_doc:
-                                node.metadata["documentation"] = current_doc
-                                current_doc = []
-                            ast.children.append(node)
-                            break
-
-                # Add any remaining documentation
-                if current_doc:
-                    ast.metadata["trailing_documentation"] = current_doc
-
-                return ast.__dict__
+                future = submit_async_task(self._parse_content, source_code)
+                self._pending_tasks.add(future)
+                try:
+                    return await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
                 
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error parsing Nim content: {e}", level="error")
-                raise ParsingError(f"Failed to parse Nim content: {str(e)}") from e
+                return NimNode(
+                    type="module",
+                    start_point=[0, 0],
+                    end_point=[0, 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
+
+    def _parse_content(self, source_code: str) -> Dict[str, Any]:
+        """Internal method to parse Nim content synchronously."""
+        lines = source_code.splitlines()
+        ast = self._create_node(
+            "module",
+            [0, 0],
+            [len(lines) - 1, len(lines[-1]) if lines else 0]
+        )
+
+        current_doc = []
+        
+        for i, line in enumerate(lines):
+            line_start = [i, 0]
+            line_end = [i, len(line)]
             
-        # This code runs when the ErrorBoundary catches an exception
-        if error_boundary.error:
-            log(f"Error in Nim parser: {error_boundary.error}", level="error")
-            return NimNode(
-                type="module",
-                start_point=[0, 0],
-                end_point=[0, 0],
-                error=str(error_boundary.error),
-                children=[]
-            ).__dict__
+            line = line.strip()
+            if not line:
+                continue
+
+            # Process documentation
+            if doc_match := self.patterns['docstring'].match(line):
+                node = self._create_node(
+                    "docstring",
+                    line_start,
+                    line_end,
+                    **NIM_PATTERNS[PatternCategory.DOCUMENTATION]['docstring'].extract(doc_match)
+                )
+                current_doc.append(node)
+                continue
+
+            # Process procedures
+            if proc_match := self.patterns['proc'].match(line):
+                node = self._create_node(
+                    "proc",
+                    line_start,
+                    line_end,
+                    **NIM_PATTERNS[PatternCategory.SYNTAX]['proc'].extract(proc_match)
+                )
+                node.metadata["parameters"] = self._process_parameters(node.metadata.get("parameters", ""))
+                if current_doc:
+                    node.metadata["documentation"] = current_doc
+                    current_doc = []
+                ast.children.append(node)
+                continue
+
+            # Process other patterns
+            for pattern_name, category in [
+                ('type', PatternCategory.SYNTAX),
+                ('import', PatternCategory.STRUCTURE),
+                ('variable', PatternCategory.SEMANTICS)
+            ]:
+                if match := self.patterns[pattern_name].match(line):
+                    node = self._create_node(
+                        pattern_name,
+                        line_start,
+                        line_end,
+                        **NIM_PATTERNS[category][pattern_name].extract(match)
+                    )
+                    if current_doc:
+                        node.metadata["documentation"] = current_doc
+                        current_doc = []
+                    ast.children.append(node)
+                    break
+
+        # Add any remaining documentation
+        if current_doc:
+            ast.metadata["trailing_documentation"] = current_doc
+
+        return ast.__dict__
 
     @handle_errors(error_types=(ProcessingError,))
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
         Extract code patterns from Nim files for repository learning.
         
@@ -151,101 +185,113 @@ class NimParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
+        if not self._initialized:
+            await self.initialize()
+
         patterns = []
         
-        with ErrorBoundary(operation_name="Nim pattern extraction", error_types=(ProcessingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
+        with ErrorBoundary(operation_name="Nim pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
-                ast_dict = self._parse_source(source_code)
+                ast = await self._parse_source(source_code)
                 
-                # Extract procedure patterns
-                proc_patterns = self._extract_proc_patterns(ast_dict)
-                for proc in proc_patterns:
-                    patterns.append({
-                        'name': f'nim_proc_{proc["name"]}',
-                        'content': proc["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.9,
-                        'metadata': {
-                            'type': 'nim_proc',
-                            'name': proc["name"],
-                            'parameters': proc.get("parameters", []),
-                            'return_type': proc.get("return_type")
-                        }
-                    })
-                
-                # Extract type patterns
-                type_patterns = self._extract_type_patterns(ast_dict)
-                for type_pattern in type_patterns:
-                    patterns.append({
-                        'name': f'nim_type_{type_pattern["name"]}',
-                        'content': type_pattern["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.85,
-                        'metadata': {
-                            'type': 'nim_type',
-                            'name': type_pattern["name"]
-                        }
-                    })
-                    
-                # Extract variable patterns and naming conventions
-                var_patterns, naming_conventions = self._extract_variable_patterns(ast_dict)
-                
-                for var_pattern in var_patterns:
-                    patterns.append({
-                        'name': f'nim_variable_{var_pattern["kind"]}',
-                        'content': var_pattern["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.8,
-                        'metadata': {
-                            'type': 'nim_variable',
-                            'kind': var_pattern["kind"],
-                            'examples': var_pattern.get("examples", [])
-                        }
-                    })
-                    
-                # Add naming convention patterns
-                for convention in naming_conventions:
-                    patterns.append({
-                        'name': f'nim_naming_convention_{convention["name"]}',
-                        'content': convention["content"],
-                        'pattern_type': PatternType.NAMING_CONVENTION,
-                        'language': self.language_id,
-                        'confidence': 0.85,
-                        'metadata': {
-                            'type': 'naming_convention',
-                            'convention': convention["name"],
-                            'examples': convention.get("examples", [])
-                        }
-                    })
-                    
-                # Extract module structure patterns
-                structure_patterns = self._extract_structure_patterns(ast_dict)
-                for structure in structure_patterns:
-                    patterns.append({
-                        'name': f'nim_structure_{structure["type"]}',
-                        'content': structure["content"],
-                        'pattern_type': PatternType.MODULE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.9,
-                        'metadata': {
-                            'type': 'module_structure',
-                            'structure_type': structure["type"],
-                            'elements': structure.get("elements", [])
-                        }
-                    })
+                # Extract patterns asynchronously
+                future = submit_async_task(self._extract_all_patterns, ast)
+                self._pending_tasks.add(future)
+                try:
+                    patterns = await asyncio.wrap_future(future)
+                finally:
+                    self._pending_tasks.remove(future)
                     
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error extracting Nim patterns: {e}", level="error")
-                raise ProcessingError(f"Failed to extract Nim patterns: {str(e)}") from e
                 
-        # This code runs when the ErrorBoundary catches an exception
-        if error_boundary.error:
-            log(f"Error in Nim pattern extraction: {error_boundary.error}", level="error")
-                
+        return patterns
+
+    def _extract_all_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract all patterns from the AST synchronously."""
+        patterns = []
+        
+        # Extract procedure patterns
+        proc_patterns = self._extract_proc_patterns(ast)
+        for proc in proc_patterns:
+            patterns.append({
+                'name': f'nim_proc_{proc["name"]}',
+                'content': proc["content"],
+                'pattern_type': PatternType.CODE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.9,
+                'metadata': {
+                    'type': 'nim_proc',
+                    'name': proc["name"],
+                    'parameters': proc.get("parameters", []),
+                    'return_type': proc.get("return_type")
+                }
+            })
+        
+        # Extract type patterns
+        type_patterns = self._extract_type_patterns(ast)
+        for type_pattern in type_patterns:
+            patterns.append({
+                'name': f'nim_type_{type_pattern["name"]}',
+                'content': type_pattern["content"],
+                'pattern_type': PatternType.CODE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.85,
+                'metadata': {
+                    'type': 'nim_type',
+                    'name': type_pattern["name"]
+                }
+            })
+            
+        # Extract variable patterns and naming conventions
+        var_patterns, naming_conventions = self._extract_variable_patterns(ast)
+        
+        for var_pattern in var_patterns:
+            patterns.append({
+                'name': f'nim_variable_{var_pattern["kind"]}',
+                'content': var_pattern["content"],
+                'pattern_type': PatternType.CODE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.8,
+                'metadata': {
+                    'type': 'nim_variable',
+                    'kind': var_pattern["kind"],
+                    'examples': var_pattern.get("examples", [])
+                }
+            })
+            
+        # Add naming convention patterns
+        for convention in naming_conventions:
+            patterns.append({
+                'name': f'nim_naming_convention_{convention["name"]}',
+                'content': convention["content"],
+                'pattern_type': PatternType.NAMING_CONVENTION,
+                'language': self.language_id,
+                'confidence': 0.85,
+                'metadata': {
+                    'type': 'naming_convention',
+                    'convention': convention["name"],
+                    'examples': convention.get("examples", [])
+                }
+            })
+            
+        # Extract module structure patterns
+        structure_patterns = self._extract_structure_patterns(ast)
+        for structure in structure_patterns:
+            patterns.append({
+                'name': f'nim_structure_{structure["type"]}',
+                'content': structure["content"],
+                'pattern_type': PatternType.MODULE_STRUCTURE,
+                'language': self.language_id,
+                'confidence': 0.9,
+                'metadata': {
+                    'type': 'module_structure',
+                    'structure_type': structure["type"],
+                    'elements': structure.get("elements", [])
+                }
+            })
+            
         return patterns
         
     def _extract_proc_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:

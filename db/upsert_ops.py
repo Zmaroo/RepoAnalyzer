@@ -25,11 +25,12 @@ from utils.error_handling import (
     ErrorSeverity
 )
 from db.retry_utils import DatabaseRetryManager, RetryConfig
-from utils.async_runner import submit_async_task
+from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
 from db.transaction import transaction_scope
 from parsers.types import ParserResult, ExtractedFeatures
 from embedding.embedding_models import DocEmbedder
+from utils.app_init import register_shutdown_handler
 
 # Initialize retry manager for upsert operations
 _retry_manager = DatabaseRetryManager(RetryConfig(max_retries=5))  # More retries for upsert operations
@@ -41,6 +42,19 @@ class UpsertCoordinator:
         self._pending_tasks: Set[asyncio.Future] = set()
         self._lock = asyncio.Lock()
         self.doc_embedder = DocEmbedder()
+        self._initialized = False
+        register_shutdown_handler(self.cleanup)
+    
+    async def initialize(self):
+        """Initialize the upsert coordinator."""
+        if not self._initialized:
+            try:
+                # Any coordinator-specific initialization can go here
+                self._initialized = True
+                log("Upsert coordinator initialized", level="info")
+            except Exception as e:
+                log(f"Error initializing upsert coordinator: {e}", level="error")
+                raise
     
     @handle_async_errors(error_types=[PostgresError, DatabaseError])
     async def store_code_in_postgres(self, code_data: Dict) -> None:
@@ -194,6 +208,9 @@ class UpsertCoordinator:
     @handle_async_errors(error_types=(PostgresError, Neo4jError, TransactionError))
     async def upsert_code_snippet(self, code_data: Dict) -> None:
         """[6.5.2] Store code with transaction coordination."""
+        if not self._initialized:
+            await self.initialize()
+            
         async with AsyncErrorBoundary("code upsert", error_types=(PostgresError, Neo4jError), severity=ErrorSeverity.ERROR):
             async with transaction_scope() as txn:
                 await txn.track_repo_change(code_data['repo_id'])
@@ -213,6 +230,9 @@ class UpsertCoordinator:
         is_primary: bool = True
     ) -> Optional[int]:
         """[6.5.3] Store document with transaction coordination."""
+        if not self._initialized:
+            await self.initialize()
+            
         async with AsyncErrorBoundary("doc upsert", error_types=(PostgresError, Neo4jError), severity=ErrorSeverity.ERROR):
             async with transaction_scope() as txn:
                 await txn.track_repo_change(repo_id)
@@ -239,6 +259,9 @@ class UpsertCoordinator:
     @handle_async_errors(error_types=(PostgresError, TransactionError))
     async def upsert_repository(self, repo_data: Dict) -> int:
         """[6.5.4] Store repository with transaction coordination."""
+        if not self._initialized:
+            await self.initialize()
+            
         async with transaction_scope() as txn:
             conn = await connection_manager.get_postgres_connection()
             try:
@@ -276,6 +299,9 @@ class UpsertCoordinator:
     @handle_async_errors(error_types=[PostgresError, DatabaseError])
     async def share_docs_with_repo(self, doc_ids: List[int], target_repo_id: int) -> Dict:
         """[6.5.5] Share documents with another repository."""
+        if not self._initialized:
+            await self.initialize()
+            
         async with transaction_scope() as txn:
             conn = await connection_manager.get_postgres_connection()
             try:
@@ -314,6 +340,9 @@ class UpsertCoordinator:
         features: ExtractedFeatures
     ) -> None:
         """[6.5.6] Store parsed content with transaction coordination."""
+        if not self._initialized:
+            await self.initialize()
+            
         async with transaction_scope() as txn:
             await txn.track_repo_change(repo_id)
             
@@ -338,11 +367,31 @@ class UpsertCoordinator:
             graph_sync = await get_graph_sync()
             await graph_sync.ensure_projection(repo_id)
     
-    async def cleanup(self) -> None:
-        """Clean up any pending tasks."""
-        if self._pending_tasks:
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-            self._pending_tasks.clear()
+    async def cleanup(self):
+        """Clean up all resources."""
+        try:
+            # Cancel and clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("Upsert coordinator cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up upsert coordinator: {e}", level="error")
 
 # Create global coordinator instance
-coordinator = UpsertCoordinator() 
+coordinator = UpsertCoordinator()
+
+# Register cleanup handler
+async def cleanup_upsert():
+    """Cleanup upsert coordinator resources."""
+    try:
+        await coordinator.cleanup()
+        log("Upsert coordinator resources cleaned up", level="info")
+    except Exception as e:
+        log(f"Error cleaning up upsert coordinator resources: {e}", level="error")
+
+register_shutdown_handler(cleanup_upsert) 

@@ -1,5 +1,4 @@
-"""
-Retry utilities for database operations.
+"""Database retry utilities.
 
 This module provides comprehensive retry functionality for database operations,
 with support for:
@@ -27,6 +26,7 @@ from utils.error_handling import (
     ErrorSeverity
 )
 from utils.async_runner import submit_async_task, get_loop
+from utils.app_init import register_shutdown_handler
 
 # Error classes for retry mechanism
 class RetryableError(Exception):
@@ -63,15 +63,7 @@ NON_RETRYABLE_ERROR_PATTERNS = [
 ]
 
 def is_retryable_error(error: Exception) -> bool:
-    """
-    Determine if an error is retryable based on its error message.
-    
-    Args:
-        error: The exception to check
-        
-    Returns:
-        bool: True if the error is retryable, False otherwise
-    """
+    """Determine if an error is retryable based on its error message."""
     error_msg = str(error).lower()
     
     # Check if it's explicitly a non-retryable error
@@ -95,15 +87,7 @@ def is_retryable_error(error: Exception) -> bool:
     return isinstance(error, (Neo4jError, TransactionError, ConnectionError, OSError))
 
 def classify_error(error: Exception) -> Exception:
-    """
-    Classify an error as retryable or non-retryable.
-    
-    Args:
-        error: The exception to classify
-        
-    Returns:
-        Exception: Either RetryableNeo4jError or NonRetryableNeo4jError
-    """
+    """Classify an error as retryable or non-retryable."""
     if is_retryable_error(error):
         return RetryableNeo4jError(str(error))
     else:
@@ -119,30 +103,13 @@ class RetryConfig:
         max_delay: float = 30.0,
         jitter_factor: float = 0.1
     ):
-        """
-        Initialize retry configuration.
-        
-        Args:
-            max_retries: Maximum number of retry attempts
-            base_delay: Base delay in seconds for exponential backoff
-            max_delay: Maximum delay in seconds
-            jitter_factor: Factor to apply randomness to delay (0.0-1.0)
-        """
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
         self.jitter_factor = jitter_factor
     
     def calculate_delay(self, attempt: int) -> float:
-        """
-        Calculate delay for a given attempt using exponential backoff with jitter.
-        
-        Args:
-            attempt: Current attempt number (0-based)
-            
-        Returns:
-            float: Delay in seconds
-        """
+        """Calculate delay for a given attempt using exponential backoff with jitter."""
         # Calculate exponential backoff: base_delay * 2^attempt
         delay = self.base_delay * (2 ** attempt)
         
@@ -156,23 +123,24 @@ class RetryConfig:
         return delay
 
 class DatabaseRetryManager:
-    """
-    Manager for database operations with comprehensive retry functionality.
-    
-    This class provides methods to execute database operations with 
-    exponential backoff retry logic, proper error classification,
-    and detailed logging.
-    """
+    """Manager for database operations with comprehensive retry functionality."""
     
     def __init__(self, config: RetryConfig = None):
-        """
-        Initialize the database retry manager.
-        
-        Args:
-            config: Retry configuration (optional)
-        """
         self.config = config or RetryConfig()
         self._pending_tasks: Set[asyncio.Future] = set()
+        self._initialized = False
+        register_shutdown_handler(self.cleanup)
+    
+    async def initialize(self):
+        """Initialize the retry manager."""
+        if not self._initialized:
+            try:
+                # Any retry manager-specific initialization can go here
+                self._initialized = True
+                log("Database retry manager initialized", level="info")
+            except Exception as e:
+                log(f"Error initializing database retry manager: {e}", level="error")
+                raise
     
     async def execute_with_retry(
         self,
@@ -180,20 +148,10 @@ class DatabaseRetryManager:
         *args,
         **kwargs
     ) -> Any:
-        """
-        Execute an operation with retry logic.
-        
-        Args:
-            operation_func: Function to execute
-            *args: Arguments to pass to the function
-            **kwargs: Keyword arguments to pass to the function
+        """Execute an operation with retry logic."""
+        if not self._initialized:
+            await self.initialize()
             
-        Returns:
-            Any: The result of the operation
-            
-        Raises:
-            DatabaseError: If all retries fail or a non-retryable error occurs
-        """
         operation_name = getattr(operation_func, "__name__", "database_operation")
         attempt = 0
         last_error = None
@@ -276,10 +234,19 @@ class DatabaseRetryManager:
             raise DatabaseError(error_msg)
     
     async def cleanup(self):
-        """Clean up any pending tasks."""
-        if self._pending_tasks:
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-            self._pending_tasks.clear()
+        """Clean up all resources."""
+        try:
+            # Cancel and clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("Database retry manager cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up database retry manager: {e}", level="error")
     
     def retry(
         self,
@@ -287,17 +254,7 @@ class DatabaseRetryManager:
         base_delay: Optional[float] = None,
         max_delay: Optional[float] = None
     ):
-        """
-        Decorator for retrying operations with custom retry parameters.
-        
-        Args:
-            max_retries: Override default max retries
-            base_delay: Override default base delay
-            max_delay: Override default max delay
-            
-        Returns:
-            Callable: Decorator function
-        """
+        """Decorator for retrying operations with custom retry parameters."""
         def decorator(func):
             @wraps(func)
             async def wrapper(*args, **kwargs):
@@ -319,24 +276,23 @@ class DatabaseRetryManager:
 # Default retry manager instance
 default_retry_manager = DatabaseRetryManager()
 
+# Register cleanup handler
+async def cleanup_retry():
+    """Cleanup retry utilities resources."""
+    try:
+        await default_retry_manager.cleanup()
+        log("Retry utilities cleaned up", level="info")
+    except Exception as e:
+        log(f"Error cleaning up retry utilities: {e}", level="error")
+
+register_shutdown_handler(cleanup_retry)
+
 def with_retry(
     max_retries: Optional[int] = None,
     base_delay: Optional[float] = None,
     max_delay: Optional[float] = None
 ):
-    """
-    Decorator for retrying operations with custom retry parameters.
-    
-    This is a convenience wrapper around DatabaseRetryManager.retry.
-    
-    Args:
-        max_retries: Override default max retries
-        base_delay: Override default base delay
-        max_delay: Override default max delay
-        
-    Returns:
-        Callable: Decorator function
-    """
+    """Decorator for retrying operations with custom retry parameters."""
     return default_retry_manager.retry(
         max_retries=max_retries,
         base_delay=base_delay,

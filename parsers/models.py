@@ -2,7 +2,12 @@
 
 from typing import Dict, Any, List, Optional, Set, Union, Callable
 from dataclasses import dataclass, field
+import asyncio
 from parsers.types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, PatternCategory, PatternDefinition, QueryPattern, PatternType
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
+from utils.logger import log
+from utils.app_init import register_shutdown_handler
+from utils.async_runner import submit_async_task
 from enum import Enum, auto
 import re
 
@@ -29,6 +34,42 @@ class LanguageFeatures:
     canonical_name: str
     file_extensions: Set[str]
     parser_type: ParserType
+    _initialized: bool = False
+    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+
+    def __post_init__(self):
+        """Post initialization setup."""
+        register_shutdown_handler(self.cleanup)
+
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize language features."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary(f"{self.canonical_name} features initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    log(f"{self.canonical_name} features initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing {self.canonical_name} features: {e}", level="error")
+                raise
+        return True
+
+    async def cleanup(self):
+        """Clean up language features resources."""
+        try:
+            if self._pending_tasks:
+                log(f"Cleaning up {len(self._pending_tasks)} pending {self.canonical_name} feature tasks", level="info")
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            self._initialized = False
+            log(f"{self.canonical_name} features cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up {self.canonical_name} features: {e}", level="error")
 
 @dataclass
 class PatternMatch:
@@ -56,6 +97,39 @@ class BaseNode:
     children: List[Any] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
+    _initialized: bool = False
+    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+
+    def __post_init__(self):
+        """Post initialization setup."""
+        register_shutdown_handler(self.cleanup)
+
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize node resources."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary(f"{self.type} node initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    return True
+            except Exception as e:
+                log(f"Error initializing {self.type} node: {e}", level="error")
+                raise
+        return True
+
+    async def cleanup(self):
+        """Clean up node resources."""
+        try:
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            self._initialized = False
+        except Exception as e:
+            log(f"Error cleaning up {self.type} node: {e}", level="error")
 
 @dataclass
 class AsciidocNode(BaseNode):
@@ -168,6 +242,39 @@ class ProcessedPattern:
     matches: List[PatternMatch] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
+    _initialized: bool = False
+    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+
+    def __post_init__(self):
+        """Post initialization setup."""
+        register_shutdown_handler(self.cleanup)
+
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize pattern resources."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary(f"{self.pattern_name} pattern initialization"):
+                    # No special initialization needed yet
+                    self._initialized = True
+                    return True
+            except Exception as e:
+                log(f"Error initializing {self.pattern_name} pattern: {e}", level="error")
+                raise
+        return True
+
+    async def cleanup(self):
+        """Clean up pattern resources."""
+        try:
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            self._initialized = False
+        except Exception as e:
+            log(f"Error cleaning up {self.pattern_name} pattern: {e}", level="error")
 
 PATTERN_CATEGORIES = {
     FeatureCategory.SYNTAX: {

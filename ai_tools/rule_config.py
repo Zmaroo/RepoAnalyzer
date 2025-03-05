@@ -31,6 +31,8 @@ DEFAULT_THRESHOLDS = {
     "code_pattern_minimum": 3,     # Minimum occurrences to consider a code pattern
     "confidence_threshold": 0.7,   # Minimum confidence for pattern extraction
     "pattern_cluster_size": 2,     # Minimum size for a pattern cluster
+    "embedding_similarity": 0.8,   # Minimum similarity for embedding matches
+    "min_pattern_support": 2,      # Minimum number of files supporting a pattern
 }
 
 # Graph projection configurations
@@ -38,45 +40,65 @@ GRAPH_PROJECTIONS = {
     "code": {
         "name_template": "code-repo-{repo_id}",
         "node_query": """
-        MATCH (n:Code) WHERE n.repo_id = $repo_id 
+        MATCH (n) 
+        WHERE (n:Code {repo_id: $repo_id}) OR 
+              (n:Pattern {repo_id: $repo_id}) OR 
+              (n:Repository {id: $repo_id})
         RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
         """,
         "relationship_query": """
-        MATCH (n:Code)-[r]->(m:Code) 
-        WHERE n.repo_id = $repo_id AND m.repo_id = $repo_id 
-        RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
+        MATCH (s)-[r]->(t)
+        WHERE s.repo_id = $repo_id AND t.repo_id = $repo_id
+        AND (
+            (s:Code AND t:Code) OR
+            (s:Pattern AND t:Code) OR
+            (s:Repository AND (t:Code OR t:Pattern))
+        )
+        RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties
         """
     },
     "pattern": {
         "name_template": "pattern-repo-{repo_id}",
         "node_query": """
         MATCH (n) 
-        WHERE (n:Pattern AND n.repo_id = $repo_id) OR 
-              (n:Code AND n.repo_id = $repo_id) OR 
-              (n:Repository AND n.id = $repo_id)
+        WHERE (n:Pattern {repo_id: $repo_id}) OR 
+              (n:Code {repo_id: $repo_id}) OR 
+              (n:Repository {id: $repo_id})
         RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
         """,
         "relationship_query": """
-        MATCH (n:Pattern {repo_id: $repo_id})-[r:EXTRACTED_FROM]->(m:Code {repo_id: $repo_id})
-        RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
-        UNION
-        MATCH (n:Repository {id: $repo_id})-[r:REFERENCE_PATTERN|APPLIED_PATTERN]->(m:Pattern)
-        RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
+        MATCH (s)-[r]->(t)
+        WHERE (
+            (s:Pattern {repo_id: $repo_id} AND t:Code {repo_id: $repo_id} AND type(r) = 'EXTRACTED_FROM') OR
+            (s:Repository {id: $repo_id} AND t:Pattern AND type(r) IN ['REFERENCE_PATTERN', 'APPLIED_PATTERN'])
+        )
+        RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties
         """
     },
     "combined": {
         "name_template": "active-reference-{active_repo_id}-{reference_repo_id}",
         "node_query": """
         MATCH (n) 
-        WHERE (n:Code AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR 
-              (n:Pattern AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id))
+        WHERE (
+            (n:Code AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR 
+            (n:Pattern AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR
+            (n:Repository AND n.id IN [$active_repo_id, $reference_repo_id])
+        )
         RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
         """,
         "relationship_query": """
         MATCH (s)-[r]->(t)
-        WHERE (s:Code OR s:Pattern) AND (t:Code OR t:Pattern) AND
-              (s.repo_id = $active_repo_id OR s.repo_id = $reference_repo_id) AND
-              (t.repo_id = $active_repo_id OR t.repo_id = $reference_repo_id)
+        WHERE (
+            (s.repo_id IN [$active_repo_id, $reference_repo_id] AND 
+             t.repo_id IN [$active_repo_id, $reference_repo_id]) OR
+            (s:Repository AND s.id IN [$active_repo_id, $reference_repo_id] AND
+             t:Pattern AND t.repo_id IN [$active_repo_id, $reference_repo_id])
+        )
+        AND (
+            (s:Code AND t:Code) OR
+            (s:Pattern AND t:Code) OR
+            (s:Repository AND (t:Code OR t:Pattern))
+        )
         RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties
         """
     }
@@ -88,21 +110,63 @@ GRAPH_ALGORITHMS = {
         "algorithm": "gds.nodeSimilarity.stream",
         "config": {
             "topK": 10,
-            "similarityCutoff": 0.5
+            "similarityCutoff": 0.5,
+            "relationshipWeightProperty": "confidence"
         }
     },
     "clustering": {
         "algorithm": "gds.louvain.stream",
         "config": {
-            "relationshipWeightProperty": "confidence"
+            "relationshipWeightProperty": "confidence",
+            "includeIntermediateCommunities": True
         }
     },
     "centrality": {
         "algorithm": "gds.pageRank.stream",
         "config": {
             "maxIterations": 20,
-            "dampingFactor": 0.85
+            "dampingFactor": 0.85,
+            "relationshipWeightProperty": "confidence"
         }
+    },
+    "path_finding": {
+        "algorithm": "gds.shortestPath.stream",
+        "config": {
+            "relationshipWeightProperty": "confidence",
+            "path": True
+        }
+    }
+}
+
+# Pattern extraction configurations
+PATTERN_EXTRACTION = {
+    PatternType.CODE_STRUCTURE: {
+        "min_occurrences": 3,
+        "confidence_threshold": 0.7,
+        "embedding_similarity": 0.8,
+        "table": "code_snippets",
+        "join_conditions": """
+            JOIN code_patterns p ON c.id = p.code_id
+            WHERE c.repo_id = $1 AND p.pattern_type = 'code_structure'
+        """
+    },
+    PatternType.DOCUMENTATION: {
+        "min_occurrences": 2,
+        "confidence_threshold": 0.6,
+        "embedding_similarity": 0.7,
+        "table": "repo_docs",
+        "join_conditions": """
+            JOIN repo_doc_relations r ON d.id = r.doc_id
+            WHERE r.repo_id = $1 AND d.doc_type = 'pattern'
+        """
+    },
+    PatternType.ARCHITECTURE: {
+        "min_occurrences": 1,
+        "confidence_threshold": 0.9,
+        "table": "code_snippets",
+        "join_conditions": """
+            WHERE c.repo_id = $1 AND c.file_path LIKE 'architecture/%'
+        """
     }
 }
 
@@ -112,42 +176,48 @@ EXTRACTION_POLICIES = {
         "policy": ExtractionPolicy.BALANCED,
         "thresholds": {
             "min_occurrences": 3,
-            "confidence": 0.7
+            "confidence": 0.7,
+            "embedding_similarity": 0.8
         }
     },
     PatternType.CODE_NAMING: {
         "policy": ExtractionPolicy.STRICT,
         "thresholds": {
             "min_occurrences": 5,
-            "confidence": 0.8
+            "confidence": 0.8,
+            "embedding_similarity": 0.85
         }
     },
     PatternType.ERROR_HANDLING: {
         "policy": ExtractionPolicy.BALANCED,
         "thresholds": {
             "min_occurrences": 2,
-            "confidence": 0.7
+            "confidence": 0.7,
+            "embedding_similarity": 0.75
         }
     },
     PatternType.DOCUMENTATION: {
         "policy": ExtractionPolicy.INCLUSIVE,
         "thresholds": {
             "min_occurrences": 1,
-            "confidence": 0.6
+            "confidence": 0.6,
+            "embedding_similarity": 0.7
         }
     },
     PatternType.ARCHITECTURE: {
         "policy": ExtractionPolicy.STRICT,
         "thresholds": {
             "min_occurrences": 1,
-            "confidence": 0.9
+            "confidence": 0.9,
+            "embedding_similarity": 0.9
         }
     },
     PatternType.COMPONENT_DEPENDENCY: {
         "policy": ExtractionPolicy.BALANCED,
         "thresholds": {
             "min_occurrences": 2,
-            "confidence": 0.7
+            "confidence": 0.7,
+            "embedding_similarity": 0.8
         }
     }
 }
@@ -231,7 +301,6 @@ DOC_PATTERN_RULES = {
     }
 }
 
-# Return a copy of the default thresholds
 def get_default_thresholds() -> Dict[str, Any]:
     """Get a copy of the default threshold settings."""
     return DEFAULT_THRESHOLDS.copy()
@@ -271,4 +340,9 @@ def get_language_rules(language: str) -> Dict[str, Any]:
 
 def get_doc_pattern_rules(doc_type: str) -> Dict[str, Any]:
     """Get rules for a specific documentation type."""
-    return DOC_PATTERN_RULES.get(doc_type.lower(), DOC_PATTERN_RULES["default"]) 
+    return DOC_PATTERN_RULES.get(doc_type.lower(), DOC_PATTERN_RULES["default"])
+
+def get_pattern_extraction_config(pattern_type: PatternType) -> Dict[str, Any]:
+    """Get extraction configuration for a pattern type."""
+    return PATTERN_EXTRACTION.get(pattern_type, 
+                                PATTERN_EXTRACTION[PatternType.CODE_STRUCTURE]) 
