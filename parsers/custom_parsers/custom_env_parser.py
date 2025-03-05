@@ -11,7 +11,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.models import EnvNode, PatternType
 from parsers.query_patterns.env import ENV_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 import re
 
 class EnvParser(BaseParser):
@@ -56,7 +56,7 @@ class EnvParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary("env file parsing"):
+        with ErrorBoundary(operation_name="env file parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -144,7 +144,7 @@ class EnvParser(BaseParser):
         Returns:
             List of extracted pattern dictionaries
         """
-        with ErrorBoundary("env pattern extraction"):
+        with ErrorBoundary(operation_name="env pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 patterns = []
                 

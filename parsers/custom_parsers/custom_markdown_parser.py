@@ -6,7 +6,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.models import MarkdownNode, PatternType
 from parsers.query_patterns.markdown import MARKDOWN_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 import re
 
 class MarkdownParser(BaseParser):
@@ -41,7 +41,7 @@ class MarkdownParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(error_types=(ParsingError,), context="Markdown parsing"):
+        with ErrorBoundary(operation_name="Markdown parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -143,7 +143,7 @@ class MarkdownParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(error_types=(ProcessingError,), context="Markdown pattern extraction"):
+        with ErrorBoundary(operation_name="Markdown pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
                 ast = self._parse_source(source_code)

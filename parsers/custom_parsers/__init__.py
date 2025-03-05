@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List, Type
 from parsers.types import FileType
 from parsers.base_parser import BaseParser
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 import importlib
 import inspect
 import os
@@ -25,7 +25,7 @@ def _load_parsers():
             continue
             
         module_name = file.stem
-        with ErrorBoundary(f"loading parser module {module_name}"):
+        with ErrorBoundary(operation_name=f"loading parser module {module_name}", error_types=(ImportError, AttributeError), severity=ErrorSeverity.ERROR):
             try:
                 # Import the module
                 module = importlib.import_module(f"parsers.custom_parsers.{module_name}")

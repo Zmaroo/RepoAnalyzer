@@ -7,7 +7,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.xml import XML_PATTERNS
 from parsers.models import XmlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 from collections import Counter
 import re
 
@@ -60,7 +60,7 @@ class XmlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(error_types=(ParsingError,), context="XML parsing"):
+        with ErrorBoundary(operation_name="XML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -109,7 +109,7 @@ class XmlParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(error_types=(ProcessingError,), context="XML pattern extraction"):
+        with ErrorBoundary(operation_name="XML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
                 ast = self._parse_source(source_code)

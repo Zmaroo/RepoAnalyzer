@@ -33,6 +33,8 @@ from utils.error_handling import (
     ProcessingError,
     AsyncErrorBoundary,
     ErrorBoundary,
+    ErrorSeverity,
+    submit_async_task
 )
 from parsers.models import (
     FileType,
@@ -52,7 +54,11 @@ class AIAssistant:
     """[4.1.1] Unified AI assistance interface."""
     
     def __init__(self):
-        with ErrorBoundary("AI Assistant initialization"):
+        with ErrorBoundary(
+            operation_name="AI Assistant initialization",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.CRITICAL
+        ):
             self.graph_analysis = GraphAnalysis()
             self.code_understanding = CodeUnderstanding()
             self.doc_embedder = DocEmbedder()
@@ -69,7 +75,11 @@ class AIAssistant:
     @handle_async_errors(error_types=ProcessingError)
     async def analyze_repository(self, repo_id: int) -> Dict[str, Any]:
         """[4.1.2] Perform comprehensive repository analysis concurrently."""
-        async with AsyncErrorBoundary("repository analysis"):
+        async with AsyncErrorBoundary(
+            operation_name="repository analysis",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
             structure_task = asyncio.create_task(self.analyze_code_structure(repo_id))
             codebase_task = asyncio.create_task(self.code_understanding.analyze_codebase(repo_id))
             docs_task = asyncio.create_task(self.analyze_documentation(repo_id))
@@ -87,7 +97,11 @@ class AIAssistant:
         file_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """Analyze code structure using graph capabilities."""
-        async with AsyncErrorBoundary("code structure analysis"):
+        async with AsyncErrorBoundary(
+            operation_name="code structure analysis",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
             metrics = await self.graph_analysis.get_code_metrics(repo_id, file_path)
             dependencies = await self.graph_analysis.get_dependencies(repo_id, file_path)
             
@@ -103,7 +117,11 @@ class AIAssistant:
         file_path: str
     ) -> Dict[str, Any]:
         """Get comprehensive code context concurrently."""
-        async with AsyncErrorBoundary("code context retrieval"):
+        async with AsyncErrorBoundary(
+            operation_name="code context retrieval",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
             structure, references, context = await asyncio.gather(
                 self.analyze_code_structure(repo_id, file_path),
                 self.graph_analysis.get_references(repo_id, file_path),
@@ -189,7 +207,11 @@ class AIAssistant:
     @handle_async_errors(error_types=ProcessingError)
     async def analyze_documentation(self, repo_id: int) -> Dict[str, Any]:
         """[4.1.5] Analyze documentation quality, coverage, and clusters."""
-        async with AsyncErrorBoundary("documentation analysis"):
+        async with AsyncErrorBoundary(
+            operation_name="documentation analysis",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
             try:
                 # Import locally to avoid circular dependencies
                 from semantic.search import get_repo_docs
@@ -199,9 +221,9 @@ class AIAssistant:
                 
                 return {
                     "total_docs": len(docs),
-                    "clusters": self._analyze_doc_clusters(docs),
-                    "coverage": self._analyze_coverage(docs),
-                    "quality": self._batch_quality_analysis(docs)
+                    "clusters": await self._analyze_doc_clusters(docs),
+                    "coverage": await self._analyze_coverage(docs),
+                    "quality": await self._batch_quality_analysis(docs)
                 }
             except ImportError as e:
                 log(f"Documentation module not available: {e}", level="error")
@@ -214,9 +236,13 @@ class AIAssistant:
                 raise ProcessingError(f"Documentation analysis failed: {e}")
 
     @handle_errors(error_types=ProcessingError)
-    def _analyze_doc_clusters(self, docs: List[Dict]) -> Dict[str, Any]:
+    async def _analyze_doc_clusters(self, docs: List[Dict]) -> Dict[str, Any]:
         """Cluster similar documentation."""
-        with ErrorBoundary("documentation clustering"):
+        with ErrorBoundary(
+            operation_name="documentation clustering",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.WARNING
+        ):
             if not docs:
                 return {}
             
@@ -238,9 +264,13 @@ class AIAssistant:
             return clusters
 
     @handle_errors(error_types=ProcessingError)
-    def _analyze_coverage(self, docs: List[Dict]) -> Dict[str, Any]:
+    async def _analyze_coverage(self, docs: List[Dict]) -> Dict[str, Any]:
         """Analyze documentation coverage."""
-        with ErrorBoundary("coverage analysis"):
+        with ErrorBoundary(
+            operation_name="coverage analysis",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.WARNING
+        ):
             coverage = {
                 "total_lines": sum(len(doc['content'].splitlines()) for doc in docs),
                 "coverage_by_type": {},
@@ -254,9 +284,13 @@ class AIAssistant:
             return coverage
 
     @handle_errors(error_types=ProcessingError)
-    def _batch_quality_analysis(self, docs: List[Dict]) -> Dict[str, Any]:
+    async def _batch_quality_analysis(self, docs: List[Dict]) -> Dict[str, Any]:
         """Analyze documentation quality by computing various metrics."""
-        with ErrorBoundary("quality analysis"):
+        with ErrorBoundary(
+            operation_name="quality analysis",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.WARNING
+        ):
             quality_metrics = {}
             
             for doc in docs:
@@ -286,7 +320,7 @@ class AIAssistant:
             
             suggestions = []
             for doc in docs:
-                quality = self._batch_quality_analysis([doc])[doc['id']]
+                quality = await self._batch_quality_analysis([doc])[doc['id']]
                 
                 if quality['completeness'] < 0.7:
                     suggestions.append({
@@ -525,7 +559,11 @@ class AIAssistant:
     @handle_errors(error_types=ProcessingError)
     def close(self) -> None:
         """[4.1.10] Cleanup all resources."""
-        with ErrorBoundary("resource cleanup"):
+        with ErrorBoundary(
+            operation_name="resource cleanup",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.WARNING
+        ):
             try:
                 self.graph_analysis.cleanup()
                 self.code_understanding.cleanup()

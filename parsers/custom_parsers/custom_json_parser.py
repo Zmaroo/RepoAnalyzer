@@ -6,7 +6,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.models import JsonNode, PatternType
 from parsers.query_patterns.json import JSON_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 import json
 import re
 from collections import Counter
@@ -124,7 +124,7 @@ class JsonParser(BaseParser):
         lines = source_code.splitlines()
         line_count = len(lines)
         
-        with ErrorBoundary(error_types=(ParsingError,), context="JSON parsing"):
+        with ErrorBoundary(operation_name="JSON parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Note: We don't need to check cache here as BaseParser.parse() already does this
                 # This method will only be called for cache misses
@@ -226,7 +226,7 @@ class JsonParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(error_types=(ProcessingError,), context="JSON pattern extraction"):
+        with ErrorBoundary(operation_name="JSON pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
                 ast_dict = self._parse_source(source_code)

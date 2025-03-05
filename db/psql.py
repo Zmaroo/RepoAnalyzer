@@ -10,7 +10,8 @@ from utils.error_handling import (
     DatabaseError,
     AsyncErrorBoundary,
     ErrorBoundary,
-    PostgresError
+    PostgresError,
+    ErrorSeverity
 )
 from db.retry_utils import DatabaseRetryManager, RetryConfig
 
@@ -38,7 +39,7 @@ async def init_db_pool() -> None:
     """[6.1.1] Initialize the database connection pool."""
     global _pool
     try:
-        async with AsyncErrorBoundary("db pool initialization", error_types=ConnectionError):
+        async with AsyncErrorBoundary("db pool initialization", error_types=ConnectionError, severity=ErrorSeverity.CRITICAL):
             _pool = await asyncpg.create_pool(
                 user=PostgresConfig.user,
                 password=PostgresConfig.password,

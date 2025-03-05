@@ -1,7 +1,7 @@
 from db.psql import query, close_db_pool
 import asyncio
 from pprint import pprint
-from utils.error_handling import handle_async_errors, ErrorBoundary, PostgresError
+from utils.error_handling import handle_async_errors, ErrorBoundary, PostgresError, ErrorSeverity
 from utils.logger import log
 
 @handle_async_errors(error_types=[PostgresError])
@@ -21,8 +21,7 @@ async def check_all_postgres_tables():
     }
     
     for table_name, sql in tables.items():
-        with ErrorBoundary(error_types=[PostgresError, Exception],
-                           error_message=f"Error querying {table_name}") as error_boundary:
+        with ErrorBoundary(error_types=[PostgresError, Exception], error_message="Error executing clickhouse query", severity=ErrorSeverity.ERROR) as error_boundary:
             records = await query(sql)
             print(f"{table_name}:")
             print("-" * len(table_name))

@@ -10,9 +10,69 @@ import threading
 import asyncio
 import os
 import json
+import time
 from datetime import datetime
+from utils.async_runner import get_loop, submit_async_task
 # The following import is circular, but explicitly used only when needed
 # from utils.logger import log
+
+# Add error severity levels
+class ErrorSeverity:
+    """Error severity levels for better error handling."""
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+# Add health status tracking
+class HealthStatus:
+    """Health status tracking for error boundaries."""
+    OK = "ok"
+    DEGRADED = "degraded"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+class ErrorMetrics:
+    """Tracks error metrics and performance."""
+    def __init__(self):
+        self.error_counts = {level: 0 for level in vars(ErrorSeverity).keys() if not level.startswith('_')}
+        self.total_operations = 0
+        self.total_errors = 0
+        self.performance_data = []
+        self._lock = asyncio.Lock()
+
+    async def record_error(self, severity: str):
+        """Record an error occurrence."""
+        async with self._lock:
+            self.error_counts[severity] = self.error_counts.get(severity, 0) + 1
+            self.total_errors += 1
+
+    async def record_operation(self, duration: float):
+        """Record operation performance."""
+        async with self._lock:
+            self.total_operations += 1
+            self.performance_data.append(duration)
+
+    def get_error_rate(self) -> float:
+        """Calculate error rate."""
+        if self.total_operations == 0:
+            return 0.0
+        return self.total_errors / self.total_operations
+
+    def get_health_status(self) -> str:
+        """Determine health status based on error rates."""
+        error_rate = self.get_error_rate()
+        if error_rate == 0:
+            return HealthStatus.OK
+        elif error_rate < 0.1:
+            return HealthStatus.DEGRADED
+        elif error_rate < 0.3:
+            return HealthStatus.ERROR
+        return HealthStatus.CRITICAL
+
+# Global metrics instance
+error_metrics = ErrorMetrics()
 
 class ProcessingError(Exception):
     """Base class for processing errors."""
@@ -103,7 +163,7 @@ def handle_errors(error_types: Union[Type[Exception], Tuple[Type[Exception], ...
     return decorator
 
 @asynccontextmanager
-async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True):
+async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True, severity=ErrorSeverity.ERROR):
     """
     Async context manager for error boundaries.
     
@@ -116,11 +176,14 @@ async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), erro
         error_types: A tuple of exception types to catch. Can also be a list or a single exception type.
         error_message: An optional custom error message prefix
         reraise: Whether to re-raise the exception (default True)
+        severity: Error severity level (default ERROR)
     
     Yields:
         A simple namespace object with an 'error' attribute that will be None or
         contain the caught exception.
     """
+    start_time = time.time()
+
     # Ensure error_types is a tuple for the except clause
     if isinstance(error_types, list):
         error_types = tuple(error_types)
@@ -131,6 +194,8 @@ async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), erro
     class ErrorContainer:
         def __init__(self):
             self.error = None
+            self.duration = 0
+            self.severity = severity
     
     error_container = ErrorContainer()
     
@@ -141,17 +206,32 @@ async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), erro
         yield error_container
     except error_types as e:
         from utils.logger import log
-        log(f"{msg_prefix}: {str(e)}", level="error")
         
-        # Record the error for audit purposes
-        ErrorAudit.record_error(e, operation_name or "unknown", error_types)
+        # Record error metrics asynchronously
+        await error_metrics.record_error(severity)
+        
+        # Enhanced error logging with severity
+        log(f"{msg_prefix}: {str(e)}", level=severity.lower())
+        
+        # Record the error for audit purposes with severity
+        await ErrorAudit.record_error(e, operation_name or "unknown", error_types)
         
         # Store the error
         error_container.error = e
         
+        # Check health status and log if degraded
+        health_status = error_metrics.get_health_status()
+        if health_status != HealthStatus.OK:
+            log(f"Health status degraded to {health_status}", level="warning")
+        
         # Re-raise if requested
         if reraise:
             raise
+    finally:
+        # Record performance metrics asynchronously
+        duration = time.time() - start_time
+        error_container.duration = duration
+        await error_metrics.record_operation(duration)
 
 def handle_async_errors(func=None, error_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]] = Exception, default_return=None):
     """
@@ -296,7 +376,7 @@ def handle_async_errors(func=None, error_types: Union[Type[Exception], Tuple[Typ
     return decorator
 
 @contextmanager
-def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True):
+def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True, severity=ErrorSeverity.ERROR):
     """
     Context manager for error handling.
     
@@ -305,11 +385,14 @@ def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=N
         error_types: A tuple of exception types to catch. Can also be a list or a single exception type.
         error_message: An optional custom error message prefix
         reraise: Whether to re-raise the exception (default True)
+        severity: Error severity level (default ERROR)
     
     Yields:
         A simple namespace object with an 'error' attribute that will be None or
         contain the caught exception.
     """
+    start_time = time.time()
+
     # Ensure error_types is a tuple for the except clause
     if isinstance(error_types, list):
         error_types = tuple(error_types)
@@ -320,6 +403,8 @@ def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=N
     class ErrorContainer:
         def __init__(self):
             self.error = None
+            self.duration = 0
+            self.severity = severity
     
     error_container = ErrorContainer()
     
@@ -330,17 +415,32 @@ def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=N
         yield error_container
     except error_types as e:
         from utils.logger import log
-        log(f"{msg_prefix}: {str(e)}", level="error")
         
-        # Record the error for audit purposes
-        ErrorAudit.record_error(e, operation_name or "unknown", error_types)
+        # Record error metrics asynchronously using submit_async_task
+        submit_async_task(error_metrics.record_error(severity))
+        
+        # Enhanced error logging with severity
+        log(f"{msg_prefix}: {str(e)}", level=severity.lower())
+        
+        # Record the error for audit purposes with severity
+        submit_async_task(ErrorAudit.record_error(e, operation_name or "unknown", error_types))
         
         # Store the error
         error_container.error = e
         
+        # Check health status and log if degraded
+        health_status = error_metrics.get_health_status()
+        if health_status != HealthStatus.OK:
+            log(f"Health status degraded to {health_status}", level="warning")
+        
         # Re-raise if requested
         if reraise:
             raise
+    finally:
+        # Record performance metrics asynchronously
+        duration = time.time() - start_time
+        error_container.duration = duration
+        submit_async_task(error_metrics.record_operation(duration))
 
 # New class for exception auditing
 class ErrorAudit:
@@ -354,9 +454,8 @@ class ErrorAudit:
     4. Recommend standardization of error handling
     """
     
-    # Track errors with thread safety
-    _lock = threading.RLock()
-    _async_lock = asyncio.Lock()
+    # Track errors with async safety
+    _lock = asyncio.Lock()
     
     # Storage for error occurrences
     _errors: Dict[str, List[Dict]] = {}
@@ -369,7 +468,7 @@ class ErrorAudit:
     _all_functions: Set[str] = set()
     
     @classmethod
-    def record_error(cls, error: Exception, operation_name: str, handled_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]]) -> None:
+    async def record_error(cls, error: Exception, operation_name: str, handled_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]]) -> None:
         """
         Record an error for audit purposes.
         
@@ -379,18 +478,16 @@ class ErrorAudit:
             handled_types: The type(s) of exceptions that were handled. Can be a single exception type,
                           a tuple of exception types, or a list of exception types.
         """
-        with cls._lock:
+        async with cls._lock:
             # Ensure handled_types is a tuple
             if isinstance(handled_types, list):
                 handled_types = tuple(handled_types)
             elif not isinstance(handled_types, tuple) and not isinstance(handled_types, type):
                 try:
-                    # Try to convert to tuple if it's an iterable but not a tuple
                     handled_types = tuple(handled_types)
                 except (TypeError, ValueError):
                     handled_types = (Exception,)
             elif isinstance(handled_types, type):
-                # Convert single type to tuple
                 handled_types = (handled_types,)
             
             error_type = type(error).__name__
@@ -427,21 +524,21 @@ class ErrorAudit:
             del frame  # Avoid reference cycles
         
         # Register the error
-        cls.register_raw_exception_handler(file_path, line_number)
+        await cls.register_raw_exception_handler(file_path, line_number)
     
     @classmethod
-    def register_decorated_function(cls, func_name: str):
+    async def register_decorated_function(cls, func_name: str):
         """
         Register a function that uses our error handling decorators.
         
         Args:
             func_name: The name of the decorated function
         """
-        with cls._lock:
+        async with cls._lock:
             cls._decorated_functions.add(func_name)
     
     @classmethod
-    def register_all_functions(cls, module_name: str):
+    async def register_all_functions(cls, module_name: str):
         """
         Register all functions in a module for coverage analysis.
         
@@ -453,7 +550,7 @@ class ErrorAudit:
             if not module:
                 return
                 
-            with cls._lock:
+            async with cls._lock:
                 for name, obj in inspect.getmembers(module):
                     if inspect.isfunction(obj) or inspect.iscoroutinefunction(obj):
                         cls._all_functions.add(f"{module_name}.{name}")
@@ -462,7 +559,7 @@ class ErrorAudit:
             log(f"Error registering functions from {module_name}: {e}", level="error")
     
     @classmethod
-    def register_raw_exception_handler(cls, file_path: str, line_number: int):
+    async def register_raw_exception_handler(cls, file_path: str, line_number: int):
         """
         Register a location with a raw try/except block.
         
@@ -470,18 +567,18 @@ class ErrorAudit:
             file_path: Path to the file containing the try/except
             line_number: Line number where the try/except begins
         """
-        with cls._lock:
+        async with cls._lock:
             cls._raw_exception_handlers.add(f"{file_path}:{line_number}")
     
     @classmethod
-    def get_error_report(cls) -> Dict:
+    async def get_error_report(cls) -> Dict:
         """
         Generate a comprehensive error report.
         
         Returns:
             Dict containing error statistics and patterns
         """
-        with cls._lock:
+        async with cls._lock:
             # Count errors by type
             error_counts = {error_type: len(occurrences) 
                            for error_type, occurrences in cls._errors.items()}
@@ -533,7 +630,7 @@ class ErrorAudit:
             }
     
     @classmethod
-    def get_standardization_recommendations(cls) -> List[Dict]:
+    async def get_standardization_recommendations(cls) -> List[Dict]:
         """
         Generate recommendations for standardizing error handling.
         
@@ -542,7 +639,7 @@ class ErrorAudit:
         """
         recommendations = []
         
-        with cls._lock:
+        async with cls._lock:
             # Identify functions with high error rates
             location_counts = {}
             for error_type, occurrences in cls._errors.items():
@@ -584,7 +681,7 @@ class ErrorAudit:
         return sorted(recommendations, key=lambda x: x["error_count"], reverse=True)
     
     @classmethod
-    def _get_most_common_category_for_location(cls, location: str) -> str:
+    async def _get_most_common_category_for_location(cls, location: str) -> str:
         """
         Determine the most common error category for a location.
         
@@ -596,13 +693,14 @@ class ErrorAudit:
         """
         category_counts = {}
         
-        for error_type, occurrences in cls._errors.items():
-            for occurrence in occurrences:
-                if occurrence.get("location") == location:
-                    category = occurrence.get("category", "unknown")
-                    if category not in category_counts:
-                        category_counts[category] = 0
-                    category_counts[category] += 1
+        async with cls._lock:
+            for error_type, occurrences in cls._errors.items():
+                for occurrence in occurrences:
+                    if occurrence.get("location") == location:
+                        category = occurrence.get("category", "unknown")
+                        if category not in category_counts:
+                            category_counts[category] = 0
+                        category_counts[category] += 1
         
         if not category_counts:
             return "general"
@@ -621,7 +719,7 @@ class ErrorAudit:
         Returns:
             The path to the saved report file
         """
-        async with cls._async_lock:
+        async with cls._lock:
             # Generate the report
             report = cls.get_error_report()
             recommendations = cls.get_standardization_recommendations()
@@ -657,7 +755,7 @@ class ErrorAudit:
                 return ""
     
     @classmethod
-    def analyze_codebase(cls, directory: str):
+    async def analyze_codebase(cls, directory: str):
         """
         Analyze a directory for error handling patterns.
         
@@ -676,14 +774,14 @@ class ErrorAudit:
                 for file in files:
                     if file.endswith('.py'):
                         file_path = os.path.join(root, file)
-                        cls._analyze_file(file_path)
+                        await cls._analyze_file(file_path)
             
             log(f"Completed error handling analysis of {directory}", level="info")
         except Exception as e:
             log(f"Error analyzing codebase: {e}", level="error")
     
     @classmethod
-    def _analyze_file(cls, file_path: str):
+    async def _analyze_file(cls, file_path: str):
         """
         Analyze a Python file for error handling patterns.
         
@@ -699,7 +797,7 @@ class ErrorAudit:
                 stripped = line.strip()
                 if stripped == 'try:':
                     # Register this as a raw try/except
-                    cls.register_raw_exception_handler(file_path, i + 1)
+                    await cls.register_raw_exception_handler(file_path, i + 1)
                 
                 # Check for our decorators
                 elif '@handle_errors' in stripped or '@handle_async_errors' in stripped:
@@ -707,7 +805,7 @@ class ErrorAudit:
                     if i + 1 < len(lines) and 'def ' in lines[i + 1]:
                         func_def = lines[i + 1].strip()
                         func_name = func_def.split('def ')[1].split('(')[0].strip()
-                        cls.register_decorated_function(func_name)
+                        await cls.register_decorated_function(func_name)
                 
                 # Check for context managers
                 elif 'with ErrorBoundary' in stripped or 'with AsyncErrorBoundary' in stripped:
@@ -725,7 +823,7 @@ class ErrorAudit:
                     func_name = stripped.split('def ')[1].split('(')[0].strip()
                     full_name = f"{module_path}.{func_name}"
                     
-                    with cls._lock:
+                    async with cls._lock:
                         cls._all_functions.add(full_name)
                         
         except Exception as e:
@@ -749,11 +847,11 @@ async def run_exception_audit(codebase_dir: str = ".") -> Dict:
         log("Starting exception handling audit...", level="info")
         
         # Analyze the codebase for error handling patterns
-        ErrorAudit.analyze_codebase(codebase_dir)
+        await ErrorAudit.analyze_codebase(codebase_dir)
         
         # Generate the report
-        report = ErrorAudit.get_error_report()
-        recommendations = ErrorAudit.get_standardization_recommendations()
+        report = await ErrorAudit.get_error_report()
+        recommendations = await ErrorAudit.get_standardization_recommendations()
         
         # Save the report to a file
         await ErrorAudit.save_report()

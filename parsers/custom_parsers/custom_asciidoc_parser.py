@@ -6,7 +6,7 @@ from parsers.models import AsciidocNode, PatternType
 from parsers.types import FileType, ParserType
 from parsers.query_patterns.asciidoc import ASCIIDOC_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 import re
 
 class AsciidocParser(BaseParser):
@@ -45,7 +45,7 @@ class AsciidocParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(error_types=(ParsingError,), context="AsciiDoc parsing"):
+        with ErrorBoundary(operation_name="AsciiDoc parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 ast = self._create_node("asciidoc_document", [0, 0], [0, 0], children=[])
                 # Your custom parsing logic here...
@@ -75,7 +75,7 @@ class AsciidocParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(error_types=(ProcessingError,), context="AsciiDoc pattern extraction"):
+        with ErrorBoundary(operation_name="AsciiDoc pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
                 ast = self._parse_source(source_code)

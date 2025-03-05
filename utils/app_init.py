@@ -7,7 +7,7 @@ import sys
 from typing import Callable, List, Optional
 
 from utils.logger import log
-from utils.async_runner import cleanup_tasks
+from utils.async_runner import cleanup_tasks, submit_async_task
 from utils.cache import cache_coordinator
 from utils.cache_analytics import start_cache_analytics
 
@@ -45,8 +45,9 @@ async def _initialize_components():
         
         # Initialize error handling
         from utils.error_handling import ErrorAudit
-        ErrorAudit.analyze_codebase(os.getcwd())
-        log("Error handling initialized", level="info")
+        log("Initializing error handling...")
+        submit_async_task(ErrorAudit.analyze_codebase(os.getcwd()))
+        log("Error handling initialized")
         
         # Initialize databases
         from db.psql import init_db_pool

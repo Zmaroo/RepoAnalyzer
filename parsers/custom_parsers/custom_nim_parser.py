@@ -8,7 +8,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.nim import NIM_PATTERNS
 from utils.logger import log
 from collections import Counter
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 
 class NimParser(BaseParser):
     """Parser for Nim files with enhanced pattern extraction capabilities."""
@@ -55,7 +55,7 @@ class NimParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(reraise=False, operation="parsing Nim content") as error_boundary:
+        with ErrorBoundary(operation_name="Nim parsing", error_types=(ParsingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -153,7 +153,7 @@ class NimParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(reraise=False, operation="extracting Nim patterns") as error_boundary:
+        with ErrorBoundary(operation_name="Nim pattern extraction", error_types=(ProcessingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
             try:
                 # Parse the source first to get a structured representation
                 ast_dict = self._parse_source(source_code)

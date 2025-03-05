@@ -17,7 +17,7 @@ from parsers.models import (  # Domain-specific models
 from functools import wraps
 # Import shared functionality from common module
 from indexer.common import async_read_file
-from utils.error_handling import handle_async_errors, ErrorBoundary
+from utils.error_handling import handle_async_errors, ErrorBoundary, ErrorSeverity
 
 """[3.0] Asynchronous utilities for file processing.
 
@@ -50,7 +50,7 @@ async def async_process_index_file(
     file_type: FileType  # Now using FileType enum from parsers/types
 ) -> None:
     """Asynchronously process and index a file using FileProcessor"""
-    with ErrorBoundary(f"processing file {file_path}"):
+    with ErrorBoundary(f"processing file {file_path}", severity=ErrorSeverity.ERROR):
         await processor.process_file(file_path, repo_id, base_path)
 
 @handle_async_errors
@@ -70,7 +70,7 @@ async def batch_process_files(
     4. Clean up resources
     5. Handle task errors without stopping the entire batch
     """
-    with ErrorBoundary("batch processing files"):
+    with ErrorBoundary("batch processing files", severity=ErrorSeverity.ERROR):
         # Import here to avoid circular reference
         from indexer.file_processor import FileProcessor
         

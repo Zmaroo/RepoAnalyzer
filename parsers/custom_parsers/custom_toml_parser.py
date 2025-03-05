@@ -6,7 +6,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.toml import TOML_PATTERNS
 from parsers.models import TomlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 import tomli
 from collections import Counter
 
@@ -64,7 +64,7 @@ class TomlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(error_types=(ParsingError,), context="TOML parsing"):
+        with ErrorBoundary(operation_name="TOML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -124,7 +124,7 @@ class TomlParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(error_types=(ProcessingError,), context="TOML pattern extraction"):
+        with ErrorBoundary(operation_name="TOML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source to get a structured representation
                 ast = self._parse_source(source_code)

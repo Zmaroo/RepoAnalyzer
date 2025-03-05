@@ -30,7 +30,8 @@ from utils.error_handling import (
     ProcessingError,
     DatabaseError,
     ErrorBoundary,
-    AsyncErrorBoundary
+    AsyncErrorBoundary,
+    ErrorSeverity
 )
 from parsers.models import (
     FileType,
@@ -50,7 +51,7 @@ class CodeUnderstanding:
     """[4.2.1] Code understanding and analysis capabilities."""
     
     def __init__(self):
-        with ErrorBoundary("model initialization", error_types=ProcessingError):
+        with ErrorBoundary("model initialization", error_types=ProcessingError, severity=ErrorSeverity.CRITICAL):
             self.graph_projections = Neo4jProjections()
             self.embedder = code_embedder
             
@@ -62,7 +63,7 @@ class CodeUnderstanding:
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def analyze_codebase(self, repo_id: int) -> Dict[str, Any]:
         """[4.2.2] Analyze codebase structure and relationships."""
-        async with AsyncErrorBoundary("codebase analysis"):
+        async with AsyncErrorBoundary("codebase analysis", severity=ErrorSeverity.ERROR):
             try:
                 # Import locally to avoid circular dependencies
                 from semantic.search import search_code
@@ -103,7 +104,7 @@ class CodeUnderstanding:
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_code_context(self, file_path: str, repo_id: int) -> Dict[str, Any]:
         """[4.2.3] Retrieve context for a specific file."""
-        async with AsyncErrorBoundary("code context retrieval"):
+        async with AsyncErrorBoundary(operation_name="code context retrieval", severity=ErrorSeverity.ERROR):
             # Get file content
             file_query = """
             SELECT file_content FROM code_files 
@@ -150,7 +151,7 @@ class CodeUnderstanding:
         code_content: str
     ) -> None:
         """Update both graph and content embeddings."""
-        async with AsyncErrorBoundary("embedding update"):
+        async with AsyncErrorBoundary("embedding update", severity=ErrorSeverity.ERROR):
             # Update content embedding using GraphCodeBERT
             embedding = await self.embedder.embed_async(code_content)
             update_query = """
@@ -167,7 +168,7 @@ class CodeUnderstanding:
     @handle_errors(error_types=ProcessingError)
     def cleanup(self) -> None:
         """Clean up resources."""
-        with ErrorBoundary("model cleanup"):
+        with ErrorBoundary("model cleanup", severity=ErrorSeverity.WARNING):
             self.graph_projections.close()
 
 # Do not create global instance until implementation is ready

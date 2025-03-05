@@ -8,7 +8,7 @@ from parsers.query_patterns.plaintext import PLAINTEXT_PATTERNS
 from utils.logger import log
 import re
 from collections import Counter
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 
 class PlaintextParser(BaseParser):
     """Parser for plaintext files with enhanced pattern extraction capabilities."""
@@ -41,7 +41,7 @@ class PlaintextParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(reraise=False, operation="parsing plaintext content") as error_boundary:
+        with ErrorBoundary(operation_name="plaintext parsing", error_types=(ParsingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -126,7 +126,7 @@ class PlaintextParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(reraise=False, operation="extracting plaintext patterns") as error_boundary:
+        with ErrorBoundary(operation_name="plaintext pattern extraction", error_types=(ProcessingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
             try:
                 # Parse the source first to get a structured representation
                 ast_dict = self._parse_source(source_code)

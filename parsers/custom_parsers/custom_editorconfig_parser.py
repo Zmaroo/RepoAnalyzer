@@ -12,7 +12,7 @@ from parsers.types import FileType, ParserType
 from parsers.models import EditorconfigNode, PatternType
 from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 import re
 from collections import Counter
 
@@ -51,7 +51,7 @@ class EditorconfigParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(error_types=(ParsingError,), context="EditorConfig parsing"):
+        with ErrorBoundary(operation_name="EditorConfig parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -168,7 +168,7 @@ class EditorconfigParser(BaseParser):
         Returns:
             List of extracted patterns with metadata
         """
-        with ErrorBoundary(error_types=(ProcessingError,), context="EditorConfig pattern extraction"):
+        with ErrorBoundary(operation_name="EditorConfig pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 patterns = []
                 

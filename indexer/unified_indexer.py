@@ -32,7 +32,7 @@ from db.neo4j_ops import auto_reinvoke_projection_once
 from db.upsert_ops import upsert_code_snippet
 from indexer.file_processor import FileProcessor
 from semantic.search import search_code
-from utils.error_handling import handle_async_errors, ErrorBoundary
+from utils.error_handling import handle_async_errors, ErrorBoundary, ErrorSeverity
 from utils.request_cache import request_cache_context, cached_in_request
 
 # Ensure pattern system is initialized
@@ -62,7 +62,7 @@ class ProcessingCoordinator:
         3. Handle task completion/cleanup
         4. Support graceful cancellation
         """
-        with ErrorBoundary(f"processing file {file_path}"):
+        with ErrorBoundary(f"processing file {file_path}", severity=ErrorSeverity.ERROR):
             try:
                 if not is_processable_file(file_path):
                     log(f"File not processable: {file_path}", level="debug")
@@ -99,7 +99,7 @@ async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: s
     Using request-level caching to avoid redundant work during a single indexing operation.
     """
     # Wrap the entire operation in a request cache context
-    with request_cache_context(), ErrorBoundary(f"processing repository {repo_id} at {repo_path}"):
+    with request_cache_context(), ErrorBoundary(f"processing repository {repo_id} at {repo_path}", severity=ErrorSeverity.ERROR):
         coordinator = ProcessingCoordinator()
         tasks = set()
         

@@ -40,7 +40,8 @@ from utils.error_handling import (
     Neo4jError,
     TransactionError,
     handle_async_errors,
-    ErrorBoundary
+    ErrorBoundary,
+    ErrorSeverity
 )
 
 
@@ -139,8 +140,7 @@ async def store_doc_in_postgres(doc_data: Dict) -> int:
 @handle_async_errors(error_types=[Neo4jError, DatabaseError])
 async def store_doc_in_neo4j(doc_data: Dict) -> None:
     """Store document data in Neo4j."""
-    with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception],
-                       error_message=f"Error storing document in Neo4j: {doc_data.get('file_path', 'unknown')}") as error_boundary:
+    with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception], error_message="Error storing document in Neo4j", severity=ErrorSeverity.ERROR) as error_boundary:
         cypher = """
         MERGE (d:Documentation {repo_id: $repo_id, path: $path})
         SET d += $properties
@@ -167,7 +167,7 @@ async def store_doc_in_neo4j(doc_data: Dict) -> None:
 @handle_async_errors(error_types=(PostgresError, Neo4jError, TransactionError))
 async def upsert_code_snippet(code_data: Dict) -> None:
     """[6.5.2] Store code with transaction coordination."""
-    async with AsyncErrorBoundary("code upsert", error_types=(PostgresError, Neo4jError)):
+    async with AsyncErrorBoundary("code upsert", error_types=(PostgresError, Neo4jError), severity=ErrorSeverity.ERROR):
         try:
             # Directly use transaction_scope in the async with statement
             async with transaction_scope() as txn:
@@ -202,8 +202,7 @@ async def upsert_doc(
     is_primary: bool = True
 ) -> Optional[str]:
     """High-level document upsert function."""
-    with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception],
-                       error_message=f"Error upserting document: {file_path}") as error_boundary:
+    with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception], error_message="Error upserting document", severity=ErrorSeverity.ERROR) as error_boundary:
         doc_data = {
             'repo_id': repo_id,
             'file_path': file_path,
@@ -250,8 +249,7 @@ async def upsert_repository(repo_data: Dict) -> int:
 @handle_async_errors(error_types=[PostgresError, DatabaseError])
 async def share_docs_with_repo(doc_ids: list, target_repo_id: int) -> dict:
     """[6.5.5] Share documents with another repository."""
-    with ErrorBoundary(error_types=[PostgresError, DatabaseError, Exception],
-                       error_message=f"Error sharing docs with repo {target_repo_id}") as error_boundary:
+    with ErrorBoundary(error_types=[PostgresError, DatabaseError, Exception], error_message="Error sharing docs with repo", severity=ErrorSeverity.ERROR) as error_boundary:
         for doc_id in doc_ids:
             await execute("""
                 INSERT INTO repo_doc_relations (repo_id, doc_id, is_primary)

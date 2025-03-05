@@ -6,7 +6,7 @@ from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.html import HTML_PATTERNS
 from parsers.models import HtmlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 from xml.etree.ElementTree import Element, fromstring
 from xml.sax.saxutils import escape, unescape
 import re
@@ -92,7 +92,7 @@ class HtmlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(error_types=(ParsingError,), context="HTML parsing"):
+        with ErrorBoundary(operation_name="HTML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -157,7 +157,7 @@ class HtmlParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(error_types=(ProcessingError,), context="HTML pattern extraction"):
+        with ErrorBoundary(operation_name="HTML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
                 ast_dict = self._parse_source(source_code)

@@ -26,7 +26,8 @@ from utils.error_handling import (
     ProcessingError,
     DatabaseError,
     ErrorBoundary,
-    AsyncErrorBoundary
+    AsyncErrorBoundary,
+    ErrorSeverity
 )
 from parsers.types import (
     FileType,
@@ -42,7 +43,7 @@ class GraphAnalysis:
     """[4.3.1] Graph-based code analysis capabilities using GDS."""
     
     def __init__(self):
-        with ErrorBoundary("Neo4j tools initialization"):
+        with ErrorBoundary("Neo4j tools initialization", severity=ErrorSeverity.CRITICAL):
             self.neo4j = Neo4jTools()
             self.projections = Neo4jProjections()
             
@@ -71,7 +72,7 @@ class GraphAnalysis:
         file_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """[4.3.2] Get advanced code metrics using GDS."""
-        async with AsyncErrorBoundary("code metrics analysis"):
+        async with AsyncErrorBoundary("code metrics analysis", severity=ErrorSeverity.ERROR):
             file_filter = 'WHERE n.file_path = $file_path' if file_path else ''
             
             # Use GDS for centrality and community detection
@@ -115,7 +116,7 @@ class GraphAnalysis:
         repo_id: int
     ) -> Dict[str, Any]:
         """Analyze code structure using GDS algorithms."""
-        async with AsyncErrorBoundary("structure analysis"):
+        async with AsyncErrorBoundary("structure analysis", severity=ErrorSeverity.ERROR):
             query = """
             CALL gds.graph.project.cypher(
                 'code-structure',
@@ -150,7 +151,7 @@ class GraphAnalysis:
         similarity_cutoff: float = 0.8
     ) -> List[Dict[str, Any]]:
         """Find similar code components using node2vec."""
-        async with AsyncErrorBoundary("similarity analysis"):
+        async with AsyncErrorBoundary("similarity analysis", severity=ErrorSeverity.ERROR):
             query = """
             CALL gds.graph.project.cypher(
                 'similarity-graph',
@@ -198,7 +199,7 @@ class GraphAnalysis:
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_references(self, repo_id: int, file_path: str) -> list:
         """Retrieve code references for a given file via Neo4j."""
-        async with AsyncErrorBoundary("reference retrieval"):
+        async with AsyncErrorBoundary("reference retrieval", severity=ErrorSeverity.ERROR):
             query = """
             MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:RELATED_TO]->(m:Code)
             RETURN m.file_path as file_path
@@ -209,7 +210,7 @@ class GraphAnalysis:
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_dependencies(self, repo_id: int, file_path: str, depth: int = 3) -> list:
         """Retrieve code dependencies up to a specified depth using variable-length relationships."""
-        async with AsyncErrorBoundary("dependency retrieval"):
+        async with AsyncErrorBoundary("dependency retrieval", severity=ErrorSeverity.ERROR):
             query = """
             MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:DEPENDS_ON*1..$depth]->(dep:Code)
             RETURN dep.file_path as file_path
@@ -220,7 +221,7 @@ class GraphAnalysis:
     @handle_errors(error_types=(Exception,))
     def close(self):
         """Closes Neo4j connections and graph projections."""
-        with ErrorBoundary("Neo4j connection cleanup"):
+        with ErrorBoundary("Neo4j connection cleanup", severity=ErrorSeverity.WARNING):
             if hasattr(self, 'neo4j'):
                 try:
                     self.neo4j.close()

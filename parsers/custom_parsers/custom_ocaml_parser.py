@@ -29,7 +29,7 @@ from parsers.query_patterns.ocaml_interface import OCAML_INTERFACE_PATTERNS
 from parsers.models import OcamlNode, PatternType
 from parsers.types import FileType, ParserType, PatternCategory
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
 
 def compute_offset(lines, line_no, col):
     """
@@ -72,7 +72,7 @@ class OcamlParser(BaseParser):
         Cache checks are handled at the BaseParser level, so this method is only called
         on cache misses or when we need to generate a fresh AST.
         """
-        with ErrorBoundary(reraise=False, operation="parsing OCaml content") as error_boundary:
+        with ErrorBoundary(operation_name="OCaml parsing", error_types=(ParsingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -154,7 +154,7 @@ class OcamlParser(BaseParser):
         """
         patterns = []
         
-        with ErrorBoundary(reraise=False, operation="extracting OCaml patterns") as error_boundary:
+        with ErrorBoundary(operation_name="OCaml pattern extraction", error_types=(ProcessingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
             try:
                 # Parse the source first to get a structured representation
                 ast_dict = self._parse_source(source_code)

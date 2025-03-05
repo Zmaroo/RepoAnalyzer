@@ -13,7 +13,7 @@ from parsers.file_classification import classify_file
 import asyncio
 from contextlib import asynccontextmanager
 from config import PostgresConfig, Neo4jConfig
-from utils.error_handling import handle_async_errors, ErrorBoundary
+from utils.error_handling import handle_async_errors, ErrorBoundary, ErrorSeverity
 
 @asynccontextmanager
 async def repository_transaction():
@@ -39,7 +39,7 @@ async def get_or_create_repo(
     """
     Retrieves or creates a repository using the centralized upsert operation.
     """
-    with ErrorBoundary(f"getting or creating repository '{repo_name}'"):
+    with ErrorBoundary(f"getting or creating repository '{repo_name}'", severity=ErrorSeverity.ERROR):
         async with repository_transaction():
             repo_data = {
                 'repo_name': repo_name,
@@ -52,7 +52,7 @@ async def get_or_create_repo(
 @handle_async_errors
 async def clone_repository(repo_url: str, target_dir: str) -> bool:
     """Clone a git repository to target directory."""
-    with ErrorBoundary(f"cloning repository from {repo_url}"):
+    with ErrorBoundary(f"cloning repository from {repo_url}", severity=ErrorSeverity.ERROR):
         try:
             # Run git clone in a way that doesn't block the event loop
             proc = await asyncio.create_subprocess_exec(
@@ -81,7 +81,7 @@ async def clone_and_index_repo(
     active_repo_id: Optional[int] = None
 ) -> None:
     """Clone and index a reference repository."""
-    with ErrorBoundary(f"cloning and indexing repository from {repo_url}"):
+    with ErrorBoundary(f"cloning and indexing repository from {repo_url}", severity=ErrorSeverity.ERROR):
         if not repo_name:
             repo_name = repo_url.split('/')[-1].replace('.git', '')
         

@@ -22,7 +22,9 @@ from utils.error_handling import (
     ErrorBoundary,
     AsyncErrorBoundary,
     Neo4jError,
-    TransactionError
+    TransactionError,
+    ErrorSeverity,
+    submit_async_task
 )
 from parsers.types import (
     ExtractedFeatures,
@@ -247,25 +249,22 @@ class Neo4jTools:
     
     def __init__(self, config=Neo4jConfig):
         self.config = config
-        with ErrorBoundary("Neo4j tools initialization", error_types=DatabaseError):
+        with ErrorBoundary(
+            error_types=DatabaseError,
+            operation_name="Neo4j tools initialization",
+            severity=ErrorSeverity.CRITICAL
+        ):
             self.driver = driver
         logging.info("Neo4j driver initialized with URI: %s and Database: %s", config.uri, config.database)
 
     @with_retry(max_retries=3)
     async def store_code_node(self, code_data: dict) -> None:
-        """
-        [6.2.2] Store code node with transaction coordination.
-        
-        This method is now decorated with @with_retry, providing automatic
-        retry with exponential backoff for retryable errors.
-        
-        Args:
-            code_data: Dictionary containing code node data
-            
-        Raises:
-            DatabaseError: If all retries fail or a non-retryable error occurs
-        """
-        async with AsyncErrorBoundary("Neo4j node storage", error_types=(Neo4jError, TransactionError)):
+        """[6.2.2] Store code node with transaction coordination."""
+        async with AsyncErrorBoundary(
+            "Neo4j node storage",
+            error_types=(Neo4jError, TransactionError),
+            severity=ErrorSeverity.ERROR
+        ):
             async with transaction_scope() as txn:
                 query = """
                 MERGE (n:Code {repo_id: $repo_id, file_path: $file_path})
@@ -286,7 +285,11 @@ class Neo4jTools:
     @handle_async_errors(error_types=DatabaseError)
     async def update_code_relationships(self, repo_id: int, relationships: list) -> None:
         """Update code relationships with graph synchronization."""
-        async with AsyncErrorBoundary("Neo4j relationship update", error_types=DatabaseError):
+        async with AsyncErrorBoundary(
+            "Neo4j relationship update",
+            error_types=DatabaseError,
+            severity=ErrorSeverity.ERROR
+        ):
             query = """
             UNWIND $relationships as rel
             MATCH (s:Code {repo_id: $repo_id, file_path: rel.source})
@@ -321,7 +324,11 @@ class Neo4jTools:
     @handle_errors(error_types=(DatabaseError, Neo4jError))
     def create_doc_node(self, properties: dict) -> None:
         """Create or update a Documentation node in Neo4j"""
-        with ErrorBoundary(error_types=(Neo4jError, DatabaseError), context="create_doc_node") as error_boundary:
+        with ErrorBoundary(
+            operation_name="create_doc_node",
+            error_types=(Neo4jError, DatabaseError),
+            severity=ErrorSeverity.ERROR
+        ) as error_boundary:
             with self.driver.session() as session:
                 session.execute_write(self._create_or_update_doc_node, properties)
         
@@ -370,7 +377,11 @@ class Neo4jTools:
     @handle_async_errors(error_types=DatabaseError)
     async def store_pattern_node(self, pattern_data: dict) -> None:
         """[6.2.6] Store code pattern node for reference repository learning."""
-        async with AsyncErrorBoundary("Neo4j pattern node storage", error_types=(Neo4jError, TransactionError)):
+        async with AsyncErrorBoundary(
+            "Neo4j pattern node storage",
+            error_types=(Neo4jError, TransactionError),
+            severity=ErrorSeverity.ERROR
+        ):
             # Create pattern node
             query = """
             MERGE (p:Pattern {
@@ -464,7 +475,12 @@ class Neo4jTools:
 @handle_errors(error_types=(DatabaseError, Neo4jError))
 def create_schema_indexes_and_constraints():
     """Create Neo4j schema indexes and constraints."""
-    with ErrorBoundary(error_types=(Neo4jError, DatabaseError), context="creating_schema_indexes", reraise=False) as boundary:
+    with ErrorBoundary(
+        operation_name="creating_schema_indexes",
+        error_types=(Neo4jError, DatabaseError),
+        reraise=False,
+        severity=ErrorSeverity.CRITICAL
+    ) as boundary:
         with driver.session() as session:
             # Create indexes for different node types
             session.run("CREATE INDEX IF NOT EXISTS FOR (c:Code) ON (c.repo_id, c.file_path)")

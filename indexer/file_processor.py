@@ -33,7 +33,8 @@ from utils.error_handling import (
     handle_async_errors,
     ProcessingError,
     AsyncErrorBoundary,
-    DatabaseError
+    DatabaseError,
+    ErrorSeverity
 )
 import aiofiles
 from utils.async_runner import get_loop
@@ -99,10 +100,10 @@ class FileProcessor:
     @handle_async_errors
     async def _process_code_file(self, repo_id: int, rel_path: str, content: str, classification) -> Optional[Dict]:
         """[2.3] Process and store code file with embeddings."""
-        async with AsyncErrorBoundary(f"processing code file {rel_path}"):
+        async with AsyncErrorBoundary(f"processing code file {rel_path}", severity=ErrorSeverity.ERROR):
             try:
                 # Parse file - use cached parser to avoid redundant parsing
-                async with AsyncErrorBoundary(f"Error parsing {rel_path}"):
+                async with AsyncErrorBoundary(f"Error parsing {rel_path}", severity=ErrorSeverity.ERROR):
                     parse_result = await cached_parse_file(rel_path, content, classification)
                     if not parse_result:
                         # Try alternative language if primary parsing fails
@@ -128,11 +129,11 @@ class FileProcessor:
                 patterns = await cached_get_patterns(classification)
                 
                 # Generate embedding - use cached embedder to avoid redundant embedding generation
-                async with AsyncErrorBoundary(f"Error generating embedding for {rel_path}"):
+                async with AsyncErrorBoundary(f"Error generating embedding for {rel_path}", severity=ErrorSeverity.ERROR):
                     embedding = await cached_embed_code(content)
                 
                 # Store with embedding
-                async with AsyncErrorBoundary(f"Error storing {rel_path} in database"):
+                async with AsyncErrorBoundary(f"Error storing {rel_path} in database", severity=ErrorSeverity.ERROR):
                     await upsert_code_snippet({
                         'repo_id': repo_id,
                         'file_path': rel_path,
@@ -155,15 +156,15 @@ class FileProcessor:
     @handle_async_errors
     async def _process_doc_file(self, repo_id: int, rel_path: str, content: str, classification) -> Optional[Dict]:
         """[2.4] Process and store documentation file with embeddings."""
-        async with AsyncErrorBoundary(f"processing doc file {rel_path}"):
+        async with AsyncErrorBoundary(f"processing doc file {rel_path}", severity=ErrorSeverity.ERROR):
             try:
                 # Generate embedding - use cached embedder to avoid redundant embedding generation
-                async with AsyncErrorBoundary(f"Error generating embedding for doc {rel_path}"):
+                async with AsyncErrorBoundary(f"Error generating embedding for doc {rel_path}", severity=ErrorSeverity.ERROR):
                     embedding = await cached_embed_doc(content)
                 
                 doc_type = classification.language_id
                 
-                async with AsyncErrorBoundary(f"Error storing doc {rel_path} in database"):
+                async with AsyncErrorBoundary(f"Error storing doc {rel_path} in database", severity=ErrorSeverity.ERROR):
                     await upsert_doc(
                         repo_id=repo_id,
                         file_path=rel_path,

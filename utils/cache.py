@@ -381,7 +381,7 @@ async def warm_common_patterns(limit: int = 50) -> bool:
             for name, pattern in patterns.items()
         }
         
-        await pattern_cache.warmup(cache_patterns)
+        await cache_coordinator.pattern_cache.warmup(cache_patterns)
         log(f"Warmed pattern cache with {len(patterns)} common patterns", level="info")
         return True
 
@@ -405,6 +405,6 @@ async def warm_language_specific_patterns(language: str) -> bool:
             for name, pattern in patterns.items()
         }
         
-        await pattern_cache.warmup(cache_patterns)
+        await cache_coordinator.pattern_cache.warmup(cache_patterns)
         log(f"Warmed pattern cache with {len(patterns)} patterns for language '{language}'", level="info")
         return True 
