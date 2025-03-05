@@ -97,10 +97,10 @@ File processing operations should:
 3. Utilize error boundaries for multi-step operations
 
 ```python
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ProcessingError, ParsingError
 
-@handle_errors(error_types=(ProcessingError, IOError, ParsingError))
-def process_source_file(file_path):
+@handle_async_errors(error_types=(ProcessingError, IOError, ParsingError))
+async def process_source_file(file_path):
     """Process a source code file with comprehensive error handling.
     
     Args:
@@ -109,7 +109,7 @@ def process_source_file(file_path):
     Returns:
         Processed result or None if processing failed
     """
-    with ErrorBoundary(f"processing {file_path}", error_types=(IOError,)):
+    async with AsyncErrorBoundary(f"processing {file_path}", error_types=(IOError,)):
         # Check if file exists
         if not os.path.exists(file_path):
             raise ProcessingError(f"File not found: {file_path}")
@@ -128,7 +128,7 @@ def process_source_file(file_path):
                 raise ProcessingError(f"Failed to read file {file_path}: {str(e)}")
                 
         # Parse content
-        with ErrorBoundary("parsing file content", error_types=(ParsingError,)):
+        async with AsyncErrorBoundary("parsing file content", error_types=(ParsingError,)):
             # Attempt parsing
             # Implementation
             

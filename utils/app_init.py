@@ -10,33 +10,9 @@ from utils.logger import log
 from utils.async_runner import cleanup_tasks, submit_async_task, get_loop
 from utils.cache import cache_coordinator
 from utils.cache_analytics import start_cache_analytics
-
-# List to keep track of registered shutdown handlers
-_shutdown_handlers: List[Callable] = []
-
-def register_shutdown_handler(handler: Callable) -> None:
-    """Register a function to be called during application shutdown."""
-    _shutdown_handlers.append(handler)
-
-def _cleanup_on_exit() -> None:
-    """Handle all cleanup operations on application exit."""
-    log("Application shutting down, performing cleanup...", level="info")
-    
-    # Execute all registered shutdown handlers
-    for handler in _shutdown_handlers:
-        try:
-            if asyncio.iscoroutinefunction(handler):
-                # Use submit_async_task for async handlers
-                future = submit_async_task(handler())
-                future.result()  # Wait for completion
-            else:
-                handler()
-        except Exception as e:
-            log(f"Error in shutdown handler: {e}", level="error")
-    
-    # Final cleanup of any remaining tasks
-    cleanup_tasks()
-    log("Cleanup completed", level="info")
+from utils.shutdown import execute_shutdown_handlers
+from db.connection import connection_manager
+from analytics.pattern_statistics import pattern_profiler
 
 async def _initialize_components():
     """Initialize all application components asynchronously."""
@@ -49,9 +25,8 @@ async def _initialize_components():
         # Initialize error handling
         from utils.error_handling import ErrorAudit
         log("Initializing error handling...")
-        # Use submit_async_task and wait for completion
-        future = submit_async_task(ErrorAudit.analyze_codebase(os.getcwd()))
-        await asyncio.wrap_future(future)
+        # Directly await the analyze_codebase call
+        await ErrorAudit.analyze_codebase(os.getcwd())
         log("Error handling initialized")
         
         # Initialize databases
@@ -76,21 +51,25 @@ async def _initialize_components():
         await initialize_cache_analytics(cache_coordinator)
         log("Cache analytics initialized", level="info")
         
+        # Initialize embedders
+        from embedding.embedding_models import init_embedders
+        await init_embedders()
+        log("Embedders initialized", level="info")
+        
         # Initialize health monitoring
         from utils.health_monitor import global_health_monitor
         global_health_monitor.start_monitoring()
         log("Health monitoring started", level="info")
         
         # Initialize pattern profiler
-        from utils.pattern_profiler import pattern_profiler
         pattern_profiler.configure(sampling_rate=1.0, enabled=True)
         log("Pattern profiler initialized", level="info")
         
         # Register cleanup handlers in reverse initialization order
         from db.psql import close_db_pool
-        from db.connection import driver as neo4j_driver
         
         # Pattern profiler cleanup
+        from utils.shutdown import register_shutdown_handler
         register_shutdown_handler(pattern_profiler.cleanup)
         
         # Health monitoring cleanup
@@ -106,13 +85,19 @@ async def _initialize_components():
         # Create an async cleanup function for Neo4j
         async def async_neo4j_close():
             try:
-                await neo4j_driver.close()
-                log("Neo4j driver closed successfully", level="info")
+                await connection_manager.cleanup()
+                log("Neo4j connection closed successfully", level="info")
             except Exception as e:
-                log(f"Error closing Neo4j driver: {e}", level="error")
+                log(f"Error closing Neo4j connection: {e}", level="error")
         
-        # Register the async cleanup function directly
-        register_shutdown_handler(async_neo4j_close)
+        # Register the async cleanup function by wrapping it in a sync function
+        def sync_neo4j_close():
+            loop = get_loop()
+            future = submit_async_task(async_neo4j_close())
+            loop.run_until_complete(asyncio.wrap_future(future))
+        
+        # Register the sync wrapper function
+        register_shutdown_handler(sync_neo4j_close)
         
         # Async tasks cleanup should be very last
         register_shutdown_handler(cleanup_tasks)
@@ -128,7 +113,7 @@ async def initialize_application():
         log("Initializing application...", level="info")
         
         # Register the cleanup handler
-        atexit.register(_cleanup_on_exit)
+        atexit.register(lambda: asyncio.run(execute_shutdown_handlers()))
         
         # Initialize components
         await _initialize_components()

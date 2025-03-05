@@ -10,19 +10,18 @@ This module provides a comprehensive set of language mapping utilities, includin
 All language detection logic should be centralized in this module.
 """
 from utils.logger import log
-from typing import Optional, Set, Dict, List, Tuple, Any
+from typing import Optional, Set, Dict, List, Tuple, Any, Union, Callable
 import os
 import re
 import asyncio
 from parsers.types import FileType, ParserType
 from parsers.models import LanguageFeatures
-from utils.error_handling import ErrorBoundary, AsyncErrorBoundary, handle_async_errors
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors
+from utils.shutdown import register_shutdown_handler
 
 # Track initialization state and tasks
 _initialized = False
-_pending_tasks: Set[asyncio.Future] = set()
+_pending_tasks: Set[asyncio.Task] = set()
 
 @handle_async_errors(error_types=(Exception,))
 async def initialize():
@@ -32,15 +31,15 @@ async def initialize():
         try:
             async with AsyncErrorBoundary("language_mapping_initialization"):
                 # Validate mappings
-                future = submit_async_task(validate_language_mappings())
-                _pending_tasks.add(future)
+                task = asyncio.create_task(validate_language_mappings())
+                _pending_tasks.add(task)
                 try:
-                    errors = await asyncio.wrap_future(future)
+                    errors = await task
                     if errors:
                         for error in errors:
                             log(error, level="warning")
                 finally:
-                    _pending_tasks.remove(future)
+                    _pending_tasks.remove(task)
                 
                 _initialized = True
                 log("Language mapping initialized", level="info")
@@ -66,26 +65,26 @@ async def detect_language(file_path: str, content: Optional[str] = None) -> Tupl
     async with AsyncErrorBoundary("detect_language"):
         # Start with filename-based detection
         filename = os.path.basename(file_path)
-        future = submit_async_task(detect_language_from_filename(filename))
-        _pending_tasks.add(future)
+        task = asyncio.create_task(detect_language_from_filename(filename))
+        _pending_tasks.add(task)
         try:
-            language_by_filename = await asyncio.wrap_future(future)
+            language_by_filename = await task
         finally:
-            _pending_tasks.remove(future)
+            _pending_tasks.remove(task)
         
         if language_by_filename:
             return language_by_filename, 0.9  # High confidence for extension matches
         
         # Try content-based detection if content is provided
         if content:
-            future = submit_async_task(detect_language_from_content(content))
-            _pending_tasks.add(future)
+            task = asyncio.create_task(detect_language_from_content(content))
+            _pending_tasks.add(task)
             try:
-                language_by_content = await asyncio.wrap_future(future)
+                language_by_content = await task
                 if language_by_content:
                     return language_by_content, 0.7  # Medium-high confidence for content matches
             finally:
-                _pending_tasks.remove(future)
+                _pending_tasks.remove(task)
         
         # Try shebang detection for script files
         if content and content.startswith('#!'):
@@ -114,12 +113,12 @@ async def get_complete_language_info(language_id: str) -> Dict[str, Any]:
         normalized = normalize_language_name(language_id)
         
         # Get extensions for this language
-        future = submit_async_task(get_extensions_for_language(normalized))
-        _pending_tasks.add(future)
+        task = asyncio.create_task(get_extensions_for_language(normalized))
+        _pending_tasks.add(task)
         try:
-            extensions = await asyncio.wrap_future(future)
+            extensions = await task
         finally:
-            _pending_tasks.remove(future)
+            _pending_tasks.remove(task)
         
         # Get parser type information
         parser_type = get_parser_type(normalized)
@@ -146,42 +145,6 @@ async def get_complete_language_info(language_id: str) -> Dict[str, Any]:
             "is_custom_parser_supported": normalized in CUSTOM_PARSER_LANGUAGES
         }
 
-@handle_async_errors(error_types=(Exception,))
-async def get_parser_info_for_language(language_id: str) -> Dict[str, Any]:
-    """
-    Get parser-specific information for a language.
-    
-    Args:
-        language_id: The language identifier
-        
-    Returns:
-        Dictionary with parser information for the language
-    """
-    if not _initialized:
-        await initialize()
-        
-    async with AsyncErrorBoundary("get_parser_info"):
-        normalized = normalize_language_name(language_id)
-        parser_type = get_parser_type(normalized)
-        fallback = get_fallback_parser_type(normalized)
-        
-        info = {
-            "language_id": normalized,
-            "parser_type": parser_type,
-            "fallback_parser_type": fallback,
-            "file_type": get_file_type(normalized)
-        }
-        
-        # Add tree-sitter specific info if applicable
-        if normalized in TREE_SITTER_LANGUAGES:
-            info["tree_sitter_available"] = True
-        
-        # Add custom parser info if applicable
-        if normalized in CUSTOM_PARSER_LANGUAGES:
-            info["custom_parser_available"] = True
-        
-        return info
-
 async def cleanup():
     """Clean up language mapping resources."""
     global _initialized
@@ -190,7 +153,7 @@ async def cleanup():
         if _pending_tasks:
             for task in _pending_tasks:
                 task.cancel()
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in _pending_tasks], return_exceptions=True)
+            await asyncio.gather(*_pending_tasks, return_exceptions=True)
             _pending_tasks.clear()
         
         _initialized = False
@@ -580,9 +543,8 @@ def normalize_language_name(language: str) -> str:
     if not language:
         return "unknown"
     
-    with ErrorBoundary("normalize_language_name", error_types=(Exception,)):
-        normalized = language.lower().strip()
-        return LANGUAGE_ALIASES.get(normalized, normalized)
+    normalized = language.lower().strip()
+    return LANGUAGE_ALIASES.get(normalized, normalized)
     
     return "unknown"
 

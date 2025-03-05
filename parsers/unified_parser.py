@@ -19,7 +19,7 @@ Pipeline Stages:
    - Returns: Optional[ParserResult]
 """
 
-from typing import Optional, Set
+from typing import Optional, Set, Dict, Any
 import asyncio
 from parsers.types import FileType, FeatureCategory, ParserType, ParserResult
 from parsers.models import FileClassification, PATTERN_CATEGORIES
@@ -31,197 +31,182 @@ from parsers.language_mapping import (
     get_parser_info_for_language, 
     get_complete_language_info
 )
-from utils.error_handling import handle_async_errors, ParsingError, AsyncErrorBoundary, ErrorSeverity
+from utils.error_handling import handle_async_errors, ParsingError, AsyncErrorBoundary, ErrorSeverity, ProcessingError
 from utils.encoding import encode_query_pattern
 from utils.logger import log
-from utils.cache import cache_coordinator
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.cache import cache_coordinator, UnifiedCache
+from utils.shutdown import register_shutdown_handler
 from db.transaction import transaction_scope
 from db.upsert_ops import coordinator as upsert_coordinator
+from utils.health_monitor import global_health_monitor
 
 class UnifiedParser:
     """Unified parsing interface."""
     
     def __init__(self):
-        """Initialize the unified parser."""
+        """Private constructor - use create() instead."""
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        register_shutdown_handler(self.cleanup)
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+        self._cache = None
+        self._component_states = {
+            'language_registry': False,
+            'upsert_coordinator': False,
+            'cache_coordinator': False
+        }
     
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self):
-        """Initialize parser resources."""
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("unified_parser_initialization"):
-                    # Initialize cache coordinator
-                    future = submit_async_task(cache_coordinator.initialize())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
-                    
-                    # Initialize upsert coordinator
-                    future = submit_async_task(upsert_coordinator.initialize())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
-                    
-                    # Initialize language registry
-                    future = submit_async_task(language_registry.initialize())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
-                    
-                    self._initialized = True
-                    log("Unified parser initialized", level="info")
-            except Exception as e:
-                log(f"Error initializing unified parser: {e}", level="error")
-                raise
+            raise ProcessingError("UnifiedParser instance not initialized. Use create() to initialize.")
+        return True
     
-    @handle_async_errors(error_types=(ParsingError, Exception))
-    async def parse_file(self, file_path: str, content: str) -> Optional[ParserResult]:
-        """Parse file content using appropriate parser."""
-        if not self._initialized:
-            await self.initialize()
-        
-        # Check if the complete parsed result is already cached
-        parse_cache_key = f"parse:{file_path}:{hash(content)}"
-        
-        future = submit_async_task(cache_coordinator.get_async(parse_cache_key))
-        self._pending_tasks.add(future)
+    @classmethod
+    async def create(cls) -> 'UnifiedParser':
+        """Async factory method to create and initialize a UnifiedParser instance."""
+        instance = cls()
         try:
-            cached_result = await asyncio.wrap_future(future)
-            if cached_result:
-                return ParserResult(**cached_result)
-        finally:
-            self._pending_tasks.remove(future)
-        
-        async with AsyncErrorBoundary(f"parse_file_{file_path}", error_types=(ParsingError, Exception)):
-            # Use the improved language detection with confidence score
-            future = submit_async_task(detect_language(file_path, content))
-            self._pending_tasks.add(future)
-            try:
-                language_id, confidence = await asyncio.wrap_future(future)
-            finally:
-                self._pending_tasks.remove(future)
+            async with AsyncErrorBoundary(
+                operation_name="unified parser initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize cache
+                instance._cache = UnifiedCache("unified_parser")
+                await cache_coordinator.register_cache(instance._cache)
                 
-            if confidence < 0.6:
-                log(f"Low confidence ({confidence:.2f}) language detection for {file_path}", level="warning")
-            
-            # Get comprehensive language and parser information
-            future = submit_async_task(get_complete_language_info(language_id))
-            self._pending_tasks.add(future)
-            try:
-                language_info = await asyncio.wrap_future(future)
-            finally:
-                self._pending_tasks.remove(future)
-            
-            # Create classification using the parser info
-            classification = FileClassification(
-                file_type=language_info["file_type"],
-                language_id=language_info["canonical_name"],
-                parser_type=language_info["parser_type"]
-            )
-
-            future = submit_async_task(language_registry.get_parser(classification))
-            self._pending_tasks.add(future)
-            try:
-                parser = await asyncio.wrap_future(future)
-            finally:
-                self._pending_tasks.remove(future)
+                # Initialize components with proper error handling
+                components = [
+                    ('cache_coordinator', cache_coordinator.initialize()),
+                    ('upsert_coordinator', upsert_coordinator.initialize()),
+                    ('language_registry', language_registry.initialize())
+                ]
                 
-            if not parser:
-                log(f"No parser found for language: {classification.language_id}", level="error")
-                return None
-
-            # Parse the file within a transaction scope
-            async with transaction_scope() as txn:
-                # Parse the content
-                future = submit_async_task(parser.parse(content))
-                self._pending_tasks.add(future)
-                try:
-                    parse_result = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
-                
-                if not parse_result or not parse_result.success:
-                    return None
-
-                features = {}
-                for category in FeatureCategory:
-                    future = submit_async_task(parser._extract_category_features(
-                        category=category,
-                        ast=parse_result.ast,
-                        source_code=content
-                    ))
-                    self._pending_tasks.add(future)
+                for component_name, init_coro in components:
                     try:
-                        category_features = await asyncio.wrap_future(future)
-                        features[category.value] = category_features
-                    finally:
-                        self._pending_tasks.remove(future)
-
-                result = ParserResult(
-                    success=True,
-                    ast=parse_result.ast,
-                    features={
-                        "syntax": features.get(FeatureCategory.SYNTAX.value, {}),
-                        "semantics": features.get(FeatureCategory.SEMANTICS.value, {}),
-                        "documentation": features.get(FeatureCategory.DOCUMENTATION.value, {}),
-                        "structure": features.get(FeatureCategory.STRUCTURE.value, {})
-                    },
-                    documentation=features.get(FeatureCategory.DOCUMENTATION.value, {}),
-                    complexity=features.get(FeatureCategory.SYNTAX.value, {}).get("metrics", {}),
-                    statistics=parse_result.statistics
-                )
-
-                # Store the result in the database
-                future = submit_async_task(upsert_coordinator.store_parsed_content(
-                    repo_id=None,  # Will be set when associated with a repository
-                    file_path=file_path,
-                    ast=parse_result.ast,
-                    features=features
-                ))
-                self._pending_tasks.add(future)
+                        task = asyncio.create_task(init_coro)
+                        instance._pending_tasks.add(task)
+                        try:
+                            await task
+                            instance._component_states[component_name] = True
+                        finally:
+                            instance._pending_tasks.remove(task)
+                    except Exception as e:
+                        await log(f"Error initializing {component_name}: {e}", level="error")
+                        raise ProcessingError(f"Failed to initialize {component_name}: {e}")
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                global_health_monitor.register_component("unified_parser")
+                
+                instance._initialized = True
+                await log("Unified parser initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing unified parser: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize unified parser: {e}")
+    
+    @handle_async_errors(error_types=(ProcessingError,))
+    async def parse_file(self, file_path: str, content: str) -> Optional[ParserResult]:
+        """Parse a file and extract features."""
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        async with self._lock:
+            # Check cache first
+            cache_key = f"parse_result_{file_path}"
+            if self._cache:
+                cached_result = await self._cache.get(cache_key)
+                if cached_result:
+                    return ParserResult(**cached_result)
+            
+            try:
+                # Create task for language detection
+                detect_task = asyncio.create_task(detect_language(file_path, content))
+                self._pending_tasks.add(detect_task)
                 try:
-                    await asyncio.wrap_future(future)
+                    language_id = await detect_task
                 finally:
-                    self._pending_tasks.remove(future)
-
-                # Cache the complete parsed result
-                cached_result = asdict(result)
-                future = submit_async_task(cache_coordinator.set_async(parse_cache_key, cached_result))
-                self._pending_tasks.add(future)
+                    self._pending_tasks.remove(detect_task)
+                
+                if not language_id:
+                    return None
+                
+                # Get parser for language
+                parser = await language_registry.get_parser(language_id)
+                if not parser:
+                    return None
+                
+                # Parse content
+                task = asyncio.create_task(parser.parse(content))
+                self._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    result = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
+                
+                # Cache result
+                if self._cache and result:
+                    await self._cache.set(cache_key, asdict(result))
                 
                 return result
-        
-        return None
+            except Exception as e:
+                await log(f"Error parsing file {file_path}: {e}", level="error")
+                raise ProcessingError(f"Failed to parse file {file_path}: {e}")
     
     async def cleanup(self):
         """Clean up parser resources."""
         try:
-            # Cancel and clean up any pending tasks
+            if not self._initialized:
+                return
+                
+            # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
+            # Cleanup components in reverse initialization order
+            cleanup_order = [
+                ('language_registry', language_registry),
+                ('upsert_coordinator', upsert_coordinator),
+                ('cache_coordinator', cache_coordinator)
+            ]
+            
+            for component_name, component in cleanup_order:
+                if self._component_states.get(component_name):
+                    try:
+                        await component.cleanup()
+                        self._component_states[component_name] = False
+                    except Exception as e:
+                        await log(f"Error cleaning up {component_name}: {e}", level="error")
+            
+            # Cleanup cache
+            if self._cache:
+                await cache_coordinator.unregister_cache(self._cache)
+                self._cache = None
+            
+            # Unregister from health monitoring
+            global_health_monitor.unregister_component("unified_parser")
+            
             self._initialized = False
-            log("Unified parser cleaned up", level="info")
+            await log("Unified parser cleaned up", level="info")
         except Exception as e:
-            log(f"Error cleaning up unified parser: {e}", level="error")
+            await log(f"Error cleaning up unified parser: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup unified parser: {e}")
 
 # Global instance
-unified_parser = UnifiedParser() 
+_unified_parser = None
+
+async def get_unified_parser() -> UnifiedParser:
+    """Get the global unified parser instance."""
+    global _unified_parser
+    if not _unified_parser:
+        _unified_parser = await UnifiedParser.create()
+    return _unified_parser 

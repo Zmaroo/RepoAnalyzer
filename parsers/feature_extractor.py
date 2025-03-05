@@ -6,13 +6,14 @@ from .types import FileType, FeatureCategory, ParserType, Documentation, Complex
 from parsers.models import QueryResult, FileClassification
 from parsers.language_support import language_registry
 from utils.logger import log
-from utils.error_handling import ErrorBoundary, AsyncErrorBoundary, handle_async_errors
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors
+from utils.shutdown import register_shutdown_handler
 from parsers.pattern_processor import PatternProcessor, PatternMatch, pattern_processor
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from abc import ABC, abstractmethod
 import asyncio
+from utils.error_handling import ProcessingError, ErrorSeverity
+from utils.cache import UnifiedCache, cache_coordinator
 
 # Define a type for extractor functions
 # Support both sync and async extractors
@@ -21,61 +22,113 @@ ExtractorFn = Union[Callable[[Any], Dict[str, Any]], Callable[[Any], Awaitable[D
 class BaseFeatureExtractor(ABC):
     """[3.2.0] Abstract base class for feature extraction."""
     
-    def __init__(self, language_id: str, file_type: FileType):
-        # [3.2.0.1] Initialize Base Extractor
-        self.language_id = language_id
-        self.file_type = file_type
+    def __init__(self, language_id: str):
+        """Private constructor - use create() instead."""
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        register_shutdown_handler(self.cleanup)
-        self._patterns = None
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self.language_id = language_id
+        self._lock = asyncio.Lock()
+        self._cache = None
     
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize feature extractor resources."""
+    async def _initialize_cache(self):
+        """Initialize cache based on extractor type."""
+        if not self._cache:
+            self._cache = UnifiedCache(f"feature_extractor_{self.language_id}")
+            await cache_coordinator.register_cache(self._cache)
+    
+    async def _check_features_cache(self, ast: Dict[str, Any], source_code: str) -> Optional[ExtractedFeatures]:
+        """Check if features are cached."""
+        if not self._cache:
+            return None
+            
+        import hashlib
+        # Create cache key based on both AST and source code
+        # This ensures cache invalidation if either changes
+        ast_hash = hashlib.md5(str(ast).encode('utf8')).hexdigest()
+        source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
+        cache_key = f"features:{self.language_id}:{ast_hash}:{source_hash}"
+        
+        cached_features = await self._cache.get(cache_key)
+        if cached_features:
+            return ExtractedFeatures(**cached_features)
+        return None
+    
+    async def _store_features_in_cache(self, ast: Dict[str, Any], source_code: str, features: ExtractedFeatures):
+        """Store extracted features in cache."""
+        if not self._cache:
+            return
+            
+        import hashlib
+        ast_hash = hashlib.md5(str(ast).encode('utf8')).hexdigest()
+        source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
+        cache_key = f"features:{self.language_id}:{ast_hash}:{source_hash}"
+        
+        await self._cache.set(cache_key, {
+            'features': features.features,
+            'documentation': features.documentation.__dict__,
+            'metrics': features.metrics.__dict__
+        })
+    
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("feature_extractor_initialization"):
-                    # Get patterns for this file type
-                    future = submit_async_task(pattern_processor.get_patterns_for_file(
-                        FileClassification(
-                            file_type=self.file_type,
-                            language_id=self.language_id,
-                            parser_type=language_registry.get_parser_type(self.language_id)
-                        )
-                    ))
-                    self._pending_tasks.add(future)
-                    try:
-                        self._patterns = await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
-                    
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing feature extractor: {e}", level="error")
-                raise
+            raise ProcessingError(f"Feature extractor not initialized for {self.language_id}. Use create() to initialize.")
         return True
     
+    @classmethod
+    async def create(cls, language_id: str) -> 'BaseFeatureExtractor':
+        """Async factory method to create and initialize a BaseFeatureExtractor instance."""
+        instance = cls(language_id)
+        try:
+            async with AsyncErrorBoundary(
+                operation_name=f"feature extractor initialization for {language_id}",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component(f"feature_extractor_{language_id}")
+                
+                instance._initialized = True
+                await log(f"Feature extractor initialized for {language_id}", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing feature extractor for {language_id}: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize feature extractor for {language_id}: {e}")
+    
     @abstractmethod
-    async def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
-        """Extract features from existing AST."""
+    async def extract_features(self, code: str) -> Dict[str, Any]:
+        """Extract features from code. Must be implemented by subclasses."""
         pass
     
     async def cleanup(self):
         """Clean up feature extractor resources."""
         try:
-            # Clean up any pending tasks
+            if not self._initialized:
+                return
+                
+            # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component(f"feature_extractor_{self.language_id}")
+            
             self._initialized = False
-            log(f"Feature extractor cleaned up for {self.language_id}", level="info")
+            await log(f"Feature extractor cleaned up for {self.language_id}", level="info")
         except Exception as e:
-            log(f"Error cleaning up feature extractor: {e}", level="error")
+            await log(f"Error cleaning up feature extractor for {self.language_id}: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup feature extractor for {self.language_id}: {e}")
 
 class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     """[3.2.1] Tree-sitter specific feature extraction."""
@@ -85,7 +138,7 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     QUERY_MATCH_LIMIT = 10000
     
     def __init__(self, language_id: str, file_type: FileType):
-        super().__init__(language_id, file_type)
+        super().__init__(language_id)
         # [3.2.1.1] Initialize Tree-sitter Components
         self._language_registry = language_registry
         self._parser = None
@@ -100,20 +153,20 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
         try:
             async with AsyncErrorBoundary("tree_sitter_feature_extractor_initialization"):
                 # Initialize parser
-                future = submit_async_task(self._initialize_parser())
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._initialize_parser())
+                self._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 # Load patterns
-                future = submit_async_task(self._load_patterns())
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._load_patterns())
+                self._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 return True
         except Exception as e:
@@ -151,10 +204,10 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                     extractor_func = None
             
             # Create and configure query
-            future = submit_async_task(self._language.query(query_str))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(self._language.query(query_str))
+            self._pending_tasks.add(task)
             try:
-                query = await asyncio.wrap_future(future)
+                query = await task
                 query.set_timeout_micros(self.QUERY_TIMEOUT_MICROS)
                 query.set_match_limit(self.QUERY_MATCH_LIMIT)
                 
@@ -163,28 +216,28 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                     'extract': extractor_func
                 }
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
     
     @handle_async_errors(error_types=(Exception,))
     async def _process_query_result(self, result: QueryResult) -> Dict[str, Any]:
         """Process a single query result."""
         async with AsyncErrorBoundary(f"process_query_result_{result.pattern_name}", error_types=(Exception,)):
-            future = submit_async_task(self._extract_node_features(result.node))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(self._extract_node_features(result.node))
+            self._pending_tasks.add(task)
             try:
-                node_features = await asyncio.wrap_future(future)
+                node_features = await task
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
             
             # Add capture information
             node_features['captures'] = {}
             for name, node in result.captures.items():
-                future = submit_async_task(self._extract_node_features(node))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._extract_node_features(node))
+                self._pending_tasks.add(task)
                 try:
-                    node_features['captures'][name] = await asyncio.wrap_future(future)
+                    node_features['captures'][name] = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
             
             # Add metadata
             node_features.update(result.metadata)
@@ -216,6 +269,11 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             await self.initialize()
             
         async with AsyncErrorBoundary("extract_features_tree_sitter", error_types=(Exception,)):
+            # Check cache first
+            cached_features = await self._check_features_cache(ast, source_code)
+            if cached_features:
+                return cached_features
+            
             # Check if we have a valid AST with a tree structure
             tree = None
             root_node = None
@@ -226,20 +284,19 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
             else:
                 # If we don't have a root node or need to create a new tree
                 # [3.2.1.3] Parse Tree and Extract Features
-                future = submit_async_task(self._parser.parse(bytes(source_code, "utf8")))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parser.parse(bytes(source_code, "utf8")))
+                self._pending_tasks.add(task)
                 try:
-                    tree = await asyncio.wrap_future(future)
+                    tree = await task
                     if not tree:
                         raise ValueError("Failed to parse source code")
                     root_node = tree.root_node
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
             features = {category: {} for category in PatternCategory}
             
             # [3.2.1.4] Process Patterns by Category
-            # USES: [pattern_processor.py] QueryResult
             for category, patterns in self._queries.items():
                 category_features = {}
                 for pattern_name, pattern_info in patterns.items():
@@ -248,10 +305,10 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                     matches = []
                     
                     # Process matches
-                    future = submit_async_task(query.matches(root_node))
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(query.matches(root_node))
+                    self._pending_tasks.add(task)
                     try:
-                        query_matches = await asyncio.wrap_future(future)
+                        query_matches = await task
                         for match in query_matches:
                             async with AsyncErrorBoundary(f"process_match_{pattern_name}", error_types=(Exception,)):
                                 result = QueryResult(
@@ -271,20 +328,24 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
                                 if processed:
                                     matches.append(processed)
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
                             
                     if matches:
                         category_features[pattern_name] = matches
                         
                 features[category] = category_features
             
-            # [3.2.1.5] Return Extracted Features
-            # RETURNS: [models.py] ExtractedFeatures
-            return ExtractedFeatures(
+            # Create ExtractedFeatures instance
+            extracted_features = ExtractedFeatures(
                 features=features,
                 documentation=await self._extract_documentation(features),
                 metrics=await self._calculate_metrics(features, source_code)
             )
+            
+            # Cache the results
+            await self._store_features_in_cache(ast, source_code, extracted_features)
+            
+            return extracted_features
         
         # Return empty features on error
         return ExtractedFeatures()
@@ -334,44 +395,44 @@ class TreeSitterFeatureExtractor(BaseFeatureExtractor):
         metrics.loc = len(source_code.splitlines())
         
         # Calculate cyclomatic complexity
-        future = submit_async_task(self._calculate_cyclomatic_complexity(features))
-        self._pending_tasks.add(future)
+        task = asyncio.create_task(self._calculate_cyclomatic_complexity(features))
+        self._pending_tasks.add(task)
         try:
-            metrics.cyclomatic_complexity = await asyncio.wrap_future(future)
+            metrics.cyclomatic_complexity = await task
         finally:
-            self._pending_tasks.remove(future)
+            self._pending_tasks.remove(task)
         
         # Calculate maintainability metrics
-        future = submit_async_task(self._calculate_halstead_metrics(features))
-        self._pending_tasks.add(future)
+        task = asyncio.create_task(self._calculate_halstead_metrics(features))
+        self._pending_tasks.add(task)
         try:
-            metrics.halstead_metrics = await asyncio.wrap_future(future)
+            metrics.halstead_metrics = await task
         finally:
-            self._pending_tasks.remove(future)
+            self._pending_tasks.remove(task)
         
-        future = submit_async_task(self._calculate_maintainability_index(metrics))
-        self._pending_tasks.add(future)
+        task = asyncio.create_task(self._calculate_maintainability_index(metrics))
+        self._pending_tasks.add(task)
         try:
-            metrics.maintainability_index = await asyncio.wrap_future(future)
+            metrics.maintainability_index = await task
         finally:
-            self._pending_tasks.remove(future)
+            self._pending_tasks.remove(task)
         
         return metrics
 
 class CustomFeatureExtractor(BaseFeatureExtractor):
     """[3.2.2] Custom parser feature extraction."""
     
-    def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
-        """
-        Extract features using regex patterns.
-        
-        USES: [pattern_processor.py] pattern_processor.get_patterns_for_file()
-        RETURNS: [models.py] ExtractedFeatures containing:
-        - Documentation
-        - Complexity metrics
-        - Pattern matches
-        """
-        with ErrorBoundary("extract_features_custom", error_types=(Exception,)):
+    async def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
+        """Extract features using regex patterns."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("extract_features_custom", error_types=(Exception,)):
+            # Check cache first
+            cached_features = await self._check_features_cache(ast, source_code)
+            if cached_features:
+                return cached_features
+            
             # Check if we have a valid AST structure
             if not ast:
                 log(f"No AST provided for feature extraction", level="debug")
@@ -403,7 +464,7 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
                             
                             # [3.2.2.4] Apply custom extractor if available
                             if pattern.extract:
-                                with ErrorBoundary(f"pattern_extraction_{pattern_name}", error_types=(Exception,)):
+                                with AsyncErrorBoundary(f"pattern_extraction_{pattern_name}", error_types=(Exception,)):
                                     extracted = pattern.extract(result)
                                     if extracted:
                                         result.update(extracted)
@@ -417,23 +478,23 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
             
             # Extract AST nodes if available
             if ast and 'nodes' in ast:
-                self._process_ast_nodes(ast['nodes'], features)
+                await self._process_ast_nodes(ast['nodes'], features)
                 
-            # [3.2.2.5] Return standardized features
-            # RETURNS: [models.py] ExtractedFeatures
-            documentation = self._extract_documentation(features)
-            metrics = self._calculate_metrics(features, source_code)
-            
-            return ExtractedFeatures(
+            # Create ExtractedFeatures instance
+            documentation = await self._extract_documentation(features)
+            metrics = await self._calculate_metrics(features, source_code)
+            extracted_features = ExtractedFeatures(
                 features=features,
                 documentation=documentation,
                 metrics=metrics
             )
-        
-        # Return empty features on error
-        return ExtractedFeatures()
             
-    def _process_ast_nodes(self, nodes: List[Dict[str, Any]], features: Dict[str, Dict[str, Any]]) -> None:
+            # Cache the results
+            await self._store_features_in_cache(ast, source_code, extracted_features)
+            
+            return extracted_features
+    
+    async def _process_ast_nodes(self, nodes: List[Dict[str, Any]], features: Dict[str, Dict[str, Any]]) -> None:
         """Process AST nodes from a custom parser and add them to features."""
         if not nodes:
             return
@@ -445,7 +506,7 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
                 continue
                 
             # Determine which category this node belongs to
-            category = self._get_category_for_node_type(node_type)
+            category = await self._get_category_for_node_type(node_type)
             if not category:
                 continue
                 
@@ -455,7 +516,7 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
                 
             features[category][node_type].append(node)
     
-    def _get_category_for_node_type(self, node_type: str) -> Optional[str]:
+    async def _get_category_for_node_type(self, node_type: str) -> Optional[str]:
         """Map a node type to a feature category."""
         from parsers.models import PATTERN_CATEGORIES
         
@@ -478,7 +539,7 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
             
         return None
             
-    def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
+    async def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
         """Extract documentation features from parsed content."""
         # Reuse same logic as TreeSitterFeatureExtractor
         doc_features = features.get(PatternCategory.DOCUMENTATION.value, {})
@@ -514,7 +575,7 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
             
         return documentation
     
-    def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
+    async def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
         """Calculate code complexity metrics based on extracted features."""
         # Reuse same logic as TreeSitterFeatureExtractor
         metrics = ComplexityMetrics()

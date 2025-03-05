@@ -12,12 +12,22 @@ from utils.logger import log
 import os
 import importlib
 from parsers.language_mapping import is_supported_language
-from utils.error_handling import ErrorBoundary, AsyncErrorBoundary, ErrorSeverity, handle_async_errors
-from utils.cache import cache_coordinator
-from utils.app_init import register_shutdown_handler
+from utils.error_handling import (
+    handle_errors,
+    handle_async_errors,
+    ProcessingError,
+    AsyncErrorBoundary,
+    ErrorSeverity
+)
+from utils.cache import cache_coordinator, UnifiedCache
+from utils.shutdown import register_shutdown_handler
 from utils.async_runner import submit_async_task
 from db.transaction import transaction_scope
-from db.upsert_ops import coordinator as upsert_coordinator
+from db.upsert_ops import UpsertCoordinator
+from utils.health_monitor import global_health_monitor
+
+# Create coordinator instance
+upsert_coordinator = UpsertCoordinator()
 
 # Try to import pattern statistics
 try:
@@ -45,7 +55,7 @@ class CompiledPattern:
     extract: Optional[Callable] = None
     definition: Optional[PatternDefinition] = None
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""
@@ -83,15 +93,17 @@ def compile_patterns(pattern_defs: Dict[str, Any]) -> Dict[str, Any]:
     compiled = {}
     for category, patterns in pattern_defs.items():
         for name, pattern_obj in patterns.items():
-            with ErrorBoundary(f"compile_pattern_{name}", error_types=(Exception,)):
+            try:
                 compiled[name] = re.compile(pattern_obj.pattern, re.DOTALL)
+            except Exception as e:
+                log(f"Error compiling pattern {name}: {e}", level="error")
     return compiled
 
 class PatternProcessor:
     """Central pattern processing system."""
     
     def __init__(self):
-        """Initialize the pattern processor."""
+        """Private constructor - use create() instead."""
         # Initialize dictionaries for all supported languages first
         self._tree_sitter_patterns = {lang: {} for lang in TREE_SITTER_LANGUAGES}
         self._regex_patterns = {lang: {} for lang in CUSTOM_PARSER_LANGUAGES}
@@ -108,53 +120,88 @@ class PatternProcessor:
         
         # Initialize state tracking
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+        self._cache = None
+        
+        # Register shutdown handler
         register_shutdown_handler(self.cleanup)
     
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self):
-        """Initialize pattern processor resources."""
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("pattern processor initialization"):
-                    # Initialize cache coordinator
-                    future = submit_async_task(cache_coordinator.initialize())
-                    self._pending_tasks.add(future)
+            raise ProcessingError("PatternProcessor not initialized. Use create() to initialize.")
+        return True
+    
+    @classmethod
+    async def create(cls) -> 'PatternProcessor':
+        """Async factory method to create and initialize a PatternProcessor instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="pattern processor initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize cache
+                instance._cache = UnifiedCache("pattern_processor")
+                await cache_coordinator.register_cache(instance._cache)
+                
+                # Initialize cache coordinator
+                task = asyncio.create_task(cache_coordinator.initialize())
+                instance._pending_tasks.add(task)
+                try:
+                    await task
+                finally:
+                    instance._pending_tasks.remove(task)
+                
+                # Initialize upsert coordinator
+                task = asyncio.create_task(upsert_coordinator.initialize())
+                instance._pending_tasks.add(task)
+                try:
+                    await task
+                finally:
+                    instance._pending_tasks.remove(task)
+                
+                # Load initial patterns
+                for language in TREE_SITTER_LANGUAGES:
+                    task = asyncio.create_task(instance._ensure_patterns_loaded(language))
+                    instance._pending_tasks.add(task)
                     try:
-                        await asyncio.wrap_future(future)
+                        await task
                     finally:
-                        self._pending_tasks.remove(future)
-                    
-                    # Initialize upsert coordinator
-                    future = submit_async_task(upsert_coordinator.initialize())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
-                    
-                    # Load initial patterns
-                    for language in TREE_SITTER_LANGUAGES:
-                        future = submit_async_task(self._ensure_patterns_loaded(language))
-                        self._pending_tasks.add(future)
-                        try:
-                            await asyncio.wrap_future(future)
-                        finally:
-                            self._pending_tasks.remove(future)
-                    
-                    self._initialized = True
-                    log("Pattern processor initialized", level="info")
-            except Exception as e:
-                log(f"Error initializing pattern processor: {e}", level="error")
-                raise
+                        instance._pending_tasks.remove(task)
+                
+                # Register with health monitoring
+                global_health_monitor.register_component("pattern_processor")
+                
+                instance._initialized = True
+                await log("Pattern processor initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing pattern processor: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize pattern processor: {e}")
     
     @handle_async_errors(error_types=(Exception,))
     async def _ensure_patterns_loaded(self, language: str):
         """Ensure patterns for a language are loaded."""
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
 
         normalized_lang = normalize_language_name(language)
+        
+        # Check cache only for custom parser patterns
+        # Tree-sitter patterns are managed by tree-sitter-language-pack
+        if normalized_lang in CUSTOM_PARSER_LANGUAGES:
+            cache_key = f"patterns_{normalized_lang}"
+            if self._cache:
+                cached_patterns = await self._cache.get(cache_key)
+                if cached_patterns:
+                    self._regex_patterns[normalized_lang] = cached_patterns
+                    self._loaded_languages.add(normalized_lang)
+                    return
         
         # Skip if already loaded
         if normalized_lang in self._loaded_languages:
@@ -167,7 +214,12 @@ class PatternProcessor:
             elif normalized_lang in CUSTOM_PARSER_LANGUAGES:
                 await self._load_custom_patterns(normalized_lang)
                 
-            # Mark as loaded even if there were no patterns
+                # Cache only custom parser patterns
+                if self._cache and normalized_lang in CUSTOM_PARSER_LANGUAGES:
+                    await self._cache.set(f"patterns_{normalized_lang}", 
+                                        self._regex_patterns[normalized_lang])
+            
+            # Mark as loaded
             self._loaded_languages.add(normalized_lang)
     
     @handle_async_errors(error_types=(Exception,))
@@ -176,10 +228,10 @@ class PatternProcessor:
         from parsers.query_patterns import get_patterns_for_language
         
         async with AsyncErrorBoundary(f"load_tree_sitter_patterns_{language}"):
-            future = submit_async_task(get_patterns_for_language(language))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(get_patterns_for_language(language))
+            self._pending_tasks.add(task)
             try:
-                patterns = await asyncio.wrap_future(future)
+                patterns = await task
                 if patterns:
                     # Compile and initialize each pattern
                     for pattern_name, pattern in patterns.items():
@@ -194,7 +246,7 @@ class PatternProcessor:
                     self._tree_sitter_patterns[language] = patterns
                     log(f"Loaded {len(patterns)} tree-sitter patterns for {language}", level="debug")
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
     
     @handle_async_errors(error_types=(Exception,))
     async def _load_custom_patterns(self, language: str):
@@ -202,10 +254,10 @@ class PatternProcessor:
         from parsers.query_patterns import get_patterns_for_language
         
         async with AsyncErrorBoundary(f"load_custom_patterns_{language}"):
-            future = submit_async_task(get_patterns_for_language(language))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(get_patterns_for_language(language))
+            self._pending_tasks.add(task)
             try:
-                patterns = await asyncio.wrap_future(future)
+                patterns = await task
                 if patterns:
                     # Compile and initialize each pattern
                     for pattern_name, pattern in patterns.items():
@@ -220,7 +272,7 @@ class PatternProcessor:
                     self._regex_patterns[language] = patterns
                     log(f"Loaded {len(patterns)} regex patterns for {language}", level="debug")
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
 
     @handle_async_errors(error_types=(Exception,))
     async def get_patterns_for_file(self, classification: FileClassification) -> dict:
@@ -235,16 +287,16 @@ class PatternProcessor:
             Dictionary of patterns for the specified language
         """
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
             
-        async with AsyncErrorBoundary(f"get_patterns_{classification.language_id}"):
-            # Make sure patterns are loaded for this language
-            await self._ensure_patterns_loaded(classification.language_id)
-            
-            # Return the appropriate pattern set
-            patterns = (self._tree_sitter_patterns if classification.parser_type == ParserType.TREE_SITTER 
-                       else self._regex_patterns)
-            return patterns.get(classification.language_id, {})
+            async with AsyncErrorBoundary(f"get_patterns_{classification.language_id}"):
+                # Make sure patterns are loaded for this language
+                await self._ensure_patterns_loaded(classification.language_id)
+                
+                # Return the appropriate pattern set
+                patterns = (self._tree_sitter_patterns if classification.parser_type == ParserType.TREE_SITTER 
+                           else self._regex_patterns)
+                return patterns.get(classification.language_id, {})
         
     def validate_pattern(self, pattern: CompiledPattern, language: str) -> bool:
         """Validate pattern matches parser type."""
@@ -284,7 +336,7 @@ class PatternProcessor:
             
             # Call the pattern statistics manager
             try:
-                future = submit_async_task(pattern_statistics.track_pattern_execution(
+                task = asyncio.create_task(pattern_statistics.track_pattern_execution(
                     pattern_id=pattern_id,
                     pattern_type=pattern_type,
                     language=language,
@@ -293,11 +345,11 @@ class PatternProcessor:
                     matches_found=len(matches),
                     memory_bytes=len(source_code) if matches else 0  # Rough estimate
                 ))
-                self._pending_tasks.add(future)
+                self._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
             except Exception as e:
                 log(f"Error tracking pattern statistics: {str(e)}", level="error")
         
@@ -310,16 +362,16 @@ class PatternProcessor:
         matches = []
         
         # Submit regex processing as an async task
-        future = submit_async_task(self._process_regex_matches(source_code, pattern, start_time))
-        self._pending_tasks.add(future)
+        task = asyncio.create_task(self._process_regex_matches(source_code, pattern, start_time))
+        self._pending_tasks.add(task)
         try:
-            matches = await asyncio.wrap_future(future)
+            matches = await task
         finally:
-            self._pending_tasks.remove(future)
+            self._pending_tasks.remove(task)
             
         return matches
         
-    def _process_regex_matches(self, source_code: str, pattern: CompiledPattern, start_time: float) -> List[PatternMatch]:
+    async def _process_regex_matches(self, source_code: str, pattern: CompiledPattern, start_time: float) -> List[PatternMatch]:
         """Helper method to process regex matches in a separate task."""
         matches = []
         for match in pattern.regex.finditer(source_code):
@@ -334,7 +386,7 @@ class PatternProcessor:
                 }
             )
             if pattern.extract:
-                with ErrorBoundary("regex pattern extraction"):
+                async with AsyncErrorBoundary("regex pattern extraction"):
                     result.metadata.update(pattern.extract(result))
             matches.append(result)
         return matches
@@ -345,7 +397,6 @@ class PatternProcessor:
         # Pre-import required modules outside the error boundary
         from tree_sitter_language_pack import get_parser
         from parsers.models import PatternMatch
-        import hashlib
         
         start_time = time.time()
         matches = []
@@ -356,70 +407,31 @@ class PatternProcessor:
             if not parser:
                 return []
             
-            # Create a unique cache key based on language and source code hash
-            source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
-            cache_key = f"ast:{pattern.language_id}:{source_hash}"
-            
-            # Try to get from cache
-            future = submit_async_task(cache_coordinator.ast_cache.get_async(cache_key))
-            self._pending_tasks.add(future)
+            # Parse the source code - tree-sitter-language-pack handles caching
+            task = asyncio.create_task(parser.parse(bytes(source_code, "utf8")))
+            self._pending_tasks.add(task)
             try:
-                cached_ast = await asyncio.wrap_future(future)
+                tree = await task
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
                 
-            if cached_ast and "tree" in cached_ast:
-                log(f"Using cached AST for pattern processing", level="debug")
-                
-                # For pattern processing, we need the root node
-                # Parse the source code to get the tree with root node
-                future = submit_async_task(parser.parse(bytes(source_code, "utf8")))
-                self._pending_tasks.add(future)
-                try:
-                    tree = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
-                    
-                if not tree:
-                    return []
-            else:
-                # Parse the source code if not in cache
-                future = submit_async_task(parser.parse(bytes(source_code, "utf8")))
-                self._pending_tasks.add(future)
-                try:
-                    tree = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
-                    
-                if not tree:
-                    return []
-                
-                # Cache the AST for future use
-                cache_data = {
-                    "tree": self._convert_tree_to_dict(tree.root_node)
-                }
-                future = submit_async_task(cache_coordinator.ast_cache.set_async(cache_key, cache_data))
-                self._pending_tasks.add(future)
-                try:
-                    await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
-                log(f"AST cached for pattern processing", level="debug")
+            if not tree:
+                return []
             
             # Execute the tree-sitter query
             query = parser.language.query(pattern.tree_sitter)
             
             # Process matches in a separate task
-            future = submit_async_task(self._process_tree_sitter_matches(query, tree.root_node, pattern, start_time))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(self._process_tree_sitter_matches(query, tree.root_node, pattern, start_time))
+            self._pending_tasks.add(task)
             try:
-                matches = await asyncio.wrap_future(future)
+                matches = await task
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
             
         return matches
         
-    def _process_tree_sitter_matches(self, query, root_node, pattern: CompiledPattern, start_time: float) -> List[PatternMatch]:
+    async def _process_tree_sitter_matches(self, query, root_node, pattern: CompiledPattern, start_time: float) -> List[PatternMatch]:
         """Helper method to process tree-sitter matches in a separate task."""
         matches = []
         for match in query.matches(root_node):
@@ -438,7 +450,7 @@ class PatternProcessor:
             
             # Apply custom extraction if available
             if pattern.extract:
-                with ErrorBoundary("pattern extraction"):
+                async with AsyncErrorBoundary("pattern extraction"):
                     extracted = pattern.extract(result)
                     if extracted:
                         result.metadata.update(extracted)
@@ -458,12 +470,12 @@ class PatternProcessor:
         if node.children:
             tasks = []
             for child in node.children:
-                future = submit_async_task(self._convert_tree_to_dict(child))
-                self._pending_tasks.add(future)
-                tasks.append(future)
+                task = asyncio.create_task(self._convert_tree_to_dict(child))
+                self._pending_tasks.add(task)
+                tasks.append(task)
             
             try:
-                children = await asyncio.gather(*[asyncio.wrap_future(f) for f in tasks])
+                children = await asyncio.gather(*tasks)
             finally:
                 for task in tasks:
                     self._pending_tasks.remove(task)
@@ -484,14 +496,14 @@ class PatternProcessor:
         
         for category, patterns in pattern_defs.items():
             for name, pattern_obj in patterns.items():
-                future = submit_async_task(self._compile_single_pattern(name, pattern_obj))
-                self._pending_tasks.add(future)
-                tasks.append((name, future))
+                task = asyncio.create_task(self._compile_single_pattern(name, pattern_obj))
+                self._pending_tasks.add(task)
+                tasks.append((name, task))
         
         try:
-            for name, future in tasks:
+            for name, task in tasks:
                 try:
-                    pattern = await asyncio.wrap_future(future)
+                    pattern = await task
                     if pattern:
                         compiled[name] = pattern
                 except Exception as e:
@@ -502,9 +514,9 @@ class PatternProcessor:
                 
         return compiled
         
-    def _compile_single_pattern(self, name: str, pattern_obj: Any) -> Optional[re.Pattern]:
+    async def _compile_single_pattern(self, name: str, pattern_obj: Any) -> Optional[re.Pattern]:
         """Helper method to compile a single pattern in a separate task."""
-        with ErrorBoundary(f"compile_pattern_{name}", error_types=(Exception,)):
+        async with AsyncErrorBoundary(f"compile_pattern_{name}", error_types=(Exception,)):
             return re.compile(pattern_obj.pattern, re.DOTALL)
 
     @handle_async_errors(error_types=(Exception,))
@@ -911,22 +923,86 @@ class PatternProcessor:
     async def cleanup(self):
         """Clean up pattern processor resources."""
         try:
-            # Cancel and clean up any pending tasks
+            if not self._initialized:
+                return
+            
+            # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
-            # Clear pattern caches
+            # Cleanup cache
+            if self._cache:
+                await cache_coordinator.unregister_cache(self._cache)
+                self._cache = None
+            
+            # Unregister from health monitoring
+            global_health_monitor.unregister_component("pattern_processor")
+            
+            # Clear pattern dictionaries
             self._tree_sitter_patterns.clear()
             self._regex_patterns.clear()
             self._loaded_languages.clear()
             
             self._initialized = False
-            log("Pattern processor cleaned up", level="info")
+            await log("Pattern processor cleaned up", level="info")
         except Exception as e:
-            log(f"Error cleaning up pattern processor: {e}", level="error")
+            await log(f"Error cleaning up pattern processor: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup pattern processor: {e}")
+
+    def extract_regex_patterns(self, content: str) -> List[Dict[str, Any]]:
+        """Extract regex patterns from content."""
+        try:
+            patterns = []
+            for line in content.splitlines():
+                if "re.compile" in line or "regex.compile" in line:
+                    pattern = self._extract_pattern_from_line(line)
+                    if pattern:
+                        patterns.append(pattern)
+            return patterns
+        except Exception as e:
+            log(f"Error extracting regex patterns: {e}", level="error")
+            return []
+
+    def extract_patterns(self, content: str) -> List[Dict[str, Any]]:
+        """Extract patterns from content."""
+        try:
+            patterns = []
+            # Extract regex patterns
+            regex_patterns = self.extract_regex_patterns(content)
+            if regex_patterns:
+                patterns.extend(regex_patterns)
+            
+            # Extract other pattern types
+            ast_patterns = self._extract_ast_patterns(content)
+            if ast_patterns:
+                patterns.extend(ast_patterns)
+            
+            return patterns
+        except Exception as e:
+            log(f"Error extracting patterns: {e}", level="error")
+            return []
+
+    def compile_pattern(self, name: str, pattern: str) -> CompiledPattern:
+        """Compile a pattern string into a CompiledPattern object."""
+        try:
+            return CompiledPattern(
+                regex=re.compile(pattern, re.DOTALL),
+                definition=PatternDefinition(pattern=pattern)
+            )
+        except Exception as e:
+            log(f"Error compiling pattern {name}: {e}", level="error")
+            return None
 
 # Global instance
-pattern_processor = PatternProcessor() 
+_pattern_processor = None
+
+async def get_pattern_processor() -> PatternProcessor:
+    """Get the global pattern processor instance."""
+    global _pattern_processor
+    if not _pattern_processor:
+        _pattern_processor = await PatternProcessor.create()
+    return _pattern_processor 

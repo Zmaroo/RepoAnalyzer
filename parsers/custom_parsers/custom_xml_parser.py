@@ -1,26 +1,17 @@
-"""Custom parser for XML with enhanced documentation features."""
+"""Custom parser for XML files."""
 
-from typing import Dict, List, Any, Optional
+from .base_imports import *
 import xml.etree.ElementTree as ET
-import asyncio
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.xml import XML_PATTERNS
-from parsers.models import XmlNode, PatternType
-from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
-from collections import Counter
 import re
+from collections import Counter
 
 class XmlParser(BaseParser):
     """Parser for XML files."""
     
     def __init__(self, language_id: str = "xml", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.MARKUP, parser_type=ParserType.CUSTOM)
+        super().__init__(language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
         self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         self.patterns = self._compile_patterns(XML_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
@@ -42,11 +33,16 @@ class XmlParser(BaseParser):
     def _create_node(
         self, node_type: str, start_point: List[int],
         end_point: List[int], **kwargs
-    ) -> XmlNode:
+    ) -> XmlNodeDict:
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return XmlNode(**node_dict)
+        return {
+            **node_dict,
+            "tag": kwargs.get("tag"),
+            "attributes": kwargs.get("attributes", {}),
+            "text": kwargs.get("text")
+        }
     
-    def _process_element(self, element: ET.Element, path: List[str], start_point: List[int]) -> XmlNode:
+    def _process_element(self, element: ET.Element, path: List[str], start_point: List[int]) -> XmlNodeDict:
         """Process an XML element into a node structure."""
         tag = element.tag
         if '}' in tag:
@@ -73,7 +69,7 @@ class XmlParser(BaseParser):
                 child_path,
                 [start_point[0], start_point[1] + 1]
             )
-            node.children.append(child_node)
+            node["children"].append(child_node)
             
         return node
     
@@ -88,7 +84,11 @@ class XmlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="XML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(
+            operation_name="XML parsing",
+            error_types=(ParsingError,),
+            severity=ErrorSeverity.ERROR
+        ):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -107,27 +107,37 @@ class XmlParser(BaseParser):
                                 )
                                 ast.children.append(node)
                 try:
-                    future = submit_async_task(ET.fromstring(source_code))
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(self._parse_xml(source_code))
+                    self._pending_tasks.add(task)
                     try:
-                        root = await asyncio.wrap_future(future)
+                        root = await task
                         root_node = self._process_element(root, [], [0, 0])
                         ast.children.append(root_node)
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
                 except ET.ParseError as e:
                     log(f"Error parsing XML structure: {e}", level="error")
-                    return XmlNode(
-                        type="document", start_point=[0, 0], end_point=[0, 0],
-                        error=str(e), children=[]
+                    return self._create_node(
+                        "document",
+                        [0, 0],
+                        [0, 0],
+                        error=str(e),
+                        children=[]
                     ).__dict__
                 return ast.__dict__
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing XML content: {e}", level="error")
-                return XmlNode(
-                    type="document", start_point=[0, 0], end_point=[0, 0],
-                    error=str(e), children=[]
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
                 ).__dict__
+    
+    async def _parse_xml(self, source_code: str) -> ET.Element:
+        """Parse XML content asynchronously."""
+        return ET.fromstring(source_code)
     
     @handle_errors(error_types=(ParsingError, ProcessingError))
     async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
@@ -142,17 +152,21 @@ class XmlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="XML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(
+            operation_name="XML pattern extraction",
+            error_types=(ProcessingError,),
+            severity=ErrorSeverity.ERROR
+        ):
             try:
                 patterns = []
                 
                 # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_source(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    ast = await asyncio.wrap_future(future)
+                    ast = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 # Extract element patterns
                 element_patterns = self._extract_element_patterns(ast)

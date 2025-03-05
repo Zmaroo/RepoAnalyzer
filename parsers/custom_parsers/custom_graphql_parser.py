@@ -5,25 +5,27 @@ This parser uses regexes to capture common GraphQL definitions such as type, int
 enum, or schema definitions from a GraphQL file.
 """
 
-from typing import Dict, List, Any, Optional
+from .base_imports import *
+from typing import Dict, List, Any, Optional, Set, Tuple
 import asyncio
+import re
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.graphql import GRAPHQL_PATTERNS
-from parsers.models import GraphqlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
-import re
+from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
+from collections import Counter
+from parsers.custom_parsers.custom_parser_mixin import CustomParserMixin
 
-class GraphqlParser(BaseParser):
+class GraphQLParser(BaseParser, CustomParserMixin):
     """Parser for GraphQL files."""
     
     def __init__(self, language_id: str = "graphql", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.SCHEMA, parser_type=ParserType.CUSTOM)
+        BaseParser.__init__(self, language_id, file_type or FileType.SCHEMA, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(GRAPHQL_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
@@ -33,7 +35,7 @@ class GraphqlParser(BaseParser):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("GraphQL parser initialization"):
-                    # No special initialization needed yet
+                    await self._initialize_cache(self.language_id)
                     self._initialized = True
                     log("GraphQL parser initialized", level="info")
                     return True
@@ -48,10 +50,9 @@ class GraphqlParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> GraphqlNode:
+    ) -> Dict[str, Any]:
         """Create a standardized GraphQL AST node using the shared helper."""
-        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return GraphqlNode(**node_dict)
+        return super()._create_node(node_type, start_point, end_point, **kwargs)
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
@@ -64,8 +65,13 @@ class GraphqlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="GraphQL parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="GraphQL parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
+                # Check cache first
+                cached_result = await self._check_parse_cache(source_code)
+                if cached_result:
+                    return cached_result
+                    
                 lines = source_code.splitlines()
                 ast = self._create_node(
                     "document",
@@ -88,7 +94,7 @@ class GraphqlParser(BaseParser):
                             [i - 1, len(current_comment_block[-1])],
                             content="\n".join(current_comment_block)
                         )
-                        ast.children.append(node)
+                        ast["children"].append(node)
                         current_comment_block = []
                 
                 # Process GraphQL structure
@@ -106,7 +112,7 @@ class GraphqlParser(BaseParser):
                     # Handle type definitions
                     if type_match := re.match(r'^\s*(type|interface|enum|union|input|scalar)\s+(\w+)', line):
                         if current_type:
-                            ast.children.append(current_type)
+                            ast["children"].append(current_type)
                         
                         type_kind = type_match.group(1)
                         type_name = type_match.group(2)
@@ -134,11 +140,11 @@ class GraphqlParser(BaseParser):
                             type=field_type,
                             arguments=self._parse_arguments(field_args) if field_args else []
                         )
-                        current_type.fields.append(field)
+                        current_type["fields"].append(field)
                         continue
                     
                     # Handle enum values
-                    if current_type and current_type.kind == 'enum' and (enum_match := re.match(r'^\s*(\w+)\s*$', line)):
+                    if current_type and current_type["kind"] == 'enum' and (enum_match := re.match(r'^\s*(\w+)\s*$', line)):
                         enum_value = enum_match.group(1)
                         field = self._create_node(
                             "enum_value",
@@ -146,25 +152,30 @@ class GraphqlParser(BaseParser):
                             line_end,
                             value=enum_value
                         )
-                        current_type.fields.append(field)
+                        current_type["fields"].append(field)
                         continue
                 
                 # Add the last type definition if any
                 if current_type:
-                    ast.children.append(current_type)
+                    ast["children"].append(current_type)
                 
                 # Handle any remaining comments
                 if current_comment_block:
-                    ast.metadata["trailing_comments"] = current_comment_block
+                    ast["metadata"]["trailing_comments"] = current_comment_block
                 
-                return ast.__dict__
+                # Store result in cache
+                await self._store_parse_result(source_code, ast)
+                return ast
                 
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing GraphQL content: {e}", level="error")
-                return GraphqlNode(
-                    type="document", start_point=[0, 0], end_point=[0, 0],
-                    error=str(e), children=[]
-                ).__dict__
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
+                )
     
     def _parse_arguments(self, args_str: str) -> List[Dict[str, Any]]:
         """Parse GraphQL field arguments."""
@@ -214,17 +225,16 @@ class GraphqlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="GraphQL pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="GraphQL pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                patterns = []
+                # Check features cache first
+                ast = await self._parse_source(source_code)
+                cached_features = await self._check_features_cache(ast, source_code)
+                if cached_features:
+                    return cached_features
                 
-                # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
-                try:
-                    ast = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
+                # Extract patterns
+                patterns = []
                 
                 # Extract type patterns
                 type_patterns = self._extract_type_patterns(ast)
@@ -254,7 +264,7 @@ class GraphqlParser(BaseParser):
                         'metadata': {
                             'type': 'field_definition',
                             'field_type': field_pattern["type"],
-                            'examples': field_pattern.get("examples", [])
+                            'arguments': field_pattern.get("arguments", [])
                         }
                     })
                 
@@ -289,23 +299,18 @@ class GraphqlParser(BaseParser):
                         }
                     })
                 
+                # Store features in cache
+                await self._store_features_in_cache(ast, source_code, patterns)
                 return patterns
                 
-            except (ValueError, KeyError, TypeError) as e:
-                log(f"Error extracting patterns from GraphQL file: {str(e)}", level="error")
+            except Exception as e:
+                log(f"Error extracting GraphQL patterns: {e}", level="error")
                 return []
     
     async def cleanup(self):
         """Clean up GraphQL parser resources."""
         try:
-            # Cancel and clean up any pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            self._initialized = False
+            await self._cleanup_cache()
             log("GraphQL parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up GraphQL parser: {e}", level="error")

@@ -10,18 +10,20 @@ from typing import List, Set, Optional, Callable, Awaitable, Any, Dict
 from utils.logger import log
 from utils.error_handling import (
     handle_async_errors,
-    ErrorBoundary,
+    AsyncErrorBoundary,
     ErrorSeverity,
     ProcessingError,
     DatabaseError
 )
-from utils.async_runner import submit_async_task, get_loop
-from config import file_config
+from config import FileConfig
+
+# Initialize file config
+file_config = FileConfig()
 
 # Re-export handle_async_errors for backward compatibility
 handle_errors = handle_async_errors
 
-@handle_async_errors(error_types=(ProcessingError, DatabaseError))
+@handle_async_errors
 async def async_read_file(file_path: str, try_encodings: bool = True) -> Optional[str]:
     """[3.2] Unified file reading with encoding detection.
     
@@ -37,7 +39,7 @@ async def async_read_file(file_path: str, try_encodings: bool = True) -> Optiona
     Returns:
         File contents as string or None if reading fails
     """
-    async with ErrorBoundary(f"reading file {file_path}", severity=ErrorSeverity.ERROR):
+    async with AsyncErrorBoundary(f"reading file {file_path}", severity=ErrorSeverity.ERROR):
         # Check file size first
         try:
             if os.path.getsize(file_path) > file_config.max_file_size:

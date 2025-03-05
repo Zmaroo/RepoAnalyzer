@@ -1,29 +1,23 @@
-"""Custom parser for AsciiDoc with enhanced documentation features."""
+"""Custom parser for AsciiDoc files."""
 
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
-import asyncio
-from parsers.base_parser import BaseParser
-from parsers.models import AsciidocNode, PatternType
-from parsers.types import FileType, ParserType
-from parsers.query_patterns.asciidoc import ASCIIDOC_PATTERNS
-from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from .base_imports import *
 import re
+from utils.error_handling import (
+    handle_errors,
+    handle_async_errors,
+    ProcessingError,
+    AsyncErrorBoundary,
+    ErrorSeverity
+)
 
-class AsciidocParser(BaseParser):
-    """Parser for AsciiDoc documents."""
+class AsciidocParser(BaseParser, CustomParserMixin):
+    """Parser for AsciiDoc files."""
     
     def __init__(self, language_id: str = "asciidoc", file_type: Optional[FileType] = None):
-        # Assume AsciiDoc files are documentation files by default
-        from parsers.types import FileType
-        if file_type is None:
-            file_type = FileType.DOC
-        # Set parser_type to CUSTOM so that the base class creates a CustomFeatureExtractor
-        super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
+        BaseParser.__init__(self, language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(ASCIIDOC_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
@@ -33,7 +27,7 @@ class AsciidocParser(BaseParser):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("AsciiDoc parser initialization"):
-                    # No special initialization needed yet
+                    await self._initialize_cache(self.language_id)
                     self._initialized = True
                     log("AsciiDoc parser initialized", level="info")
                     return True
@@ -42,30 +36,46 @@ class AsciidocParser(BaseParser):
                 raise
         return True
 
+    async def cleanup(self):
+        """Clean up AsciiDoc parser resources."""
+        try:
+            await self._cleanup_cache()
+            log("AsciiDoc parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up AsciiDoc parser: {e}", level="error")
+
     def _create_node(
         self,
         node_type: str,
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> AsciidocNode:
+    ) -> AsciidocNodeDict:
         """Create a standardized AsciiDoc AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return AsciidocNode(**node_dict)
+        return {
+            **node_dict,
+            "sections": kwargs.get("sections", []),
+            "blocks": kwargs.get("blocks", [])
+        }
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse AsciiDoc source code and produce an AST.
-        
-        This method supports AST caching through the BaseParser.parse() method.
-        Cache checks are handled at the BaseParser level, so this method is only called
-        on cache misses or when we need to generate a fresh AST.
-        """
+        """Parse AsciiDoc content into AST structure."""
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="AsciiDoc parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(
+            operation_name="AsciiDoc parsing",
+            error_types=(ParsingError,),
+            severity=ErrorSeverity.ERROR
+        ):
             try:
+                # Check cache first
+                cached_result = await self._check_parse_cache(source_code)
+                if cached_result:
+                    return cached_result
+                    
                 lines = source_code.splitlines()
                 ast = self._create_node(
                     "document",
@@ -198,13 +208,18 @@ class AsciidocParser(BaseParser):
                         )
                         ast.children.append(node)
                 
+                # Store result in cache
+                await self._store_parse_result(source_code, ast.__dict__)
                 return ast.__dict__
                 
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing AsciiDoc content: {e}", level="error")
-                return AsciidocNode(
-                    type="document", start_point=[0, 0], end_point=[0, 0],
-                    error=str(e), children=[]
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
                 ).__dict__
     
     @handle_errors(error_types=(ParsingError, ProcessingError))
@@ -220,17 +235,21 @@ class AsciidocParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="AsciiDoc pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(
+            operation_name="AsciiDoc pattern extraction",
+            error_types=(ProcessingError,),
+            severity=ErrorSeverity.ERROR
+        ):
             try:
                 patterns = []
                 
                 # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_source(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    ast = await asyncio.wrap_future(future)
+                    ast = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 # Extract header patterns
                 header_patterns = self._extract_header_patterns(ast)
@@ -299,21 +318,6 @@ class AsciidocParser(BaseParser):
                 log(f"Error extracting patterns from AsciiDoc file: {str(e)}", level="error")
                 return []
     
-    async def cleanup(self):
-        """Clean up AsciiDoc parser resources."""
-        try:
-            # Cancel and clean up any pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            self._initialized = False
-            log("AsciiDoc parser cleaned up", level="info")
-        except Exception as e:
-            log(f"Error cleaning up AsciiDoc parser: {e}", level="error")
-
     def _extract_header_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract header patterns from the AST."""
         headers = []
@@ -383,3 +387,114 @@ class AsciidocParser(BaseParser):
                 
         process_node(ast)
         return lists 
+
+    async def parse_source(self, source: str) -> Dict[str, Any]:
+        """Parse AsciiDoc source."""
+        async with AsyncErrorBoundary(
+            operation_name="AsciiDoc parsing",
+            error_types=ParsingError,
+            severity=ErrorSeverity.ERROR
+        ):
+            try:
+                # Create a task to parse the content
+                async def parse_async():
+                    # Parse the content
+                    result = {}
+                    self.asciidoc.parse(source, result)
+                    return result
+
+                task = asyncio.create_task(parse_async())
+                self._pending_tasks.add(task)
+                try:
+                    doc = await task
+                finally:
+                    self._pending_tasks.remove(task)
+                
+                # Extract metadata
+                metadata = {
+                    'title': doc.get('title', ''),
+                    'author': doc.get('author', ''),
+                    'revision': doc.get('revision', ''),
+                    'attributes': doc.get('attributes', {})
+                }
+                
+                # Extract sections
+                sections = []
+                for section in doc.get('sections', []):
+                    sections.append({
+                        'title': section.get('title', ''),
+                        'level': section.get('level', 0),
+                        'content': section.get('content', '')
+                    })
+                
+                # Extract blocks
+                blocks = []
+                for block in doc.get('blocks', []):
+                    blocks.append({
+                        'type': block.get('type', ''),
+                        'content': block.get('content', ''),
+                        'attributes': block.get('attributes', {})
+                    })
+                
+                return {
+                    'metadata': metadata,
+                    'sections': sections,
+                    'blocks': blocks,
+                    'content': source
+                }
+            except Exception as e:
+                raise ParsingError(f"Failed to parse AsciiDoc: {str(e)}")
+
+    async def extract_patterns(self, source: str) -> List[Dict[str, Any]]:
+        """Extract patterns from AsciiDoc source."""
+        async with AsyncErrorBoundary(
+            operation_name="AsciiDoc pattern extraction",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
+            try:
+                patterns = []
+                
+                # Parse source first
+                parsed = await self.parse_source(source)
+                
+                # Extract patterns from sections
+                for section in parsed['sections']:
+                    # Look for code blocks
+                    if 'source' in section['content'].lower():
+                        pattern = {
+                            'type': 'code_block',
+                            'language': self._detect_language(section['content']),
+                            'content': section['content']
+                        }
+                        patterns.append(pattern)
+                
+                # Extract patterns from blocks
+                for block in parsed['blocks']:
+                    if block['type'] == 'listing' and 'source' in block['attributes']:
+                        pattern = {
+                            'type': 'code_block',
+                            'language': block['attributes']['source'],
+                            'content': block['content']
+                        }
+                        patterns.append(pattern)
+                
+                return patterns
+            except Exception as e:
+                raise ProcessingError(f"Failed to extract patterns from AsciiDoc: {str(e)}")
+
+    def _detect_language(self, content: str) -> str:
+        """Detect programming language from content."""
+        try:
+            # Simple language detection based on common markers
+            if '[source,python]' in content:
+                return 'python'
+            elif '[source,java]' in content:
+                return 'java'
+            elif '[source,javascript]' in content:
+                return 'javascript'
+            # Add more language detection rules as needed
+            return 'unknown'
+        except Exception as e:
+            log(f"Error detecting language: {e}", level="error")
+            return 'unknown' 

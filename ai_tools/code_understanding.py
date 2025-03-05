@@ -16,8 +16,7 @@ Flow:
    - DatabaseError: Storage operations
 """
 
-from typing import Dict, List, Optional, Any
-from transformers import AutoTokenizer, AutoModel
+from typing import Dict, List, Optional, Any, Set
 import torch
 import numpy as np
 from utils.logger import log
@@ -28,10 +27,10 @@ from utils.error_handling import (
     handle_async_errors,
     ProcessingError,
     DatabaseError,
-    ErrorBoundary,
     AsyncErrorBoundary,
     ErrorSeverity
 )
+from utils.shutdown import register_shutdown_handler
 from parsers.models import (
     FileType,
     FileClassification,
@@ -43,7 +42,9 @@ from parsers.types import (
 from config import ParserConfig
 from embedding.embedding_models import code_embedder
 from db.graph_sync import get_graph_sync
+from ai_tools.graph_capabilities import GraphAnalysis
 import os
+import asyncio
 # Remove direct imports from semantic.search - we'll import as needed
 # from semantic.search import search_code, search_engine
 
@@ -51,13 +52,52 @@ class CodeUnderstanding:
     """[4.2.1] Code understanding and analysis capabilities."""
     
     def __init__(self):
-        with ErrorBoundary("model initialization", error_types=ProcessingError, severity=ErrorSeverity.CRITICAL):
-            self.embedder = code_embedder
-            
-            # Skip the language data path check during initialization
-            # We'll check it when the methods that need it are called
-            # This helps with testing and avoids initialization errors
-            log("CodeUnderstanding initialized", level="info")
+        """Private constructor - use create() instead."""
+        self.graph_analysis = None
+        self.code_embedder = None
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._initialized = False
+        self._lock = asyncio.Lock()
+    
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
+        if not self._initialized:
+            raise ProcessingError("CodeUnderstanding instance not initialized. Use create() to initialize.")
+        if not self.graph_analysis:
+            raise ProcessingError("Graph analysis not initialized")
+        if not self.code_embedder:
+            raise ProcessingError("Code embedder not initialized")
+        return True
+
+    @classmethod
+    async def create(cls) -> 'CodeUnderstanding':
+        """Async factory method to create and initialize a CodeUnderstanding instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="code understanding initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize required components
+                instance.graph_analysis = await GraphAnalysis.create()
+                instance.code_embedder = code_embedder
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("code_understanding")
+                
+                instance._initialized = True
+                await log("Code understanding initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing code understanding: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize code understanding: {e}")
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def analyze_codebase(self, repo_id: int) -> Dict[str, Any]:
@@ -72,7 +112,12 @@ class CodeUnderstanding:
                 SELECT file_path, language FROM code_files 
                 WHERE repo_id = $1
                 """
-                files = await query(files_query, [repo_id])
+                task = asyncio.create_task(query(files_query, [repo_id]))
+                self._pending_tasks.add(task)
+                try:
+                    files = await task
+                finally:
+                    self._pending_tasks.remove(task)
                 
                 # Get graph sync coordinator
                 graph_sync = await get_graph_sync()
@@ -90,7 +135,12 @@ class CodeUnderstanding:
                     community: communityId
                 }) AS communities
                 """
-                communities = await run_query(community_query, {"repo_id": repo_id})
+                task = asyncio.create_task(run_query(community_query, {"repo_id": repo_id}))
+                self._pending_tasks.add(task)
+                try:
+                    communities = await task
+                finally:
+                    self._pending_tasks.remove(task)
                 
                 # Get central components using Neo4j GDS
                 centrality_query = """
@@ -103,7 +153,12 @@ class CodeUnderstanding:
                     centrality: score
                 }) AS central_components
                 """
-                central_components = await run_query(centrality_query, {"repo_id": repo_id})
+                task = asyncio.create_task(run_query(centrality_query, {"repo_id": repo_id}))
+                self._pending_tasks.add(task)
+                try:
+                    central_components = await task
+                finally:
+                    self._pending_tasks.remove(task)
                 
                 # Get embeddings
                 embeddings_query = """
@@ -111,7 +166,12 @@ class CodeUnderstanding:
                     FROM code_snippets 
                     WHERE repo_id = %s AND embedding IS NOT NULL
                 """
-                code_embeddings = await query(embeddings_query, (repo_id,))
+                task = asyncio.create_task(query(embeddings_query, (repo_id,)))
+                self._pending_tasks.add(task)
+                try:
+                    code_embeddings = await task
+                finally:
+                    self._pending_tasks.remove(task)
                 
                 return {
                     "communities": communities[0]["communities"] if communities else [],
@@ -173,7 +233,7 @@ class CodeUnderstanding:
         """Update both graph and content embeddings."""
         async with AsyncErrorBoundary("embedding update", severity=ErrorSeverity.ERROR):
             # Update content embedding using GraphCodeBERT
-            embedding = await self.embedder.embed_async(code_content)
+            embedding = await self.code_embedder.embed_async(code_content)
             update_query = """
                 UPDATE code_snippets 
                 SET embedding = %s 
@@ -186,10 +246,33 @@ class CodeUnderstanding:
             await graph_sync.invalidate_projection(repo_id)
             await graph_sync.ensure_projection(repo_id)
     
-    @handle_errors(error_types=ProcessingError)
-    def cleanup(self) -> None:
-        """Clean up resources."""
-        pass  # No cleanup needed anymore since we don't hold Neo4jProjections instance
+    async def cleanup(self):
+        """Clean up code understanding resources."""
+        try:
+            if not self._initialized:
+                return
+                
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clean up graph analysis
+            if self.graph_analysis:
+                await self.graph_analysis.cleanup()
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component("code_understanding")
+            
+            self._initialized = False
+            await log("Code understanding cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up code understanding: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup code understanding: {e}")
 
 # Do not create global instance until implementation is ready
 code_understanding = None 

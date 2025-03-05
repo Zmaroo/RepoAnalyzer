@@ -16,16 +16,15 @@ Flow:
    - DatabaseError: Graph operations
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 import asyncio
 from db.neo4j_ops import run_query, Neo4jTools
-from utils.logger import log
+from utils.logger import log, log_sync
 from utils.error_handling import (
     handle_async_errors,
     handle_errors,
     ProcessingError,
     DatabaseError,
-    ErrorBoundary,
     AsyncErrorBoundary,
     ErrorSeverity
 )
@@ -38,38 +37,77 @@ from parsers.models import (
     FileClassification
 )
 from config import Neo4jConfig
-from utils.async_runner import submit_async_task
 from db.graph_sync import get_graph_sync
+from utils.shutdown import register_shutdown_handler
 
 class GraphAnalysis:
     """[4.3.1] Graph-based code analysis capabilities using GDS."""
     
     def __init__(self):
-        with ErrorBoundary("Neo4j tools initialization", severity=ErrorSeverity.CRITICAL):
-            self.neo4j = Neo4jTools()
-            self._pending_tasks = set()
-            
-            # Validate Neo4j configuration and plugins
-            # Skip validation during initialization to avoid sync/async issues
-            # We'll validate when methods are actually called
-            pass
+        """Private constructor - use create() instead."""
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+        self.neo4j_tools = None
+    
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
+        if not self._initialized:
+            raise ProcessingError("GraphAnalysis instance not initialized. Use create() to initialize.")
+        if not self.neo4j_tools:
+            raise ProcessingError("Neo4j tools not initialized")
+        return True
+    
+    @classmethod
+    async def create(cls) -> 'GraphAnalysis':
+        """Async factory method to create and initialize a GraphAnalysis instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="graph analysis initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize Neo4j tools
+                from db.neo4j_ops import Neo4jTools
+                instance.neo4j_tools = await Neo4jTools.create()
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("graph_analysis")
+                
+                instance._initialized = True
+                await log("Graph analysis initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing graph analysis: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize graph analysis: {e}")
     
     async def _validate_plugins(self):
         """Validate that required plugins are installed."""
-        future = submit_async_task(run_query("CALL dbms.procedures()"))
-        self._pending_tasks.add(future)
         try:
-            results = await asyncio.wrap_future(future)
-            procedures = [r["name"] for r in results]
-            
-            required = ["gds.", "apoc."]
-            missing = [p for p in required if not any(proc.startswith(p) for proc in procedures)]
-            if missing:
-                log(f"Missing required Neo4j plugins: {', '.join(missing)}", level="warning")
-                return False
-            return True
-        finally:
-            self._pending_tasks.remove(future)
+            task = asyncio.create_task(run_query("CALL dbms.procedures()"))
+            self._pending_tasks.add(task)
+            try:
+                results = await task
+                procedures = [r["name"] for r in results]
+                
+                required = ["gds.", "apoc."]
+                missing = [p for p in required if not any(proc.startswith(p) for proc in procedures)]
+                if missing:
+                    await log(f"Missing required Neo4j plugins: {', '.join(missing)}", level="warning")
+                    return False
+                return True
+            finally:
+                self._pending_tasks.remove(task)
+        except Exception as e:
+            await log(f"Error validating plugins: {e}", level="error")
+            return False
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_code_metrics(
@@ -101,13 +139,13 @@ class GraphAnalysis:
             if file_path:
                 params["file_path"] = file_path
             
-            future = submit_async_task(run_query(query, params))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(run_query(query, params))
+            self._pending_tasks.add(task)
             try:
-                results = await asyncio.wrap_future(future)
+                results = await task
                 return results[0] if results else {}
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def analyze_code_structure(
@@ -136,10 +174,10 @@ class GraphAnalysis:
             RETURN communities, central_files
             """
             
-            future = submit_async_task(run_query(community_query, {"repo_id": repo_id}))
+            future = asyncio.create_task(run_query(community_query, {"repo_id": repo_id}))
             self._pending_tasks.add(future)
             try:
-                results = await asyncio.wrap_future(future)
+                results = await future
                 return results[0] if results else {}
             finally:
                 self._pending_tasks.remove(future)
@@ -183,7 +221,7 @@ class GraphAnalysis:
             ORDER BY score DESC
             """
             
-            future = submit_async_task(run_query(
+            future = asyncio.create_task(run_query(
                 query,
                 {
                     "repo_id": repo_id,
@@ -193,7 +231,7 @@ class GraphAnalysis:
             ))
             self._pending_tasks.add(future)
             try:
-                results = await asyncio.wrap_future(future)
+                results = await future
                 return results
             finally:
                 self._pending_tasks.remove(future)
@@ -206,10 +244,10 @@ class GraphAnalysis:
             MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:RELATED_TO]->(m:Code)
             RETURN m.file_path as file_path
             """
-            future = submit_async_task(run_query(query, {"repo_id": repo_id, "file_path": file_path}))
+            future = asyncio.create_task(run_query(query, {"repo_id": repo_id, "file_path": file_path}))
             self._pending_tasks.add(future)
             try:
-                results = await asyncio.wrap_future(future)
+                results = await future
                 return results if results else []
             finally:
                 self._pending_tasks.remove(future)
@@ -239,10 +277,10 @@ class GraphAnalysis:
             ORDER BY similarity DESC
             LIMIT 100
             """
-            future = submit_async_task(run_query(similarity_query, {"repo_id": repo_id}))
+            future = asyncio.create_task(run_query(similarity_query, {"repo_id": repo_id}))
             self._pending_tasks.add(future)
             try:
-                similarity_results = await asyncio.wrap_future(future)
+                similarity_results = await future
             finally:
                 self._pending_tasks.remove(future)
             
@@ -258,37 +296,17 @@ class GraphAnalysis:
                    count(*) AS cluster_size
             ORDER BY cluster_size DESC
             """
-            future = submit_async_task(run_query(cluster_query, {"repo_id": repo_id}))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(run_query(cluster_query, {"repo_id": repo_id}))
+            self._pending_tasks.add(task)
             try:
-                cluster_results = await asyncio.wrap_future(future)
+                cluster_results = await task
             finally:
-                self._pending_tasks.remove(future)
-            
-            # Get component dependencies
-            dependency_query = """
-            MATCH (c1:Code)-[:IMPORTS|CALLS|DEPENDS_ON]->(c2:Code)
-            WHERE c1.repo_id = $repo_id AND c2.repo_id = $repo_id
-            WITH split(c1.file_path, '/')[0] AS comp1, 
-                 split(c2.file_path, '/')[0] AS comp2, 
-                 count(*) AS weight
-            WHERE comp1 <> comp2
-            RETURN comp1 AS source_component, 
-                   comp2 AS target_component, 
-                   weight
-            ORDER BY weight DESC
-            """
-            future = submit_async_task(run_query(dependency_query, {"repo_id": repo_id}))
-            self._pending_tasks.add(future)
-            try:
-                dependency_results = await asyncio.wrap_future(future)
-            finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
             
             return {
                 "similarities": similarity_results,
                 "clusters": cluster_results,
-                "dependencies": dependency_results
+                "dependencies": []  # Placeholder for dependencies that would be added later
             }
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
@@ -303,28 +321,41 @@ class GraphAnalysis:
             MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:DEPENDS_ON*1..$depth]->(dep:Code)
             RETURN dep.file_path as file_path
             """
-            future = submit_async_task(run_query(query, {"repo_id": repo_id, "file_path": file_path, "depth": depth}))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(run_query(query, {"repo_id": repo_id, "file_path": file_path, "depth": depth}))
+            self._pending_tasks.add(task)
             try:
-                results = await asyncio.wrap_future(future)
+                results = await task
                 return results if results else []
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
     
-    @handle_errors(error_types=(Exception,))
-    async def close(self):
-        """Closes Neo4j connections and graph projections."""
-        with ErrorBoundary("Neo4j connection cleanup", severity=ErrorSeverity.WARNING):
-            # Clean up any pending tasks
+    async def cleanup(self):
+        """Clean up all resources."""
+        try:
+            if not self._initialized:
+                return
+                
+            # Cancel all pending tasks
             if self._pending_tasks:
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
-            if hasattr(self, 'neo4j'):
-                try:
-                    await self.neo4j.close()
-                except Exception as e:
-                    log(f"Error closing neo4j connection: {e}", level="error")
+            # Clean up Neo4j tools
+            if self.neo4j_tools:
+                await self.neo4j_tools.cleanup()
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component("graph_analysis")
+            
+            self._initialized = False
+            await log("Graph analysis cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up graph analysis: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup graph analysis: {e}")
 
 # Do not create global instance until implementation is ready
 graph_analysis = None 

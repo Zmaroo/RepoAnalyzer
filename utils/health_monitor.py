@@ -8,7 +8,6 @@ information for troubleshooting.
 
 import os
 import time
-import threading
 import json
 import logging
 import platform
@@ -23,8 +22,9 @@ import gc
 import socket
 from enum import Enum
 
-# Internal imports
 from utils.logger import log
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 
 # Component status enum
 class ComponentStatus(Enum):
@@ -128,17 +128,21 @@ class HealthMonitor:
             "error_rate": 0.1,  # 10% error rate
             "response_time": 1000.0,  # 1 second in ms
         }
-        self._lock = threading.RLock()
-        self._reporter_thread = None
-        self._stop_event = threading.Event()
+        self._lock = asyncio.Lock()
+        self._monitoring_task = None
+        self._stop_event = asyncio.Event()
         self._report_dir = os.path.join("reports", "health")
         self._health_checks: Dict[str, Callable[[], ComponentStatus]] = {}
         self._recent_response_times: Dict[str, List[float]] = {}
         self._recent_errors: Dict[str, int] = {}
         self._recent_successes: Dict[str, int] = {}
+        self._pending_tasks: Set[asyncio.Task] = set()
         
         # Create report directory
         os.makedirs(self._report_dir, exist_ok=True)
+        
+        # Register cleanup handler
+        register_shutdown_handler(self.cleanup)
         
     def register_component(self, name: str, health_check: Optional[Callable[[], ComponentStatus]] = None) -> None:
         """Register a component for health monitoring.
@@ -147,13 +151,12 @@ class HealthMonitor:
             name: Component name
             health_check: Optional function that returns component status
         """
-        with self._lock:
-            self._components[name] = ComponentHealth(name=name)
-            if health_check:
-                self._health_checks[name] = health_check
-            self._recent_response_times[name] = []
-            self._recent_errors[name] = 0
-            self._recent_successes[name] = 0
+        self._components[name] = ComponentHealth(name=name)
+        if health_check:
+            self._health_checks[name] = health_check
+        self._recent_response_times[name] = []
+        self._recent_errors[name] = 0
+        self._recent_successes[name] = 0
             
     def register_database(self, name: str) -> None:
         """Register a database for health monitoring.
@@ -161,10 +164,9 @@ class HealthMonitor:
         Args:
             name: Database name
         """
-        with self._lock:
-            self._database_health[name] = DatabaseHealth()
+        self._database_health[name] = DatabaseHealth()
             
-    def update_component_status(
+    async def update_component_status(
         self, 
         name: str, 
         status: ComponentStatus,
@@ -181,7 +183,7 @@ class HealthMonitor:
             error: Whether this was an error
             details: Additional details about component status
         """
-        with self._lock:
+        async with self._lock:
             if name not in self._components:
                 self.register_component(name)
                 
@@ -215,9 +217,9 @@ class HealthMonitor:
                 component.details.update(details)
                 
             # Check for alerts
-            self._check_component_alerts(name, component)
+            await self._check_component_alerts(name, component)
             
-    def update_database_health(
+    async def update_database_health(
         self,
         name: str,
         connection_pool_size: Optional[int] = None,
@@ -238,7 +240,7 @@ class HealthMonitor:
             failed_query: Whether this was a failed query
             retried_operation: Whether this was a retried operation
         """
-        with self._lock:
+        async with self._lock:
             if name not in self._database_health:
                 self.register_database(name)
                 
@@ -271,7 +273,7 @@ class HealthMonitor:
             if not failed_query and query_response_time is not None:
                 db_health.last_successful_connection = datetime.now()
                 
-    def _update_system_resources(self) -> None:
+    async def _update_system_resources(self) -> None:
         """Update system resource metrics."""
         try:
             # Get process info
@@ -304,12 +306,12 @@ class HealthMonitor:
                 pass
                 
             # Count threads
-            self._resources.thread_count = threading.active_count()
+            self._resources.thread_count = len(process.threads())
             
         except Exception as e:
             log(f"Error updating system resources: {str(e)}", level="error")
             
-    def record_error(self, error: Exception, component: str, context: Dict[str, Any] = None) -> None:
+    async def record_error(self, error: Exception, component: str, context: Dict[str, Any] = None) -> None:
         """Record an error for health monitoring.
         
         Args:
@@ -317,9 +319,9 @@ class HealthMonitor:
             component: Component where the error occurred
             context: Additional context about the error
         """
-        with self._lock:
+        async with self._lock:
             # Update component status
-            self.update_component_status(
+            await self.update_component_status(
                 component,
                 ComponentStatus.DEGRADED,
                 error=True,
@@ -343,7 +345,7 @@ class HealthMonitor:
             if len(self._error_history) > self._max_error_history:
                 self._error_history = self._error_history[-self._max_error_history:]
                 
-    def _check_component_alerts(self, name: str, component: ComponentHealth) -> None:
+    async def _check_component_alerts(self, name: str, component: ComponentHealth) -> None:
         """Check if component metrics exceed alert thresholds.
         
         Args:
@@ -364,7 +366,7 @@ class HealthMonitor:
         if alerts:
             log(f"Health alert for {name}: {', '.join(alerts)}", level="warning")
             
-    def _check_system_alerts(self) -> None:
+    async def _check_system_alerts(self) -> None:
         """Check if system metrics exceed alert thresholds."""
         alerts = []
         
@@ -384,18 +386,18 @@ class HealthMonitor:
         if alerts:
             log(f"System health alert: {', '.join(alerts)}", level="warning")
             
-    def check_health(self) -> HealthReport:
+    async def check_health(self) -> HealthReport:
         """Check health of all components and system resources.
         
         Returns:
             HealthReport: Current health report
         """
-        with self._lock:
+        async with self._lock:
             # Update system resources
-            self._update_system_resources()
+            await self._update_system_resources()
             
             # Check system alerts
-            self._check_system_alerts()
+            await self._check_system_alerts()
             
             # Run component health checks
             for name, check_func in self._health_checks.items():
@@ -404,13 +406,13 @@ class HealthMonitor:
                     status = check_func()
                     elapsed = (time.time() - start_time) * 1000  # ms
                     
-                    self.update_component_status(
+                    await self.update_component_status(
                         name,
                         status,
                         response_time=elapsed
                     )
                 except Exception as e:
-                    self.record_error(e, name)
+                    await self.record_error(e, name)
                     
             # Determine overall system status
             system_status = ComponentStatus.HEALTHY
@@ -435,7 +437,7 @@ class HealthMonitor:
             
             return report
             
-    def save_health_report(self, report: Optional[HealthReport] = None) -> str:
+    async def save_health_report(self, report: Optional[HealthReport] = None) -> str:
         """Save health report to disk.
         
         Args:
@@ -445,7 +447,7 @@ class HealthMonitor:
             str: Path to saved report
         """
         if report is None:
-            report = self.check_health()
+            report = await self.check_health()
             
         # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -459,58 +461,60 @@ class HealthMonitor:
         log(f"Health report saved to {filepath}", level="info")
         return filepath
         
-    def _reporter_loop(self) -> None:
-        """Background thread to periodically check and report health."""
-        log("Health monitor reporter thread started", level="info")
+    async def _monitoring_loop(self) -> None:
+        """Background loop for periodically checking and reporting health."""
+        log("Health monitor reporter task started", level="info")
         
         while not self._stop_event.is_set():
             try:
-                report = self.check_health()
-                self.save_health_report(report)
+                report = await self.check_health()
+                await self.save_health_report(report)
             except Exception as e:
                 log(f"Error in health reporter loop: {str(e)}", level="error")
                 
             # Sleep until next check
-            self._stop_event.wait(self._check_interval)
+            try:
+                await asyncio.sleep(self._check_interval)
+            except asyncio.CancelledError:
+                break
             
-        log("Health monitor reporter thread stopped", level="info")
+        log("Health monitor reporter task stopped", level="info")
         
-    def start_monitoring(self, check_interval: int = 60) -> None:
+    async def start_monitoring(self, check_interval: int = 60) -> None:
         """Start background health monitoring.
         
         Args:
             check_interval: Interval between health checks in seconds
         """
-        with self._lock:
-            if self._reporter_thread and self._reporter_thread.is_alive():
+        async with self._lock:
+            if self._monitoring_task and not self._monitoring_task.done():
                 log("Health monitoring already running", level="warning")
                 return
                 
             self._check_interval = check_interval
             self._stop_event.clear()
-            self._reporter_thread = threading.Thread(
-                target=self._reporter_loop,
-                daemon=True,
-                name="HealthMonitorReporter"
-            )
-            self._reporter_thread.start()
+            self._monitoring_task = asyncio.create_task(self._monitoring_loop())
+            self._pending_tasks.add(self._monitoring_task)
             
             log(f"Health monitoring started with {check_interval}s interval", level="info")
             
-    def stop_monitoring(self) -> None:
+    async def stop_monitoring(self) -> None:
         """Stop background health monitoring."""
-        with self._lock:
-            if not self._reporter_thread or not self._reporter_thread.is_alive():
+        async with self._lock:
+            if not self._monitoring_task or self._monitoring_task.done():
                 log("Health monitoring not running", level="warning")
                 return
                 
             self._stop_event.set()
-            self._reporter_thread.join(timeout=5.0)
-            
-            if self._reporter_thread.is_alive():
-                log("Health monitor reporter thread did not stop gracefully", level="warning")
-            else:
-                log("Health monitoring stopped", level="info")
+            try:
+                await asyncio.wait_for(self._monitoring_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                log("Health monitor reporter task did not stop gracefully", level="warning")
+            finally:
+                if self._monitoring_task in self._pending_tasks:
+                    self._pending_tasks.remove(self._monitoring_task)
+                
+            log("Health monitoring stopped", level="info")
                 
     def set_alert_threshold(self, metric: str, threshold: float) -> None:
         """Set alert threshold for a metric.
@@ -519,18 +523,25 @@ class HealthMonitor:
             metric: Metric name
             threshold: Alert threshold value
         """
-        with self._lock:
-            if metric in self._alert_thresholds:
-                self._alert_thresholds[metric] = threshold
-            else:
-                log(f"Unknown alert metric: {metric}", level="warning")
+        if metric in self._alert_thresholds:
+            self._alert_thresholds[metric] = threshold
+        else:
+            log(f"Unknown alert metric: {metric}", level="warning")
 
-    def cleanup(self):
+    async def cleanup(self):
         """Clean up health monitor resources."""
         try:
-            self.stop_monitoring()
+            await self.stop_monitoring()
             # Save final health report
-            self.save_health_report()
+            await self.save_health_report()
+            
+            # Clean up any remaining tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+                
         except Exception as e:
             log(f"Error cleaning up health monitor: {e}", level="error")
 
@@ -562,13 +573,15 @@ def monitor_operation(name: str, component: str, health_monitor: Optional['Healt
         # Operation succeeded
         elapsed_ms = (time.time() - start_time) * 1000
         details = {"operation": name, "duration_ms": elapsed_ms}
-        monitor.update_component_status(
+        # Create task for status update
+        task = asyncio.create_task(monitor.update_component_status(
             component,
             ComponentStatus.HEALTHY,
             response_time=elapsed_ms,
             error=False,
             details=details
-        )
+        ))
+        monitor._pending_tasks.add(task)
     except Exception as e:
         # Operation failed
         elapsed_ms = (time.time() - start_time) * 1000
@@ -576,7 +589,9 @@ def monitor_operation(name: str, component: str, health_monitor: Optional['Healt
             "operation": name,
             "duration_ms": elapsed_ms
         }
-        monitor.record_error(e, component, context=context)
+        # Create task for error recording
+        task = asyncio.create_task(monitor.record_error(e, component, context=context))
+        monitor._pending_tasks.add(task)
         raise
 
 # Function to monitor database operations
@@ -610,31 +625,36 @@ def monitor_database(db_name: str, operation: str, health_monitor: Optional['Hea
         elapsed_ms = (time.time() - start_time) * 1000
         slow_query = elapsed_ms > slow_threshold
         
-        monitor.update_database_health(
+        # Create task for database health update
+        task = asyncio.create_task(monitor.update_database_health(
             db_name,
             query_response_time=elapsed_ms,
             slow_query=slow_query
-        )
+        ))
+        monitor._pending_tasks.add(task)
         
         # Also update component status
         details = {"operation": operation, "duration_ms": elapsed_ms}
-        monitor.update_component_status(
+        task = asyncio.create_task(monitor.update_component_status(
             f"db_{db_name}",
             ComponentStatus.HEALTHY,
             response_time=elapsed_ms,
             error=False,
             details=details
-        )
+        ))
+        monitor._pending_tasks.add(task)
         
     except Exception as e:
         # Operation failed
         elapsed_ms = (time.time() - start_time) * 1000
         
-        monitor.update_database_health(
+        # Create task for database health update
+        task = asyncio.create_task(monitor.update_database_health(
             db_name,
             query_response_time=elapsed_ms,
             failed_query=True
-        )
+        ))
+        monitor._pending_tasks.add(task)
         
         # Also record error
         context = {
@@ -642,7 +662,8 @@ def monitor_database(db_name: str, operation: str, health_monitor: Optional['Hea
             "operation": operation,
             "duration_ms": elapsed_ms
         }
-        monitor.record_error(e, f"db_{db_name}", context=context)
+        task = asyncio.create_task(monitor.record_error(e, f"db_{db_name}", context=context))
+        monitor._pending_tasks.add(task)
         raise
 
 # Global health monitor instance
@@ -667,7 +688,8 @@ def get_health_status():
     Returns:
         dict: Health status summary
     """
-    report = global_health_monitor.check_health()
+    loop = asyncio.get_event_loop()
+    report = loop.run_until_complete(global_health_monitor.check_health())
     
     # Create a simplified status report
     status = {

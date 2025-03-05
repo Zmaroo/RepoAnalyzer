@@ -9,14 +9,22 @@ from typing import Dict, List, Optional, Any, Tuple, Set
 import re
 import asyncio
 from dataclasses import dataclass
+import time
 
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, AsyncErrorBoundary, ErrorSeverity
+from utils.error_handling import (
+    handle_errors,
+    handle_async_errors,
+    AsyncErrorBoundary,
+    ErrorSeverity,
+    ProcessingError
+)
 from tree_sitter_language_pack import get_parser, get_language
 from parsers.types import FileType, ParserType
 from parsers.models import PatternMatch
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
+from utils.health_monitor import global_health_monitor
+from utils.cache import cache_coordinator, UnifiedCache
 
 @dataclass
 class ExtractedBlock:
@@ -30,41 +38,89 @@ class ExtractedBlock:
 
 
 class TreeSitterBlockExtractor:
-    """
-    Extracts code blocks using tree-sitter's AST capabilities.
-    This provides more accurate and language-aware block extraction
-    compared to heuristic text-based approaches.
-    """
+    """Extracts code blocks from tree-sitter ASTs."""
     
     def __init__(self):
-        """Initialize the block extractor."""
-        self._language_parsers = {}
+        """Private constructor - use create() instead."""
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        register_shutdown_handler(self.cleanup)
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._language_parsers: Dict[str, Any] = {}
+        self._lock = asyncio.Lock()
+        self._cache = None
+        self._component_states = {
+            'tree_sitter': False
+        }
     
-    async def initialize(self):
-        """Initialize block extractor resources."""
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                # Initialize commonly used language parsers
-                common_languages = {"python", "javascript", "typescript", "java", "cpp"}
-                for language in common_languages:
-                    future = submit_async_task(self._initialize_parser(language))
-                    self._pending_tasks.add(future)
-                    try:
-                        parser = await asyncio.wrap_future(future)
-                        if parser:
-                            self._language_parsers[language] = parser
-                    finally:
-                        self._pending_tasks.remove(future)
-                
-                self._initialized = True
-                log("Block extractor initialized", level="info")
-            except Exception as e:
-                log(f"Error initializing block extractor: {e}", level="error")
-                raise
+            raise ProcessingError("Block extractor not initialized. Use create() to initialize.")
+        return True
     
+    @classmethod
+    async def create(cls) -> 'TreeSitterBlockExtractor':
+        """Async factory method to create and initialize a TreeSitterBlockExtractor instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="block extractor initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize cache
+                instance._cache = UnifiedCache("block_extractor")
+                await cache_coordinator.register_cache(instance._cache)
+                
+                # Initialize required components
+                from tree_sitter import Language, Parser
+                
+                # Initialize parsers for supported languages
+                supported_languages = ['python', 'javascript', 'typescript', 'java', 'cpp']
+                for lang in supported_languages:
+                    try:
+                        task = asyncio.create_task(cls._init_language_parser(lang))
+                        instance._pending_tasks.add(task)
+                        try:
+                            parser = await task
+                            instance._language_parsers[lang] = parser
+                        finally:
+                            instance._pending_tasks.remove(task)
+                    except Exception as e:
+                        await log(f"Warning: Failed to initialize tree-sitter for {lang}: {e}", level="warning")
+                
+                if not instance._language_parsers:
+                    raise ProcessingError("Failed to initialize any language parsers")
+                
+                instance._component_states['tree_sitter'] = True
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                global_health_monitor.register_component("block_extractor")
+                
+                instance._initialized = True
+                await log("Block extractor initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing block extractor: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize block extractor: {e}")
+    
+    @staticmethod
+    async def _init_language_parser(lang: str) -> Any:
+        """Initialize a language parser."""
+        try:
+            from tree_sitter import Language, Parser
+            return Language.build_library(
+                f"build/{lang}.so",
+                [f"vendor/tree-sitter-{lang}"]
+            )
+        except Exception as e:
+            raise ProcessingError(f"Failed to initialize parser for {lang}: {e}")
+    
+    @handle_async_errors(error_types=(ProcessingError,))
     async def extract_block(self, 
                          language_id: str, 
                          source_code: str, 
@@ -81,24 +137,46 @@ class TreeSitterBlockExtractor:
             An ExtractedBlock object or None if extraction fails
         """
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
+        
+        async with self._lock:
+            # Cache only the final extracted block result
+            cache_key = f"block_{language_id}_{hash(source_code)}_{hash(str(node_or_match))}"
+            if self._cache:
+                cached_block = await self._cache.get(cache_key)
+                if cached_block:
+                    return ExtractedBlock(**cached_block)
             
-        with ErrorBoundary(f"extracting block for {language_id}"):
-            # If we were passed a PatternMatch, extract from the node
-            if isinstance(node_or_match, PatternMatch):
-                node = node_or_match.node
-                if node is None:
-                    # Try heuristic fallback for regex-based matches
-                    return await self._extract_block_heuristic(source_code, node_or_match)
-                return await self._extract_from_node(language_id, source_code, node)
-            
-            # If we were passed a node directly
-            try:
-                return await self._extract_from_node(language_id, source_code, node_or_match)
-            except Exception as e:
-                log(f"Error extracting from node: {e}", level="warning")
-                # Try heuristic fallback
-                return await self._extract_block_heuristic(source_code, node_or_match)
+            async with AsyncErrorBoundary(f"extracting block for {language_id}"):
+                # If we were passed a PatternMatch, extract from the node
+                if isinstance(node_or_match, PatternMatch):
+                    node = node_or_match.node
+                    if node is None:
+                        # Try heuristic fallback for regex-based matches
+                        result = await self._extract_block_heuristic(source_code, node_or_match)
+                    else:
+                        result = await self._extract_from_node(language_id, source_code, node)
+                else:
+                    # If we were passed a node directly
+                    try:
+                        result = await self._extract_from_node(language_id, source_code, node_or_match)
+                    except Exception as e:
+                        await log(f"Error extracting from node: {e}", level="warning")
+                        # Try heuristic fallback
+                        result = await self._extract_block_heuristic(source_code, node_or_match)
+                
+                # Cache only the final extracted block result
+                if self._cache and result:
+                    await self._cache.set(cache_key, {
+                        'content': result.content,
+                        'start_point': result.start_point,
+                        'end_point': result.end_point,
+                        'node_type': result.node_type,
+                        'metadata': result.metadata,
+                        'confidence': result.confidence
+                    })
+                
+                return result
 
     async def _extract_block_heuristic(self, source_code: str, node_or_match: Any) -> Optional[ExtractedBlock]:
         """
@@ -188,20 +266,6 @@ class TreeSitterBlockExtractor:
             log(f"Heuristic extraction failed: {e}", level="warning")
             return None
     
-    async def _initialize_parser(self, language_id: str) -> Any:
-        """Initialize a tree-sitter parser for the given language."""
-        try:
-            future = submit_async_task(get_parser(language_id))
-            self._pending_tasks.add(future)
-            try:
-                parser = await asyncio.wrap_future(future)
-                return parser
-            finally:
-                self._pending_tasks.remove(future)
-        except Exception as e:
-            log(f"Failed to initialize tree-sitter parser for {language_id}: {str(e)}", level="error")
-            return None
-    
     async def _extract_from_node(self, language_id: str, source_code: str, node: Any) -> Optional[ExtractedBlock]:
         """Extract a code block from a tree-sitter Node."""
         if not node:
@@ -269,11 +333,11 @@ class TreeSitterBlockExtractor:
             List of ExtractedBlock objects
         """
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
             
         blocks = []
         
-        with ErrorBoundary("get_child_blocks", error_types=(Exception,)):
+        async with AsyncErrorBoundary("get_child_blocks", error_types=(Exception,)):
             if not parent_node or not hasattr(parent_node, 'children'):
                 return blocks
             
@@ -284,24 +348,24 @@ class TreeSitterBlockExtractor:
                     
                 # Check if this is a block-like node based on type
                 if await self._is_block_node(language_id, child):
-                    future = submit_async_task(self._extract_from_node(language_id, source_code, child))
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(self._extract_from_node(language_id, source_code, child))
+                    self._pending_tasks.add(task)
                     try:
-                        block = await asyncio.wrap_future(future)
+                        block = await task
                         if block:
                             blocks.append(block)
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
                 
                 # Recursively process child blocks for certain container nodes
                 if await self._is_container_node(language_id, child):
-                    future = submit_async_task(self.get_child_blocks(language_id, source_code, child))
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(self.get_child_blocks(language_id, source_code, child))
+                    self._pending_tasks.add(task)
                     try:
-                        child_blocks = await asyncio.wrap_future(future)
+                        child_blocks = await task
                         blocks.extend(child_blocks)
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
         
         return blocks
     
@@ -381,20 +445,42 @@ class TreeSitterBlockExtractor:
     async def cleanup(self):
         """Clean up block extractor resources."""
         try:
-            # Cancel and clean up any pending tasks
+            if not self._initialized:
+                return
+            
+            # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
             # Clear parser cache
-            self._language_parsers.clear()
+            if self._component_states['tree_sitter']:
+                self._language_parsers.clear()
+                self._component_states['tree_sitter'] = False
+            
+            # Cleanup cache
+            if self._cache:
+                await cache_coordinator.unregister_cache(self._cache)
+                self._cache = None
+            
+            # Unregister from health monitoring
+            global_health_monitor.unregister_component("block_extractor")
             
             self._initialized = False
-            log("Block extractor cleaned up", level="info")
+            await log("Block extractor cleaned up", level="info")
         except Exception as e:
-            log(f"Error cleaning up block extractor: {e}", level="error")
+            await log(f"Error cleaning up block extractor: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup block extractor: {e}")
 
 # Global instance
-block_extractor = TreeSitterBlockExtractor() 
+_block_extractor = None
+
+async def get_block_extractor() -> TreeSitterBlockExtractor:
+    """Get the global block extractor instance."""
+    global _block_extractor
+    if not _block_extractor:
+        _block_extractor = await TreeSitterBlockExtractor.create()
+    return _block_extractor 

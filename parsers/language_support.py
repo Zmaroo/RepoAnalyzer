@@ -19,9 +19,8 @@ from parsers.language_mapping import (
     get_parser_info_for_language
 )
 from utils.logger import log
-from utils.error_handling import ErrorBoundary, AsyncErrorBoundary, ErrorSeverity, handle_async_errors
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import AsyncErrorBoundary, ErrorSeverity, handle_async_errors
+from utils.shutdown import register_shutdown_handler
 from dataclasses import dataclass
 import re
 
@@ -103,7 +102,7 @@ def is_documentation_code(file_path: str, content: Optional[str] = None) -> Tupl
                 return True, doc_type
     return False, ""
 
-def get_language_by_extension(file_path: str) -> Optional[LanguageFeatures]:
+async def get_language_by_extension(file_path: str) -> Optional[LanguageFeatures]:
     """
     Get language features for a file extension or path.
     
@@ -111,7 +110,7 @@ def get_language_by_extension(file_path: str) -> Optional[LanguageFeatures]:
     """
     basename = os.path.basename(file_path)
     
-    with ErrorBoundary(f"get_language_for_path_{basename}", error_types=(Exception,)):
+    async with AsyncErrorBoundary(f"get_language_for_path_{basename}", error_types=(Exception,)):
         # Use the language mapping module to detect language
         from parsers.language_mapping import detect_language_from_filename
         language = detect_language_from_filename(basename)
@@ -121,9 +120,9 @@ def get_language_by_extension(file_path: str) -> Optional[LanguageFeatures]:
     
     return None
 
-def get_extensions_for_language(language: str) -> Set[str]:
+async def get_extensions_for_language(language: str) -> Set[str]:
     """Get all file extensions associated with a language."""
-    with ErrorBoundary(f"get_extensions_for_{language}", error_types=(Exception,)):
+    async with AsyncErrorBoundary(f"get_extensions_for_{language}", error_types=(Exception,)):
         from parsers.language_mapping import get_extensions_for_language as get_exts
         return get_exts(language)
     
@@ -136,7 +135,7 @@ class LanguageRegistry(ParserRegistryInterface):
         self._parsers: Dict[str, BaseParserInterface] = {}
         self._fallback_parsers: Dict[str, BaseParserInterface] = {}
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -155,18 +154,18 @@ class LanguageRegistry(ParserRegistryInterface):
                                 parser_type=parser_info["parser_type"],
                                 file_type=parser_info["file_type"]
                             )
-                            future = submit_async_task(self._create_parser(
+                            task = asyncio.create_task(self._create_parser(
                                 language, 
                                 classification.parser_type,
                                 classification.file_type
                             ))
-                            self._pending_tasks.add(future)
+                            self._pending_tasks.add(task)
                             try:
-                                parser = await asyncio.wrap_future(future)
+                                parser = await task
                                 if parser:
                                     self._parsers[language] = parser
                             finally:
-                                self._pending_tasks.remove(future)
+                                self._pending_tasks.remove(task)
                     
                     self._initialized = True
                     log("Language registry initialized", level="info")
@@ -191,19 +190,19 @@ class LanguageRegistry(ParserRegistryInterface):
                 return self._parsers.get(language)
                 
             # Create a parser if it doesn't exist
-            future = submit_async_task(self._create_parser(
+            task = asyncio.create_task(self._create_parser(
                 language, 
                 classification.parser_type,
                 classification.file_type
             ))
-            self._pending_tasks.add(future)
+            self._pending_tasks.add(task)
             try:
-                parser = await asyncio.wrap_future(future)
+                parser = await task
                 if parser:
                     self._parsers[language] = parser
                     return parser
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
             
             # If no parser could be created with specified type, try fallback
             parser_info = get_parser_info_for_language(language)
@@ -216,38 +215,38 @@ class LanguageRegistry(ParserRegistryInterface):
                     return self._fallback_parsers[fallback_key]
                     
                 # Try to create a fallback parser
-                future = submit_async_task(self._create_parser(
+                task = asyncio.create_task(self._create_parser(
                     language,
                     fallback_type,
                     classification.file_type
                 ))
-                self._pending_tasks.add(future)
+                self._pending_tasks.add(task)
                 try:
-                    fallback_parser = await asyncio.wrap_future(future)
+                    fallback_parser = await task
                     if fallback_parser:
                         self._fallback_parsers[fallback_key] = fallback_parser
                         log(f"Using fallback parser type {fallback_type} for {language}", level="info")
                         return fallback_parser
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
             
             # Try language alternatives as last resort
             for alt_language in get_suggested_alternatives(language):
                 alt_parser_info = get_parser_info_for_language(alt_language)
-                future = submit_async_task(self.get_parser(FileClassification(
+                task = asyncio.create_task(self.get_parser(FileClassification(
                     file_path=classification.file_path,
                     language_id=alt_language,
                     parser_type=alt_parser_info["parser_type"],
                     file_type=alt_parser_info["file_type"]
                 )))
-                self._pending_tasks.add(future)
+                self._pending_tasks.add(task)
                 try:
-                    alt_parser = await asyncio.wrap_future(future)
+                    alt_parser = await task
                     if alt_parser:
                         log(f"Using alternative language {alt_language} parser for {language}", level="info")
                         return alt_parser
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
         
         # No parser available
         return None
@@ -298,22 +297,22 @@ class LanguageRegistry(ParserRegistryInterface):
             
             # Clean up primary parsers
             for parser in self._parsers.values():
-                future = submit_async_task(parser.cleanup())
-                cleanup_tasks.append(future)
+                task = asyncio.create_task(parser.cleanup())
+                cleanup_tasks.append(task)
             
             # Clean up fallback parsers
             for parser in self._fallback_parsers.values():
-                future = submit_async_task(parser.cleanup())
-                cleanup_tasks.append(future)
+                task = asyncio.create_task(parser.cleanup())
+                cleanup_tasks.append(task)
             
             # Wait for all cleanup tasks
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in cleanup_tasks], return_exceptions=True)
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
             
             # Clean up any remaining pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
                     task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
             # Clear parser dictionaries

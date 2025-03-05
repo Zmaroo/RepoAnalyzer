@@ -11,14 +11,13 @@ from utils.error_handling import (
     handle_async_errors,
     DatabaseError,
     AsyncErrorBoundary,
-    ErrorBoundary,
     PostgresError,
     ErrorSeverity
 )
 from db.retry_utils import DatabaseRetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
-from utils.app_init import register_shutdown_handler
+from utils.shutdown import register_shutdown_handler
 
 # Initialize retry manager for database operations
 _retry_manager = DatabaseRetryManager(RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0))
@@ -31,17 +30,15 @@ async def query(sql: str, params: tuple = None) -> List[Dict[str, Any]]:
         try:
             async with conn.transaction():
                 if params:
-                    future = submit_async_task(conn.fetch(sql, *params))
+                    results = await conn.fetch(sql, *params)
                 else:
-                    future = submit_async_task(conn.fetch(sql))
-                try:
-                    results = await asyncio.wrap_future(future)
-                    return [dict(row) for row in results]
-                finally:
-                    await connection_manager.release_postgres_connection(conn)
+                    results = await conn.fetch(sql)
+                return [dict(row) for row in results]
         except Exception as e:
             await connection_manager.release_postgres_connection(conn)
             raise
+        finally:
+            await connection_manager.release_postgres_connection(conn)
     
     return await _retry_manager.execute_with_retry(_execute_query)
 
@@ -53,10 +50,9 @@ async def execute(sql: str, params: tuple = None) -> None:
         try:
             async with conn.transaction():
                 if params:
-                    future = submit_async_task(conn.execute(sql, *params))
+                    await conn.execute(sql, *params)
                 else:
-                    future = submit_async_task(conn.execute(sql))
-                await asyncio.wrap_future(future)
+                    await conn.execute(sql)
         finally:
             await connection_manager.release_postgres_connection(conn)
     
@@ -69,8 +65,7 @@ async def execute_many(sql: str, params_list: list) -> None:
         conn = await connection_manager.get_postgres_connection()
         try:
             async with conn.transaction():
-                future = submit_async_task(conn.executemany(sql, params_list))
-                await asyncio.wrap_future(future)
+                await conn.executemany(sql, params_list)
         finally:
             await connection_manager.release_postgres_connection(conn)
     
@@ -88,8 +83,7 @@ async def execute_batch(
             async with conn.transaction():
                 for i in range(0, len(params_list), batch_size):
                     batch = params_list[i:i + batch_size]
-                    future = submit_async_task(conn.executemany(sql, batch))
-                    await asyncio.wrap_future(future)
+                    await conn.executemany(sql, batch)
         finally:
             await connection_manager.release_postgres_connection(conn)
     
@@ -104,22 +98,18 @@ async def execute_parallel_queries(
         try:
             async with conn.transaction():
                 if params:
-                    future = submit_async_task(conn.fetch(sql, *params))
+                    results = await conn.fetch(sql, *params)
                 else:
-                    future = submit_async_task(conn.fetch(sql))
-                results = await asyncio.wrap_future(future)
+                    results = await conn.fetch(sql)
                 return [dict(row) for row in results]
         finally:
             await connection_manager.release_postgres_connection(conn)
     
     # Create tasks for all queries
-    tasks = []
-    for sql, params in queries:
-        future = submit_async_task(_execute_single_query(sql, params))
-        tasks.append(future)
+    tasks = [_execute_single_query(sql, params) for sql, params in queries]
     
     # Wait for all queries to complete
-    results = await asyncio.gather(*[asyncio.wrap_future(f) for f in tasks], return_exceptions=True)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     
     # Check for errors
     for i, result in enumerate(results):

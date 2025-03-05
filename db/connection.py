@@ -18,35 +18,79 @@ from utils.error_handling import (
     DatabaseError,
     Neo4jError,
     ConnectionError,
-    ErrorBoundary,
+    AsyncErrorBoundary,
     ErrorSeverity,
     PostgresError
 )
 from utils.async_runner import submit_async_task, get_loop
 from db.retry_utils import DatabaseRetryManager, RetryConfig
-from utils.app_init import register_shutdown_handler
+from utils.shutdown import register_shutdown_handler
 
 class ConnectionManager:
     """Manages all database connections and their lifecycle."""
     
     def __init__(self):
+        """Private constructor - use create() instead."""
         # Neo4j
         self._driver = None
         self._lock = asyncio.Lock()
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         self._health_check_interval = 60  # seconds
         self._health_check_task = None
-        self._retry_manager = DatabaseRetryManager(
-            RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
-        )
+        self._retry_manager = None
         self._initialized = False
         
         # PostgreSQL
         self._pool = None
         self._pg_initialized = False
-        
-        # Register cleanup handler
-        register_shutdown_handler(self.cleanup)
+    
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
+        if not self._initialized:
+            raise ConnectionError("ConnectionManager not initialized. Use create() to initialize.")
+        if not self._pg_initialized:
+            raise ConnectionError("PostgreSQL not initialized. Use create() to initialize.")
+        if not self._driver:
+            raise ConnectionError("Neo4j driver not initialized")
+        return True
+    
+    @classmethod
+    async def create(cls) -> 'ConnectionManager':
+        """Async factory method to create and initialize a ConnectionManager instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="connection manager initialization",
+                error_types=(ConnectionError, DatabaseError),
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize retry manager
+                from db.retry_utils import DatabaseRetryManager, RetryConfig
+                instance._retry_manager = await DatabaseRetryManager.create(
+                    RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
+                )
+                
+                # Initialize Neo4j
+                await instance.initialize()
+                
+                # Initialize PostgreSQL
+                await instance.initialize_postgres()
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("connection_manager")
+                
+                instance._initialized = True
+                await log("Connection manager initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing connection manager: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ConnectionError(f"Failed to initialize connection manager: {e}")
     
     @property
     def driver(self):
@@ -85,12 +129,7 @@ class ConnectionManager:
                 )
                 
                 # Verify connection
-                future = submit_async_task(self._verify_connectivity())
-                self._pending_tasks.add(future)
-                try:
-                    await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
+                await self._verify_connectivity()
                 
                 # Start health check
                 self._start_health_check()
@@ -117,7 +156,7 @@ class ConnectionManager:
                 return
             
             try:
-                future = submit_async_task(asyncpg.create_pool(
+                self._pool = await asyncpg.create_pool(
                     user=PostgresConfig.user,
                     password=PostgresConfig.password,
                     database=PostgresConfig.database,
@@ -126,21 +165,11 @@ class ConnectionManager:
                     min_size=PostgresConfig.min_pool_size,
                     max_size=PostgresConfig.max_pool_size,
                     timeout=PostgresConfig.connection_timeout
-                ))
-                self._pending_tasks.add(future)
-                try:
-                    self._pool = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
+                )
                 
                 # Test connection
                 async with self._pool.acquire() as conn:
-                    future = submit_async_task(conn.execute('SELECT 1'))
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
+                    await conn.execute('SELECT 1')
                 
                 self._pg_initialized = True
                 
@@ -160,18 +189,12 @@ class ConnectionManager:
     async def _verify_connectivity(self) -> None:
         """Verify database connectivity with a test query."""
         async with self.driver.session() as session:
-            future = submit_async_task(session.run("RETURN 1"))
-            self._pending_tasks.add(future)
-            try:
-                await asyncio.wrap_future(future)
-            finally:
-                self._pending_tasks.remove(future)
+            await session.run("RETURN 1")
     
     def _start_health_check(self) -> None:
         """Start periodic health check."""
         if not self._health_check_task or self._health_check_task.done():
-            self._health_check_task = submit_async_task(self._health_check_loop())
-            self._pending_tasks.add(self._health_check_task)
+            self._health_check_task = asyncio.create_task(self._health_check_loop())
     
     async def _health_check_loop(self) -> None:
         """Periodic health check loop."""
@@ -179,38 +202,27 @@ class ConnectionManager:
             while True:
                 try:
                     # Check Neo4j
-                    future = submit_async_task(self._verify_connectivity())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                        log("Neo4j health check passed", level="debug")
-                    except Exception as e:
-                        log("Neo4j health check failed", level="error", context={
-                            "error": str(e)
-                        })
-                        # Try to reconnect
-                        await self._handle_connection_failure()
-                    finally:
-                        self._pending_tasks.remove(future)
-                    
+                    await self._verify_connectivity()
+                    log("Neo4j health check passed", level="debug")
+                except Exception as e:
+                    log("Neo4j health check failed", level="error", context={
+                        "error": str(e)
+                    })
+                    # Try to reconnect
+                    await self._handle_connection_failure()
+                
+                try:
                     # Check PostgreSQL if initialized
                     if self._pg_initialized:
                         async with self._pool.acquire() as conn:
-                            future = submit_async_task(conn.execute('SELECT 1'))
-                            self._pending_tasks.add(future)
-                            try:
-                                await asyncio.wrap_future(future)
-                                log("PostgreSQL health check passed", level="debug")
-                            except Exception as e:
-                                log("PostgreSQL health check failed", level="error", context={
-                                    "error": str(e)
-                                })
-                                # Try to reconnect
-                                await self._handle_postgres_failure()
-                            finally:
-                                self._pending_tasks.remove(future)
+                            await conn.execute('SELECT 1')
+                            log("PostgreSQL health check passed", level="debug")
                 except Exception as e:
-                    log(f"Error in health check loop: {e}", level="error")
+                    log("PostgreSQL health check failed", level="error", context={
+                        "error": str(e)
+                    })
+                    # Try to reconnect
+                    await self._handle_postgres_failure()
                 
                 # Wait for next check
                 await asyncio.sleep(self._health_check_interval)
@@ -224,12 +236,7 @@ class ConnectionManager:
             try:
                 # Close existing connection
                 if self._driver:
-                    future = submit_async_task(self._driver.close())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
+                    await self._driver.close()
                     self._driver = None
                     self._initialized = False
                 
@@ -244,12 +251,7 @@ class ConnectionManager:
             try:
                 # Close existing pool
                 if self._pool:
-                    future = submit_async_task(self._pool.close())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
+                    await self._pool.close()
                     self._pool = None
                     self._pg_initialized = False
                 
@@ -263,39 +265,27 @@ class ConnectionManager:
         """Get a Neo4j database session."""
         if not self._initialized:
             await self.initialize()
-        future = submit_async_task(self.driver.session())
-        self._pending_tasks.add(future)
-        try:
-            return await asyncio.wrap_future(future)
-        finally:
-            self._pending_tasks.remove(future)
+        return await self.driver.session()
     
     @handle_async_errors(error_types=(PostgresError, ConnectionError))
     async def get_postgres_connection(self):
         """Get a PostgreSQL connection from the pool."""
         if not self._pg_initialized:
             await self.initialize_postgres()
-        future = submit_async_task(self.pool.acquire())
-        self._pending_tasks.add(future)
-        try:
-            return await asyncio.wrap_future(future)
-        finally:
-            self._pending_tasks.remove(future)
+        return await self.pool.acquire()
     
     @handle_async_errors(error_types=(PostgresError, ConnectionError))
     async def release_postgres_connection(self, conn):
         """Release a PostgreSQL connection back to the pool."""
-        future = submit_async_task(self.pool.release(conn))
-        self._pending_tasks.add(future)
-        try:
-            await asyncio.wrap_future(future)
-        finally:
-            self._pending_tasks.remove(future)
+        await self.pool.release(conn)
     
     async def cleanup(self) -> None:
         """Close all database connections and cleanup resources."""
         async with self._lock:
             try:
+                if not self._initialized:
+                    return
+                    
                 # Stop health check
                 if self._health_check_task and not self._health_check_task.done():
                     self._health_check_task.cancel()
@@ -304,40 +294,63 @@ class ConnectionManager:
                     except asyncio.CancelledError:
                         pass
                 
+                # Cancel all pending tasks
+                if self._pending_tasks:
+                    for task in self._pending_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                    self._pending_tasks.clear()
+                
                 # Close Neo4j driver
                 if self._driver:
-                    future = submit_async_task(self._driver.close())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
+                    await self._driver.close()
                     self._driver = None
                     self._initialized = False
                 
                 # Close PostgreSQL pool
                 if self._pool:
-                    future = submit_async_task(self._pool.close())
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
+                    await self._pool.close()
                     self._pool = None
                     self._pg_initialized = False
                 
-                # Clean up any remaining tasks
-                if self._pending_tasks:
-                    await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                    self._pending_tasks.clear()
+                # Clean up retry manager
+                if self._retry_manager:
+                    await self._retry_manager.cleanup()
                 
-                log("All database connections closed", level="info")
+                # Unregister from health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.unregister_component("connection_manager")
+                
+                await log("All database connections closed", level="info")
             except Exception as e:
-                log(f"Error closing database connections: {e}", level="error")
-                raise
+                await log(f"Error cleaning up connection manager: {e}", level="error")
+                raise ConnectionError(f"Failed to cleanup connection manager: {e}")
 
 # Create global connection manager instance
-connection_manager = ConnectionManager()
+connection_manager = None
 
-# Initialize driver with connection manager
-driver = connection_manager.driver 
+async def get_connection_manager() -> 'ConnectionManager':
+    """Get the global connection manager instance."""
+    global connection_manager
+    if not connection_manager:
+        connection_manager = await ConnectionManager.create()
+    return connection_manager
+
+async def initialize_postgres():
+    """Initialize PostgreSQL connection pool."""
+    manager = await get_connection_manager()
+    await manager.initialize_postgres()
+
+async def initialize():
+    """Initialize Neo4j connection."""
+    manager = await get_connection_manager()
+    await manager.initialize()
+
+async def cleanup():
+    """Clean up all database connections."""
+    manager = await get_connection_manager()
+    await manager.cleanup()
+
+# Export the connection manager only, not the driver
+__all__ = ['connection_manager'] 

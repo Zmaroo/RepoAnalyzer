@@ -21,7 +21,6 @@ from utils.error_handling import (
     Neo4jError,
     TransactionError,
     handle_async_errors,
-    ErrorBoundary,
     ErrorSeverity
 )
 from db.retry_utils import DatabaseRetryManager, RetryConfig
@@ -29,8 +28,8 @@ from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
 from db.transaction import transaction_scope
 from parsers.types import ParserResult, ExtractedFeatures
-from embedding.embedding_models import DocEmbedder
-from utils.app_init import register_shutdown_handler
+from embedding.embedding_models import doc_embedder
+from utils.shutdown import register_shutdown_handler
 
 # Initialize retry manager for upsert operations
 _retry_manager = DatabaseRetryManager(RetryConfig(max_retries=5))  # More retries for upsert operations
@@ -39,9 +38,8 @@ class UpsertCoordinator:
     """Coordinates upsert operations across databases."""
     
     def __init__(self):
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
-        self.doc_embedder = DocEmbedder()
         self._initialized = False
         register_shutdown_handler(self.cleanup)
     
@@ -72,18 +70,18 @@ class UpsertCoordinator:
                     enriched_features = EXCLUDED.enriched_features;
                 """
                 
-                future = submit_async_task(conn.execute(sql, (
+                task = asyncio.create_task(conn.execute(sql, (
                     code_data['repo_id'],
                     code_data['file_path'],
                     json.dumps(code_data['ast']) if code_data.get('ast') else None,
                     code_data.get('embedding'),
                     json.dumps(code_data['enriched_features']) if code_data.get('enriched_features') else None
                 )))
-                self._pending_tasks.add(future)
+                self._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
         finally:
             await connection_manager.release_postgres_connection(conn)
     
@@ -105,16 +103,16 @@ class UpsertCoordinator:
                 'enriched_features': code_data.get('enriched_features')
             }
             
-            future = submit_async_task(session.run(cypher, {
+            task = asyncio.create_task(session.run(cypher, {
                 'repo_id': code_data['repo_id'], 
                 'file_path': code_data['file_path'], 
                 'properties': properties
             }))
-            self._pending_tasks.add(future)
+            self._pending_tasks.add(task)
             try:
-                await asyncio.wrap_future(future)
+                await task
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
         finally:
             await session.close()
     
@@ -132,7 +130,7 @@ class UpsertCoordinator:
                 RETURNING id;
                 """
                 
-                future = submit_async_task(conn.fetchrow(sql, (
+                task = asyncio.create_task(conn.fetchrow(sql, (
                     doc_data['file_path'],
                     doc_data['content'],
                     doc_data.get('doc_type', 'markdown'),
@@ -143,12 +141,12 @@ class UpsertCoordinator:
                     json.dumps(doc_data.get('metadata', {})),
                     json.dumps(doc_data.get('quality_metrics', {}))
                 )))
-                self._pending_tasks.add(future)
+                self._pending_tasks.add(task)
                 try:
-                    result = await asyncio.wrap_future(future)
+                    result = await task
                     doc_id = result['id']
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 # Create relation
                 relation_sql = """
@@ -158,16 +156,16 @@ class UpsertCoordinator:
                 SET is_primary = EXCLUDED.is_primary;
                 """
                 
-                future = submit_async_task(conn.execute(relation_sql, (
+                task = asyncio.create_task(conn.execute(relation_sql, (
                     doc_data['repo_id'],
                     doc_id,
                     doc_data.get('is_primary', False)
                 )))
-                self._pending_tasks.add(future)
+                self._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 return doc_id
         finally:
@@ -192,16 +190,16 @@ class UpsertCoordinator:
                 'metadata': doc_data.get('metadata', {})
             }
             
-            future = submit_async_task(session.run(cypher, {
+            task = asyncio.create_task(session.run(cypher, {
                 'repo_id': doc_data['repo_id'], 
                 'path': doc_data['file_path'],
                 'properties': properties
             }))
-            self._pending_tasks.add(future)
+            self._pending_tasks.add(task)
             try:
-                await asyncio.wrap_future(future)
+                await task
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
         finally:
             await session.close()
     
@@ -240,7 +238,7 @@ class UpsertCoordinator:
                 # Generate embedding if needed
                 embedding = None
                 if doc_type in ['markdown', 'docstring']:
-                    embedding = await self.doc_embedder.embed_text(content)
+                    embedding = await doc_embedder.embed_text(content)
                 
                 doc_data = {
                     'repo_id': repo_id,
@@ -374,7 +372,7 @@ class UpsertCoordinator:
             if self._pending_tasks:
                 for task in self._pending_tasks:
                     task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
             self._initialized = False

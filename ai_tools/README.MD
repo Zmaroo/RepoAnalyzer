@@ -12,6 +12,7 @@ This directory contains the core implementation of AI-powered code analysis tool
 - Code structure analysis
 - Reference repository learning
 - Resource management and cleanup
+- Proper async task management with `asyncio.create_task`
 
 ### Code Understanding (`code_understanding.py`)
 
@@ -21,6 +22,7 @@ This directory contains the core implementation of AI-powered code analysis tool
 - Embedding generation and management
 - Integration with Neo4j and PostgreSQL
 - Uses GraphSync for projection management
+- Efficient async task handling
 
 ### Graph Analysis (`graph_capabilities.py`)
 
@@ -30,6 +32,7 @@ This directory contains the core implementation of AI-powered code analysis tool
 - Reference analysis
 - Graph-based metrics
 - Centralized graph projection management via GraphSync
+- Proper async task lifecycle management
 
 ### Reference Repository Learning (`reference_repository_learning.py`)
 
@@ -41,27 +44,31 @@ This directory contains the core implementation of AI-powered code analysis tool
 - Cross-repository learning
 - Graph-based pattern analysis
 
-## Configuration
+## Async Task Management
 
-The AI tools use configuration from the `config` package:
+All components implement consistent async task management:
 
-- `parser_config`: Language parser settings
-- `neo4j_config`: Graph database settings
-- `rule_config`: Pattern learning rules
+- Using `asyncio.create_task` for managing async operations
+- Proper task set typing with `Set[asyncio.Task]`
+- Direct awaiting of coroutines in main flow
+- Using `asyncio.gather` for cleanup
+- Proper task cancellation during cleanup
 
 ## Error Handling
 
 All components implement consistent error handling:
 
-- Async/sync error boundaries
+- Async/sync error boundaries with `AsyncErrorBoundary`
 - Specific error types for different failures
 - Resource cleanup on errors
 - Proper error logging
+- Error severity levels
 
 ## Usage Example
 
 ```python
 from ai_tools.ai_interface import ai_assistant
+
 async def analyze_repo(repo_id: int):
     try:
         # Perform comprehensive analysis
@@ -74,7 +81,7 @@ async def analyze_repo(repo_id: int):
         )
         
         # Analyze documentation
-        docs = ai_assistant.analyze_documentation(repo_id)
+        docs = await ai_assistant.analyze_documentation(repo_id)
         
         # Learn from reference repository
         reference_repo_id = 123  # ID of reference repo
@@ -95,7 +102,7 @@ async def analyze_repo(repo_id: int):
         }
     finally:
         # Always cleanup resources
-        ai_assistant.close()
+        await ai_assistant.cleanup()
 ```
 
 ## Dependencies
@@ -122,5 +129,14 @@ The tools use a centralized graph management system through the GraphSync module
 - `ParserError`: Code parsing errors
 - `Neo4jError`: Graph database errors
 - `TransactionError`: Transaction-related errors
+
+## Async Task Management Best Practices
+
+1. Always use `asyncio.create_task` for managing async operations
+2. Track tasks in a typed set: `_pending_tasks: Set[asyncio.Task]`
+3. Properly clean up tasks during shutdown
+4. Use `asyncio.gather` for parallel operations
+5. Handle task cancellation gracefully
+6. Implement proper error boundaries
 
 See individual module documentation for detailed API references.

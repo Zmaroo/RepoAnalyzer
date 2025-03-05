@@ -5,10 +5,12 @@ This module provides a caching mechanism that persists for the duration of a sin
 or analysis operation, helping to avoid redundant work within a request lifecycle.
 """
 
-import threading
-from typing import Any, Dict, Optional, TypeVar, Generic, Callable
-from contextlib import contextmanager
+import asyncio
+from typing import Any, Dict, Optional, TypeVar, Generic, Callable, Set
+from contextlib import contextmanager, asynccontextmanager
 from functools import wraps
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 
 T = TypeVar('T')
 
@@ -24,8 +26,11 @@ class RequestCache:
     def __init__(self):
         """Initialize an empty request cache."""
         self._cache: Dict[str, Any] = {}
+        self._lock = asyncio.Lock()
+        self._pending_tasks: Set[asyncio.Task] = set()
+        register_shutdown_handler(self.cleanup)
         
-    def set(self, key: str, value: Any) -> None:
+    async def set(self, key: str, value: Any) -> None:
         """
         Store a value in the request cache.
         
@@ -33,9 +38,10 @@ class RequestCache:
             key: The cache key
             value: The value to store
         """
-        self._cache[key] = value
+        async with self._lock:
+            self._cache[key] = value
         
-    def get(self, key: str, default: Any = None) -> Any:
+    async def get(self, key: str, default: Any = None) -> Any:
         """
         Retrieve a value from the request cache.
         
@@ -46,19 +52,21 @@ class RequestCache:
         Returns:
             The cached value or the default if not found
         """
-        return self._cache.get(key, default)
+        async with self._lock:
+            return self._cache.get(key, default)
     
-    def delete(self, key: str) -> None:
+    async def delete(self, key: str) -> None:
         """
         Remove an item from the cache.
         
         Args:
             key: The cache key to remove
         """
-        if key in self._cache:
-            del self._cache[key]
+        async with self._lock:
+            if key in self._cache:
+                del self._cache[key]
             
-    def has(self, key: str) -> bool:
+    async def has(self, key: str) -> bool:
         """
         Check if a key exists in the cache.
         
@@ -68,51 +76,70 @@ class RequestCache:
         Returns:
             True if the key exists, False otherwise
         """
-        return key in self._cache
+        async with self._lock:
+            return key in self._cache
         
-    def clear(self) -> None:
+    async def clear(self) -> None:
         """Clear all entries from the request cache."""
-        self._cache.clear()
+        async with self._lock:
+            self._cache.clear()
         
-    def size(self) -> int:
+    async def size(self) -> int:
         """
         Get the number of items in the cache.
         
         Returns:
             The number of items in the cache
         """
-        return len(self._cache)
+        async with self._lock:
+            return len(self._cache)
+            
+    async def cleanup(self) -> None:
+        """Clean up cache resources."""
+        try:
+            await self.clear()
+            # Clean up any pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+        except Exception as e:
+            print(f"Error cleaning up request cache: {e}")
 
 
 # Thread-local storage for the current request cache
-_thread_local = threading.local()
+_request_context = {}
 
 
 def get_current_request_cache() -> Optional[RequestCache]:
     """
-    Get the currently active request cache for this thread.
+    Get the currently active request cache for this task.
     
     Returns:
         The active RequestCache instance or None if no cache is active
     """
-    return getattr(_thread_local, 'current_cache', None)
+    task = asyncio.current_task()
+    return _request_context.get(task) if task else None
 
 
 def set_current_request_cache(cache: Optional[RequestCache]) -> None:
     """
-    Set the current request cache for this thread.
+    Set the current request cache for this task.
     
     Args:
         cache: The RequestCache instance to set as current, or None to clear
     """
-    if cache is None and hasattr(_thread_local, 'current_cache'):
-        delattr(_thread_local, 'current_cache')
-    else:
-        _thread_local.current_cache = cache
+    task = asyncio.current_task()
+    if task:
+        if cache is None and task in _request_context:
+            del _request_context[task]
+        else:
+            _request_context[task] = cache
 
 
-@contextmanager
-def request_cache_context():
+@asynccontextmanager
+async def request_cache_context():
     """
     Context manager providing a request-level cache.
     
@@ -120,10 +147,12 @@ def request_cache_context():
     The cache is automatically cleared when exiting the context.
     
     Example:
-        with request_cache_context() as cache:
+        ```python
+        async with request_cache_context() as cache:
             # Use cache within this request/operation
-            cache.set("key1", "value1")
-            value = cache.get("key1")
+            await cache.set("key1", "value1")
+            value = await cache.get("key1")
+        ```
     
     Yields:
         RequestCache: The request cache instance
@@ -135,7 +164,7 @@ def request_cache_context():
         yield cache
     finally:
         set_current_request_cache(previous_cache)
-        cache.clear()
+        await cache.cleanup()
 
 
 def cached_in_request(key_fn=None):
@@ -151,16 +180,18 @@ def cached_in_request(key_fn=None):
                If not provided, a default key based on function name and args is used.
     
     Example:
+        ```python
         @cached_in_request
-        def expensive_operation(arg1, arg2):
+        async def expensive_operation(arg1, arg2):
             # This result will be cached in the current request
-            return do_expensive_work(arg1, arg2)
+            return await do_expensive_work(arg1, arg2)
             
         # With custom key generation
         @cached_in_request(lambda repo_id, file_path: f"repo:{repo_id}:file:{file_path}")
-        def process_file(repo_id, file_path):
+        async def process_file(repo_id, file_path):
             # Process with custom cache key
-            return process_content(repo_id, file_path)
+            return await process_content(repo_id, file_path)
+        ```
     
     Returns:
         The decorated function
@@ -174,12 +205,12 @@ def cached_in_request(key_fn=None):
     # This is the actual decorator that will be returned
     def actual_decorator(func):
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             # Get the current request cache
             cache = get_current_request_cache()
             if cache is None:
                 # No active request cache, just execute the function
-                return func(*args, **kwargs)
+                return await func(*args, **kwargs) if asyncio.iscoroutinefunction(func) else func(*args, **kwargs)
             
             # Determine the cache key
             if key_fn is not None:
@@ -190,12 +221,12 @@ def cached_in_request(key_fn=None):
                 cache_key = default_key_fn(func.__name__, *args, **kwargs)
             
             # Check if result is already cached
-            if cache.has(cache_key):
-                return cache.get(cache_key)
+            if await cache.has(cache_key):
+                return await cache.get(cache_key)
             
             # Execute the function and cache the result
-            result = func(*args, **kwargs)
-            cache.set(cache_key, result)
+            result = await func(*args, **kwargs) if asyncio.iscoroutinefunction(func) else func(*args, **kwargs)
+            await cache.set(cache_key, result)
             return result
         return wrapper
     

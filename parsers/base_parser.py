@@ -7,15 +7,16 @@ from dataclasses import field
 import re
 import asyncio
 from parsers.types import PatternCategory
-from parsers.models import PatternType, QueryPattern
+from parsers.models import PatternType, QueryPattern, BaseNodeDict
 from utils.logger import log
 from .parser_interfaces import BaseParserInterface
-from utils.error_handling import ErrorBoundary, AsyncErrorBoundary, ErrorSeverity
+from utils.error_handling import AsyncErrorBoundary, ErrorSeverity
 from utils.cache import cache_coordinator
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
 from db.transaction import transaction_scope
 from db.upsert_ops import coordinator as upsert_coordinator
+from utils.error_handling import ProcessingError
+from utils.cache import UnifiedCache
 
 class BaseParser(BaseParserInterface):
     """Base implementation for parsers.
@@ -26,62 +27,103 @@ class BaseParser(BaseParserInterface):
     """
     
     def __init__(self):
-        """Initialize the base parser."""
+        """Private constructor - use create() instead."""
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        register_shutdown_handler(self.cleanup)
-        
-        # Initialize feature extractor according to parser type.
-        from parsers.feature_extractor import TreeSitterFeatureExtractor, CustomFeatureExtractor
-        if self.parser_type == ParserType.TREE_SITTER:
-            self.feature_extractor = TreeSitterFeatureExtractor(self.language_id, self.file_type)
-        elif self.parser_type == ParserType.CUSTOM:
-            self.feature_extractor = CustomFeatureExtractor(self.language_id, self.file_type)
-        else:
-            self.feature_extractor = None
-
-    async def initialize(self):
-        """Initialize parser resources."""
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self.feature_extractor = None
+        self._cache = None
+        self._lock = asyncio.Lock()
+    
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
+            raise ProcessingError(f"{self.language_id} parser not initialized. Use create() to initialize.")
+        return True
+    
+    @classmethod
+    async def create(cls, language_id: str, file_type: FileType, parser_type: ParserType) -> 'BaseParser':
+        """Async factory method to create and initialize a BaseParser instance."""
+        instance = cls()
+        instance.language_id = language_id
+        instance.file_type = file_type
+        instance.parser_type = parser_type
+        
+        try:
+            async with AsyncErrorBoundary(f"{language_id} parser initialization"):
+                # Initialize feature extractor according to parser type
+                from parsers.feature_extractor import TreeSitterFeatureExtractor, CustomFeatureExtractor
+                if parser_type == ParserType.TREE_SITTER:
+                    instance.feature_extractor = TreeSitterFeatureExtractor(language_id, file_type)
+                elif parser_type == ParserType.CUSTOM:
+                    instance.feature_extractor = CustomFeatureExtractor(language_id, file_type)
+                
                 # Initialize cache coordinator
-                future = submit_async_task(cache_coordinator.initialize())
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(cache_coordinator.initialize())
+                instance._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    instance._pending_tasks.remove(task)
                 
                 # Initialize upsert coordinator
-                future = submit_async_task(upsert_coordinator.initialize())
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(upsert_coordinator.initialize())
+                instance._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    instance._pending_tasks.remove(task)
                 
-                # Initialize feature extractor
-                if self.feature_extractor:
-                    future = submit_async_task(self.feature_extractor.initialize())
-                    self._pending_tasks.add(future)
+                # Initialize feature extractor if present
+                if instance.feature_extractor:
+                    task = asyncio.create_task(instance.feature_extractor.initialize())
+                    instance._pending_tasks.add(task)
                     try:
-                        await asyncio.wrap_future(future)
+                        await task
                     finally:
-                        self._pending_tasks.remove(future)
+                        instance._pending_tasks.remove(task)
                 
-                self._initialized = True
-                log(f"Base parser initialized for {self.language_id}", level="info")
-            except Exception as e:
-                log(f"Error initializing base parser: {e}", level="error")
-                raise
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                instance._initialized = True
+                await log(f"Base parser initialized for {language_id}", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing base parser for {language_id}: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize base parser for {language_id}: {e}")
+    
+    async def cleanup(self):
+        """Clean up parser resources."""
+        try:
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clean up feature extractor
+            if self.feature_extractor:
+                await self.feature_extractor.cleanup()
+            
+            self._initialized = False
+            self.stats = ParsingStatistics()
+            await log(f"Base parser cleaned up for {self.language_id}", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up base parser for {self.language_id}: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup base parser for {self.language_id}: {e}")
 
-    def _create_node(self, node_type: str, start_point: List[int], end_point: List[int], **kwargs) -> Dict[str, Any]:
+    def _create_node(self, node_type: str, start_point: List[int], end_point: List[int], **kwargs) -> BaseNodeDict:
         """Helper for creating a standardized AST node. (Subclasses can override if needed.)"""
         return {
             "type": node_type,
             "start_point": start_point,
             "end_point": end_point,
             "children": [],
+            "metadata": {},
             **kwargs
         }
 
@@ -97,86 +139,98 @@ class BaseParser(BaseParserInterface):
         """Get syntax errors from AST."""
         return []
 
+    async def _initialize_cache(self):
+        """Initialize cache based on parser type."""
+        if not self._cache:
+            # Only initialize cache for custom parsers
+            # Tree-sitter parsers use tree-sitter-language-pack's caching
+            if self.parser_type == ParserType.CUSTOM:
+                self._cache = UnifiedCache(f"parser_{self.language_id}")
+                await cache_coordinator.register_cache(self._cache)
+    
     async def _check_ast_cache(self, source_code: str) -> Optional[Dict[str, Any]]:
         """Check if an AST for this source code is already cached."""
+        # Only use caching for custom parsers
+        if self.parser_type != ParserType.CUSTOM or not self._cache:
+            return None
+            
         import hashlib
-        
-        # Create a unique cache key based on language and source code hash
         source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
         cache_key = f"ast:{self.language_id}:{source_hash}"
         
-        with ErrorBoundary(f"check_ast_cache_{self.language_id}", error_types=(Exception,)):
-            # Try to get from cache
-            future = submit_async_task(cache_coordinator.get_async(cache_key))
-            self._pending_tasks.add(future)
+        async with AsyncErrorBoundary(f"check_ast_cache_{self.language_id}", error_types=(Exception,)):
+            task = asyncio.create_task(self._cache.get(cache_key))
+            self._pending_tasks.add(task)
             try:
-                cached_ast = await asyncio.wrap_future(future)
+                cached_ast = await task
                 if cached_ast:
                     log(f"AST cache hit for {self.language_id}", level="debug")
                     return cached_ast
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
         
         return None
             
     async def _store_ast_in_cache(self, source_code: str, ast: Dict[str, Any]) -> None:
         """Store an AST in the cache."""
+        # Only cache for custom parsers
+        if self.parser_type != ParserType.CUSTOM or not self._cache:
+            return
+            
         import hashlib
-        
-        # Create a unique cache key based on language and source code hash
         source_hash = hashlib.md5(source_code.encode('utf8')).hexdigest()
         cache_key = f"ast:{self.language_id}:{source_hash}"
         
-        with ErrorBoundary(f"store_ast_in_cache_{self.language_id}", error_types=(Exception,)):
-            # Store in cache asynchronously
-            future = submit_async_task(cache_coordinator.set_async(cache_key, ast))
-            self._pending_tasks.add(future)
+        async with AsyncErrorBoundary(f"store_ast_in_cache_{self.language_id}", error_types=(Exception,)):
+            task = asyncio.create_task(self._cache.set(cache_key, ast))
+            self._pending_tasks.add(task)
             try:
-                await asyncio.wrap_future(future)
+                await task
                 log(f"AST cached for {self.language_id}", level="debug")
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
 
     async def parse(self, source_code: str) -> Optional[ParserResult]:
         """[2.2] Unified parsing pipeline."""
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
             
-        with ErrorBoundary("parse_source", error_types=(Exception,)):
+        async with AsyncErrorBoundary("parse_source", error_types=(Exception,)):
             # [2.2.1] Initialize Parser
             if not self._initialized and not await self.initialize():
                 log(f"Failed to initialize {self.language_id} parser", level="error")
                 return None
 
             # [2.2.2] Generate AST
-            # First check if we have a cached AST
-            cached_ast = await self._check_ast_cache(source_code)
-            if cached_ast:
-                ast = cached_ast
-            else:
-                # If not in cache, parse the source
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
+            ast = None
+            
+            # For custom parsers, check cache first
+            if self.parser_type == ParserType.CUSTOM:
+                ast = await self._check_ast_cache(source_code)
+            
+            if not ast:
+                # If not in cache or using tree-sitter, parse the source
+                task = asyncio.create_task(self._parse_source(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    ast = await asyncio.wrap_future(future)
+                    ast = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
-                if ast:
-                    # Cache the AST for future use
+                # Cache AST for custom parsers
+                if ast and self.parser_type == ParserType.CUSTOM:
                     await self._store_ast_in_cache(source_code, ast)
             
             if not ast:
                 return None
 
             # [2.2.3] Extract Features
-            # USES: [feature_extractor.py] FeatureExtractor.extract_features()
-            future = submit_async_task(self.feature_extractor.extract_features(ast, source_code))
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(self.feature_extractor.extract_features(ast, source_code))
+            self._pending_tasks.add(task)
             try:
-                features = await asyncio.wrap_future(future)
+                features = await task
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
 
             # [2.2.4] Get Syntax Errors
             errors = self._get_syntax_errors(ast)
@@ -193,26 +247,6 @@ class BaseParser(BaseParserInterface):
             )
         
         return None
-
-    async def cleanup(self):
-        """Clean up parser resources."""
-        try:
-            # Cancel and clean up any pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            # Clean up feature extractor
-            if self.feature_extractor:
-                await self.feature_extractor.cleanup()
-            
-            self._initialized = False
-            self.stats = ParsingStatistics()
-            log(f"Base parser cleaned up for {self.language_id}", level="info")
-        except Exception as e:
-            log(f"Error cleaning up base parser: {e}", level="error")
 
     def _extract_category_features(
         self,
@@ -249,7 +283,7 @@ class BaseParser(BaseParserInterface):
         """
         patterns = []
         
-        with ErrorBoundary(f"extract_patterns_{self.language_id}", error_types=(Exception,)):
+        with AsyncErrorBoundary(f"extract_patterns_{self.language_id}", error_types=(Exception,)):
             # Parse the source first
             ast = self.parse(source_code)
             

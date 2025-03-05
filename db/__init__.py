@@ -31,14 +31,10 @@ from .psql import (
     execute_batch,
     execute_parallel_queries
 )
-from .upsert_ops import (
-    upsert_doc,
-    upsert_code_snippet
-)
+from .upsert_ops import UpsertCoordinator
 from .neo4j_ops import (
     Neo4jTools,
     run_query,
-    run_query_with_retry,
     projections,
     neo4j_tools
 )
@@ -50,14 +46,19 @@ from .retry_utils import (
     NonRetryableNeo4jError,
     RetryConfig,
     DatabaseRetryManager,
-    default_retry_manager
+    default_retry_manager,
+    with_retry
 )
 from .schema import schema_manager
 from .transaction import transaction_scope
 
-from utils.app_init import register_shutdown_handler
 from utils.logger import log
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 from utils.async_runner import submit_async_task, get_loop
+
+# Create coordinator instance
+upsert_coordinator = UpsertCoordinator()
 
 # Initialize database components
 async def initialize_databases():
@@ -71,6 +72,10 @@ async def initialize_databases():
         await connection_manager.initialize_postgres()
         await connection_manager.initialize()
         log("Database connections initialized", level="info")
+        
+        # Initialize upsert coordinator
+        await upsert_coordinator.initialize()
+        log("Upsert coordinator initialized", level="info")
         
         # Initialize graph sync
         await graph_sync.initialize()
@@ -87,6 +92,7 @@ async def cleanup_databases():
     try:
         # Cleanup in reverse initialization order
         await graph_sync.cleanup()
+        await upsert_coordinator.cleanup()
         await connection_manager.cleanup()
         await schema_manager.cleanup()
         await default_retry_manager.cleanup()
@@ -108,13 +114,11 @@ __all__ = [
     "execute_parallel_queries",
     
     # Data storage operations
-    "upsert_doc",
-    "upsert_code_snippet",
+    "upsert_coordinator",
     
     # Neo4j operations
     "Neo4jTools",
     "run_query",
-    "run_query_with_retry",
     "projections",
     "neo4j_tools",
     
@@ -129,6 +133,7 @@ __all__ = [
     "RetryConfig",
     "DatabaseRetryManager",
     "default_retry_manager",
+    "with_retry",
     
     # Schema management
     "schema_manager",

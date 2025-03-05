@@ -66,21 +66,23 @@ import asyncio
 from typing import Optional, Set, Dict, Any, List
 from utils.logger import log
 from db.connection import connection_manager
-from utils.cache import create_cache
+from utils.cache import UnifiedCache, cache_coordinator
 from utils.error_handling import (
     DatabaseError, 
     Neo4jError, 
     TransactionError, 
     handle_async_errors, 
-    ErrorBoundary, 
-    AsyncErrorBoundary, 
+    AsyncErrorBoundary,
+    ProcessingError,
     ErrorSeverity
 )
 from utils.async_runner import submit_async_task
-from utils.app_init import register_shutdown_handler
+from utils.shutdown import register_shutdown_handler
+from analytics.pattern_statistics import pattern_profiler
+from utils.health_monitor import global_health_monitor
 
-# Cache for graph states
-graph_cache = create_cache("graph_state", ttl=300)
+# Create cache instance for graph state
+graph_cache = UnifiedCache("graph_state", ttl=300)
 
 class ProjectionError(DatabaseError):
     """Graph projection specific errors."""
@@ -90,136 +92,231 @@ class GraphSyncCoordinator:
     """Coordinates graph operations and projections."""
     
     def __init__(self):
-        self._lock = asyncio.Lock()
-        self._active_projections: Set[str] = set()
-        self._pending_updates: Dict[int, asyncio.Event] = {}
-        self._pending_tasks: Set[asyncio.Future] = set()
-        self._update_task = None
-        self._projections: Dict[str, Dict[str, bool]] = {}
+        """Private constructor - use create() instead."""
         self._initialized = False
-        register_shutdown_handler(self.cleanup)
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+        self._update_task = None
+        self._active_projections: Set[str] = set()
+        self._projections: Dict[str, Dict[str, Any]] = {}
+        self._retry_manager = None
     
-    async def initialize(self):
-        """Initialize the graph sync coordinator."""
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                # Any coordinator-specific initialization can go here
-                self._initialized = True
-                log("Graph sync coordinator initialized", level="info")
-            except Exception as e:
-                log(f"Error initializing graph sync coordinator: {e}", level="error")
-                raise
+            raise DatabaseError("GraphSyncCoordinator not initialized. Use create() to initialize.")
+        if not self._retry_manager:
+            raise DatabaseError("Retry manager not initialized")
+        return True
     
-    @handle_async_errors(error_types=(Neo4jError, ProjectionError, Exception))
-    async def ensure_projection(self, repo_id: int) -> bool:
-        """Ensures graph projection exists and is up to date."""
-        if not self._initialized:
-            await self.initialize()
-            
-        projection_name = f"code-repo-{repo_id}"
-        
-        async with self._lock:
-            with ErrorBoundary(
-                operation_name="ensure_graph_projection", 
-                error_types=(Neo4jError,), 
-                reraise=True, 
+    @classmethod
+    async def create(cls) -> 'GraphSyncCoordinator':
+        """Async factory method to create and initialize a GraphSyncCoordinator instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="graph sync coordinator initialization",
+                error_types=DatabaseError,
                 severity=ErrorSeverity.CRITICAL
-            ) as error_boundary:
-                # Check if projection exists and is valid
-                is_valid = await self._is_projection_valid(projection_name)
-                if is_valid:
-                    return True
+            ):
+                # Initialize retry manager
+                from db.retry_utils import DatabaseRetryManager, RetryConfig
+                instance._retry_manager = await DatabaseRetryManager.create(
+                    RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
+                )
                 
-                # Create or update projection
-                await self._create_projection(repo_id, projection_name)
-                self._active_projections.add(projection_name)
-                self._projections[projection_name] = {"valid": True}
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
                 
-                log("Graph projection ensured", level="debug", context={
-                    "repo_id": repo_id,
-                    "projection": projection_name
-                })
-                return True
-            
-            if error_boundary.error:
-                log(f"Error in graph projection: {str(error_boundary.error)}", level="error")
-                raise ProjectionError(f"Failed to ensure projection for repo {repo_id}: {str(error_boundary.error)}")
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("graph_sync_coordinator")
+                
+                instance._initialized = True
+                await log("Graph sync coordinator initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing graph sync coordinator: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise DatabaseError(f"Failed to initialize graph sync coordinator: {e}")
     
-    @handle_async_errors(error_types=(Neo4jError, TransactionError))
-    async def ensure_pattern_projection(self, repo_id: int) -> bool:
-        """Ensures pattern graph projection exists and is valid."""
-        graph_name = f"pattern-repo-{repo_id}"
-        
-        async with self._lock:
-            with ErrorBoundary(
-                operation_name="pattern_graph_projection", 
-                error_types=(Neo4jError,), 
-                reraise=True, 
-                severity=ErrorSeverity.CRITICAL
-            ) as error_boundary:
-                # Check if projection exists and is valid
-                if graph_name in self._projections and self._projections[graph_name]["valid"]:
-                    log(f"Using cached pattern graph projection: {graph_name}", level="debug")
-                    return True
+    async def cleanup(self):
+        """Clean up all resources."""
+        try:
+            if not self._initialized:
+                return
                 
-                # Create pattern projection
-                await self._create_pattern_projection(repo_id, graph_name)
-                self._projections[graph_name] = {"valid": True}
-                return True
+            # Stop update task
+            if self._update_task and not self._update_task.done():
+                self._update_task.cancel()
+                try:
+                    await self._update_task
+                except asyncio.CancelledError:
+                    pass
             
-            if error_boundary.error:
-                log(f"Error in pattern graph projection: {str(error_boundary.error)}", level="error")
-                raise ProjectionError(f"Failed to ensure pattern projection for repo {repo_id}: {str(error_boundary.error)}")
-    
-    @handle_async_errors(error_types=[Neo4jError, ProjectionError, DatabaseError])
-    async def invalidate_projection(self, repo_id: int) -> None:
-        """Invalidates existing projection for repository."""
-        projection_name = f"code-repo-{repo_id}"
-        
-        async with self._lock:
-            with ErrorBoundary(
-                error_types=[Neo4jError, DatabaseError, Exception], 
-                error_message=f"Error invalidating projection for repo {repo_id}", 
-                severity=ErrorSeverity.WARNING
-            ) as error_boundary:
-                if projection_name in self._active_projections:
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clean up retry manager
+            if self._retry_manager:
+                await self._retry_manager.cleanup()
+            
+            # Clear all projections
+            for projection_name in self._active_projections:
+                try:
                     await self._drop_projection(projection_name)
-                    self._active_projections.remove(projection_name)
-                    if projection_name in self._projections:
-                        self._projections[projection_name]["valid"] = False
-                
-                await graph_cache.clear_pattern_async(f"graph:{repo_id}:*")
+                except Exception as e:
+                    await log(f"Error dropping projection {projection_name}: {e}", level="error")
             
-            if error_boundary.error:
-                log(f"Error invalidating projection: {error_boundary.error}", level="error")
+            self._active_projections.clear()
+            self._projections.clear()
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component("graph_sync_coordinator")
+            
+            self._initialized = False
+            await log("Graph sync coordinator cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up graph sync coordinator: {e}", level="error")
+            raise DatabaseError(f"Failed to cleanup graph sync coordinator: {e}")
     
-    @handle_async_errors(error_types=[Neo4jError, ProjectionError, DatabaseError])
-    async def invalidate_pattern_projection(self, repo_id: int) -> None:
-        """Invalidates existing pattern projection for repository."""
-        graph_name = f"pattern-repo-{repo_id}"
-        
-        async with self._lock:
-            with ErrorBoundary(
-                error_types=[Neo4jError, DatabaseError, Exception], 
-                error_message=f"Error invalidating pattern projection for repo {repo_id}", 
-                severity=ErrorSeverity.WARNING
-            ) as error_boundary:
-                if graph_name in self._projections:
-                    self._projections[graph_name]["valid"] = False
-                    await self._drop_projection(graph_name)
-                    log(f"Invalidated pattern graph projection: {graph_name}", level="debug")
-                
-                await graph_cache.clear_pattern_async(f"pattern:{repo_id}:*")
+    @handle_async_errors(error_types=ProcessingError)
+    async def ensure_projection(self, repo_id: int) -> bool:
+        """Ensure graph projection exists for repository."""
+        async with AsyncErrorBoundary(
+            operation_name="ensuring graph projection",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
+            if not self._initialized:
+                await self.ensure_initialized()
             
-            if error_boundary.error:
-                log(f"Error invalidating pattern projection: {error_boundary.error}", level="error")
+            projection_name = f"code-repo-{repo_id}"
+            
+            async with self._lock:
+                async with AsyncErrorBoundary(
+                    operation_name="ensure_graph_projection", 
+                    error_types=(Neo4jError,), 
+                    reraise=True, 
+                    severity=ErrorSeverity.CRITICAL
+                ) as error_boundary:
+                    # Check if projection exists and is valid
+                    is_valid = await self._is_projection_valid(projection_name)
+                    if is_valid:
+                        return True
+                    
+                    # Create or update projection
+                    await self._create_projection(repo_id, projection_name)
+                    self._active_projections.add(projection_name)
+                    self._projections[projection_name] = {"valid": True}
+                    
+                    log("Graph projection ensured", level="debug", context={
+                        "repo_id": repo_id,
+                        "projection": projection_name
+                    })
+                    return True
+                
+                if error_boundary.error:
+                    log(f"Error in graph projection: {str(error_boundary.error)}", level="error")
+                    raise ProjectionError(f"Failed to ensure projection for repo {repo_id}: {str(error_boundary.error)}")
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def ensure_pattern_projection(self, repo_id: int) -> bool:
+        """Ensure pattern graph projection exists."""
+        async with AsyncErrorBoundary(
+            operation_name="ensuring pattern projection",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
+            graph_name = f"pattern-repo-{repo_id}"
+            
+            async with self._lock:
+                async with AsyncErrorBoundary(
+                    operation_name="pattern_graph_projection", 
+                    error_types=(Neo4jError,), 
+                    reraise=True, 
+                    severity=ErrorSeverity.CRITICAL
+                ) as error_boundary:
+                    # Check if projection exists and is valid
+                    if graph_name in self._projections and self._projections[graph_name]["valid"]:
+                        log(f"Using cached pattern graph projection: {graph_name}", level="debug")
+                        return True
+                    
+                    # Create pattern projection
+                    await self._create_pattern_projection(repo_id, graph_name)
+                    self._projections[graph_name] = {"valid": True}
+                    return True
+                
+                if error_boundary.error:
+                    log(f"Error in pattern graph projection: {str(error_boundary.error)}", level="error")
+                    raise ProjectionError(f"Failed to ensure pattern projection for repo {repo_id}: {str(error_boundary.error)}")
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def invalidate_projection(self, repo_id: int) -> None:
+        """Invalidate graph projection for repository."""
+        async with AsyncErrorBoundary(
+            operation_name="invalidating graph projection",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
+            projection_name = f"code-repo-{repo_id}"
+            
+            async with self._lock:
+                async with AsyncErrorBoundary(
+                    operation_name="invalidating_projection",
+                    error_types=[Neo4jError, DatabaseError, Exception], 
+                    severity=ErrorSeverity.WARNING
+                ) as error_boundary:
+                    if projection_name in self._active_projections:
+                        await self._drop_projection(projection_name)
+                        self._active_projections.remove(projection_name)
+                        if projection_name in self._projections:
+                            self._projections[projection_name]["valid"] = False
+                    
+                    await graph_cache.clear_pattern_async(f"graph:{repo_id}:*")
+                
+                if error_boundary.error:
+                    log(f"Error invalidating projection: {error_boundary.error}", level="error")
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def invalidate_pattern_projection(self, repo_id: int) -> None:
+        """Invalidate pattern graph projection."""
+        async with AsyncErrorBoundary(
+            operation_name="invalidating pattern projection",
+            error_types=ProcessingError,
+            severity=ErrorSeverity.ERROR
+        ):
+            graph_name = f"pattern-repo-{repo_id}"
+            
+            async with self._lock:
+                async with AsyncErrorBoundary(
+                    operation_name="invalidating_pattern_projection",
+                    error_types=[Neo4jError, DatabaseError, Exception], 
+                    severity=ErrorSeverity.WARNING
+                ) as error_boundary:
+                    if graph_name in self._projections:
+                        self._projections[graph_name]["valid"] = False
+                        await self._drop_projection(graph_name)
+                        log(f"Invalidated pattern graph projection: {graph_name}", level="debug")
+                    
+                    await graph_cache.clear_pattern_async(f"pattern:{repo_id}:*")
+                
+                if error_boundary.error:
+                    log(f"Error invalidating pattern projection: {error_boundary.error}", level="error")
     
     @handle_async_errors(error_types=[Neo4jError, DatabaseError])
     async def _is_projection_valid(self, projection_name: str) -> bool:
         """Checks if projection exists and is valid."""
-        with ErrorBoundary(
+        async with AsyncErrorBoundary(
+            operation_name="checking_projection_validity",
             error_types=[Neo4jError, DatabaseError, Exception], 
-            error_message="Error checking graph projection", 
             severity=ErrorSeverity.ERROR
         ) as error_boundary:
             # Check in-memory cache first
@@ -370,8 +467,8 @@ class GraphSyncCoordinator:
 
     async def queue_projection_update(self, repo_id: int) -> None:
         """Queue projection update with debouncing."""
-        if repo_id not in self._pending_updates:
-            self._pending_updates[repo_id] = asyncio.Event()
+        if repo_id not in self._projections:
+            self._projections[repo_id] = {}
         
         if not self._update_task or self._update_task.done():
             self._update_task = submit_async_task(self._process_updates())
@@ -383,20 +480,21 @@ class GraphSyncCoordinator:
             await asyncio.sleep(1.0)  # Debounce window
             async with self._lock:
                 futures = []
-                for repo_id, event in self._pending_updates.items():
-                    future = submit_async_task(self.ensure_projection(repo_id))
-                    futures.append((future, event))
-                    self._pending_tasks.add(future)
+                for repo_id, projection in self._projections.items():
+                    if not projection.get("valid", False):
+                        future = submit_async_task(self.ensure_projection(repo_id))
+                        futures.append((future, repo_id))
+                        self._pending_tasks.add(future)
                 
                 try:
-                    for future, event in futures:
+                    for future, repo_id in futures:
                         await asyncio.wrap_future(future)
-                        event.set()
+                        self._projections[repo_id]["valid"] = True
                 finally:
                     for future, _ in futures:
                         if future in self._pending_tasks:
                             self._pending_tasks.remove(future)
-                self._pending_updates.clear()
+                self._projections.clear()
         finally:
             if self._update_task in self._pending_tasks:
                 self._pending_tasks.remove(self._update_task)
@@ -555,7 +653,19 @@ class GraphSyncCoordinator:
                 return False
         finally:
             await session.close()
+
+# Create singleton instance of GraphSyncCoordinator
+_graph_sync = GraphSyncCoordinator()
+
+# Export with proper async handling
+async def get_graph_sync() -> GraphSyncCoordinator:
+    """Get the graph sync coordinator instance.
     
+    Returns:
+        GraphSyncCoordinator: The singleton graph sync coordinator instance
+    """
+    if not _graph_sync._initialized:
+        await _graph_sync.ensure_initialized()
     async def cleanup(self):
         """Clean up all resources."""
         try:

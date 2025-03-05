@@ -22,15 +22,18 @@ from parsers.types import FileType
 from parsers.models import FileClassification
 from parsers.types import ParserType
 from parsers.language_mapping import is_binary_extension, BINARY_EXTENSIONS
-from config import file_config
+from config import FileConfig
 from parsers.file_classification import classify_file as parsers_classify_file
 from utils.error_handling import (
-    handle_errors,
-    ErrorBoundary,
+    handle_async_errors,
+    AsyncErrorBoundary,
     ErrorSeverity,
     ProcessingError
 )
-from utils.async_runner import submit_async_task
+import asyncio
+
+# Initialize file config
+file_config = FileConfig()
 
 def should_ignore(file_path: str) -> bool:
     """Check if file should be ignored based on patterns.
@@ -47,8 +50,8 @@ def should_ignore(file_path: str) -> bool:
     path_parts = Path(file_path).parts
     return any(pattern in path_parts for pattern in ignore_patterns)
 
-@handle_errors(error_types=(ProcessingError,))
-def is_binary_file(file_path: str) -> bool:
+@handle_async_errors
+async def is_binary_file(file_path: str) -> bool:
     """Check if file is binary using magic numbers.
     
     Args:
@@ -57,7 +60,7 @@ def is_binary_file(file_path: str) -> bool:
     Returns:
         True if the file is binary, False otherwise
     """
-    with ErrorBoundary(f"checking if file is binary: {file_path}", severity=ErrorSeverity.WARNING):
+    async with AsyncErrorBoundary(f"checking if file is binary: {file_path}", severity=ErrorSeverity.WARNING):
         try:
             # Check file size first
             if os.path.getsize(file_path) > file_config.max_file_size:
@@ -75,8 +78,8 @@ def is_binary_file(file_path: str) -> bool:
             log(f"Error checking if file is binary {file_path}: {e}", level="error")
             return True
 
-@handle_errors(error_types=(ProcessingError,))
-def get_file_classification(file_path: str) -> Optional[FileClassification]:
+@handle_async_errors
+async def classify_file(file_path: str) -> FileClassification:
     """Get file classification based on extension and content.
     
     This function delegates to the centralized file classification system
@@ -88,7 +91,7 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
     Returns:
         FileClassification object or None if file should be ignored
     """
-    with ErrorBoundary(f"classifying file: {file_path}", severity=ErrorSeverity.WARNING):
+    async with AsyncErrorBoundary(f"classifying file: {file_path}", severity=ErrorSeverity.WARNING):
         try:
             if should_ignore(file_path):
                 return None
@@ -104,7 +107,7 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
             
             # Use the parsers' classify_file function but handle binary detection here
             # since we have magic library available for more accurate detection
-            is_binary = is_binary_file(file_path)
+            is_binary = await is_binary_file(file_path)
             if is_binary:
                 return FileClassification(
                     file_path=file_path,
@@ -121,8 +124,8 @@ def get_file_classification(file_path: str) -> Optional[FileClassification]:
             log(f"Error classifying file {file_path}: {e}", level="error")
             return None
 
-@handle_errors(error_types=(ProcessingError,))
-def get_files(base_path: str, file_types: Set = None) -> List[str]:
+@handle_async_errors
+async def get_files(base_path: str, file_types: Set = None) -> List[str]:
     """Get all processable files in directory.
     
     Args:
@@ -132,7 +135,7 @@ def get_files(base_path: str, file_types: Set = None) -> List[str]:
     Returns:
         List of file paths
     """
-    with ErrorBoundary(f"getting files from: {base_path}", severity=ErrorSeverity.WARNING):
+    async with AsyncErrorBoundary(f"getting files from: {base_path}", severity=ErrorSeverity.WARNING):
         if file_types is None:
             file_types = {FileType.CODE, FileType.DOC}
             
@@ -154,7 +157,7 @@ def get_files(base_path: str, file_types: Set = None) -> List[str]:
                         continue
                     
                     # Check file type
-                    classification = get_file_classification(file_path)
+                    classification = await classify_file(file_path)
                     if classification and classification.file_type in file_types:
                         files.append(file_path)
                         
@@ -163,8 +166,8 @@ def get_files(base_path: str, file_types: Set = None) -> List[str]:
             log(f"Error getting files: {e}", level="error")
             return []
 
-@handle_errors(error_types=(ProcessingError,))
-def get_relative_path(file_path: str, base_path: str) -> str:
+@handle_async_errors
+async def get_relative_path(file_path: str, base_path: str) -> str:
     """Get relative path from base_path.
     
     Args:
@@ -174,15 +177,15 @@ def get_relative_path(file_path: str, base_path: str) -> str:
     Returns:
         Relative path string
     """
-    with ErrorBoundary(f"getting relative path for: {file_path}", severity=ErrorSeverity.WARNING):
+    async with AsyncErrorBoundary(f"getting relative path for: {file_path}", severity=ErrorSeverity.WARNING):
         try:
             return os.path.relpath(file_path, base_path)
         except Exception as e:
             log(f"Error getting relative path: {e}", level="error")
             return file_path
 
-@handle_errors(error_types=(ProcessingError,))
-def is_processable_file(file_path: str) -> bool:
+@handle_async_errors
+async def is_processable_file(file_path: str) -> bool:
     """Check if file can be processed.
     
     Args:
@@ -191,7 +194,7 @@ def is_processable_file(file_path: str) -> bool:
     Returns:
         True if file can be processed, False otherwise
     """
-    with ErrorBoundary(f"checking if file is processable: {file_path}", severity=ErrorSeverity.WARNING):
+    async with AsyncErrorBoundary(f"checking if file is processable: {file_path}", severity=ErrorSeverity.WARNING):
         try:
             # Check file size first
             try:
@@ -200,7 +203,7 @@ def is_processable_file(file_path: str) -> bool:
             except OSError:
                 return False
             
-            classification = get_file_classification(file_path)
+            classification = await classify_file(file_path)
             return (classification is not None and 
                     classification.file_type in {FileType.CODE, FileType.DOC})
         except Exception as e:

@@ -19,7 +19,7 @@ from functools import wraps
 from indexer.common import async_read_file
 from utils.error_handling import (
     handle_async_errors,
-    ErrorBoundary,
+    AsyncErrorBoundary,
     ErrorSeverity,
     ProcessingError,
     DatabaseError
@@ -49,7 +49,7 @@ Flow:
 # These functions are now imported from common
 # def async_handle_errors and async_read_file have been moved to common.py
 
-@handle_async_errors(error_types=(ProcessingError, DatabaseError))
+@handle_async_errors
 async def async_process_index_file(
     file_path: str,
     base_path: str,
@@ -58,12 +58,12 @@ async def async_process_index_file(
     file_type: FileType  # Now using FileType enum from parsers/types
 ) -> None:
     """Asynchronously process and index a file using FileProcessor"""
-    async with ErrorBoundary(f"processing file {file_path}", severity=ErrorSeverity.ERROR):
+    async with AsyncErrorBoundary(f"processing file {file_path}", severity=ErrorSeverity.ERROR):
         async with transaction_scope() as txn:
             await txn.track_repo_change(repo_id)
             await processor.process_file(file_path, repo_id, base_path)
 
-@handle_async_errors(error_types=(ProcessingError, DatabaseError))
+@handle_async_errors
 async def batch_process_files(
     files: List[str],
     base_path: str,
@@ -80,7 +80,7 @@ async def batch_process_files(
     4. Clean up resources
     5. Handle task errors without stopping the entire batch
     """
-    async with ErrorBoundary("batch processing files", severity=ErrorSeverity.ERROR):
+    async with AsyncErrorBoundary("batch processing files", severity=ErrorSeverity.ERROR):
         # Import here to avoid circular reference
         from indexer.file_processor import FileProcessor
         
@@ -88,7 +88,7 @@ async def batch_process_files(
         total_files = len(files)
         processed = 0
         errors = 0
-        tasks: Set[asyncio.Future] = set()
+        tasks: Set[asyncio.Task] = set()
         
         try:
             for i in range(0, total_files, batch_size):
@@ -97,7 +97,7 @@ async def batch_process_files(
                 
                 # Create tasks for each file in the batch
                 for f in batch:
-                    future = submit_async_task(
+                    task = asyncio.create_task(
                         async_process_index_file(
                             file_path=f,
                             base_path=base_path,
@@ -106,11 +106,11 @@ async def batch_process_files(
                             file_type=FileType.CODE  # Use the enum value instead of a string
                         )
                     )
-                    batch_tasks.append(future)
-                    tasks.add(future)
+                    batch_tasks.append(task)
+                    tasks.add(task)
                 
                 # Wait for all tasks in this batch, handling errors for individual tasks
-                results = await asyncio.gather(*[asyncio.wrap_future(f) for f in batch_tasks], return_exceptions=True)
+                results = await asyncio.gather(*batch_tasks, return_exceptions=True)
                 
                 # Track errors but continue processing
                 for result in results:
@@ -138,7 +138,7 @@ async def batch_process_files(
             # Cancel any remaining tasks
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in tasks], return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
             raise
         except Exception as e:
             log(f"Unexpected error in batch processing: {e}", level="error")
@@ -146,6 +146,6 @@ async def batch_process_files(
         finally:
             # Clean up any remaining tasks
             if tasks:
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in tasks], return_exceptions=True)
+                await asyncio.gather(*tasks, return_exceptions=True)
                 tasks.clear()
             processor.clear_cache() 

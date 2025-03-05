@@ -11,21 +11,20 @@ import asyncio
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.yaml import YAML_PATTERNS
-from parsers.models import YamlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 from collections import Counter
 import re
+from .base_imports import *
 
 class YamlParser(BaseParser):
     """Parser for YAML files."""
     
     def __init__(self, language_id: str = "yaml", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
+        super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
         self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         self.patterns = self._compile_patterns(YAML_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
@@ -47,39 +46,43 @@ class YamlParser(BaseParser):
     def _create_node(
         self, node_type: str, start_point: List[int],
         end_point: List[int], **kwargs
-    ) -> YamlNode:
+    ) -> YamlNodeDict:
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return YamlNode(**node_dict)
+        return {
+            **node_dict,
+            "value": kwargs.get("value"),
+            "path": kwargs.get("path")
+        }
     
-    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> YamlNode:
+    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> YamlNodeDict:
         node = self._create_node(
             type(value).__name__, start_point,
             [start_point[0], start_point[1] + len(str(value))],
             path='.'.join(path)
         )
         if isinstance(value, dict):
-            node.type = "mapping"
+            node["type"] = "mapping"
             for key, val in value.items():
                 child = self._process_value(
                     val, path + [str(key)],
                     [start_point[0], start_point[1] + 1]
                 )
-                child.key = key
+                child["key"] = key
                 for pattern_name in ['url', 'path', 'version']:
                     if pattern_match := self.patterns[pattern_name].match(str(val)):
-                        child.metadata["semantics"] = YAML_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(pattern_match)
-                node.children.append(child)
+                        child["metadata"]["semantics"] = YAML_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(pattern_match)
+                node["children"].append(child)
         elif isinstance(value, list):
-            node.type = "sequence"
+            node["type"] = "sequence"
             for i, item in enumerate(value):
                 child = self._process_value(
                     item, path + [f"[{i}]"],
                     [start_point[0], start_point[1] + 1]
                 )
-                node.children.append(child)
+                node["children"].append(child)
         else:
-            node.type = "scalar"
-            node.value = value
+            node["type"] = "scalar"
+            node["value"] = value
         return node
     
     @handle_errors(error_types=(ParsingError,))
@@ -93,7 +96,7 @@ class YamlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="YAML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="YAML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -113,35 +116,42 @@ class YamlParser(BaseParser):
                             [i - 1, len(current_comment_block[-1])],
                             content="\n".join(current_comment_block)
                         )
-                        ast.children.append(node)
+                        ast["children"].append(node)
                         current_comment_block = []
                 try:
-                    future = submit_async_task(yaml.safe_load(source_code))
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(self._parse_yaml(source_code))
+                    self._pending_tasks.add(task)
                     try:
-                        data = await asyncio.wrap_future(future)
+                        data = await task
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
                         
                     if data is not None:
                         root_node = self._process_value(data, [], [0, 0])
-                        ast.children.append(root_node)
+                        ast["children"].append(root_node)
                         for pattern_name in ['description', 'metadata']:
-                            if YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].pattern(root_node.__dict__):
-                                ast.metadata["documentation"] = YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(root_node.__dict__)
+                            if YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].pattern(root_node):
+                                ast["metadata"]["documentation"] = YAML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(root_node)
                 except yaml.YAMLError as e:
                     log(f"Error parsing YAML structure: {e}", level="error")
-                    ast.metadata["parse_error"] = str(e)
+                    ast["metadata"]["parse_error"] = str(e)
                 if current_comment_block:
-                    ast.metadata["trailing_comments"] = current_comment_block
-                return ast.__dict__
+                    ast["metadata"]["trailing_comments"] = current_comment_block
+                return ast
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing YAML content: {e}", level="error")
-                return YamlNode(
-                    type="document", start_point=[0, 0], end_point=[0, 0],
-                    error=str(e), children=[]
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
                 ).__dict__
             
+    async def _parse_yaml(self, source_code: str) -> Any:
+        """Parse YAML content asynchronously."""
+        return yaml.safe_load(source_code)
+    
     @handle_errors(error_types=(ParsingError, ProcessingError))
     async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """Extract patterns from YAML files for repository learning.
@@ -155,17 +165,17 @@ class YamlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="YAML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="YAML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 patterns = []
                 
                 # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_source(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    ast = await asyncio.wrap_future(future)
+                    ast = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 # Extract mapping patterns
                 mapping_patterns = self._extract_mapping_patterns(ast)
@@ -240,15 +250,14 @@ class YamlParser(BaseParser):
                         'confidence': 0.8,
                         'metadata': {
                             'type': 'naming',
-                            'convention': naming["type"],
-                            'examples': naming["examples"]
+                            'convention': naming["type"]
                         }
                     })
                 
                 return patterns
                 
-            except (ValueError, KeyError, TypeError, yaml.YAMLError) as e:
-                log(f"Error extracting patterns from YAML file: {str(e)}", level="error")
+            except Exception as e:
+                log(f"Error extracting YAML patterns: {e}", level="error")
                 return []
                 
     async def cleanup(self):

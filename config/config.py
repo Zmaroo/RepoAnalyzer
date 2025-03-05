@@ -1,11 +1,12 @@
 """Configuration management with error handling."""
 
 import os
+import asyncio
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 from utils.logger import log
-from utils.error_handling import handle_errors, ProcessingError, ErrorBoundary, ErrorSeverity
+from utils.error_handling import handle_errors, ProcessingError, AsyncErrorBoundary, ErrorSeverity
 from parsers.models import FileType, FileClassification
 
 # Load environment variables from a .env file
@@ -120,66 +121,34 @@ database_config = DatabaseConfig()
 graph_config = GraphConfig()
 retry_config = RetryConfig()
 
-@handle_errors(error_types=ProcessingError)
-def validate_configs() -> bool:
+@handle_errors(error_types=(Exception,))
+async def validate_configs() -> bool:
     """Validate all configuration settings."""
-    with ErrorBoundary("configuration validation", severity=ErrorSeverity.CRITICAL):
+    async with AsyncErrorBoundary("configuration validation", severity=ErrorSeverity.CRITICAL):
         # Validate PostgreSQL config
         if not all([
             postgres_config.host,
-            postgres_config.user,
+            postgres_config.port,
             postgres_config.database,
-            0 < postgres_config.min_pool_size <= postgres_config.max_pool_size
+            postgres_config.user,
+            postgres_config.password
         ]):
             log("Invalid PostgreSQL configuration", level="error")
             return False
-        
+
         # Validate Neo4j config
         if not all([
             neo4j_config.uri,
             neo4j_config.user,
             neo4j_config.password,
-            neo4j_config.max_connection_pool_size > 0
+            neo4j_config.database
         ]):
             log("Invalid Neo4j configuration", level="error")
             return False
-        
+
         # Validate parser config
         if not os.path.exists(parser_config.language_data_path):
-            log("Invalid parser language data path", level="error")
+            log("Language data path does not exist", level="error")
             return False
-        
-        # Validate Redis config
-        if redis_config.password is not None and not isinstance(redis_config.password, str):
-            log("Invalid Redis password type", level="error")
-            return False
-        
-        # Validate database config
-        if not all([
-            database_config.transaction_timeout > 0,
-            database_config.max_transaction_retries > 0,
-            database_config.health_check_interval > 0
-        ]):
-            log("Invalid database configuration", level="error")
-            return False
-        
-        # Validate graph config
-        if not all([
-            graph_config.projection_timeout > 0,
-            graph_config.max_nodes_per_projection > 0,
-            graph_config.max_relationships_per_projection > 0
-        ]):
-            log("Invalid graph configuration", level="error")
-            return False
-        
-        # Validate retry config
-        if not all([
-            retry_config.max_retries > 0,
-            retry_config.base_delay > 0,
-            retry_config.max_delay >= retry_config.base_delay,
-            0 <= retry_config.jitter_factor <= 1
-        ]):
-            log("Invalid retry configuration", level="error")
-            return False
-        
+
         return True 

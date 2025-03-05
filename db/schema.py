@@ -16,13 +16,12 @@ from utils.error_handling import (
     DatabaseError,
     PostgresError,
     Neo4jError,
-    ErrorBoundary,
     ErrorSeverity
 )
 from db.retry_utils import DatabaseRetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
-from utils.app_init import register_shutdown_handler
+from utils.shutdown import register_shutdown_handler
 
 class SchemaError(DatabaseError):
     """Schema management specific errors."""
@@ -32,47 +31,81 @@ class SchemaManager:
     """Manages database schema operations."""
     
     def __init__(self):
-        self._lock = asyncio.Lock()
-        self._pending_tasks: Set[asyncio.Future] = set()
-        self._retry_manager = DatabaseRetryManager(
-            RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
-        )
+        """Private constructor - use create() instead."""
         self._initialized = False
-        register_shutdown_handler(self.cleanup)
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+        self._retry_manager = None
     
-    async def initialize(self):
-        """Initialize the schema manager."""
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                # Any schema manager-specific initialization can go here
-                self._initialized = True
-                log("Schema manager initialized", level="info")
-            except Exception as e:
-                log(f"Error initializing schema manager: {e}", level="error")
-                raise
+            raise DatabaseError("SchemaManager not initialized. Use create() to initialize.")
+        return True
+    
+    @classmethod
+    async def create(cls) -> 'SchemaManager':
+        """Async factory method to create and initialize a SchemaManager instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="schema manager initialization",
+                error_types=DatabaseError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize retry manager
+                instance._retry_manager = await DatabaseRetryManager.create(
+                    RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
+                )
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("schema_manager")
+                
+                instance._initialized = True
+                await log("Schema manager initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing schema manager: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise DatabaseError(f"Failed to initialize schema manager: {e}")
     
     async def _execute_query(self, sql: str) -> None:
         """Execute a SQL query with task tracking."""
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
             
-        conn = await connection_manager.get_postgres_connection()
+        task = asyncio.create_task(connection_manager.get_postgres_connection())
+        self._pending_tasks.add(task)
         try:
-            async with conn.transaction():
-                future = submit_async_task(conn.execute(sql))
-                self._pending_tasks.add(future)
+            conn = await task
+            try:
+                async with conn.transaction():
+                    task = asyncio.create_task(conn.execute(sql))
+                    self._pending_tasks.add(task)
+                    try:
+                        await task
+                    finally:
+                        self._pending_tasks.remove(task)
+            finally:
+                task = asyncio.create_task(connection_manager.release_postgres_connection(conn))
+                self._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
         finally:
-            await connection_manager.release_postgres_connection(conn)
+            self._pending_tasks.remove(task)
     
     @handle_async_errors(error_types=(SchemaError, PostgresError))
     async def drop_all_tables(self) -> None:
         """[6.6.4] Clean database state."""
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
             
         async with self._lock:
             try:
@@ -249,7 +282,7 @@ class SchemaManager:
     async def create_all_tables(self) -> None:
         """[6.6.3] Initialize all database tables."""
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
             
         async with self._lock:
             try:
@@ -272,12 +305,12 @@ class SchemaManager:
                     ]
                     
                     for create_table in tables:
-                        future = submit_async_task(create_table())
-                        self._pending_tasks.add(future)
+                        task = asyncio.create_task(create_table())
+                        self._pending_tasks.add(task)
                         try:
-                            await asyncio.wrap_future(future)
+                            await task
                         finally:
-                            self._pending_tasks.remove(future)
+                            self._pending_tasks.remove(task)
                     
                     # Create Neo4j schema
                     session = await connection_manager.get_session()
@@ -306,31 +339,47 @@ class SchemaManager:
     async def cleanup(self):
         """Clean up all resources."""
         try:
-            # Cancel and clean up any pending tasks
+            # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
             # Clean up retry manager
-            await self._retry_manager.cleanup()
+            if self._retry_manager:
+                await self._retry_manager.cleanup()
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component("schema_manager")
             
             self._initialized = False
-            log("Schema manager cleaned up", level="info")
+            await log("Schema manager cleaned up", level="info")
         except Exception as e:
-            log(f"Error cleaning up schema manager: {e}", level="error")
+            await log(f"Error cleaning up schema manager: {e}", level="error")
+            raise DatabaseError(f"Failed to cleanup schema manager: {e}")
 
-# Create global schema manager instance
-schema_manager = SchemaManager()
+# Global instance
+schema_manager = None
+
+async def get_schema_manager() -> SchemaManager:
+    """Get the global schema manager instance."""
+    global schema_manager
+    if not schema_manager:
+        schema_manager = await SchemaManager.create()
+    return schema_manager
 
 # Register cleanup handler
 async def cleanup_schema():
     """Cleanup schema manager resources."""
     try:
-        await schema_manager.cleanup()
-        log("Schema manager resources cleaned up", level="info")
+        if schema_manager:
+            await schema_manager.cleanup()
+        await log("Schema manager resources cleaned up", level="info")
     except Exception as e:
-        log(f"Error cleaning up schema manager resources: {e}", level="error")
+        await log(f"Error cleaning up schema manager resources: {e}", level="error")
+        raise DatabaseError(f"Failed to cleanup schema manager resources: {e}")
 
 register_shutdown_handler(cleanup_schema)

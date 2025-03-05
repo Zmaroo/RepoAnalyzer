@@ -10,8 +10,8 @@ from typing import Dict, Any, Optional, Set, List, Union, cast
 import asyncio
 from utils.logger import log
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
+from utils.async_runner import get_loop
 
 # Import types needed for type annotations
 from parsers.types import PatternCategory, QueryPattern, PatternInfo
@@ -25,7 +25,7 @@ _pattern_registries: Dict[str, Dict[str, Any]] = {}
 
 # Flag to track initialization
 _initialized = False
-_pending_tasks: Set[asyncio.Future] = set()
+_pending_tasks: Set[asyncio.Task] = set()
 _pattern_cache: Dict[str, Dict[str, Any]] = {}
 
 # Initialize logger
@@ -183,9 +183,10 @@ def list_available_languages() -> Set[str]:
     
     return languages
 
-def initialize_pattern_system() -> None:
+async def initialize_pattern_system() -> None:
     """Initialize the pattern system by preloading common patterns."""
     register_common_patterns()
+    await initialize_patterns()
 
 def get_all_available_patterns() -> Dict[str, Dict[str, Any]]:
     """
@@ -230,15 +231,14 @@ async def initialize_patterns():
         async with AsyncErrorBoundary("pattern initialization"):
             # Initialize commonly used language patterns first
             common_languages = {'python', 'javascript', 'typescript', 'java', 'cpp'}
+            tasks = []
             for language in common_languages:
                 module = globals().get(language)
                 if module and hasattr(module, 'initialize'):
-                    future = submit_async_task(module.initialize())
-                    _pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        _pending_tasks.remove(future)
+                    tasks.append(module.initialize())
+            
+            if tasks:
+                await asyncio.gather(*tasks)
             
             _initialized = True
             log("Query patterns initialized", level="info")
@@ -267,14 +267,14 @@ async def get_patterns_for_language(language_id: str) -> Optional[Dict[str, Any]
     module = globals().get(language_id)
     if module:
         if hasattr(module, 'get_patterns'):
-            future = submit_async_task(module.get_patterns())
-            _pending_tasks.add(future)
+            task = asyncio.create_task(module.get_patterns())
+            _pending_tasks.add(task)
             try:
-                patterns = await asyncio.wrap_future(future)
+                patterns = await task
                 _pattern_cache[language_id] = patterns
                 return patterns
             finally:
-                _pending_tasks.remove(future)
+                _pending_tasks.remove(task)
         elif hasattr(module, 'PATTERNS'):
             _pattern_cache[language_id] = module.PATTERNS
             return module.PATTERNS
@@ -291,17 +291,17 @@ async def cleanup_patterns():
         
         for module_name, module in globals().items():
             if isinstance(module, type(asyncio)) and hasattr(module, 'cleanup'):
-                future = submit_async_task(module.cleanup())
-                cleanup_tasks.append(future)
+                task = asyncio.create_task(module.cleanup())
+                cleanup_tasks.append(task)
         
         # Wait for all cleanup tasks
-        await asyncio.gather(*[asyncio.wrap_future(f) for f in cleanup_tasks], return_exceptions=True)
+        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
         
         # Clean up any remaining pending tasks
         if _pending_tasks:
             for task in _pending_tasks:
                 task.cancel()
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in _pending_tasks], return_exceptions=True)
+            await asyncio.gather(*_pending_tasks, return_exceptions=True)
             _pending_tasks.clear()
         
         # Clear pattern cache

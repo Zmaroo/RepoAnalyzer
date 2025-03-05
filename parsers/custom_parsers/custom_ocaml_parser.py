@@ -20,19 +20,7 @@ This module implements custom parsers for OCaml source files using a class-based
 Standalone parsing functions have been removed in favor of the classes below.
 """
 
-import re
-import asyncio
-from typing import Dict, List, Any, Optional, Set
-from collections import Counter
-from parsers.base_parser import BaseParser
-from parsers.query_patterns.ocaml import OCAML_PATTERNS
-from parsers.query_patterns.ocaml_interface import OCAML_INTERFACE_PATTERNS
-from parsers.models import OcamlNode, PatternType
-from parsers.types import FileType, ParserType, PatternCategory
-from utils.logger import log
-from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from .base_imports import *
 
 def compute_offset(lines, line_no, col):
     """
@@ -41,7 +29,7 @@ def compute_offset(lines, line_no, col):
     """
     return sum(len(lines[i]) + 1 for i in range(line_no)) + col
 
-class OcamlParser(BaseParser):
+class OcamlParser(BaseParser, CustomParserMixin):
     """Parser for OCaml files with enhanced pattern extraction capabilities."""
     
     def __init__(self, language_id: str = "ocaml", file_type: Optional[FileType] = None):
@@ -86,10 +74,15 @@ class OcamlParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> OcamlNode:
+    ) -> OcamlNodeDict:
         """Create a standardized OCaml AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return OcamlNode(**node_dict)
+        return {
+            **node_dict,
+            "name": kwargs.get("name"),
+            "parameters": kwargs.get("parameters", []),
+            "return_type": kwargs.get("return_type")
+        }
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
@@ -102,24 +95,24 @@ class OcamlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
 
-        with ErrorBoundary(operation_name="OCaml parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="OCaml parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
-                future = submit_async_task(self._parse_content, source_code)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_content(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    return await asyncio.wrap_future(future)
+                    return await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error parsing OCaml content: {e}", level="error")
-                return OcamlNode(
-                    type="module",
-                    start_point=[0, 0],
-                    end_point=[0, 0],
+                return self._create_node(
+                    "module",
+                    [0, 0],
+                    [0, 0],
                     error=str(e),
                     children=[]
-                ).__dict__
+                )
 
     def _parse_content(self, source_code: str) -> Dict[str, Any]:
         """Internal method to parse OCaml content synchronously."""
@@ -172,7 +165,7 @@ class OcamlParser(BaseParser):
         if current_doc:
             ast.metadata["trailing_documentation"] = current_doc
 
-        return ast.__dict__
+        return ast
 
     @handle_errors(error_types=(ProcessingError,))
     async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
@@ -190,18 +183,18 @@ class OcamlParser(BaseParser):
 
         patterns = []
         
-        with ErrorBoundary(operation_name="OCaml pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="OCaml pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
                 ast = await self._parse_source(source_code)
                 
                 # Extract patterns asynchronously
-                future = submit_async_task(self._extract_all_patterns, ast)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._extract_all_patterns(ast))
+                self._pending_tasks.add(task)
                 try:
-                    patterns = await asyncio.wrap_future(future)
+                    patterns = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                     
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error extracting OCaml patterns: {e}", level="error")

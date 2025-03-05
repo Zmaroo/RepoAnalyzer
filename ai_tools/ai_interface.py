@@ -23,18 +23,17 @@ from ai_tools.graph_capabilities import GraphAnalysis
 from utils.logger import log
 from ai_tools.code_understanding import CodeUnderstanding
 from ai_tools.reference_repository_learning import reference_learning
-from typing import List, Dict, Optional, Any
-from embedding.embedding_models import DocEmbedder
+from typing import List, Dict, Optional, Any, Set
+from embedding.embedding_models import doc_embedder
 from sklearn.cluster import DBSCAN
 from difflib import SequenceMatcher
 from utils.error_handling import (
     handle_async_errors,
     handle_errors,
     ProcessingError,
+    DatabaseError,
     AsyncErrorBoundary,
-    ErrorBoundary,
-    ErrorSeverity,
-    submit_async_task
+    ErrorSeverity
 )
 from parsers.models import (
     FileType,
@@ -48,46 +47,100 @@ import numpy as np
 import os
 import asyncio
 from config import ParserConfig
-from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
 
 
 class AIAssistant:
     """[4.1.1] Unified AI assistance interface."""
     
     def __init__(self):
-        with ErrorBoundary(
-            operation_name="AI Assistant initialization",
-            error_types=ProcessingError,
-            severity=ErrorSeverity.CRITICAL
-        ):
-            self.graph_analysis = GraphAnalysis()
-            self.code_understanding = CodeUnderstanding()
-            self.doc_embedder = DocEmbedder()
-            self.reference_learning = reference_learning
-            
-            # Skip the language data path check during initialization
-            # This helps with testing and avoids initialization errors
-            # if not os.path.exists(ParserConfig().language_data_path):
-            #     raise ProcessingError(f"Invalid language data path")
-            
-            # Additional AI tools can be initialized here in the future.
-            log("AI Assistant initialized", level="info")
-
+        """Private constructor - use create() instead."""
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+        self.graph_analysis = None
+        self.code_understanding = None
+        self.doc_embedder = None
+        self.reference_learning = None
+    
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
+        if not self._initialized:
+            raise ProcessingError("AIAssistant not initialized. Use create() to initialize.")
+        if not self.graph_analysis:
+            raise ProcessingError("Graph analysis not initialized")
+        if not self.code_understanding:
+            raise ProcessingError("Code understanding not initialized")
+        if not self.doc_embedder:
+            raise ProcessingError("Document embedder not initialized")
+        if not self.reference_learning:
+            raise ProcessingError("Reference learning not initialized")
+        return True
+    
+    @classmethod
+    async def create(cls) -> 'AIAssistant':
+        """Async factory method to create and initialize an AIAssistant instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="AI assistant initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize required components
+                from ai_tools.graph_capabilities import GraphAnalysis
+                from ai_tools.code_understanding import CodeUnderstanding
+                from embedding.embedding_models import doc_embedder
+                from ai_tools.reference_learning import reference_learning
+                
+                # Initialize graph analysis
+                instance.graph_analysis = await GraphAnalysis.create()
+                
+                # Initialize code understanding
+                instance.code_understanding = await CodeUnderstanding.create()
+                
+                # Initialize embedders
+                instance.doc_embedder = doc_embedder
+                
+                # Initialize reference learning
+                instance.reference_learning = reference_learning
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("ai_assistant")
+                
+                instance._initialized = True
+                await log("AI Assistant initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing AI Assistant: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize AI Assistant: {e}")
+    
     @handle_async_errors(error_types=ProcessingError)
     async def analyze_repository(self, repo_id: int) -> Dict[str, Any]:
         """Analyze repository using AI tools."""
         try:
-            # Submit tasks using async_runner
-            structure_future = submit_async_task(self.analyze_code_structure(repo_id))
-            codebase_future = submit_async_task(self.code_understanding.analyze_codebase(repo_id))
-            docs_future = submit_async_task(self.analyze_documentation(repo_id))
+            # Create tasks for parallel execution
+            structure_task = asyncio.create_task(self.analyze_code_structure(repo_id))
+            codebase_task = asyncio.create_task(self.code_understanding.analyze_codebase(repo_id))
+            docs_task = asyncio.create_task(self.analyze_documentation(repo_id))
             
-            # Wait for all tasks to complete
-            structure, codebase, docs = await asyncio.gather(
-                asyncio.wrap_future(structure_future),
-                asyncio.wrap_future(codebase_future),
-                asyncio.wrap_future(docs_future)
-            )
+            self._pending_tasks.update({structure_task, codebase_task, docs_task})
+            
+            try:
+                # Wait for all tasks to complete
+                structure, codebase, docs = await asyncio.gather(
+                    structure_task,
+                    codebase_task,
+                    docs_task
+                )
+            finally:
+                self._pending_tasks.difference_update({structure_task, codebase_task, docs_task})
             
             return {
                 "structure": structure,
@@ -246,7 +299,7 @@ class AIAssistant:
     @handle_errors(error_types=ProcessingError)
     async def _analyze_doc_clusters(self, docs: List[Dict]) -> Dict[str, Any]:
         """Cluster similar documentation."""
-        with ErrorBoundary(
+        async with AsyncErrorBoundary(
             operation_name="documentation clustering",
             error_types=ProcessingError,
             severity=ErrorSeverity.WARNING
@@ -274,7 +327,7 @@ class AIAssistant:
     @handle_errors(error_types=ProcessingError)
     async def _analyze_coverage(self, docs: List[Dict]) -> Dict[str, Any]:
         """Analyze documentation coverage."""
-        with ErrorBoundary(
+        async with AsyncErrorBoundary(
             operation_name="coverage analysis",
             error_types=ProcessingError,
             severity=ErrorSeverity.WARNING
@@ -294,7 +347,7 @@ class AIAssistant:
     @handle_errors(error_types=ProcessingError)
     async def _batch_quality_analysis(self, docs: List[Dict]) -> Dict[str, Any]:
         """Analyze documentation quality by computing various metrics."""
-        with ErrorBoundary(
+        async with AsyncErrorBoundary(
             operation_name="quality analysis",
             error_types=ProcessingError,
             severity=ErrorSeverity.WARNING
@@ -424,71 +477,57 @@ class AIAssistant:
                 reference_repo_id, target_repo_id
             )
     
-    @handle_async_errors(error_types=ProcessingError)
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def analyze_repository_with_reference(
         self,
         repo_id: int,
         reference_repo_id: int
     ) -> Dict[str, Any]:
         """Analyze repository with reference to another one."""
+        if not self._initialized:
+            await self.ensure_initialized()
+            
         async with AsyncErrorBoundary("repository analysis with reference"):
-            # Submit all analysis tasks using async_runner
-            analysis_future = submit_async_task(self.analyze_repository(repo_id))
-            reference_future = submit_async_task(
+            # Create tasks for parallel execution
+            analysis_task = asyncio.create_task(self.analyze_repository(repo_id))
+            reference_task = asyncio.create_task(
                 self.reference_learning.learn_from_repository(reference_repo_id)
             )
-            comparison_future = submit_async_task(
+            comparison_task = asyncio.create_task(
                 self.reference_learning.compare_with_reference_repository(
                     active_repo_id=repo_id,
                     reference_repo_id=reference_repo_id
                 )
             )
-            patterns_future = submit_async_task(
+            patterns_task = asyncio.create_task(
                 self.reference_learning.apply_patterns_to_project(
                     reference_repo_id, repo_id
                 )
             )
             
-            # Wait for all tasks to complete
-            analysis, reference_status, comparison, patterns = await asyncio.gather(
-                asyncio.wrap_future(analysis_future),
-                asyncio.wrap_future(reference_future),
-                asyncio.wrap_future(comparison_future),
-                asyncio.wrap_future(patterns_future)
-            )
+            self._pending_tasks.update({analysis_task, reference_task, comparison_task, patterns_task})
+            
+            try:
+                # Wait for all tasks to complete
+                analysis, reference_status, comparison, patterns = await asyncio.gather(
+                    analysis_task,
+                    reference_task,
+                    comparison_task,
+                    patterns_task
+                )
+            finally:
+                self._pending_tasks.difference_update({analysis_task, reference_task, comparison_task, patterns_task})
             
             # Process results
             similar_files = []
-            if "similarities" in comparison:
-                for similarity in comparison["similarities"][:5]:
-                    similar_files.append({
-                        "active_file": similarity.get("active_file"),
-                        "reference_file": similarity.get("reference_file"),
-                        "language": similarity.get("language"),
-                        "similarity_score": similarity.get("similarity")
-                    })
+            if comparison and "similar_files" in comparison:
+                similar_files = comparison["similar_files"]
             
             return {
-                **analysis,
-                "reference_patterns": patterns,
-                "repository_comparison": {
-                    "similarity_score": comparison.get("similarity_count", 0) / 20 if comparison.get("similarity_count") else 0,
-                    "similar_files": similar_files,
-                    "active_repo_stats": comparison.get("active_repo_stats", []),
-                    "reference_repo_stats": comparison.get("reference_repo_stats", []),
-                    "pattern_counts": {
-                        "active": comparison.get("active_patterns_count", 0),
-                        "reference": comparison.get("reference_patterns_count", 0)
-                    }
-                },
-                "reference_repository": {
-                    "id": reference_repo_id,
-                    "patterns": {
-                        "code_patterns": reference_status.get("code_patterns", 0),
-                        "doc_patterns": reference_status.get("doc_patterns", 0),
-                        "architecture_patterns": reference_status.get("architecture_patterns", 0)
-                    }
-                }
+                "analysis": analysis,
+                "reference_status": reference_status,
+                "similar_files": similar_files,
+                "patterns": patterns
             }
 
     @handle_async_errors(error_types=ProcessingError)
@@ -532,17 +571,19 @@ class AIAssistant:
     ) -> Dict[str, Any]:
         """Deep learn from multiple reference repositories."""
         async with AsyncErrorBoundary("deep learning from multiple repositories"):
-            # Submit learning tasks for each repository using async_runner
-            learning_futures = [
-                submit_async_task(self.reference_learning.learn_from_repository(repo_id))
+            # Create learning tasks for each repository
+            learning_tasks = [
+                asyncio.create_task(self.reference_learning.learn_from_repository(repo_id))
                 for repo_id in repo_ids
             ]
             
-            # Wait for all learning tasks to complete
-            results = await asyncio.gather(
-                *[asyncio.wrap_future(f) for f in learning_futures],
-                return_exceptions=True
-            )
+            self._pending_tasks.update(learning_tasks)
+            
+            try:
+                # Wait for all learning tasks to complete
+                results = await asyncio.gather(*learning_tasks, return_exceptions=True)
+            finally:
+                self._pending_tasks.difference_update(learning_tasks)
             
             # Process results
             successful_repos = []
@@ -566,6 +607,9 @@ class AIAssistant:
         reference_repo_ids: List[int]
     ) -> Dict[str, Any]:
         """[4.1.17] Apply patterns learned from multiple reference repositories to a target project."""
+        if not self._initialized:
+            await self.ensure_initialized()
+            
         async with AsyncErrorBoundary("applying cross-repository patterns"):
             return await self.reference_learning.apply_cross_repository_patterns(
                 target_repo_id=target_repo_id,
@@ -573,29 +617,51 @@ class AIAssistant:
             )
     
     @handle_errors(error_types=ProcessingError)
-    def close(self) -> None:
+    async def cleanup(self) -> None:
         """Cleanup all resources."""
-        with ErrorBoundary(
-            operation_name="resource cleanup",
-            error_types=ProcessingError,
-            severity=ErrorSeverity.WARNING
-        ):
-            try:
-                # Submit cleanup tasks using async_runner
-                cleanup_futures = [
-                    submit_async_task(self.graph_analysis.cleanup()),
-                    submit_async_task(self.code_understanding.cleanup()),
-                    submit_async_task(self.reference_learning.cleanup())
-                ]
+        try:
+            if not self._initialized:
+                return
                 
-                # Wait for all cleanup tasks to complete
-                loop = asyncio.get_event_loop()
-                loop.run_until_complete(
-                    asyncio.gather(*[asyncio.wrap_future(f) for f in cleanup_futures])
-                )
-                log("All AI resources cleaned up.", level="debug")
-            except Exception as e:
-                raise ProcessingError(f"Error during AI resource cleanup: {e}")
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Cleanup components in reverse initialization order
+            cleanup_tasks = []
+            
+            if self.reference_learning:
+                task = asyncio.create_task(self.reference_learning.cleanup())
+                cleanup_tasks.append(task)
+            
+            if self.doc_embedder:
+                task = asyncio.create_task(self.doc_embedder.cleanup())
+                cleanup_tasks.append(task)
+            
+            if self.code_understanding:
+                task = asyncio.create_task(self.code_understanding.cleanup())
+                cleanup_tasks.append(task)
+            
+            if self.graph_analysis:
+                task = asyncio.create_task(self.graph_analysis.cleanup())
+                cleanup_tasks.append(task)
+            
+            # Wait for all cleanup tasks
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component("ai_assistant")
+            
+            self._initialized = False
+            await log("All AI resources cleaned up.", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up AI resources: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup AI resources: {e}")
 
     # Optional alias to match documentation
     async def find_similar_code(self, query: str, repo_id: Optional[int] = None, limit: int = 5) -> list:

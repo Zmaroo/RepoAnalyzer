@@ -1,23 +1,13 @@
 """Custom parser for Nim with enhanced documentation and pattern extraction features."""
 
-from typing import Dict, List, Any, Optional, Set
-import asyncio
-import re
-from parsers.base_parser import BaseParser
-from parsers.models import NimNode, PatternType
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.nim import NIM_PATTERNS
-from utils.logger import log
-from collections import Counter
-from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from .base_imports import *
 
-class NimParser(BaseParser):
+class NimParser(BaseParser, CustomParserMixin):
     """Parser for Nim files with enhanced pattern extraction capabilities."""
     
     def __init__(self, language_id: str = "nim", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
+        BaseParser.__init__(self, language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self.patterns = self._compile_patterns(NIM_PATTERNS)
         self._initialized = False
         self._pending_tasks: Set[asyncio.Future] = set()
@@ -29,7 +19,7 @@ class NimParser(BaseParser):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("Nim parser initialization"):
-                    # No special initialization needed yet
+                    await self._initialize_cache(self.language_id)
                     self._initialized = True
                     log("Nim parser initialized", level="info")
                     return True
@@ -38,16 +28,13 @@ class NimParser(BaseParser):
                 raise
         return True
 
-    async def cleanup(self) -> None:
+    async def cleanup(self):
         """Clean up parser resources."""
-        if self._pending_tasks:
-            log(f"Cleaning up {len(self._pending_tasks)} pending Nim parser tasks", level="info")
-            for task in self._pending_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
-        self._initialized = False
+        try:
+            await self._cleanup_cache()
+            log("Nim parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up Nim parser: {e}", level="error")
 
     def _create_node(
         self,
@@ -55,10 +42,15 @@ class NimParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> NimNode:
+    ) -> NimNodeDict:
         """Create a standardized Nim AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return NimNode(**node_dict)
+        return {
+            **node_dict,
+            "name": kwargs.get("name"),
+            "parameters": kwargs.get("parameters", []),
+            "return_type": kwargs.get("return_type")
+        }
 
     def _process_parameters(self, params_str: str) -> List[Dict]:
         """Process procedure parameters into parameter nodes."""
@@ -76,30 +68,25 @@ class NimParser(BaseParser):
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse Nim content into AST structure.
-        
-        This method supports AST caching through the BaseParser.parse() method.
-        Cache checks are handled at the BaseParser level, so this method is only called
-        on cache misses or when we need to generate a fresh AST.
-        """
+        """Parse Nim content into AST structure."""
         if not self._initialized:
             await self.initialize()
 
-        with ErrorBoundary(operation_name="Nim parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="Nim parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
-                future = submit_async_task(self._parse_content, source_code)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_content(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    return await asyncio.wrap_future(future)
+                    return await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error parsing Nim content: {e}", level="error")
-                return NimNode(
-                    type="module",
-                    start_point=[0, 0],
-                    end_point=[0, 0],
+                return self._create_node(
+                    "module",
+                    [0, 0],
+                    [0, 0],
                     error=str(e),
                     children=[]
                 ).__dict__
@@ -176,32 +163,24 @@ class NimParser(BaseParser):
 
     @handle_errors(error_types=(ProcessingError,))
     async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """
-        Extract code patterns from Nim files for repository learning.
-        
-        Args:
-            source_code: The content of the Nim file
-            
-        Returns:
-            List of extracted patterns with metadata
-        """
+        """Extract code patterns from Nim files for repository learning."""
         if not self._initialized:
             await self.initialize()
 
         patterns = []
         
-        with ErrorBoundary(operation_name="Nim pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="Nim pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
                 ast = await self._parse_source(source_code)
                 
                 # Extract patterns asynchronously
-                future = submit_async_task(self._extract_all_patterns, ast)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._extract_all_patterns(ast))
+                self._pending_tasks.add(task)
                 try:
-                    patterns = await asyncio.wrap_future(future)
+                    patterns = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                     
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error extracting Nim patterns: {e}", level="error")

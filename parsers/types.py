@@ -6,8 +6,7 @@ from dataclasses import dataclass, field
 import asyncio
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
 from utils.logger import log
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
 
 class FileType(Enum):
     """File classification types."""
@@ -59,7 +58,7 @@ class ParserResult:
     statistics: Dict[str, Any] = field(default_factory=dict)
     errors: List[Dict[str, Any]] = field(default_factory=list)
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""
@@ -100,7 +99,7 @@ class ParserConfig:
     cache_results: bool = True
     include_comments: bool = True
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""
@@ -141,7 +140,7 @@ class ParsingStatistics:
     node_count: int = 0
     error_count: int = 0
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""
@@ -183,7 +182,7 @@ class Documentation:
     metadata: Dict[str, Any] = field(default_factory=dict)
     content: str = ""
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""
@@ -225,7 +224,7 @@ class ComplexityMetrics:
     maintainability_index: float = 0.0
     lines_of_code: Dict[str, int] = field(default_factory=dict)
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""
@@ -265,7 +264,7 @@ class ExtractedFeatures:
     documentation: Documentation = field(default_factory=Documentation)
     metrics: ComplexityMetrics = field(default_factory=ComplexityMetrics)
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""

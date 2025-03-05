@@ -1,26 +1,24 @@
 """Custom parser for INI files with enhanced documentation features."""
 
-from typing import Dict, List, Any, Optional
-import asyncio
+from .base_imports import *
+from typing import Dict, List, Any, Optional, Set, Tuple
 import configparser
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.ini import INI_PATTERNS
-from parsers.models import IniNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 import re
 from collections import Counter
+from parsers.custom_parsers.custom_parser_mixin import CustomParserMixin
 
-class IniParser(BaseParser):
+class IniParser(BaseParser, CustomParserMixin):
     """Parser for INI files."""
     
     def __init__(self, language_id: str = "ini", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
-        self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self.patterns = self._compile_patterns(INI_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
@@ -30,7 +28,7 @@ class IniParser(BaseParser):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("INI parser initialization"):
-                    # No special initialization needed yet
+                    await self._initialize_cache(self.language_id)
                     self._initialized = True
                     log("INI parser initialized", level="info")
                     return True
@@ -45,24 +43,28 @@ class IniParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> IniNode:
+    ) -> IniNodeDict:
         """Create a standardized INI AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return IniNode(**node_dict)
+        return {
+            **node_dict,
+            "section": kwargs.get("section"),
+            "properties": kwargs.get("properties", [])
+        }
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse INI content into AST structure.
-        
-        This method supports AST caching through the BaseParser.parse() method.
-        Cache checks are handled at the BaseParser level, so this method is only called
-        on cache misses or when we need to generate a fresh AST.
-        """
+        """Parse INI content into AST structure."""
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="INI parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="INI parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
+                # Check cache first
+                cached_result = await self._check_parse_cache(source_code)
+                if cached_result:
+                    return cached_result
+                    
                 lines = source_code.splitlines()
                 ast = self._create_node(
                     "document",
@@ -91,14 +93,14 @@ class IniParser(BaseParser):
                 # Parse INI structure
                 try:
                     config = configparser.ConfigParser(allow_no_value=True)
-                    future = submit_async_task(config.read_string, source_code)
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(config.read_string(source_code))
+                    self._pending_tasks.add(task)
                     try:
-                        await asyncio.wrap_future(future)
+                        await task
                         root_node = self._process_config(config, [0, 0])
                         ast.children.append(root_node)
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
                 except configparser.Error as e:
                     log(f"Error parsing INI structure: {e}", level="error")
                     ast.metadata["parse_error"] = str(e)
@@ -107,16 +109,21 @@ class IniParser(BaseParser):
                 if current_comment_block:
                     ast.metadata["trailing_comments"] = current_comment_block
                 
+                # Store result in cache
+                await self._store_parse_result(source_code, ast.__dict__)
                 return ast.__dict__
                 
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing INI content: {e}", level="error")
-                return IniNode(
-                    type="document", start_point=[0, 0], end_point=[0, 0],
-                    error=str(e), children=[]
-                ).__dict__
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
+                )
     
-    def _process_config(self, config: configparser.ConfigParser, start_point: List[int]) -> IniNode:
+    def _process_config(self, config: configparser.ConfigParser, start_point: List[int]) -> IniNodeDict:
         """Process a ConfigParser object into a node structure."""
         node = self._create_node(
             "root",
@@ -172,34 +179,26 @@ class IniParser(BaseParser):
     
     @handle_errors(error_types=(ParsingError, ProcessingError))
     async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """Extract patterns from INI files for repository learning.
-        
-        Args:
-            source_code: The content of the INI file
-            
-        Returns:
-            List of extracted patterns with metadata
-        """
+        """Extract patterns from INI files for repository learning."""
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="INI pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="INI pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                patterns = []
+                # Check features cache first
+                ast = await self._parse_source(source_code)
+                cached_features = await self._check_features_cache(ast, source_code)
+                if cached_features:
+                    return cached_features
                 
-                # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
-                try:
-                    ast = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
+                # Extract patterns
+                patterns = []
                 
                 # Extract section patterns
                 section_patterns = self._extract_section_patterns(ast)
                 for section in section_patterns:
                     patterns.append({
-                        'name': f'ini_section_{section["name"]}',
+                        'name': f'ini_section_{section["type"]}',
                         'content': section["content"],
                         'pattern_type': PatternType.CODE_STRUCTURE,
                         'language': self.language_id,
@@ -242,6 +241,8 @@ class IniParser(BaseParser):
                         }
                     })
                 
+                # Store features in cache
+                await self._store_features_in_cache(ast, source_code, patterns)
                 return patterns
                 
             except (ValueError, KeyError, TypeError) as e:
@@ -251,14 +252,7 @@ class IniParser(BaseParser):
     async def cleanup(self):
         """Clean up INI parser resources."""
         try:
-            # Cancel and clean up any pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            self._initialized = False
+            await self._cleanup_cache()
             log("INI parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up INI parser: {e}", level="error")

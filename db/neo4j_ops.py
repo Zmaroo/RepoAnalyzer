@@ -20,7 +20,6 @@ from utils.error_handling import (
     handle_errors,
     handle_async_errors,
     DatabaseError,
-    ErrorBoundary,
     AsyncErrorBoundary,
     Neo4jError,
     TransactionError,
@@ -31,7 +30,7 @@ from parsers.types import (
     FeatureCategory
 )
 from utils.async_runner import submit_async_task, get_loop
-from utils.app_init import register_shutdown_handler
+from utils.shutdown import register_shutdown_handler
 
 # Create a function to get the graph_sync instance to avoid circular imports
 async def get_graph_sync():
@@ -39,58 +38,70 @@ async def get_graph_sync():
     from db.graph_sync import get_graph_sync as _get_graph_sync
     return await _get_graph_sync()
 
-# Update the run_query function to properly classify errors
-@with_retry()
-async def run_query(query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """Run a Neo4j query and return results."""
-    session = await connection_manager.get_session()
-    try:
-        async with AsyncErrorBoundary("neo4j_query_execution"):
-            future = submit_async_task(session.run(query, params or {}))
-            result = await asyncio.wrap_future(future)
-            future = submit_async_task(result.data())
-            data = await asyncio.wrap_future(future)
-            return data
-    except Exception as e:
-        error_msg = str(e).lower()
-        if not is_retryable_error(e):
-            raise NonRetryableNeo4jError(f"Non-retryable error: {error_msg}")
-        raise RetryableNeo4jError(f"Retryable error: {error_msg}")
-    finally:
-        await session.close()
-
 class Neo4jTools:
     """Neo4j database operations coordinator."""
     
     def __init__(self):
-        self._pending_tasks: Set[asyncio.Future] = set()
+        """Private constructor - use create() instead."""
+        self._pending_tasks: Set[asyncio.Task] = set()
         self._initialized = False
-        with ErrorBoundary(
-            error_types=DatabaseError,
-            operation_name="Neo4j tools initialization",
-            severity=ErrorSeverity.CRITICAL
-        ):
-            # Initialize connection
-            future = submit_async_task(connection_manager.initialize())
-            self._pending_tasks.add(future)
-            try:
-                asyncio.get_event_loop().run_until_complete(future)
-            finally:
-                self._pending_tasks.remove(future)
-        
-        # Register cleanup handler
-        register_shutdown_handler(self.cleanup)
     
-    async def initialize(self):
-        """Initialize Neo4j tools."""
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                # Any tool-specific initialization can go here
-                self._initialized = True
-                log("Neo4j tools initialized", level="info")
-            except Exception as e:
-                log(f"Error initializing Neo4j tools: {e}", level="error")
-                raise
+            raise DatabaseError("Neo4jTools instance not initialized. Use create() to initialize.")
+        return True
+    
+    @classmethod
+    async def create(cls) -> 'Neo4jTools':
+        """Async factory method to create and initialize a Neo4jTools instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="Neo4j tools initialization",
+                error_types=DatabaseError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize connection
+                await connection_manager.initialize()
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("neo4j_tools")
+                
+                instance._initialized = True
+                await log("Neo4j tools initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing Neo4j tools: {e}", level="error")
+            raise DatabaseError(f"Failed to initialize Neo4j tools: {e}")
+    
+    async def cleanup(self):
+        """Clean up Neo4j tools resources."""
+        try:
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clean up connection manager
+            await connection_manager.cleanup()
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component("neo4j_tools")
+            
+            self._initialized = False
+            await log("Neo4j tools cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up Neo4j tools: {e}", level="error")
+            raise DatabaseError(f"Failed to cleanup Neo4j tools: {e}")
 
     @handle_async_errors(error_types=DatabaseError)
     async def store_code_node(self, code_data: dict) -> None:
@@ -146,168 +157,45 @@ class Neo4jTools:
             await graph_sync.invalidate_projection(repo_id)
             await graph_sync.ensure_projection(repo_id)
 
-    async def cleanup(self):
-        """Clean up all resources."""
-        try:
-            # Clean up any pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            self._initialized = False
-            log("Neo4j tools cleaned up", level="info")
-        except Exception as e:
-            log(f"Error cleaning up Neo4j tools: {e}", level="error")
+# Create singleton instance
+_neo4j_tools = Neo4jTools()
 
-    @handle_async_errors(error_types=DatabaseError)
-    async def store_node_with_features(
-        self,
-        repo_id: int,
-        file_path: str,
-        ast: dict,
-        features: ExtractedFeatures
-    ) -> None:
-        """[6.2.3] Store node with all its features and relationships."""
-        if not self._initialized:
-            await self.initialize()
-            
-        # Create base node
-        query = """
-        MERGE (n:Content {repo_id: $repo_id, file_path: $file_path})
-        SET n += $properties
-        """
-        
-        # Properties from all feature categories
-        properties = {
-            "repo_id": repo_id,
-            "file_path": file_path,
-            "ast": ast,
-            "syntax_features": features.get_category(FeatureCategory.SYNTAX),
-            "semantic_features": features.get_category(FeatureCategory.SEMANTICS),
-            "doc_features": features.get_category(FeatureCategory.DOCUMENTATION),
-            "structural_features": features.get_category(FeatureCategory.STRUCTURE)
-        }
-        
-        await run_query(query, properties)
-        await self.create_feature_relationships(repo_id, file_path, features)
+# Export with proper async handling
+async def get_neo4j_tools() -> Neo4jTools:
+    """Get the Neo4j tools instance.
+    
+    Returns:
+        Neo4jTools: The singleton Neo4j tools instance
+    """
+    if not _neo4j_tools._initialized:
+        await _neo4j_tools.initialize()
+    return _neo4j_tools
 
-    @handle_async_errors(error_types=DatabaseError)
-    async def store_pattern_node(self, pattern_data: dict) -> None:
-        """[6.2.6] Store code pattern node for reference repository learning."""
-        if not self._initialized:
-            await self.initialize()
-            
-        async with AsyncErrorBoundary(
-            "Neo4j pattern node storage",
-            error_types=(Neo4jError, TransactionError),
-            severity=ErrorSeverity.ERROR
-        ):
-            # Create pattern node
-            query = """
-            MERGE (p:Pattern {
-                repo_id: $repo_id, 
-                pattern_id: $pattern_id,
-                pattern_type: $pattern_type
-            })
-            SET p += $properties,
-                p.updated_at = timestamp()
-            """
-            
-            await run_query(query, {
-                "repo_id": pattern_data["repo_id"],
-                "pattern_id": pattern_data["pattern_id"],
-                "pattern_type": pattern_data["pattern_type"],
-                "properties": pattern_data
-            })
-            
-            # If this is a code pattern, create relationship to relevant code
-            if pattern_data.get("file_path") and pattern_data.get("pattern_type") == "code_structure":
-                rel_query = """
-                MATCH (p:Pattern {repo_id: $repo_id, pattern_id: $pattern_id})
-                MATCH (c:Code {repo_id: $repo_id, file_path: $file_path})
-                MERGE (p)-[r:EXTRACTED_FROM]->(c)
-                """
-                
-                await run_query(rel_query, {
-                    "repo_id": pattern_data["repo_id"],
-                    "pattern_id": pattern_data["pattern_id"],
-                    "file_path": pattern_data["file_path"]
-                })
-            
-            log("Stored pattern node", level="debug", context={
-                "operation": "store_pattern_node",
-                "repo_id": pattern_data["repo_id"],
-                "pattern_id": pattern_data["pattern_id"],
-                "pattern_type": pattern_data["pattern_type"]
-            })
+# For backward compatibility and direct access
+neo4j_tools = _neo4j_tools
 
-    @handle_async_errors(error_types=DatabaseError)
-    async def link_patterns_to_repository(self, repo_id: int, pattern_ids: List[int], is_reference: bool = True) -> None:
-        """[6.2.7] Link patterns to a repository with appropriate relationship type."""
-        if not self._initialized:
-            await self.initialize()
-            
-        rel_type = "REFERENCE_PATTERN" if is_reference else "APPLIED_PATTERN"
-        
-        query = """
-        MATCH (r:Repository {id: $repo_id})
-        MATCH (p:Pattern {pattern_id: $pattern_id})
-        MERGE (r)-[rel:%s]->(p)
-        """ % rel_type
-        
-        for pattern_id in pattern_ids:
-            await run_query(query, {
-                "repo_id": repo_id,
-                "pattern_id": pattern_id
-            })
+# Update the run_query function to properly classify errors
+@with_retry()
+async def run_query(query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Run a Neo4j query and return results."""
+    session = await connection_manager.get_session()
+    try:
+        async with AsyncErrorBoundary("neo4j_query_execution"):
+            result = await session.run(query, params or {})
+            data = await result.data()
+            return data
+    except Exception as e:
+        error_msg = str(e).lower()
+        if not is_retryable_error(e):
+            raise NonRetryableNeo4jError(f"Non-retryable error: {error_msg}")
+        raise RetryableNeo4jError(f"Retryable error: {error_msg}")
+    finally:
+        await session.close()
 
-    @handle_async_errors(error_types=DatabaseError)
-    async def find_similar_patterns(self, repo_id: int, file_path: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """[6.2.8] Find patterns similar to a given file."""
-        if not self._initialized:
-            await self.initialize()
-            
-        # Get language of the file
-        lang_query = """
-        MATCH (c:Code {repo_id: $repo_id, file_path: $file_path})
-        RETURN c.language as language
-        """
-        
-        lang_result = await run_query(lang_query, {
-            "repo_id": repo_id,
-            "file_path": file_path
-        })
-        
-        if not lang_result:
-            return []
-        
-        language = lang_result[0].get("language")
-        
-        # Find patterns of the same language
-        patterns_query = """
-        MATCH (p:Pattern)
-        WHERE p.language = $language AND p.pattern_type = 'code_structure'
-        RETURN p.pattern_id as pattern_id, p.repo_id as repo_id, 
-               p.language as language, p.file_path as file_path,
-               p.elements as elements, p.sample as sample
-        LIMIT $limit
-        """
-        
-        return await run_query(patterns_query, {
-            "language": language,
-            "limit": limit
-        })
-
-# Create global instance
-neo4j_tools = Neo4jTools()
-
-# Register cleanup handler
 async def cleanup_neo4j():
     """Cleanup Neo4j resources."""
     try:
-        await neo4j_tools.cleanup()
+        await _neo4j_tools.cleanup()
         await default_retry_manager.cleanup()
         log("Neo4j resources cleaned up", level="info")
     except Exception as e:
@@ -318,7 +206,7 @@ register_shutdown_handler(cleanup_neo4j)
 @handle_async_errors(error_types=(DatabaseError, Neo4jError))
 async def create_schema_indexes_and_constraints():
     """Create Neo4j schema indexes and constraints."""
-    with ErrorBoundary(
+    async with AsyncErrorBoundary(
         operation_name="creating_schema_indexes",
         error_types=(Neo4jError, DatabaseError),
         reraise=False,
@@ -327,17 +215,17 @@ async def create_schema_indexes_and_constraints():
         session = await connection_manager.get_session()
         try:
             # Create indexes for different node types
-            await session.run("CREATE INDEX IF NOT EXISTS FOR (c:Code) ON (c.repo_id, c.file_path)")
-            await session.run("CREATE INDEX IF NOT EXISTS FOR (d:Documentation) ON (d.repo_id, d.path)")
-            await session.run("CREATE INDEX IF NOT EXISTS FOR (r:Repository) ON (r.id)")
-            await session.run("CREATE INDEX IF NOT EXISTS FOR (l:Language) ON (l.name)")
-            await session.run("CREATE INDEX IF NOT EXISTS FOR (p:Pattern) ON (p.id)")
-            await session.run("CREATE INDEX IF NOT EXISTS FOR (f:Feature) ON (f.name)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (c:Code) ON (c.repo_id, c.file_path)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (d:Documentation) ON (d.repo_id, d.path)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (r:Repository) ON (r.id)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (l:Language) ON (l.name)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (p:Pattern) ON (p.id)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (f:Feature) ON (f.name)")
             
             # Create constraints for uniqueness
-            await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (r:Repository) REQUIRE r.id IS UNIQUE")
-            await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Code) REQUIRE (c.repo_id, c.file_path) IS UNIQUE")
-            await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Pattern) REQUIRE p.id IS UNIQUE")
+            await run_query("CREATE CONSTRAINT IF NOT EXISTS FOR (r:Repository) REQUIRE r.id IS UNIQUE")
+            await run_query("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Code) REQUIRE (c.repo_id, c.file_path) IS UNIQUE")
+            await run_query("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Pattern) REQUIRE p.id IS UNIQUE")
             
             log("Created Neo4j schema indexes and constraints", level="info")
         finally:
@@ -354,7 +242,7 @@ class Neo4jProjections:
     """[6.2.9] Neo4j graph projections and algorithms for pattern analysis."""
     
     def __init__(self):
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
     
     @handle_async_errors(error_types=DatabaseError)
@@ -379,13 +267,7 @@ class Neo4jProjections:
         ORDER BY similarity DESC
         LIMIT 100
         """
-        future = submit_async_task(run_query(query, {"graph_name": graph_name}))
-        self._pending_tasks.add(future)
-        try:
-            results = await asyncio.wrap_future(future)
-            return results
-        finally:
-            self._pending_tasks.remove(future)
+        return await run_query(query, {"graph_name": graph_name})
     
     @handle_async_errors(error_types=DatabaseError)
     async def find_pattern_clusters(self, repo_id: int) -> List[Dict[str, Any]]:
@@ -406,13 +288,13 @@ class Neo4jProjections:
                count(*) AS cluster_size
         ORDER BY cluster_size DESC
         """
-        future = submit_async_task(run_query(query, {"graph_name": graph_name}))
-        self._pending_tasks.add(future)
+        task = asyncio.create_task(run_query(query, {"graph_name": graph_name}))
+        self._pending_tasks.add(task)
         try:
-            results = await asyncio.wrap_future(future)
+            results = await task
             return results
         finally:
-            self._pending_tasks.remove(future)
+            self._pending_tasks.remove(task)
     
     @handle_async_errors(error_types=DatabaseError)
     async def get_component_dependencies(self, repo_id: int) -> List[Dict[str, Any]]:
@@ -432,19 +314,19 @@ class Neo4jProjections:
                weight
         ORDER BY weight DESC
         """
-        future = submit_async_task(run_query(query, {}))
-        self._pending_tasks.add(future)
+        task = asyncio.create_task(run_query(query, {}))
+        self._pending_tasks.add(task)
         try:
-            results = await asyncio.wrap_future(future)
+            results = await task
             return results
         finally:
-            self._pending_tasks.remove(future)
+            self._pending_tasks.remove(task)
     
     @handle_errors(error_types=(Exception,))
     async def close(self):
         """Clean up any pending tasks."""
         if self._pending_tasks:
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
             self._pending_tasks.clear()
 
 # Create global instance

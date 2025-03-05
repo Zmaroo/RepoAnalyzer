@@ -3,7 +3,8 @@ from .embedding_models import (
     doc_embedder,
     BaseEmbedder,
     CodeEmbedder,
-    DocEmbedder
+    DocEmbedder,
+    init_embedders
 )
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "doc_embedder",
     "BaseEmbedder",
     "CodeEmbedder",
-    "DocEmbedder"
+    "DocEmbedder",
+    "init_embedders"
 ] 

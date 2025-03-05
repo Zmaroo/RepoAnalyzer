@@ -1,17 +1,16 @@
-"""Custom parser for TOML with enhanced documentation features."""
+"""Custom parser for TOML files."""
 
-from typing import Dict, List, Any, Optional
+from .base_imports import *
+from typing import Dict, List, Any, Optional, Set, Tuple
 import asyncio
-import tomli
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.toml import TOML_PATTERNS
-from parsers.models import TomlNode, PatternType
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 import re
+import tomli
 
 class TomlParser(BaseParser):
     """Parser for TOML files."""
@@ -19,7 +18,7 @@ class TomlParser(BaseParser):
     def __init__(self, language_id: str = "toml", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         self.patterns = self._compile_patterns(TOML_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
@@ -44,10 +43,14 @@ class TomlParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> TomlNode:
+    ) -> TomlNodeDict:
         """Create a standardized TOML AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return TomlNode(**node_dict)
+        return {
+            **node_dict,
+            "value": kwargs.get("value"),
+            "path": kwargs.get("path")
+        }
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
@@ -60,7 +63,7 @@ class TomlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="TOML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="TOML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -89,14 +92,14 @@ class TomlParser(BaseParser):
                 
                 # Parse TOML structure
                 try:
-                    future = submit_async_task(tomli.loads(source_code))
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(self._parse_toml(source_code))
+                    self._pending_tasks.add(task)
                     try:
-                        data = await asyncio.wrap_future(future)
+                        data = await task
                         root_node = self._process_value(data, [], [0, 0])
                         ast.children.append(root_node)
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
                 except tomli.TOMLDecodeError as e:
                     log(f"Error parsing TOML structure: {e}", level="error")
                     ast.metadata["parse_error"] = str(e)
@@ -109,12 +112,19 @@ class TomlParser(BaseParser):
                 
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing TOML content: {e}", level="error")
-                return TomlNode(
-                    type="document", start_point=[0, 0], end_point=[0, 0],
-                    error=str(e), children=[]
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
                 ).__dict__
     
-    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> TomlNode:
+    async def _parse_toml(self, source_code: str) -> Dict[str, Any]:
+        """Parse TOML content asynchronously."""
+        return tomli.loads(source_code)
+
+    def _process_value(self, value: Any, path: List[str], start_point: List[int]) -> TomlNodeDict:
         """Process a TOML value into a node structure."""
         node = self._create_node(
             type(value).__name__,
@@ -124,27 +134,27 @@ class TomlParser(BaseParser):
         )
         
         if isinstance(value, dict):
-            node.type = "table"
+            node["type"] = "table"
             for key, val in value.items():
                 child = self._process_value(
                     val,
                     path + [str(key)],
                     [start_point[0], start_point[1] + 1]
                 )
-                child.key = key
-                node.children.append(child)
+                child["key"] = key
+                node["children"].append(child)
         elif isinstance(value, list):
-            node.type = "array"
+            node["type"] = "array"
             for i, item in enumerate(value):
                 child = self._process_value(
                     item,
                     path + [f"[{i}]"],
                     [start_point[0], start_point[1] + 1]
                 )
-                node.children.append(child)
+                node["children"].append(child)
         else:
-            node.type = "value"
-            node.value = value
+            node["type"] = "value"
+            node["value"] = value
             
         return node
     
@@ -161,17 +171,17 @@ class TomlParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="TOML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="TOML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 patterns = []
                 
                 # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_source(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    ast = await asyncio.wrap_future(future)
+                    ast = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 # Extract table patterns
                 table_patterns = self._extract_table_patterns(ast)

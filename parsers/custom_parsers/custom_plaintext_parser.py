@@ -1,17 +1,15 @@
 """Custom parser for plaintext with enhanced documentation and pattern extraction features."""
 
-from typing import Dict, List, Any, Optional, Set
+from .base_imports import *
 import asyncio
 from parsers.base_parser import BaseParser
-from parsers.models import PlaintextNode, PatternType
 from parsers.types import FileType, ParserType, PatternCategory
 from parsers.query_patterns.plaintext import PLAINTEXT_PATTERNS
 from utils.logger import log
 import re
 from collections import Counter
-from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import handle_errors, handle_async_errors, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
+from utils.shutdown import register_shutdown_handler
 
 class PlaintextParser(BaseParser):
     """Parser for plaintext files with enhanced pattern extraction capabilities."""
@@ -55,37 +53,35 @@ class PlaintextParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> PlaintextNode:
+    ) -> PlaintextNodeDict:
         """Create a standardized plaintext AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return PlaintextNode(**node_dict)
+        return {
+            **node_dict,
+            "content": kwargs.get("content")
+        }
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse plaintext content into AST structure.
-        
-        This method supports AST caching through the BaseParser.parse() method.
-        Cache checks are handled at the BaseParser level, so this method is only called
-        on cache misses or when we need to generate a fresh AST.
-        """
+        """Parse plaintext content into AST structure."""
         if not self._initialized:
             await self.initialize()
 
-        with ErrorBoundary(operation_name="plaintext parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="plaintext parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
-                future = submit_async_task(self._parse_content, source_code)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_content(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    return await asyncio.wrap_future(future)
+                    return await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
             except (ValueError, KeyError, TypeError, IndexError) as e:
                 log(f"Error parsing plaintext content: {e}", level="error")
-                return PlaintextNode(
-                    type="document",
-                    start_point=[0, 0],
-                    end_point=[0, 0],
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
                     error=str(e),
                     children=[]
                 ).__dict__
@@ -149,32 +145,24 @@ class PlaintextParser(BaseParser):
 
     @handle_errors(error_types=(ProcessingError,))
     async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """
-        Extract text patterns from plaintext files for repository learning.
-        
-        Args:
-            source_code: The content of the plaintext file
-            
-        Returns:
-            List of extracted patterns with metadata
-        """
+        """Extract text patterns from plaintext files for repository learning."""
         if not self._initialized:
             await self.initialize()
 
         patterns = []
         
-        with ErrorBoundary(operation_name="plaintext pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="plaintext pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 # Parse the source first to get a structured representation
                 ast = await self._parse_source(source_code)
                 
                 # Extract patterns asynchronously
-                future = submit_async_task(self._extract_all_patterns, ast, source_code)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._extract_all_patterns(ast, source_code))
+                self._pending_tasks.add(task)
                 try:
-                    patterns = await asyncio.wrap_future(future)
+                    patterns = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                     
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 log(f"Error extracting plaintext patterns: {e}", level="error")

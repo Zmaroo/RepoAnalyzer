@@ -13,8 +13,7 @@ import asyncio
 from .types import FileType, FeatureCategory, ParserType, ParserResult, ParserConfig, ParsingStatistics
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
 from utils.logger import log
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
 
 @dataclass
 class BaseParserInterface(ABC):
@@ -32,7 +31,7 @@ class BaseParserInterface(ABC):
     config: ParserConfig = field(default_factory=lambda: ParserConfig())
     stats: ParsingStatistics = field(default_factory=lambda: ParsingStatistics())
     feature_extractor: Any = None  # Will hold an instance of a feature extractor
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
     
     def __post_init__(self):
         """Post initialization setup."""
@@ -64,12 +63,12 @@ class BaseParserInterface(ABC):
         async with AsyncErrorBoundary(f"{self.language_id} parsing"):
             try:
                 # Subclasses should implement their parsing logic here
-                future = submit_async_task(self._parse_content, source_code)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_content(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    return await asyncio.wrap_future(future)
+                    return await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
             except Exception as e:
                 log(f"Error parsing {self.language_id} content: {e}", level="error")
                 raise
@@ -94,12 +93,12 @@ class BaseParserInterface(ABC):
                     return None
                 
                 # Extract features asynchronously
-                future = submit_async_task(self._extract_features, ast, source_code)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._extract_features(ast, source_code))
+                self._pending_tasks.add(task)
                 try:
-                    features = await asyncio.wrap_future(future)
+                    features = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 return ParserResult(
                     success=True,
@@ -140,49 +139,93 @@ class BaseParserInterface(ABC):
 class ParserRegistryInterface(ABC):
     """Abstract interface for language registry."""
     
-    @abstractmethod
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self):
-        """Initialize registry resources."""
+    def __init__(self):
+        """Private constructor - use create() instead."""
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Task] = set()
+    
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("parser registry initialization"):
-                    # Subclasses should implement their initialization logic here
-                    self._initialized = True
-                    log("Parser registry initialized", level="info")
-            except Exception as e:
-                log(f"Error initializing parser registry: {e}", level="error")
-                raise
+            raise ProcessingError("Parser registry not initialized. Use create() to initialize.")
+        return True
+    
+    @classmethod
+    async def create(cls) -> 'ParserRegistryInterface':
+        """Async factory method to create and initialize a ParserRegistryInterface instance."""
+        instance = cls()
+        try:
+            async with AsyncErrorBoundary("parser registry initialization"):
+                # Initialize required components
+                from parsers.language_support import language_registry
+                from parsers.tree_sitter_parser import TreeSitterParser
+                from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+                
+                # Initialize tree-sitter parsers for supported languages
+                supported_languages = ['python', 'javascript', 'typescript', 'java', 'cpp']
+                for lang in supported_languages:
+                    try:
+                        parser = await TreeSitterParser.create(lang, FileType.SOURCE)
+                        instance._pending_tasks.add(asyncio.create_task(parser.initialize()))
+                    except Exception as e:
+                        await log(f"Warning: Failed to initialize tree-sitter parser for {lang}: {e}", level="warning")
+                
+                # Initialize custom parsers
+                for lang, parser_cls in CUSTOM_PARSER_CLASSES.items():
+                    try:
+                        parser = await parser_cls.create(lang, FileType.SOURCE)
+                        instance._pending_tasks.add(asyncio.create_task(parser.initialize()))
+                    except Exception as e:
+                        await log(f"Warning: Failed to initialize custom parser for {lang}: {e}", level="warning")
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("parser_registry")
+                
+                instance._initialized = True
+                await log("Parser registry initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing parser registry: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize parser registry: {e}")
     
     @abstractmethod
     @handle_async_errors(error_types=(Exception,))
     async def get_parser(self, classification: Any) -> Optional[BaseParserInterface]:
         """Get a parser for the given file classification."""
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
             
         async with AsyncErrorBoundary("get parser"):
             try:
                 # Subclasses should implement their parser retrieval logic here
                 pass
             except Exception as e:
-                log(f"Error getting parser: {e}", level="error")
+                await log(f"Error getting parser: {e}", level="error")
                 raise
     
-    @abstractmethod
     async def cleanup(self):
         """Clean up all parsers."""
         try:
-            # Clean up any pending tasks
+            # Cancel all pending tasks
             if self._pending_tasks:
-                log(f"Cleaning up {len(self._pending_tasks)} pending registry tasks", level="info")
                 for task in self._pending_tasks:
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component("parser_registry")
+            
             self._initialized = False
-            log("Parser registry cleaned up", level="info")
+            await log("Parser registry cleaned up", level="info")
         except Exception as e:
-            log(f"Error cleaning up parser registry: {e}", level="error") 
+            await log(f"Error cleaning up parser registry: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup parser registry: {e}") 

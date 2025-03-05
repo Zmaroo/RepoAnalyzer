@@ -2,24 +2,15 @@
 Custom parser for the Cobalt programming language.
 """
 
-from typing import Dict, List, Any, Optional, TYPE_CHECKING, Set
-import asyncio
-from parsers.base_parser import BaseParser
-from parsers.models import CobaltNode, PatternType
-from parsers.query_patterns.cobalt import COBALT_PATTERNS
-from parsers.types import PatternCategory, FileType, ParserType
-from utils.logger import log
-from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from .base_imports import *
 import re
 
-class CobaltParser(BaseParser):
+class CobaltParser(BaseParser, CustomParserMixin):
     """Parser for the Cobalt programming language."""
     
     def __init__(self, language_id: str = "cobalt", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
-        # Use the shared helper from BaseParser to compile the regex patterns.
+        BaseParser.__init__(self, language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self.patterns = self._compile_patterns(COBALT_PATTERNS)
         self._initialized = False
         self._pending_tasks: Set[asyncio.Future] = set()
@@ -31,7 +22,7 @@ class CobaltParser(BaseParser):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("Cobalt parser initialization"):
-                    # No special initialization needed yet
+                    await self._initialize_cache(self.language_id)
                     self._initialized = True
                     log("Cobalt parser initialized", level="info")
                     return True
@@ -40,16 +31,13 @@ class CobaltParser(BaseParser):
                 raise
         return True
 
-    async def cleanup(self) -> None:
+    async def cleanup(self):
         """Clean up parser resources."""
-        if self._pending_tasks:
-            log(f"Cleaning up {len(self._pending_tasks)} pending Cobalt parser tasks", level="info")
-            for task in self._pending_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
-        self._initialized = False
+        try:
+            await self._cleanup_cache()
+            log("Cobalt parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up Cobalt parser: {e}", level="error")
 
     def _create_node(
         self,
@@ -57,10 +45,15 @@ class CobaltParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> CobaltNode:
+    ) -> CobaltNodeDict:
         """Create a standardized Cobalt AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return CobaltNode(**node_dict)
+        return {
+            **node_dict,
+            "name": kwargs.get("name"),
+            "parameters": kwargs.get("parameters", []),
+            "return_type": kwargs.get("return_type")
+        }
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
@@ -73,21 +66,29 @@ class CobaltParser(BaseParser):
         if not self._initialized:
             await self.initialize()
 
-        with ErrorBoundary(operation_name="Cobalt parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="Cobalt parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
-                future = submit_async_task(self._parse_content, source_code)
-                self._pending_tasks.add(future)
+                # Check cache first
+                cached_result = await self._check_parse_cache(source_code)
+                if cached_result:
+                    return cached_result
+                    
+                task = asyncio.create_task(self._parse_content(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    return await asyncio.wrap_future(future)
+                    ast = await task
+                    # Store result in cache
+                    await self._store_parse_result(source_code, ast)
+                    return ast
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
             except (ValueError, KeyError, TypeError, StopIteration) as e:
                 log(f"Error parsing Cobalt content: {e}", level="error")
-                return CobaltNode(
-                    type="module",
-                    start_point=[0, 0],
-                    end_point=[0, 0],
+                return self._create_node(
+                    "module",
+                    [0, 0],
+                    [0, 0],
                     error=str(e),
                     children=[]
                 ).__dict__
@@ -198,25 +199,29 @@ class CobaltParser(BaseParser):
         if not self._initialized:
             await self.initialize()
 
-        patterns = []
-        
-        with ErrorBoundary(operation_name="Cobalt pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="Cobalt pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                # Parse the source first to get a structured representation
+                # Check features cache first
                 ast = await self._parse_source(source_code)
+                cached_features = await self._check_features_cache(ast, source_code)
+                if cached_features:
+                    return cached_features
                 
                 # Extract patterns asynchronously
-                future = submit_async_task(self._extract_all_patterns, ast)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._extract_all_patterns(ast))
+                self._pending_tasks.add(task)
                 try:
-                    patterns = await asyncio.wrap_future(future)
+                    patterns = await task
+                    # Store features in cache
+                    await self._store_features_in_cache(ast, source_code, patterns)
+                    return patterns
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                     
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error extracting Cobalt patterns: {e}", level="error")
                 
-        return patterns
+        return []
 
     def _extract_all_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract all patterns from the AST synchronously."""

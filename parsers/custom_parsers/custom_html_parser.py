@@ -1,33 +1,16 @@
 """Custom parser for HTML with enhanced documentation features."""
 
-from typing import Dict, List, Any, Optional
-import asyncio
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.html import HTML_PATTERNS
-from parsers.models import HtmlNode, PatternType
-from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from .base_imports import *
 from xml.etree.ElementTree import Element, fromstring
-from xml.sax.saxutils import escape, unescape
-import re
+from bs4 import BeautifulSoup
 
-class HtmlParser(BaseParser):
+class HTMLParser(BaseParser, CustomParserMixin):
     """Parser for HTML files."""
     
     def __init__(self, language_id: str = "html", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.MARKUP, parser_type=ParserType.CUSTOM)
-        self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
-        # Use the shared helper from BaseParser to compile patterns,
-        # then recompile each with the re.DOTALL flag.
-        base_patterns = self._compile_patterns(HTML_PATTERNS)
-        self.patterns = {
-            name: re.compile(pattern.pattern, re.DOTALL)
-            for name, pattern in base_patterns.items()
-        }
+        BaseParser.__init__(self, language_id, file_type or FileType.MARKUP, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
+        self.patterns = self._compile_patterns(HTML_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -36,7 +19,7 @@ class HtmlParser(BaseParser):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("HTML parser initialization"):
-                    # No special initialization needed yet
+                    await self._initialize_cache(self.language_id)
                     self._initialized = True
                     log("HTML parser initialized", level="info")
                     return True
@@ -51,22 +34,27 @@ class HtmlParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> HtmlNode:
+    ) -> HtmlNodeDict:
         """Create a standardized HTML AST node using the shared helper."""
-        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return HtmlNode(**node_dict)
+        base_node = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return {
+            **base_node,
+            "tag": kwargs.get("tag"),
+            "attributes": kwargs.get("attributes", {}),
+            "text": kwargs.get("text")
+        }
 
-    def _process_element(self, element: Element, path: List[str], depth: int) -> HtmlNode:
+    def _process_element(self, element: Element, path: List[str], start_point: List[int]) -> HtmlNodeDict:
         """Process an HTML element and its children."""
         tag = element.tag.lower()
         
         element_data = self._create_node(
             "element",
-            [0, 0],  # Positions will be updated later if needed.
-            [0, 0],
+            start_point,
+            [start_point[0], start_point[1] + len(str(element))],
             tag=tag,
             path='/'.join(path + [tag]),
-            depth=depth,
+            depth=len(path),
             attributes=[],
             has_text=bool(element.text and element.text.strip())
         )
@@ -76,43 +64,43 @@ class HtmlParser(BaseParser):
             attr_data = {
                 "name": name.lower(),
                 "value": value,
-                "element_path": element_data.path,
-                "line_number": element_data.start_point[0] + 1
+                "element_path": element_data.get('path', ''),
+                "line_number": element_data.get('start_point', [0, 0])[0] + 1
             }
-            element_data.attributes.append(attr_data)
+            element_data['attributes'].append(attr_data)
             
             # Process semantic attributes (ARIA, data-*, etc.)
             if name.startswith('aria-') or name.startswith('data-'):
                 semantic_node = self._create_node(
                     "semantic_attribute",
-                    element_data.start_point,
-                    element_data.end_point,
+                    element_data['start_point'],
+                    element_data['end_point'],
                     name=name,
                     value=value,
                     category="aria" if name.startswith('aria-') else "data"
                 )
-                element_data.children.append(semantic_node)
+                element_data['children'].append(semantic_node)
         
         # Process children.
         for child in element:
-            child_data = self._process_element(child, path + [tag], depth + 1)
-            element_data.children.append(child_data)
+            child_data = self._process_element(child, path + [tag], [start_point[0], start_point[1] + 1])
+            element_data['children'].append(child_data)
         
         return element_data
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse HTML content into AST structure.
-        
-        This method supports AST caching through the BaseParser.parse() method.
-        Cache checks are handled at the BaseParser level, so this method is only called
-        on cache misses or when we need to generate a fresh AST.
-        """
+        """Parse HTML content into AST structure."""
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="HTML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="HTML parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
+                # Check cache first
+                cached_result = await self._check_parse_cache(source_code)
+                if cached_result:
+                    return cached_result
+                    
                 lines = source_code.splitlines()
                 ast = self._create_node(
                     "html_document",
@@ -129,21 +117,21 @@ class HtmlParser(BaseParser):
                             [source_code.count('\n', 0, match.end()), match.end()],
                             **HTML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(match)
                         )
-                        ast.children.append(node)
+                        ast['children'].append(node)
                 
                 # Parse HTML structure.
                 try:
-                    future = submit_async_task(fromstring(source_code))
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(fromstring(source_code))
+                    self._pending_tasks.add(task)
                     try:
-                        root = await asyncio.wrap_future(future)
-                        root_node = self._process_element(root, [], 0)
-                        ast.children.append(root_node)
+                        root = await task
+                        root_node = self._process_element(root, [], [0, 0])
+                        ast['children'].append(root_node)
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
                 except (ValueError, SyntaxError) as e:
                     log(f"Error parsing HTML structure: {e}", level="error")
-                    ast.metadata["parse_error"] = str(e)
+                    ast['metadata'] = {"parse_error": str(e)}
                 
                 # Process scripts and styles.
                 for pattern_name in ['script', 'style']:
@@ -154,47 +142,41 @@ class HtmlParser(BaseParser):
                             [source_code.count('\n', 0, match.end()), match.end()],
                             **HTML_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
                         )
-                        ast.children.append(node)
+                        ast['children'].append(node)
                 
-                return ast.__dict__
+                # Store result in cache
+                await self._store_parse_result(source_code, ast)
+                return ast
                 
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing HTML content: {e}", level="error")
-                return HtmlNode(
-                    type="html_document",
-                    start_point=[0, 0],
-                    end_point=[0, 0],
+                return self._create_node(
+                    "html_document",
+                    [0, 0],
+                    [0, 0],
                     error=str(e),
                     children=[]
                 ).__dict__
-            
+
     @handle_errors(error_types=(ParsingError, ProcessingError))
     async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """Extract HTML patterns from HTML files for repository learning.
-        
-        Args:
-            source_code: The content of the HTML file
-            
-        Returns:
-            List of extracted patterns with metadata
-        """
+        """Extract HTML patterns from HTML files for repository learning."""
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="HTML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="HTML pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
+                # Check features cache first
+                ast = await self._parse_source(source_code)
+                cached_features = await self._check_features_cache(ast, source_code)
+                if cached_features:
+                    return cached_features
+                
+                # Extract patterns
                 patterns = []
                 
-                # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
-                try:
-                    ast_dict = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
-                
                 # Extract element structure patterns
-                elements = self._extract_element_patterns(ast_dict)
+                elements = self._extract_element_patterns(ast)
                 for element in elements:
                     patterns.append({
                         'name': f'html_element_{element["tag"]}',
@@ -211,7 +193,7 @@ class HtmlParser(BaseParser):
                     })
                 
                 # Extract component patterns (reusable HTML structures)
-                components = self._extract_component_patterns(ast_dict)
+                components = self._extract_component_patterns(ast)
                 for component in components:
                     patterns.append({
                         'name': f'html_component_{component["name"]}',
@@ -227,7 +209,7 @@ class HtmlParser(BaseParser):
                     })
                     
                 # Extract semantic patterns (accessibility, data attributes)
-                semantic_patterns = self._extract_semantic_patterns(ast_dict)
+                semantic_patterns = self._extract_semantic_patterns(ast)
                 for semantic in semantic_patterns:
                     patterns.append({
                         'name': f'html_semantic_{semantic["category"]}',
@@ -243,38 +225,33 @@ class HtmlParser(BaseParser):
                     })
                     
                 # Extract script and style patterns
-                embedded_patterns = self._extract_embedded_patterns(ast_dict)
+                embedded_patterns = self._extract_embedded_patterns(ast)
                 for embedded in embedded_patterns:
                     patterns.append({
                         'name': f'html_embedded_{embedded["type"]}',
                         'content': embedded["content"],
                         'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': embedded.get("language", self.language_id),
-                        'confidence': 0.75,
+                        'language': self.language_id,
+                        'confidence': 0.85,
                         'metadata': {
                             'type': 'html_embedded',
                             'embedded_type': embedded["type"],
-                            'language': embedded.get("language")
+                            'attributes': embedded.get("attributes", [])
                         }
                     })
-                    
+                
+                # Store features in cache
+                await self._store_features_in_cache(ast, source_code, patterns)
                 return patterns
                 
-            except (ValueError, KeyError, TypeError) as e:
+            except Exception as e:
                 log(f"Error extracting HTML patterns: {e}", level="error")
                 return []
     
     async def cleanup(self):
         """Clean up HTML parser resources."""
         try:
-            # Cancel and clean up any pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            self._initialized = False
+            await self._cleanup_cache()
             log("HTML parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up HTML parser: {e}", level="error")

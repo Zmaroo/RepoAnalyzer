@@ -6,24 +6,26 @@ It extracts section headers (e.g. [*] or [*.py]) and
 key-value property lines beneath each section.
 """
 
-from typing import Dict, List, Any, Optional
+from .base_imports import *
+from typing import Dict, List, Any, Optional, Set, Tuple
 import asyncio
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
-from parsers.models import EditorconfigNode, PatternType
 from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 import re
 from collections import Counter
+import configparser
+from parsers.custom_parsers.custom_parser_mixin import CustomParserMixin
 
-class EditorconfigParser(BaseParser):
+class EditorconfigParser(BaseParser, CustomParserMixin):
     """Parser for EditorConfig files."""
     
     def __init__(self, language_id: str = "editorconfig", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
+        BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self._initialized = False
         self._pending_tasks: set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(EDITORCONFIG_PATTERNS)
@@ -40,7 +42,7 @@ class EditorconfigParser(BaseParser):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("EditorConfig parser initialization"):
-                    # No special initialization needed yet
+                    await self._initialize_cache(self.language_id)
                     self._initialized = True
                     log("EditorConfig parser initialized", level="info")
                     return True
@@ -55,24 +57,28 @@ class EditorconfigParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> EditorconfigNode:
+    ) -> EditorconfigNodeDict:
         """Create a standardized EditorConfig AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return EditorconfigNode(**node_dict)
+        return {
+            **node_dict,
+            "properties": kwargs.get("properties", []),
+            "sections": kwargs.get("sections", [])
+        }
 
     @handle_errors(error_types=(ParsingError,))
     async def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse EditorConfig content into AST structure.
-        
-        This method supports AST caching through the BaseParser.parse() method.
-        Cache checks are handled at the BaseParser level, so this method is only called
-        on cache misses or when we need to generate a fresh AST.
-        """
+        """Parse EditorConfig content into AST structure."""
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="EditorConfig parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="EditorConfig parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
+                # Check cache first
+                cached_result = await self._check_parse_cache(source_code)
+                if cached_result:
+                    return cached_result
+                    
                 lines = source_code.splitlines()
                 ast = self._create_node(
                     "document",
@@ -82,81 +88,53 @@ class EditorconfigParser(BaseParser):
                 
                 # Process comments first
                 current_comment_block = []
-                current_section = None
-                
                 for i, line in enumerate(lines):
                     line_start = [i, 0]
                     line_end = [i, len(line)]
-                    
-                    # Skip empty lines
-                    if not line.strip():
-                        continue
-                    
-                    # Handle comments
-                    if comment_match := re.match(r'^\s*[#;]\s*(.*)$', line):
+                    if comment_match := re.match(r'^\s*[;#]\s*(.*)$', line):
                         current_comment_block.append(comment_match.group(1).strip())
                         continue
-                    
-                    # Process any pending comments
-                    if current_comment_block:
+                    if line.strip() and current_comment_block:
                         node = self._create_node(
                             "comment_block",
                             [i - len(current_comment_block), 0],
                             [i - 1, len(current_comment_block[-1])],
                             content="\n".join(current_comment_block)
                         )
-                        if current_section:
-                            current_section.children.append(node)
-                        else:
-                            ast.children.append(node)
+                        ast.children.append(node)
                         current_comment_block = []
-                    
-                    # Handle sections
-                    if section_match := re.match(r'^\s*\[(.*?)\]\s*$', line):
-                        pattern = section_match.group(1)
-                        current_section = self._create_node(
-                            "section",
-                            line_start,
-                            line_end,
-                            pattern=pattern,
-                            properties=[]
-                        )
-                        ast.children.append(current_section)
-                        continue
-                    
-                    # Handle properties
-                    if property_match := re.match(r'^\s*([^=\s]+)\s*=\s*(.*)$', line):
-                        key = property_match.group(1)
-                        value = property_match.group(2).strip()
-                        
-                        property_node = self._create_node(
-                            "property",
-                            line_start,
-                            line_end,
-                            key=key,
-                            value=value
-                        )
-                        
-                        if current_section:
-                            current_section.properties.append({
-                                'key': key,
-                                'value': value
-                            })
-                            current_section.children.append(property_node)
-                        else:
-                            ast.children.append(property_node)
+                
+                # Parse EditorConfig structure
+                try:
+                    config = configparser.ConfigParser(allow_no_value=True)
+                    task = asyncio.create_task(config.read_string(source_code))
+                    self._pending_tasks.add(task)
+                    try:
+                        await task
+                        root_node = self._process_config(config, [0, 0])
+                        ast.children.append(root_node)
+                    finally:
+                        self._pending_tasks.remove(task)
+                except configparser.Error as e:
+                    log(f"Error parsing EditorConfig structure: {e}", level="error")
+                    ast.metadata["parse_error"] = str(e)
                 
                 # Handle any remaining comments
                 if current_comment_block:
                     ast.metadata["trailing_comments"] = current_comment_block
                 
+                # Store result in cache
+                await self._store_parse_result(source_code, ast.__dict__)
                 return ast.__dict__
                 
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing EditorConfig content: {e}", level="error")
-                return EditorconfigNode(
-                    type="document", start_point=[0, 0], end_point=[0, 0],
-                    error=str(e), children=[]
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
                 ).__dict__
     
     @handle_errors(error_types=(ParsingError, ProcessingError))
@@ -172,17 +150,16 @@ class EditorconfigParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="EditorConfig pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="EditorConfig pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                patterns = []
+                # Check features cache first
+                ast = await self._parse_source(source_code)
+                cached_features = await self._check_features_cache(ast, source_code)
+                if cached_features:
+                    return cached_features
                 
-                # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
-                try:
-                    ast = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
+                # Extract patterns
+                patterns = []
                 
                 # Extract section patterns
                 section_patterns = self._extract_section_patterns(ast)
@@ -231,6 +208,8 @@ class EditorconfigParser(BaseParser):
                         }
                     })
                 
+                # Store features in cache
+                await self._store_features_in_cache(ast, source_code, patterns)
                 return patterns
                 
             except (ValueError, KeyError, TypeError) as e:
@@ -240,14 +219,7 @@ class EditorconfigParser(BaseParser):
     async def cleanup(self):
         """Clean up EditorConfig parser resources."""
         try:
-            # Cancel and clean up any pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            self._initialized = False
+            await self._cleanup_cache()
             log("EditorConfig parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up EditorConfig parser: {e}", level="error")

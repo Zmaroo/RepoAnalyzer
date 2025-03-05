@@ -35,13 +35,12 @@ from db.retry_utils import (
     DatabaseRetryManager,
     RetryConfig
 )
-from embedding.embedding_models import code_embedder, DocEmbedder
+from embedding.embedding_models import code_embedder, doc_embedder
 from utils.error_handling import (
     handle_errors,
     handle_async_errors,
     ProcessingError,
     DatabaseError,
-    ErrorBoundary,
     AsyncErrorBoundary,
     TransactionError,
     ErrorSeverity,
@@ -66,15 +65,14 @@ class ReferenceRepositoryLearning:
     """[4.4.1] Reference repository learning capabilities."""
     
     def __init__(self):
-        with ErrorBoundary("model initialization", error_types=ProcessingError):
-            self.code_understanding = CodeUnderstanding()
-            self.embedder = code_embedder
-            self.doc_embedder = DocEmbedder()
-            self.neo4j_tools = Neo4jTools()
-            self._retry_manager = DatabaseRetryManager(
-                RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
-            )
-            self._pending_tasks: Set[asyncio.Future] = set()
+        self.code_understanding = CodeUnderstanding()
+        self.embedder = code_embedder
+        self.doc_embedder = doc_embedder
+        self.neo4j_tools = Neo4jTools()
+        self._retry_manager = DatabaseRetryManager(
+            RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
+        )
+        self._pending_tasks: Set[asyncio.Future] = set()
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def learn_from_repository(self, reference_repo_id: int) -> Dict[str, Any]:
@@ -153,17 +151,17 @@ class ReferenceRepositoryLearning:
                         embedding_list = None
                         
                         # Define a function to create embedding with specific error handling
-                        def create_embedding():
+                        async def create_embedding():
                             nonlocal embedding_list
                             embedding = self.embedder.embed(pattern_text)
                             embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else None
                         
-                        # Use ErrorBoundary with specific error types
+                        # Use AsyncErrorBoundary with specific error types
                         try:
-                            with ErrorBoundary("pattern embedding", 
+                            async with AsyncErrorBoundary("pattern embedding", 
                                             error_types=(ValueError, ImportError, ProcessingError),
                                             severity=ErrorSeverity.WARNING):
-                                create_embedding()
+                                await create_embedding()
                         except Exception as e:
                             log(f"Error creating embedding: {e}", level="error")
                             
@@ -1106,15 +1104,15 @@ class ReferenceRepositoryLearning:
         Returns:
             Dict with update results
         """
-        from utils.error_handling import AsyncErrorBoundary, ErrorBoundary
+        from utils.error_handling import AsyncErrorBoundary
         from parsers.pattern_processor import pattern_processor
         
         # Define a helper function for embedding creation
-        def create_embedding(pattern_text):
-            with ErrorBoundary("pattern_embedding"):
-                embedding = self.embedder.embed(pattern_text)
+        async def create_embedding(pattern_text):
+            async with AsyncErrorBoundary("pattern_embedding"):
+                embedding = await self.embedder.embed(pattern_text)
                 return embedding.tolist() if hasattr(embedding, 'tolist') else None
-            return None  # Return None if ErrorBoundary catches an exception
+            return None  # Return None if AsyncErrorBoundary catches an exception
         
         # Use AsyncErrorBoundary for the main operation
         async with AsyncErrorBoundary("update_file_patterns", error_types=(Exception,)):
@@ -1148,7 +1146,7 @@ class ReferenceRepositoryLearning:
                 # Create embedding for the pattern
                 pattern_text = pattern.get("content", "")
                 if pattern_text:
-                    # Use the helper function with ErrorBoundary
+                    # Use the helper function with AsyncErrorBoundary
                     embedding_list = create_embedding(pattern_text)
                     
                     # Store pattern in database

@@ -2,7 +2,7 @@
 
 from typing import Type, Tuple, Callable, Any, Dict, List, Optional, Set, Union
 from functools import wraps
-from contextlib import contextmanager, asynccontextmanager
+from contextlib import asynccontextmanager
 import inspect
 import sys
 import traceback
@@ -12,10 +12,7 @@ import os
 import json
 import time
 from datetime import datetime
-from utils.async_runner import get_loop, submit_async_task
-from utils.logger import log
-# The following import is circular, but explicitly used only when needed
-# from utils.logger import log
+import logging
 
 # Add error severity levels
 class ErrorSeverity:
@@ -83,8 +80,16 @@ class ParsingError(ProcessingError):
     """Error during parsing operations."""
     pass
 
+class LoggingError(ProcessingError):
+    """Error during logging operations."""
+    pass
+
 class DatabaseError(Exception):
     """Base class for database errors."""
+    pass
+
+class ConnectionError(DatabaseError):
+    """Base class for connection-related errors."""
     pass
 
 class PostgresError(DatabaseError):
@@ -123,6 +128,7 @@ class CacheError(DatabaseError):
 ERROR_CATEGORIES = {
     ProcessingError: "processing",
     ParsingError: "parsing",
+    LoggingError: "logging",
     DatabaseError: "database",
     PostgresError: "database",
     Neo4jError: "database",
@@ -135,122 +141,9 @@ ERROR_CATEGORIES = {
     Exception: "general"
 }
 
-def handle_errors(error_types=None, default_return=None):
-    """Decorator for handling errors in synchronous functions."""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                if error_types and not isinstance(e, error_types):
-                    raise
-                log(f"Error in {func.__name__}: {str(e)}", level="error")
-                # Submit error recording as a background task
-                future = submit_async_task(ErrorAudit.record_error(e, func.__name__, error_types))
-                try:
-                    future.result(timeout=5)  # Wait up to 5 seconds for error recording
-                except Exception as record_error:
-                    log(f"Error recording error: {record_error}", level="error")
-                return default_return
-        return wrapper
-    return decorator
-
 @asynccontextmanager
 async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True, severity=ErrorSeverity.ERROR):
-    """
-    Async context manager for error boundaries.
-    
-    This context manager provides a way to handle errors in asynchronous code blocks without
-    cluttering the code with multiple try/except blocks. It logs the error with information
-    about which operation was being performed when the error occurred.
-    
-    Args:
-        operation_name: A name describing the operation (used for logging)
-        error_types: A tuple of exception types to catch. Can also be a list or a single exception type.
-        error_message: An optional custom error message prefix
-        reraise: Whether to re-raise the exception (default True)
-        severity: Error severity level (default ERROR)
-    
-    Yields:
-        A simple namespace object with an 'error' attribute that will be None or
-        contain the caught exception.
-    """
-    start_time = time.time()
-
-    # Ensure error_types is a tuple for the except clause
-    if isinstance(error_types, list):
-        error_types = tuple(error_types)
-    elif not isinstance(error_types, tuple) and isinstance(error_types, type):
-        error_types = (error_types,)
-    
-    # Create a simple container for the error
-    class ErrorContainer:
-        def __init__(self):
-            self.error = None
-            self.duration = 0
-            self.severity = severity
-    
-    error_container = ErrorContainer()
-    
-    # Use the error_message if provided, otherwise use operation_name
-    msg_prefix = error_message if error_message else f"Error in {operation_name}"
-    
-    try:
-        yield error_container
-    except error_types as e:
-        from utils.logger import log
-        
-        # Record error metrics asynchronously
-        await error_metrics.record_error(severity)
-        
-        # Enhanced error logging with severity
-        log(f"{msg_prefix}: {str(e)}", level=severity.lower())
-        
-        # Record the error for audit purposes with severity
-        await ErrorAudit.record_error(e, operation_name or "unknown", error_types)
-        
-        # Store the error
-        error_container.error = e
-        
-        # Check health status and log if degraded
-        health_status = error_metrics.get_health_status()
-        if health_status != HealthStatus.OK:
-            log(f"Health status degraded to {health_status}", level="warning")
-        
-        # Re-raise if requested
-        if reraise:
-            raise
-    finally:
-        # Record performance metrics asynchronously
-        duration = time.time() - start_time
-        error_container.duration = duration
-        await error_metrics.record_operation(duration)
-
-def handle_async_errors(error_types=None, default_return=None):
-    """Decorator for handling errors in async functions."""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            try:
-                return await func(*args, **kwargs)
-            except Exception as e:
-                if error_types and not isinstance(e, error_types):
-                    raise
-                log(f"Error in {func.__name__}: {str(e)}", level="error")
-                # Submit error recording using async_runner
-                future = submit_async_task(ErrorAudit.record_error(e, func.__name__, error_types))
-                try:
-                    await asyncio.wrap_future(future)
-                except Exception as record_error:
-                    log(f"Error recording error: {record_error}", level="error")
-                return default_return
-        return wrapper
-    return decorator
-
-@contextmanager
-def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True, severity=ErrorSeverity.ERROR):
-    """Context manager for error handling."""
+    """Async context manager for error handling."""
     start_time = time.time()
 
     # Ensure error_types is a tuple
@@ -272,21 +165,14 @@ def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=N
     try:
         yield error_container
     except error_types as e:
-        # Record error metrics asynchronously using submit_async_task
-        metrics_future = submit_async_task(error_metrics.record_error(severity))
+        # Record error metrics asynchronously
+        await error_metrics.record_error(severity)
         
         # Enhanced error logging with severity
-        log(f"{msg_prefix}: {str(e)}", level=severity.lower())
+        logging.warning(f"{msg_prefix}: {str(e)}")
         
         # Record the error for audit purposes with severity
-        audit_future = submit_async_task(ErrorAudit.record_error(e, operation_name or "unknown", error_types))
-        
-        # Wait for error recording to complete
-        try:
-            metrics_future.result(timeout=5)
-            audit_future.result(timeout=5)
-        except Exception as record_error:
-            log(f"Error recording error metrics: {record_error}", level="error")
+        await ErrorAudit.record_error(e, operation_name or "unknown", error_types)
         
         # Store the error
         error_container.error = e
@@ -294,7 +180,7 @@ def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=N
         # Check health status and log if degraded
         health_status = error_metrics.get_health_status()
         if health_status != HealthStatus.OK:
-            log(f"Health status degraded to {health_status}", level="warning")
+            logging.warning(f"Health status degraded to {health_status}")
         
         # Re-raise if requested
         if reraise:
@@ -303,11 +189,7 @@ def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=N
         # Record performance metrics asynchronously
         duration = time.time() - start_time
         error_container.duration = duration
-        perf_future = submit_async_task(error_metrics.record_operation(duration))
-        try:
-            perf_future.result(timeout=5)
-        except Exception as e:
-            log(f"Error recording performance metrics: {e}", level="error")
+        await error_metrics.record_operation(duration)
 
 # New class for exception auditing
 class ErrorAudit:
@@ -422,8 +304,7 @@ class ErrorAudit:
                     if inspect.isfunction(obj) or inspect.iscoroutinefunction(obj):
                         cls._all_functions.add(f"{module_name}.{name}")
         except Exception as e:
-            from utils.logger import log
-            log(f"Error registering functions from {module_name}: {e}", level="error")
+            logging.error(f"Error registering functions from {module_name}: {e}")
     
     @classmethod
     async def register_raw_exception_handler(cls, file_path: str, line_number: int):
@@ -613,12 +494,10 @@ class ErrorAudit:
                 with open(file_path, 'w') as f:
                     json.dump(full_report, f, indent=2)
                 
-                from utils.logger import log
-                log(f"Error audit report saved to {file_path}", level="info")
+                logging.info(f"Error audit report saved to {file_path}")
                 return file_path
             except Exception as e:
-                from utils.logger import log
-                log(f"Error saving audit report: {e}", level="error")
+                logging.error(f"Error saving audit report: {e}")
                 return ""
     
     @classmethod
@@ -634,7 +513,7 @@ class ErrorAudit:
         Args:
             directory: Directory path to analyze
         """
-        from utils.logger import log
+        logging.info("Starting error handling audit...")
         
         try:
             for root, _, files in os.walk(directory):
@@ -643,9 +522,9 @@ class ErrorAudit:
                         file_path = os.path.join(root, file)
                         await cls._analyze_file(file_path)
             
-            log(f"Completed error handling analysis of {directory}", level="info")
+            logging.info(f"Completed error handling analysis of {directory}")
         except Exception as e:
-            log(f"Error analyzing codebase: {e}", level="error")
+            logging.error(f"Error analyzing codebase: {e}")
     
     @classmethod
     async def _analyze_file(cls, file_path: str):
@@ -694,8 +573,28 @@ class ErrorAudit:
                         cls._all_functions.add(full_name)
                         
         except Exception as e:
-            from utils.logger import log
-            log(f"Error analyzing file {file_path}: {e}", level="error")
+            logging.error(f"Error analyzing file {file_path}: {e}")
+
+def handle_async_errors(error_types=None, default_return=None):
+    """Decorator for handling errors in async functions."""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if error_types and not isinstance(e, error_types):
+                    raise
+                logging.error(f"Error in {func.__name__}: {str(e)}")
+                # Create task for error recording
+                task = asyncio.create_task(ErrorAudit.record_error(e, func.__name__, error_types))
+                try:
+                    await task
+                except Exception as record_error:
+                    logging.error(f"Error recording error: {record_error}")
+                return default_return
+        return wrapper
+    return decorator
 
 @handle_async_errors
 async def run_exception_audit(codebase_dir: str = ".") -> Dict:
@@ -708,11 +607,9 @@ async def run_exception_audit(codebase_dir: str = ".") -> Dict:
     Returns:
         Dict with audit results and recommendations
     """
-    from utils.logger import log
+    logging.info("Starting exception handling audit...")
     
     try:
-        log("Starting exception handling audit...", level="info")
-        
         # Analyze the codebase for error handling patterns
         await ErrorAudit.analyze_codebase(codebase_dir)
         
@@ -724,11 +621,10 @@ async def run_exception_audit(codebase_dir: str = ".") -> Dict:
         await ErrorAudit.save_report()
         
         # Log a summary
-        log(
+        logging.info(
             f"Exception audit complete: found {report['total_errors']} errors "
             f"across {report['unique_error_types']} types with "
-            f"{len(recommendations)} recommendations",
-            level="info"
+            f"{len(recommendations)} recommendations"
         )
         
         return {
@@ -736,9 +632,31 @@ async def run_exception_audit(codebase_dir: str = ".") -> Dict:
             "recommendations": recommendations
         }
     except Exception as e:
-        log(f"Error running exception audit: {e}", level="error")
+        logging.error(f"Error running exception audit: {e}")
         return {
             "statistics": {},
             "recommendations": [],
             "error": str(e)
-        } 
+        }
+
+def handle_errors(error_types=None, default_return=None):
+    """Decorator for handling errors in synchronous functions."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if error_types and not isinstance(e, error_types):
+                    raise
+                logging.error(f"Error in {func.__name__}: {str(e)}")
+                # Create task for error recording
+                loop = asyncio.get_event_loop()
+                task = loop.create_task(ErrorAudit.record_error(e, func.__name__, error_types))
+                try:
+                    loop.run_until_complete(task)
+                except Exception as record_error:
+                    logging.error(f"Error recording error: {record_error}")
+                return default_return
+        return wrapper
+    return decorator 

@@ -1,15 +1,12 @@
 """Parser models and data structures."""
 
-from typing import Dict, Any, List, Optional, Set, Union, Callable
+from typing import Dict, Any, List, Optional, Set, Union, Callable, TypedDict, NotRequired
 from dataclasses import dataclass, field
 import asyncio
 from parsers.types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, PatternCategory, PatternDefinition, QueryPattern, PatternType
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
 from utils.logger import log
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
-from enum import Enum, auto
-import re
+from utils.shutdown import register_shutdown_handler
 
 @dataclass
 class FileMetadata:
@@ -35,7 +32,7 @@ class LanguageFeatures:
     file_extensions: Set[str]
     parser_type: ParserType
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""
@@ -87,153 +84,103 @@ class QueryResult:
     captures: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-# AST Node definitions
-@dataclass
-class BaseNode:
-    """Base class for all parser nodes."""
+# AST Node TypedDict definitions
+class BaseNodeDict(TypedDict):
+    """Base type for all parser nodes."""
     type: str
     start_point: List[int]
     end_point: List[int]
-    children: List[Any] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    error: Optional[str] = None
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    children: List[Any]
+    metadata: Dict[str, Any]
+    error: NotRequired[Optional[str]]
 
-    def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
-
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize node resources."""
-        if not self._initialized:
-            try:
-                async with AsyncErrorBoundary(f"{self.type} node initialization"):
-                    # No special initialization needed yet
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing {self.type} node: {e}", level="error")
-                raise
-        return True
-
-    async def cleanup(self):
-        """Clean up node resources."""
-        try:
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
-        except Exception as e:
-            log(f"Error cleaning up {self.type} node: {e}", level="error")
-
-@dataclass
-class AsciidocNode(BaseNode):
+class AsciidocNodeDict(BaseNodeDict):
     """Node for AsciiDoc parser."""
-    sections: List[Any] = field(default_factory=list)
-    blocks: List[Any] = field(default_factory=list)
+    sections: List[Any]
+    blocks: List[Any]
 
-@dataclass
-class CobaltNode(BaseNode):
+class CobaltNodeDict(BaseNodeDict):
     """Node for Cobalt parser."""
-    name: Optional[str] = None
-    parameters: List[Dict[str, Any]] = field(default_factory=list)
-    return_type: Optional[str] = None
+    name: NotRequired[Optional[str]]
+    parameters: List[Dict[str, Any]]
+    return_type: NotRequired[Optional[str]]
 
-@dataclass
-class EditorconfigNode(BaseNode):
+class EditorconfigNodeDict(BaseNodeDict):
     """Node for EditorConfig parser."""
-    properties: List[Any] = field(default_factory=list)
-    sections: List[Any] = field(default_factory=list)
+    properties: List[Any]
+    sections: List[Any]
 
-@dataclass
-class EnvNode(BaseNode):
+class EnvNodeDict(BaseNodeDict):
     """Node for .env parser."""
-    name: Optional[str] = None
-    value: Optional[str] = None
-    value_type: Optional[str] = None
+    name: NotRequired[Optional[str]]
+    value: NotRequired[Optional[str]]
+    value_type: NotRequired[Optional[str]]
 
-@dataclass
-class GraphQLNode(BaseNode):
+class GraphQLNodeDict(BaseNodeDict):
     """Node for GraphQL parser."""
-    name: Optional[str] = None
-    fields: List[Dict[str, Any]] = field(default_factory=list)
-    directives: List[Dict[str, Any]] = field(default_factory=list)
+    name: NotRequired[Optional[str]]
+    fields: List[Dict[str, Any]]
+    directives: List[Dict[str, Any]]
 
-@dataclass
-class HtmlNode(BaseNode):
+class HtmlNodeDict(BaseNodeDict):
     """Node for HTML parser."""
-    tag: Optional[str] = None
-    attributes: Dict[str, str] = field(default_factory=dict)
-    text: Optional[str] = None
+    tag: NotRequired[Optional[str]]
+    attributes: Dict[str, str]
+    text: NotRequired[Optional[str]]
 
-@dataclass
-class IniNode(BaseNode):
+class IniNodeDict(BaseNodeDict):
     """Node for INI parser."""
-    section: Optional[str] = None
-    properties: List[Dict[str, Any]] = field(default_factory=list)
+    section: NotRequired[Optional[str]]
+    properties: List[Dict[str, Any]]
 
-@dataclass
-class JsonNode(BaseNode):
+class JsonNodeDict(BaseNodeDict):
     """Node for JSON parser."""
-    value: Any = None
-    path: Optional[str] = None
+    value: Any
+    path: NotRequired[Optional[str]]
 
-@dataclass
-class MarkdownNode(BaseNode):
+class MarkdownNodeDict(BaseNodeDict):
     """Node for Markdown parser."""
-    content: Optional[str] = None
-    level: Optional[int] = None
-    indent: Optional[int] = None
+    content: NotRequired[Optional[str]]
+    level: NotRequired[Optional[int]]
+    indent: NotRequired[Optional[int]]
 
-@dataclass
-class NimNode(BaseNode):
+class NimNodeDict(BaseNodeDict):
     """Node for Nim parser."""
-    name: Optional[str] = None
-    parameters: List[Dict[str, Any]] = field(default_factory=list)
-    return_type: Optional[str] = None
+    name: NotRequired[Optional[str]]
+    parameters: List[Dict[str, Any]]
+    return_type: NotRequired[Optional[str]]
 
-@dataclass
-class OcamlNode(BaseNode):
+class OcamlNodeDict(BaseNodeDict):
     """Node for OCaml parser."""
-    name: Optional[str] = None
-    parameters: List[Dict[str, Any]] = field(default_factory=list)
-    return_type: Optional[str] = None
+    name: NotRequired[Optional[str]]
+    parameters: List[Dict[str, Any]]
+    return_type: NotRequired[Optional[str]]
 
-@dataclass
-class PlaintextNode(BaseNode):
+class PlaintextNodeDict(BaseNodeDict):
     """Node for plaintext parser."""
-    content: Optional[str] = None
+    content: NotRequired[Optional[str]]
 
-@dataclass
-class RstNode(BaseNode):
+class RstNodeDict(BaseNodeDict):
     """Node for reStructuredText parser."""
-    title: Optional[str] = None
-    level: Optional[int] = None
-    content: List[str] = field(default_factory=list)
+    title: NotRequired[Optional[str]]
+    level: NotRequired[Optional[int]]
+    content: List[str]
 
-@dataclass
-class TomlNode(BaseNode):
+class TomlNodeDict(BaseNodeDict):
     """Node for TOML parser."""
-    value: Any = None
-    path: Optional[str] = None
+    value: Any
+    path: NotRequired[Optional[str]]
 
-@dataclass
-class XmlNode(BaseNode):
+class XmlNodeDict(BaseNodeDict):
     """Node for XML parser."""
-    tag: Optional[str] = None
-    attributes: Dict[str, str] = field(default_factory=dict)
-    text: Optional[str] = None
+    tag: NotRequired[Optional[str]]
+    attributes: Dict[str, str]
+    text: NotRequired[Optional[str]]
 
-@dataclass
-class YamlNode(BaseNode):
+class YamlNodeDict(BaseNodeDict):
     """Node for YAML parser."""
-    value: Any = None
-    path: Optional[str] = None
+    value: Any
+    path: NotRequired[Optional[str]]
 
 @dataclass
 class ProcessedPattern:
@@ -243,7 +190,7 @@ class ProcessedPattern:
     metadata: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     _initialized: bool = False
-    _pending_tasks: Set[asyncio.Future] = field(default_factory=set)
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
 
     def __post_init__(self):
         """Post initialization setup."""

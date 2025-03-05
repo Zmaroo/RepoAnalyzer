@@ -20,7 +20,8 @@ from utils.error_handling import (
     ProcessingError,
     DatabaseError,
     handle_async_errors,
-    AsyncErrorBoundary
+    AsyncErrorBoundary,
+    ErrorSeverity
 )
 
 # Import classes but not instances
@@ -31,5 +32,10 @@ from .graph_capabilities import GraphAnalysis
 __all__ = [
     'AIAssistant',
     'CodeUnderstanding',
-    'GraphAnalysis'
+    'GraphAnalysis',
+    'ProcessingError',
+    'DatabaseError',
+    'handle_async_errors',
+    'AsyncErrorBoundary',
+    'ErrorSeverity'
 ]

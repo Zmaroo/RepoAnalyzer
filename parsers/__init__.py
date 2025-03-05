@@ -12,8 +12,7 @@ from typing import List, Set
 import asyncio
 from utils.logger import log
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task, get_loop
+from utils.shutdown import register_shutdown_handler
 
 # Export the core parser modules and additional custom parser registrations
 __all__ = [
@@ -38,7 +37,7 @@ from .unified_parser import unified_parser
 
 # Track initialization state
 _initialized = False
-_pending_tasks: Set[asyncio.Future] = set()
+_pending_tasks: Set[asyncio.Task] = set()
 
 @handle_async_errors(error_types=(Exception,))
 async def initialize_parsers():
@@ -51,28 +50,28 @@ async def initialize_parsers():
     try:
         async with AsyncErrorBoundary("parser initialization"):
             # Initialize language registry first
-            future = submit_async_task(language_registry.initialize())
-            _pending_tasks.add(future)
+            task = asyncio.create_task(language_registry.initialize())
+            _pending_tasks.add(task)
             try:
-                await asyncio.wrap_future(future)
+                await task
             finally:
-                _pending_tasks.remove(future)
+                _pending_tasks.remove(task)
             
             # Initialize pattern processor
-            future = submit_async_task(pattern_processor.initialize())
-            _pending_tasks.add(future)
+            task = asyncio.create_task(pattern_processor.initialize())
+            _pending_tasks.add(task)
             try:
-                await asyncio.wrap_future(future)
+                await task
             finally:
-                _pending_tasks.remove(future)
+                _pending_tasks.remove(task)
             
             # Initialize unified parser last
-            future = submit_async_task(unified_parser.initialize())
-            _pending_tasks.add(future)
+            task = asyncio.create_task(unified_parser.initialize())
+            _pending_tasks.add(task)
             try:
-                await asyncio.wrap_future(future)
+                await task
             finally:
-                _pending_tasks.remove(future)
+                _pending_tasks.remove(task)
             
             _initialized = True
             log("Parser components initialized successfully", level="info")
@@ -89,25 +88,25 @@ async def cleanup_parsers():
         cleanup_tasks = []
         
         # Clean up unified parser
-        future = submit_async_task(unified_parser.cleanup())
-        cleanup_tasks.append(future)
+        task = asyncio.create_task(unified_parser.cleanup())
+        cleanup_tasks.append(task)
         
         # Clean up pattern processor
-        future = submit_async_task(pattern_processor.cleanup())
-        cleanup_tasks.append(future)
+        task = asyncio.create_task(pattern_processor.cleanup())
+        cleanup_tasks.append(task)
         
         # Clean up language registry
-        future = submit_async_task(language_registry.cleanup())
-        cleanup_tasks.append(future)
+        task = asyncio.create_task(language_registry.cleanup())
+        cleanup_tasks.append(task)
         
         # Wait for all cleanup tasks
-        await asyncio.gather(*[asyncio.wrap_future(f) for f in cleanup_tasks], return_exceptions=True)
+        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
         
         # Clean up any remaining pending tasks
         if _pending_tasks:
             for task in _pending_tasks:
                 task.cancel()
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in _pending_tasks], return_exceptions=True)
+            await asyncio.gather(*_pending_tasks, return_exceptions=True)
             _pending_tasks.clear()
         
         _initialized = False

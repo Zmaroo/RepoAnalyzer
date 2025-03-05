@@ -9,10 +9,9 @@ import re
 import asyncio
 from typing import Dict, Any, List, Optional, Set, Callable
 from parsers.types import PatternCategory, PatternDefinition, QueryPattern
-from utils.error_handling import ErrorBoundary, AsyncErrorBoundary, ErrorSeverity
+from utils.error_handling import AsyncErrorBoundary, ErrorSeverity
 from utils.logger import log
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
 
 class PatternValidationError(Exception):
     """Exception raised for pattern validation errors."""
@@ -24,7 +23,7 @@ class PatternValidator:
     def __init__(self):
         """Initialize the pattern validator."""
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         register_shutdown_handler(self.cleanup)
     
     async def initialize(self):
@@ -61,14 +60,14 @@ class PatternValidator:
         # Check that pattern is valid regex (if it's a string)
         if hasattr(definition, 'pattern') and isinstance(definition.pattern, str):
             try:
-                future = submit_async_task(re.compile(definition.pattern))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(re.compile(definition.pattern))
+                self._pending_tasks.add(task)
                 try:
-                    await asyncio.wrap_future(future)
+                    await task
                 except re.error as e:
                     errors.append(f"Pattern '{pattern_name}' has invalid regex: {str(e)}")
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
             except Exception as e:
                 errors.append(f"Pattern '{pattern_name}' compilation failed: {str(e)}")
         
@@ -121,18 +120,18 @@ class PatternValidator:
         validation_results = {}
         
         for pattern_name, definition in patterns.items():
-            future = submit_async_task(
+            task = asyncio.create_task(
                 self.validate_query_pattern(pattern_name, definition) 
                 if hasattr(definition, 'query') 
                 else self.validate_pattern_definition(pattern_name, definition)
             )
-            self._pending_tasks.add(future)
+            self._pending_tasks.add(task)
             try:
-                errors = await asyncio.wrap_future(future)
+                errors = await task
                 if errors:
                     validation_results[pattern_name] = errors
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
         
         return validation_results
     
@@ -194,7 +193,7 @@ class PatternValidator:
             if self._pending_tasks:
                 for task in self._pending_tasks:
                     task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
             self._initialized = False
@@ -221,10 +220,10 @@ async def validate_all_patterns(patterns_by_language: Dict[str, Dict[str, Any]])
     validation_results = {}
     
     for language, patterns in patterns_by_language.items():
-        future = submit_async_task(pattern_validator.validate_language_patterns(language, patterns))
-        pattern_validator._pending_tasks.add(future)
+        task = asyncio.create_task(pattern_validator.validate_language_patterns(language, patterns))
+        pattern_validator._pending_tasks.add(task)
         try:
-            language_results = await asyncio.wrap_future(future)
+            language_results = await task
             
             # Add naming convention validation
             for pattern_name in patterns.keys():
@@ -238,7 +237,7 @@ async def validate_all_patterns(patterns_by_language: Dict[str, Dict[str, Any]])
             if language_results:
                 validation_results[language] = language_results
         finally:
-            pattern_validator._pending_tasks.remove(future)
+            pattern_validator._pending_tasks.remove(task)
     
     return validation_results
 

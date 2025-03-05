@@ -6,13 +6,12 @@ import asyncio
 from tree_sitter_language_pack import get_parser, get_language, SupportedLanguage
 from utils.logger import log
 from parsers.base_parser import BaseParser
-from utils.error_handling import handle_errors, handle_async_errors, ProcessingError, ErrorBoundary, AsyncErrorBoundary, ErrorSeverity
+from utils.error_handling import handle_errors, handle_async_errors, ProcessingError, AsyncErrorBoundary, ErrorSeverity
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from parsers.models import PatternMatch, ProcessedPattern
 from parsers.types import FileType, ParserType, FeatureCategory, ParserResult
 from utils.cache import cache_coordinator
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
 
 class TreeSitterError(ProcessingError):
     """Tree-sitter specific errors."""
@@ -21,18 +20,96 @@ class TreeSitterError(ProcessingError):
 class TreeSitterParser(BaseParser):
     """Tree-sitter implementation of the base parser."""
     
-    def __init__(self, language_id: str, file_type: FileType):
-        super().__init__(language_id, file_type, parser_type=ParserType.TREE_SITTER)
+    def __init__(self):
+        """Private constructor - use create() instead."""
+        super().__init__()
+        self._parser = None
         self._language = None
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        
-        # Initialize the block extractor
-        from parsers.block_extractor import block_extractor
-        self.block_extractor = block_extractor
-        
-        register_shutdown_handler(self.cleanup)
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
     
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
+        if not self._initialized:
+            raise ProcessingError(f"Tree-sitter {self.language_id} parser not initialized. Use create() to initialize.")
+        if not self._parser or not self._language:
+            raise ProcessingError(f"Tree-sitter {self.language_id} parser components not initialized")
+        return True
+    
+    @classmethod
+    async def create(cls, language_id: str, file_type: FileType) -> 'TreeSitterParser':
+        """Async factory method to create and initialize a TreeSitterParser instance."""
+        instance = cls()
+        instance.language_id = language_id
+        instance.file_type = file_type
+        instance.parser_type = ParserType.TREE_SITTER
+        
+        try:
+            async with AsyncErrorBoundary(
+                operation_name=f"tree-sitter {language_id} parser initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize tree-sitter components
+                from tree_sitter import Language, Parser
+                instance._language = Language.build_library(
+                    'build/my-languages.so',
+                    [f'vendor/tree-sitter-{language_id}']
+                )
+                instance._parser = Parser()
+                instance._parser.set_language(instance._language)
+                
+                # Initialize base parser
+                await super(TreeSitterParser, instance).create(language_id, file_type, ParserType.TREE_SITTER)
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component(f"tree_sitter_parser_{language_id}")
+                
+                instance._initialized = True
+                await log(f"Tree-sitter {language_id} parser initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing tree-sitter {language_id} parser: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize tree-sitter {language_id} parser: {e}")
+    
+    async def cleanup(self):
+        """Clean up parser resources."""
+        try:
+            if not self._initialized:
+                return
+                
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clean up tree-sitter specific resources
+            self._parser = None
+            self._language = None
+            
+            # Clean up base parser resources
+            await super().cleanup()
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component(f"tree_sitter_parser_{self.language_id}")
+            
+            self._initialized = False
+            await log(f"Tree-sitter {self.language_id} parser cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up tree-sitter {self.language_id} parser: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup tree-sitter {self.language_id} parser: {e}")
+
     @handle_async_errors(error_types=(Exception,))
     async def initialize(self) -> bool:
         """Initialize parser resources."""
@@ -63,35 +140,35 @@ class TreeSitterParser(BaseParser):
                 cache_key = f"ast:{self.language_id}:{source_hash}"
                 
                 # First try to get from cache
-                future = submit_async_task(cache_coordinator.get_async(cache_key))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(cache_coordinator.get_async(cache_key))
+                self._pending_tasks.add(task)
                 try:
-                    cached_ast = await asyncio.wrap_future(future)
+                    cached_ast = await task
                     if cached_ast and "tree" in cached_ast:
                         log(f"AST cache hit for {self.language_id}", level="debug")
                         return cached_ast
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 # If not in cache, generate the AST
-                future = submit_async_task(self._parse_content, source_code)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_content(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    ast_dict = await asyncio.wrap_future(future)
+                    ast_dict = await task
                     
                     # Cache the AST for future use
                     cache_data = {"tree": ast_dict["tree"], "metadata": {"language": self.language_id}}
-                    future = submit_async_task(cache_coordinator.set_async(cache_key, cache_data))
-                    self._pending_tasks.add(future)
+                    task = asyncio.create_task(cache_coordinator.set_async(cache_key, cache_data))
+                    self._pending_tasks.add(task)
                     try:
-                        await asyncio.wrap_future(future)
+                        await task
                         log(f"AST cached for {self.language_id}", level="debug")
                     finally:
-                        self._pending_tasks.remove(future)
+                        self._pending_tasks.remove(task)
                     
                     return ast_dict
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                     
             except Exception as e:
                 log(f"Error in tree-sitter parsing for {self.language_id}: {e}", level="error")
@@ -124,12 +201,12 @@ class TreeSitterParser(BaseParser):
                     return None
                 
                 # Extract features asynchronously
-                future = submit_async_task(self._extract_features, ast, source_code)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._extract_features(ast, source_code))
+                self._pending_tasks.add(task)
                 try:
-                    features = await asyncio.wrap_future(future)
+                    features = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 return ParserResult(
                     success=True,

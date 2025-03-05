@@ -10,19 +10,33 @@ This module shows practical examples of:
 import asyncio
 import os
 from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
 
-from utils.cache import create_cache, UnifiedCache
+from utils.cache import UnifiedCache, cache_coordinator
 from utils.cache_analytics import cache_analytics
 from utils.logger import log
-from utils.error_handling import handle_async_errors
+from utils.error_handling import (
+    handle_errors,
+    handle_async_errors,
+    CacheError,
+    ErrorBoundary
+)
 
 # Create example directory if it doesn't exist
 os.makedirs("examples", exist_ok=True)
 
-# Example caches for different data types
-repository_cache = create_cache("repository", ttl=3600, adaptive_ttl=True)  # 1 hour default
-user_cache = create_cache("user", ttl=1800, adaptive_ttl=True)  # 30 minutes default
-search_cache = create_cache("search", ttl=600, adaptive_ttl=True)  # 10 minutes default
+# Create cache instances with different TTLs
+repository_cache = UnifiedCache("repository", ttl=3600)  # 1 hour default
+user_cache = UnifiedCache("user", ttl=1800)  # 30 minutes default
+search_cache = UnifiedCache("search", ttl=600)  # 10 minutes default
+
+async def initialize_caches():
+    """Initialize all cache instances."""
+    # Register caches with the coordinator
+    await cache_coordinator.register_cache("repository", repository_cache)
+    await cache_coordinator.register_cache("user", user_cache)
+    await cache_coordinator.register_cache("search", search_cache)
+    log("Cache instances initialized", level="info")
 
 # Mock database interface (in a real app, this would connect to a real database)
 class MockDatabase:
@@ -182,6 +196,9 @@ class RepositoryService:
 # Example function to demonstrate caching in action
 async def demonstrate_caching():
     """Demonstrate caching features with example operations."""
+    # Initialize caches first
+    await initialize_caches()
+    
     # Register warmup functions
     register_warmup_functions()
     

@@ -7,8 +7,11 @@
 
 import os
 import shutil
+import asyncio
 from typing import List
 from pathlib import Path
+from utils.logger import log
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
 
 def get_project_root() -> Path:
     """Get the project root directory."""
@@ -32,7 +35,8 @@ def find_cache_directories(start_path: Path) -> List[Path]:
                 cache_dirs.append(Path(root) / dir_name)
     return cache_dirs
 
-def clear_cache_files(directory: Path = None) -> None:
+@handle_async_errors
+async def clear_cache_files(directory: Path = None) -> None:
     """
     Clear all cache files and directories.
     
@@ -42,31 +46,47 @@ def clear_cache_files(directory: Path = None) -> None:
     if directory is None:
         directory = get_project_root()
     
+    async with AsyncErrorBoundary("clearing cache files"):
+        try:
+            # Find all cache directories
+            cache_dirs = find_cache_directories(directory)
+            
+            # Remove each cache directory
+            for cache_dir in cache_dirs:
+                if cache_dir.exists():
+                    log(f"Removing cache directory: {cache_dir}")
+                    shutil.rmtree(cache_dir)
+            
+            # Remove .pyc files that might be outside __pycache__
+            for pyc_file in directory.rglob("*.pyc"):
+                log(f"Removing .pyc file: {pyc_file}")
+                pyc_file.unlink()
+                
+            # Remove .coverage files
+            for coverage_file in directory.rglob(".coverage"):
+                log(f"Removing coverage file: {coverage_file}")
+                coverage_file.unlink()
+                
+            log("Cache clearing completed successfully.")
+            
+        except Exception as e:
+            log(f"Error while clearing cache: {e}", level="error")
+            raise
+
+async def main_async():
+    """Async main entry point."""
+    await clear_cache_files()
+
+def main():
+    """Main entry point."""
+    loop = asyncio.get_event_loop()
     try:
-        # Find all cache directories
-        cache_dirs = find_cache_directories(directory)
-        
-        # Remove each cache directory
-        for cache_dir in cache_dirs:
-            if cache_dir.exists():
-                print(f"Removing cache directory: {cache_dir}")
-                shutil.rmtree(cache_dir)
-        
-        # Remove .pyc files that might be outside __pycache__
-        for pyc_file in directory.rglob("*.pyc"):
-            print(f"Removing .pyc file: {pyc_file}")
-            pyc_file.unlink()
-            
-        # Remove .coverage files
-        for coverage_file in directory.rglob(".coverage"):
-            print(f"Removing coverage file: {coverage_file}")
-            coverage_file.unlink()
-            
-        print("Cache clearing completed successfully.")
-        
+        loop.run_until_complete(main_async())
+    except KeyboardInterrupt:
+        log("Cache clearing interrupted by user", level="info")
     except Exception as e:
-        print(f"Error while clearing cache: {e}")
+        log(f"Error during cache clearing: {e}", level="error")
         raise
 
 if __name__ == "__main__":
-    clear_cache_files() 
+    main() 

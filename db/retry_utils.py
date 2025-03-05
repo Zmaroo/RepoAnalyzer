@@ -21,12 +21,12 @@ from utils.error_handling import (
     Neo4jError, 
     TransactionError, 
     handle_async_errors, 
-    ErrorBoundary,
+    AsyncErrorBoundary,
     PostgresError,
     ErrorSeverity
 )
 from utils.async_runner import submit_async_task, get_loop
-from utils.app_init import register_shutdown_handler
+from utils.shutdown import register_shutdown_handler
 
 # Error classes for retry mechanism
 class RetryableError(Exception):
@@ -125,22 +125,45 @@ class RetryConfig:
 class DatabaseRetryManager:
     """Manager for database operations with comprehensive retry functionality."""
     
-    def __init__(self, config: RetryConfig = None):
-        self.config = config or RetryConfig()
-        self._pending_tasks: Set[asyncio.Future] = set()
+    def __init__(self):
+        """Private constructor - use create() instead."""
         self._initialized = False
-        register_shutdown_handler(self.cleanup)
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self.config = None
     
-    async def initialize(self):
-        """Initialize the retry manager."""
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
         if not self._initialized:
-            try:
-                # Any retry manager-specific initialization can go here
-                self._initialized = True
-                log("Database retry manager initialized", level="info")
-            except Exception as e:
-                log(f"Error initializing database retry manager: {e}", level="error")
-                raise
+            raise DatabaseError("DatabaseRetryManager not initialized. Use create() to initialize.")
+        return True
+    
+    @classmethod
+    async def create(cls, config: RetryConfig = None) -> 'DatabaseRetryManager':
+        """Async factory method to create and initialize a DatabaseRetryManager instance."""
+        instance = cls()
+        instance.config = config or RetryConfig()
+        
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="database retry manager initialization",
+                error_types=DatabaseError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component("database_retry_manager")
+                
+                instance._initialized = True
+                await log("Database retry manager initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing database retry manager: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise DatabaseError(f"Failed to initialize database retry manager: {e}")
     
     async def execute_with_retry(
         self,
@@ -150,142 +173,101 @@ class DatabaseRetryManager:
     ) -> Any:
         """Execute an operation with retry logic."""
         if not self._initialized:
-            await self.initialize()
+            await self.ensure_initialized()
             
-        operation_name = getattr(operation_func, "__name__", "database_operation")
-        attempt = 0
+        operation_name = kwargs.pop("operation_name", operation_func.__name__)
+        retry_count = 0
+        total_time = 0
         last_error = None
         
-        # Start timer for performance tracking
-        start_time = time.time()
-        
-        with ErrorBoundary(error_types=[DatabaseError, Neo4jError, PostgresError, Exception],
-                           error_message=f"Error in retry operation: {operation_name}",
-                           reraise=True) as outer_error_boundary:
-            while attempt <= self.config.max_retries:
+        while retry_count <= self.config.max_retries:
+            try:
+                task = asyncio.create_task(operation_func(*args, **kwargs))
+                self._pending_tasks.add(task)
                 try:
-                    # Execute the operation using submit_async_task
-                    future = submit_async_task(operation_func(*args, **kwargs))
-                    self._pending_tasks.add(future)
-                    try:
-                        result = await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
+                    start_time = time.time()
+                    result = await task
+                    execution_time = time.time() - start_time
+                    total_time += execution_time
                     
-                    # If successful and not the first attempt, log success after retry
-                    if attempt > 0:
-                        total_time = time.time() - start_time
-                        log(
-                            f"Operation '{operation_name}' succeeded after {attempt} retries "
+                    if retry_count > 0:
+                        await log(
+                            f"Operation '{operation_name}' succeeded after {retry_count} retries "
                             f"(total time: {total_time:.2f}s)",
                             level="info"
                         )
-                    
                     return result
-                    
-                except Exception as e:
-                    # Classify the error
-                    if not isinstance(e, (RetryableError, NonRetryableError)):
-                        classified_error = classify_error(e)
-                    else:
-                        classified_error = e
-                    
-                    # If non-retryable, raise immediately
-                    if isinstance(classified_error, NonRetryableError):
-                        error_msg = f"Non-retryable error in '{operation_name}': {str(e)}"
-                        log(error_msg, level="error")
-                        # Wrap the NonRetryableError in a DatabaseError for backward compatibility
-                        db_error = DatabaseError(error_msg)
-                        db_error.__cause__ = e
-                        raise db_error
-                    
-                    # Handle retryable error
-                    attempt += 1
-                    last_error = e
-                    
-                    # If we've exceeded max retries, break out and raise
-                    if attempt > self.config.max_retries:
-                        break
-                    
-                    # Calculate delay with exponential backoff
-                    delay = self.config.calculate_delay(attempt - 1)
-                    
-                    log(
-                        f"Retryable error in '{operation_name}' (attempt {attempt}/{self.config.max_retries}): "
-                        f"{str(e)}. Retrying in {delay:.2f}s",
-                        level="warn"
-                    )
-                    
-                    # Wait before retrying using submit_async_task
-                    future = submit_async_task(asyncio.sleep(delay))
-                    self._pending_tasks.add(future)
-                    try:
-                        await asyncio.wrap_future(future)
-                    finally:
-                        self._pending_tasks.remove(future)
-            
-            # If we get here, all retries failed
-            total_time = time.time() - start_time
-            error_msg = (
-                f"Operation '{operation_name}' failed after {self.config.max_retries} retries "
-                f"(total time: {total_time:.2f}s). Last error: {str(last_error)}"
-            )
-            log(error_msg, level="error")
-            raise DatabaseError(error_msg)
+                finally:
+                    self._pending_tasks.remove(task)
+            except Exception as e:
+                last_error = e
+                retry_count += 1
+                
+                if not is_retryable_error(e) or retry_count > self.config.max_retries:
+                    break
+                
+                delay = min(
+                    self.config.base_delay * (2 ** (retry_count - 1)),
+                    self.config.max_delay
+                )
+                
+                await log(
+                    f"Operation '{operation_name}' failed (attempt {retry_count}/{self.config.max_retries}). "
+                    f"Error: {str(e)}. Retrying in {delay:.2f}s...",
+                    level="warning"
+                )
+                
+                await asyncio.sleep(delay)
+                total_time += delay
+        
+        error_msg = (
+            f"Operation '{operation_name}' failed after {self.config.max_retries} retries "
+            f"(total time: {total_time:.2f}s). Last error: {str(last_error)}"
+        )
+        await log(error_msg, level="error")
+        raise DatabaseError(error_msg)
     
     async def cleanup(self):
         """Clean up all resources."""
         try:
-            # Cancel and clean up any pending tasks
+            # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component("database_retry_manager")
+            
             self._initialized = False
-            log("Database retry manager cleaned up", level="info")
+            await log("Database retry manager cleaned up", level="info")
         except Exception as e:
-            log(f"Error cleaning up database retry manager: {e}", level="error")
-    
-    def retry(
-        self,
-        max_retries: Optional[int] = None,
-        base_delay: Optional[float] = None,
-        max_delay: Optional[float] = None
-    ):
-        """Decorator for retrying operations with custom retry parameters."""
-        def decorator(func):
-            @wraps(func)
-            async def wrapper(*args, **kwargs):
-                # Create a custom retry config if any parameters are overridden
-                if any(param is not None for param in [max_retries, base_delay, max_delay]):
-                    custom_config = RetryConfig(
-                        max_retries=max_retries or self.config.max_retries,
-                        base_delay=base_delay or self.config.base_delay,
-                        max_delay=max_delay or self.config.max_delay,
-                        jitter_factor=self.config.jitter_factor
-                    )
-                    temp_manager = DatabaseRetryManager(custom_config)
-                    return await temp_manager.execute_with_retry(func, *args, **kwargs)
-                else:
-                    return await self.execute_with_retry(func, *args, **kwargs)
-            return wrapper
-        return decorator
+            await log(f"Error cleaning up database retry manager: {e}", level="error")
+            raise DatabaseError(f"Failed to cleanup database retry manager: {e}")
 
 # Default retry manager instance
-default_retry_manager = DatabaseRetryManager()
+default_retry_manager = None
+
+async def get_retry_manager() -> DatabaseRetryManager:
+    """Get the default retry manager instance."""
+    global default_retry_manager
+    if not default_retry_manager:
+        default_retry_manager = await DatabaseRetryManager.create()
+    return default_retry_manager
 
 # Register cleanup handler
 async def cleanup_retry():
     """Cleanup retry utilities resources."""
     try:
-        await default_retry_manager.cleanup()
-        log("Retry utilities cleaned up", level="info")
+        if default_retry_manager:
+            await default_retry_manager.cleanup()
+        await log("Retry utilities cleaned up", level="info")
     except Exception as e:
-        log(f"Error cleaning up retry utilities: {e}", level="error")
-
-register_shutdown_handler(cleanup_retry)
+        await log(f"Error cleaning up retry utilities: {e}", level="error")
+        raise DatabaseError(f"Failed to cleanup retry utilities: {e}")
 
 def with_retry(
     max_retries: Optional[int] = None,

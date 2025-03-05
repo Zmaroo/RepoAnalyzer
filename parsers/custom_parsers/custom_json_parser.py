@@ -1,14 +1,12 @@
 """Custom parser for JSON files with enhanced documentation and pattern extraction."""
 
-from typing import Dict, List, Any, Optional, Union, Tuple
+from .base_imports import *
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory, ParserResult, ParserConfig
-from parsers.models import JsonNode, PatternType
 from parsers.query_patterns.json import JSON_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 import json
 import re
 from collections import Counter
@@ -17,10 +15,10 @@ import asyncio
 class JsonParser(BaseParser):
     """Parser for JSON files with enhanced documentation and structure analysis."""
 
-    def __init__(self, language_id: str, file_type: FileType = FileType.CONFIG):
-        super().__init__(language_id, file_type)
+    def __init__(self, language_id: str = "json", file_type: Optional[FileType] = None):
+        super().__init__(language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
         self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(JSON_PATTERNS)
         register_shutdown_handler(self.cleanup)
 
@@ -43,17 +41,21 @@ class JsonParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> JsonNode:
+    ) -> JsonNodeDict:
         """Create a standardized JSON AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return JsonNode(**node_dict)
+        return {
+            **node_dict,
+            "value": kwargs.get("value"),
+            "path": kwargs.get("path")
+        }
 
     def _process_json_value(
         self, 
         value: Any, 
         path: str, 
         parent_key: Optional[str] = None
-    ) -> JsonNode:
+    ) -> JsonNodeDict:
         """Process a JSON value into a node structure."""
         if isinstance(value, dict):
             node = self._create_node(
@@ -71,7 +73,7 @@ class JsonParser(BaseParser):
             for key, item in value.items():
                 child_path = f"{path}.{key}" if path else key
                 child = self._process_json_value(item, child_path, key)
-                node.children.append(child)
+                node["children"].append(child)
                 
             return node
             
@@ -90,7 +92,7 @@ class JsonParser(BaseParser):
             for idx, item in enumerate(value):
                 child_path = f"{path}[{idx}]" if path else f"[{idx}]"
                 child = self._process_json_value(item, child_path)
-                node.children.append(child)
+                node["children"].append(child)
                 
             return node
             
@@ -138,70 +140,71 @@ class JsonParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        try:
-            # Note: We don't need to check cache here as BaseParser.parse() already does this
-            # This method will only be called for cache misses
-            
-            future = submit_async_task(json.loads(source_code))
-            self._pending_tasks.add(future)
+        async with AsyncErrorBoundary("JSON parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
-                data = await asyncio.wrap_future(future)
-            finally:
-                self._pending_tasks.remove(future)
-            
-            ast = self._process_json_value(data, "")
-            
-            # Set document root position
-            ast.start_point = [0, 0]
-            ast.end_point = [len(source_code.splitlines()), 0]
-            
-            # Analyze structure
-            self._analyze_structure(ast)
-            
-            return ast.__dict__
-            
-        except json.JSONDecodeError as e:
-            log(f"Error parsing JSON: {e}", level="error")
-            return None
-        except Exception as e:
-            log(f"Unexpected error parsing JSON: {e}", level="error")
-            return None
+                # Note: We don't need to check cache here as BaseParser.parse() already does this
+                # This method will only be called for cache misses
+                
+                task = asyncio.create_task(json.loads(source_code))
+                self._pending_tasks.add(task)
+                try:
+                    data = await task
+                finally:
+                    self._pending_tasks.remove(task)
+                
+                ast = self._process_json_value(data, "")
+                
+                # Set document root position
+                ast["start_point"] = [0, 0]
+                ast["end_point"] = [len(source_code.splitlines()), 0]
+                
+                # Analyze structure
+                self._analyze_structure(ast)
+                
+                return ast
+                
+            except json.JSONDecodeError as e:
+                log(f"Error parsing JSON: {e}", level="error")
+                return None
+            except Exception as e:
+                log(f"Unexpected error parsing JSON: {e}", level="error")
+                return None
 
-    def _analyze_structure(self, node: JsonNode) -> None:
+    def _analyze_structure(self, node: JsonNodeDict) -> None:
         """Analyze JSON structure for insights."""
-        if node.type == "object":
+        if node["type"] == "object":
             # Analyze naming conventions
-            if node.keys:
-                conventions = self._detect_naming_convention(node.keys)
-                node.metadata["naming_convention"] = conventions[0] if conventions else "mixed"
-                node.metadata["naming_conventions"] = conventions
+            if node["keys"]:
+                conventions = self._detect_naming_convention(node["keys"])
+                node["metadata"]["naming_convention"] = conventions[0] if conventions else "mixed"
+                node["metadata"]["naming_conventions"] = conventions
                 
             # Analyze nesting
             max_depth = 0
-            for child in node.children:
+            for child in node["children"]:
                 self._analyze_structure(child)
-                child_depth = child.metadata.get("max_depth", 0)
+                child_depth = child["metadata"].get("max_depth", 0)
                 max_depth = max(max_depth, child_depth + 1)
-            node.metadata["max_depth"] = max_depth
+            node["metadata"]["max_depth"] = max_depth
                 
-        elif node.type == "array":
+        elif node["type"] == "array":
             # Analyze homogeneity
-            schema_types = [child.schema_type for child in node.children]
+            schema_types = [child["schema_type"] for child in node["children"]]
             if schema_types:
                 is_homogeneous = len(set(schema_types)) == 1
-                node.metadata["is_homogeneous"] = is_homogeneous
-                node.metadata["item_type"] = schema_types[0] if is_homogeneous else "mixed"
+                node["metadata"]["is_homogeneous"] = is_homogeneous
+                node["metadata"]["item_type"] = schema_types[0] if is_homogeneous else "mixed"
                 
             # Analyze nesting
             max_depth = 0
-            for child in node.children:
+            for child in node["children"]:
                 self._analyze_structure(child)
-                child_depth = child.metadata.get("max_depth", 0)
+                child_depth = child["metadata"].get("max_depth", 0)
                 max_depth = max(max_depth, child_depth + 1)
-            node.metadata["max_depth"] = max_depth
+            node["metadata"]["max_depth"] = max_depth
                 
         else:  # value node
-            node.metadata["max_depth"] = 0
+            node["metadata"]["max_depth"] = 0
     
     def _detect_naming_convention(self, keys: List[str]) -> List[str]:
         """Detect naming conventions in a list of keys."""
@@ -245,54 +248,56 @@ class JsonParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        try:
-            # Parse the source first to get a structured representation
-            future = submit_async_task(self._parse_source(source_code))
-            self._pending_tasks.add(future)
+        async with AsyncErrorBoundary("JSON pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                ast_dict = await asyncio.wrap_future(future)
-                ast = JsonNode(**ast_dict)
+                # Parse the source first to get a structured representation
+                task = asyncio.create_task(self._parse_source(source_code))
+                self._pending_tasks.add(task)
+                try:
+                    ast = await task
+                finally:
+                    self._pending_tasks.remove(task)
+                
+                if not ast:
+                    return []
                 
                 # Extract structure patterns
-                structure_patterns = self._extract_structure_patterns(ast)
-                patterns.extend(structure_patterns)
+                patterns.extend(self._extract_structure_patterns(ast))
                 
                 # Extract naming convention patterns
-                naming_patterns = self._extract_naming_convention_patterns(ast)
-                patterns.extend(naming_patterns)
+                patterns.extend(self._extract_naming_convention_patterns(ast))
                 
                 # Extract schema patterns
-                schema_patterns = self._extract_schema_patterns(ast)
-                patterns.extend(schema_patterns)
+                patterns.extend(self._extract_schema_patterns(ast))
                 
                 # Extract common field patterns
-                field_patterns = self._extract_common_field_patterns(ast)
-                patterns.extend(field_patterns)
+                patterns.extend(self._extract_common_field_patterns(ast))
                 
-            except (ValueError, KeyError, TypeError) as e:
+                # Extract nested structure patterns
+                patterns.extend(self._extract_nested_structure_patterns(ast))
+                
+                return patterns
+                
+            except Exception as e:
                 log(f"Error extracting JSON patterns: {e}", level="error")
-                
-        except Exception as e:
-            log(f"Error extracting JSON patterns: {e}", level="error")
-            
-        return patterns
+                return []
         
-    def _extract_structure_patterns(self, ast: JsonNode) -> List[Dict[str, Any]]:
+    def _extract_structure_patterns(self, ast: JsonNodeDict) -> List[Dict[str, Any]]:
         """Extract structure patterns from the AST."""
         patterns = []
         
         # Analyze overall structure
-        if ast.type == "object":
+        if ast["type"] == "object":
             # Root level object structure
             patterns.append({
                 'name': 'json_root_structure',
-                'content': json.dumps({'root_keys': ast.keys}, indent=2),
+                'content': json.dumps({'root_keys': ast["keys"]}, indent=2),
                 'pattern_type': PatternType.DATA_STRUCTURE,
                 'language': self.language_id,
                 'confidence': 0.9,
                 'metadata': {
-                    'root_keys': ast.keys,
-                    'max_depth': ast.metadata.get('max_depth', 0)
+                    'root_keys': ast["keys"],
+                    'max_depth': ast["metadata"].get('max_depth', 0)
                 }
             })
             
@@ -310,7 +315,7 @@ class JsonParser(BaseParser):
                     }
                 })
                 
-        elif ast.type == "array":
+        elif ast["type"] == "array":
             # Root level array structure
             item_types = self._analyze_array_item_types(ast)
             patterns.append({
@@ -320,9 +325,9 @@ class JsonParser(BaseParser):
                 'language': self.language_id,
                 'confidence': 0.9,
                 'metadata': {
-                    'is_homogeneous': ast.metadata.get('is_homogeneous', False),
-                    'item_type': ast.metadata.get('item_type', 'mixed'),
-                    'items_count': ast.items_count,
+                    'is_homogeneous': ast["metadata"].get('is_homogeneous', False),
+                    'item_type': ast["metadata"].get('item_type', 'mixed'),
+                    'items_count': ast["items_count"],
                     'item_types': item_types
                 }
             })
@@ -337,7 +342,7 @@ class JsonParser(BaseParser):
                     'confidence': 0.85,
                     'metadata': {
                         'file_type': 'data_collection',
-                        'item_count': ast.items_count,
+                        'item_count': ast["items_count"],
                         'common_fields': self._extract_common_fields(ast)
                     }
                 })
@@ -348,18 +353,18 @@ class JsonParser(BaseParser):
         
         return patterns
         
-    def _extract_naming_convention_patterns(self, ast: JsonNode) -> List[Dict[str, Any]]:
+    def _extract_naming_convention_patterns(self, ast: JsonNodeDict) -> List[Dict[str, Any]]:
         """Extract naming convention patterns from the AST."""
         patterns = []
         conventions = {}
         
         def collect_conventions(node):
-            if node.type == "object" and node.metadata.get("naming_convention"):
-                convention = node.metadata["naming_convention"]
+            if node["type"] == "object" and node["metadata"].get("naming_convention"):
+                convention = node["metadata"]["naming_convention"]
                 if convention != "mixed":
                     conventions[convention] = conventions.get(convention, 0) + 1
             
-            for child in node.children:
+            for child in node["children"]:
                 collect_conventions(child)
                 
         collect_conventions(ast)
@@ -382,7 +387,7 @@ class JsonParser(BaseParser):
             
         return patterns
         
-    def _extract_schema_patterns(self, ast: JsonNode) -> List[Dict[str, Any]]:
+    def _extract_schema_patterns(self, ast: JsonNodeDict) -> List[Dict[str, Any]]:
         """Extract schema patterns from the AST."""
         patterns = []
         
@@ -390,15 +395,15 @@ class JsonParser(BaseParser):
         field_schemas = {}
         
         def collect_field_schemas(node, path=""):
-            if node.type == "object":
-                for child in node.children:
-                    child_path = f"{path}.{child.parent_key}" if path else child.parent_key
-                    if child.type == "value":
-                        field_schemas[child_path] = child.schema_type
+            if node["type"] == "object":
+                for child in node["children"]:
+                    child_path = f"{path}.{child['parent_key']}" if path else child['parent_key']
+                    if child["type"] == "value":
+                        field_schemas[child_path] = child["schema_type"]
                     collect_field_schemas(child, child_path)
-            elif node.type == "array" and node.children and node.metadata.get("is_homogeneous", False):
-                sample_child = node.children[0]
-                if sample_child.type == "object":
+            elif node["type"] == "array" and node["children"] and node["metadata"].get("is_homogeneous", False):
+                sample_child = node["children"][0]
+                if sample_child["type"] == "object":
                     collect_field_schemas(sample_child, f"{path}[item]")
                 
         collect_field_schemas(ast)
@@ -432,7 +437,7 @@ class JsonParser(BaseParser):
                 
         return patterns
         
-    def _extract_common_field_patterns(self, ast: JsonNode) -> List[Dict[str, Any]]:
+    def _extract_common_field_patterns(self, ast: JsonNodeDict) -> List[Dict[str, Any]]:
         """Extract common field patterns from the AST."""
         patterns = []
         common_fields = set()
@@ -441,10 +446,10 @@ class JsonParser(BaseParser):
             if field_set is None:
                 field_set = set()
                 
-            if node.type == "object":
-                field_set.update(node.keys)
+            if node["type"] == "object":
+                field_set.update(node["keys"])
                 
-            for child in node.children:
+            for child in node["children"]:
                 collect_fields(child, field_set)
                 
             return field_set
@@ -483,9 +488,9 @@ class JsonParser(BaseParser):
                 
         return patterns
         
-    def _is_likely_config_file(self, ast: JsonNode) -> bool:
+    def _is_likely_config_file(self, ast: JsonNodeDict) -> bool:
         """Check if this is likely a configuration file."""
-        if ast.type != "object":
+        if ast["type"] != "object":
             return False
             
         # Configuration files typically have these keys or structures
@@ -496,99 +501,99 @@ class JsonParser(BaseParser):
         ]
         
         # Check for presence of common config keys
-        for key in ast.keys:
+        for key in ast["keys"]:
             if key.lower() in config_indicators:
                 return True
                 
         # Check for nested configuration sections
-        has_nested_objects = any(child.type == "object" for child in ast.children)
-        has_primitive_values = any(child.type == "value" for child in ast.children)
+        has_nested_objects = any(child["type"] == "object" for child in ast["children"])
+        has_primitive_values = any(child["type"] == "value" for child in ast["children"])
         
         # Config files often have a mix of primitive values and nested objects
         return has_nested_objects and has_primitive_values
         
-    def _extract_config_sections(self, ast: JsonNode) -> List[str]:
+    def _extract_config_sections(self, ast: JsonNodeDict) -> List[str]:
         """Extract configuration sections from a config file."""
-        if ast.type != "object":
+        if ast["type"] != "object":
             return []
             
         # Return top-level keys that are objects
-        return [child.parent_key for child in ast.children 
-                if child.type == "object" and child.parent_key]
+        return [child["parent_key"] for child in ast["children"] 
+                if child["type"] == "object" and child["parent_key"]]
                 
-    def _is_likely_data_collection(self, ast: JsonNode) -> bool:
+    def _is_likely_data_collection(self, ast: JsonNodeDict) -> bool:
         """Check if this is likely a data collection."""
-        if ast.type != "array" or not ast.children:
+        if ast["type"] != "array" or not ast["children"]:
             return False
             
         # Data collections typically have array of objects
-        is_array_of_objects = all(child.type == "object" for child in ast.children)
+        is_array_of_objects = all(child["type"] == "object" for child in ast["children"])
         
         # And typically the objects share common fields
-        if is_array_of_objects and len(ast.children) > 1:
+        if is_array_of_objects and len(ast["children"]) > 1:
             common_fields = self._extract_common_fields(ast)
             # If there are at least 2 common fields across items, it's likely a collection
             return len(common_fields) >= 2
             
         return False
         
-    def _extract_common_fields(self, ast: JsonNode) -> List[str]:
+    def _extract_common_fields(self, ast: JsonNodeDict) -> List[str]:
         """Extract common fields from an array of objects."""
-        if ast.type != "array" or not ast.children:
+        if ast["type"] != "array" or not ast["children"]:
             return []
             
         # Get all object children
-        object_children = [child for child in ast.children if child.type == "object"]
+        object_children = [child for child in ast["children"] if child["type"] == "object"]
         if not object_children:
             return []
             
         # Find fields that appear in most objects
         all_fields = Counter()
         for child in object_children:
-            all_fields.update(child.keys)
+            all_fields.update(child["keys"])
             
         # Return fields that appear in at least 70% of the objects
         threshold = 0.7 * len(object_children)
         return [field for field, count in all_fields.items() if count >= threshold]
         
-    def _extract_nested_structure_patterns(self, ast: JsonNode) -> List[Dict[str, Any]]:
+    def _extract_nested_structure_patterns(self, ast: JsonNodeDict) -> List[Dict[str, Any]]:
         """Extract patterns from nested structures."""
         patterns = []
         
         def process_nested_objects(node, path=""):
-            if node.type == "object" and len(node.keys) >= 3:
+            if node["type"] == "object" and len(node["keys"]) >= 3:
                 # Found a significant nested object
                 patterns.append({
                     'name': f'json_nested_object_{path.replace(".", "_")}',
-                    'content': json.dumps({'path': path, 'keys': node.keys}, indent=2),
+                    'content': json.dumps({'path': path, 'keys': node["keys"]}, indent=2),
                     'pattern_type': PatternType.DATA_STRUCTURE,
                     'language': self.language_id,
                     'confidence': 0.8,
                     'metadata': {
                         'path': path,
-                        'keys': node.keys,
+                        'keys': node["keys"],
                         'depth': path.count('.') + 1
                     }
                 })
                 
             # Process children
-            for child in node.children:
-                if child.type in ["object", "array"]:
-                    child_path = f"{path}.{child.parent_key}" if path and child.parent_key else \
-                               child.parent_key if child.parent_key else path
+            for child in node["children"]:
+                if child["type"] in ["object", "array"]:
+                    child_path = f"{path}.{child['parent_key']}" if path and child['parent_key'] else \
+                               child['parent_key'] if child['parent_key'] else path
                     process_nested_objects(child, child_path)
                     
         process_nested_objects(ast)
         return patterns
         
-    def _analyze_array_item_types(self, array_node: JsonNode) -> Dict[str, int]:
+    def _analyze_array_item_types(self, array_node: JsonNodeDict) -> Dict[str, int]:
         """Analyze the types of items in an array."""
-        if array_node.type != "array":
+        if array_node["type"] != "array":
             return {}
             
         type_counter = Counter()
-        for child in array_node.children:
-            type_counter[child.type] += 1
+        for child in array_node["children"]:
+            type_counter[child["type"]] += 1
             
         return dict(type_counter)
 

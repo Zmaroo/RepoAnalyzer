@@ -1,17 +1,17 @@
 """Custom parser for reStructuredText with enhanced documentation and pattern extraction features."""
 
-from typing import Dict, List, Any, Optional
+from .base_imports import *
+from typing import Dict, List, Any, Optional, Set, Tuple
 import asyncio
-from parsers.base_parser import BaseParser
-from parsers.models import RstNode, PatternType
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.rst import RST_PATTERNS
-from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
 import re
 from collections import Counter
+from parsers.base_parser import BaseParser
+from parsers.types import FileType, ParserType, PatternCategory
+from parsers.query_patterns.rst import RST_PATTERNS
+from parsers.models import PatternType
+from utils.logger import log
+from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 
 class RstParser(BaseParser):
     """Parser for reStructuredText files with enhanced pattern extraction capabilities."""
@@ -19,7 +19,7 @@ class RstParser(BaseParser):
     def __init__(self, language_id: str = "rst", file_type: Optional[FileType] = None):
         super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
         self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         self.patterns = self._compile_patterns(RST_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
@@ -44,10 +44,9 @@ class RstParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> RstNode:
+    ) -> Dict[str, Any]:
         """Create a standardized RST AST node using the shared helper."""
-        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return RstNode(**node_dict)
+        return super()._create_node(node_type, start_point, end_point, **kwargs)
 
     def _get_section_level(self, char: str) -> int:
         """Determine section level based on underline character."""
@@ -68,7 +67,7 @@ class RstParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="RST parsing", error_types=(ParsingError,), reraise=False, severity=ErrorSeverity.ERROR) as error_boundary:
+        async with AsyncErrorBoundary(operation_name="RST parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
                 lines = source_code.splitlines()
                 ast = self._create_node(
@@ -234,17 +233,17 @@ class RstParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="RST pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="RST pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
                 patterns = []
                 
                 # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(self._parse_source(source_code))
+                self._pending_tasks.add(task)
                 try:
-                    ast = await asyncio.wrap_future(future)
+                    ast = await task
                 finally:
-                    self._pending_tasks.remove(future)
+                    self._pending_tasks.remove(task)
                 
                 # Extract section patterns
                 section_patterns = self._extract_section_patterns(ast)

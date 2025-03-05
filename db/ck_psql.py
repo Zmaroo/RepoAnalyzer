@@ -7,15 +7,16 @@ import asyncio
 from pprint import pprint
 from utils.error_handling import (
     handle_async_errors,
-    ErrorBoundary,
+    AsyncErrorBoundary,
     PostgresError,
     ErrorSeverity
 )
 from utils.logger import log
 from db.psql import query
 from db.connection import connection_manager
-from utils.async_runner import submit_async_task, get_loop
-from utils.app_init import register_shutdown_handler
+from utils.async_runner import get_loop
+from utils.shutdown import register_shutdown_handler
+from typing import Dict, Any
 
 @handle_async_errors(error_types=[PostgresError])
 async def check_all_postgres_tables():
@@ -40,18 +41,18 @@ async def check_all_postgres_tables():
         await connection_manager.initialize_postgres()
         
         for table_name, sql in tables.items():
-            with ErrorBoundary(
+            with AsyncErrorBoundary(
+                operation_name=f"Error querying {table_name}",
                 error_types=[PostgresError, Exception],
-                error_message=f"Error querying {table_name}",
                 severity=ErrorSeverity.ERROR
             ) as error_boundary:
-                future = submit_async_task(query(sql))
-                tasks.append((table_name, future))
+                task = asyncio.create_task(query(sql))
+                tasks.append((table_name, task))
         
         # Wait for all queries to complete
-        for table_name, future in tasks:
+        for table_name, task in tasks:
             try:
-                records = await asyncio.wrap_future(future)
+                records = await task
                 print(f"{table_name}:")
                 print("-" * len(table_name))
                 print(f"Total entries: {len(records)}")
@@ -78,5 +79,26 @@ register_shutdown_handler(cleanup_check)
 
 if __name__ == "__main__":
     loop = get_loop()
-    future = submit_async_task(check_all_postgres_tables())
-    loop.run_until_complete(future)
+    loop.run_until_complete(check_all_postgres_tables())
+
+async def query_tables(self, tables: Dict[str, str]) -> Dict[str, Any]:
+    """Query multiple tables with error handling."""
+    results = {}
+    
+    for table_name, sql in tables.items():
+        async with AsyncErrorBoundary(
+            operation_name=f"Error querying {table_name}",
+            error_types=[PostgresError, Exception],
+            severity=ErrorSeverity.ERROR
+        ) as error_boundary:
+            try:
+                conn = await self.get_connection()
+                result = await conn.fetch(sql)
+                results[table_name] = result
+            except Exception as e:
+                log(f"Error querying {table_name}: {e}", level="error")
+                results[table_name] = None
+            finally:
+                await self.release_connection(conn)
+    
+    return results

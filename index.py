@@ -42,13 +42,13 @@ from parsers.feature_extractor import (
 
 # Use the new consolidated module for schema initialization.
 from db.neo4j_ops import (
-    create_schema_indexes_and_constraints,
-    auto_reinvoke_projection_once
+    create_schema_indexes_and_constraints
 )
-from db.psql import close_db_pool, query, init_db_pool  # Asynchronous cleanup method.
-from db.schema import create_all_tables, drop_all_tables
+from db.graph_sync import get_graph_sync
+from db.psql import query  # Database query operations
+from db.schema import SchemaManager  # Use SchemaManager for schema operations
 from indexer.unified_indexer import process_repository_indexing
-from db.upsert_ops import upsert_repository, share_docs_with_repo
+from db.upsert_ops import UpsertCoordinator  # Use UpsertCoordinator for database operations
 from embedding.embedding_models import code_embedder, doc_embedder  # Use global instances
 from semantic.search import (  # Updated import path
     search_code,
@@ -59,9 +59,11 @@ from semantic.search import (  # Updated import path
 # from ai_tools.graph_capabilities import graph_analysis
 # from ai_tools.ai_interface import AIAssistant
 from watcher.file_watcher import watch_directory
-from utils.error_handling import handle_async_errors, ErrorBoundary, handle_errors
-from utils.app_init import register_shutdown_handler, _initialize_components
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, handle_errors
+from utils.app_init import _initialize_components
+from utils.shutdown import register_shutdown_handler
 from utils.async_runner import submit_async_task, cleanup_tasks
+from db.connection import connection_manager
 
 # TODO: Implement AI Assistant before enabling
 # ai_assistant = AIAssistant()
@@ -76,17 +78,21 @@ async def process_share_docs(share_docs_arg: str):
     Shares documentation based on input argument.
     Expected format: "doc_id1,doc_id2:target_repo_id"
     """
-    with ErrorBoundary("sharing documentation"):
+    async with AsyncErrorBoundary("sharing documentation"):
         doc_ids_str, target_repo = share_docs_arg.split(":")
         doc_ids = [int(doc_id.strip()) for doc_id in doc_ids_str.split(",")]
-        result = await share_docs_with_repo(doc_ids, int(target_repo))
+        upsert_coordinator = UpsertCoordinator()
+        await upsert_coordinator.initialize()
+        result = await upsert_coordinator.share_docs_with_repo(doc_ids, int(target_repo))
         log(f"Sharing docs result: {result}", level="info")
 
 @handle_async_errors
 async def handle_file_change(file_path: str, repo_id: int):
     log(f"File changed: {file_path}", level="info")
     await process_repository_indexing(file_path, repo_id, single_file=True)
-    await auto_reinvoke_projection_once(repo_id)
+    graph_sync = await get_graph_sync()
+    await graph_sync.invalidate_projection(repo_id)
+    await graph_sync.ensure_projection(repo_id)
     # TODO: Implement graph analysis before enabling
     # await graph_analysis.analyze_code_structure(repo_id)
 
@@ -96,7 +102,7 @@ async def handle_file_change(file_path: str, repo_id: int):
 #     """
 #     Learn patterns from a reference repository and optionally apply them to an active repo.
 #     """
-#     with ErrorBoundary("learning from reference repository"):
+#     async with AsyncErrorBoundary("learning from reference repository"):
 #         # Add support for deep learning from multiple repositories
 #         if isinstance(reference_repo_id, list):
 #             learn_result = await ai_assistant.deep_learn_from_multiple_repositories(reference_repo_id)
@@ -126,15 +132,18 @@ async def main_async(args):
         
         if args.clean:
             log("Cleaning databases and reinitializing schema...", level="info")
-            await drop_all_tables()
-            await create_all_tables()
+            schema_manager = SchemaManager()
+            await schema_manager.drop_all_tables()
+            await schema_manager.create_all_tables()
             await create_schema_indexes_and_constraints()
             
         repo_path = args.index if args.index else os.getcwd()
         repo_name = os.path.basename(os.path.abspath(repo_path))
         
         # [0.2] Repository Setup
-        repo_id = await upsert_repository({
+        upsert_coordinator = UpsertCoordinator()
+        await upsert_coordinator.initialize()
+        repo_id = await upsert_coordinator.upsert_repository({
             'repo_name': repo_name,
             'repo_type': 'active',
             'source_url': args.clone_ref
@@ -147,7 +156,7 @@ async def main_async(args):
         # Handle single reference repository
         if args.learn_ref:
             reference_repo = os.path.basename(os.path.abspath(args.learn_ref))
-            reference_repo_id = await upsert_repository({
+            reference_repo_id = await upsert_coordinator.upsert_repository({
                 'repo_name': reference_repo,
                 'repo_type': 'reference',
                 'active_repo_id': repo_id,
@@ -166,7 +175,7 @@ async def main_async(args):
                 else:
                     # It's a path or URL
                     ref_name = os.path.basename(os.path.abspath(ref))
-                    ref_id = await upsert_repository({
+                    ref_id = await upsert_coordinator.upsert_repository({
                         'repo_name': ref_name,
                         'repo_type': 'reference',
                         'active_repo_id': repo_id,
@@ -177,11 +186,13 @@ async def main_async(args):
         # [0.3] Processing Tasks
         futures = []
         # Core indexing using UnifiedIndexer [1.0]
-        futures.append(submit_async_task(process_repository_indexing(repo_path, repo_id)))
+        future = submit_async_task(process_repository_indexing(repo_path, repo_id))
+        futures.append(asyncio.wrap_future(future))
         
         # Index reference repository if provided
         if args.learn_ref:
-            futures.append(submit_async_task(process_repository_indexing(args.learn_ref, reference_repo_id)))
+            future = submit_async_task(process_repository_indexing(args.learn_ref, reference_repo_id))
+            futures.append(asyncio.wrap_future(future))
         
         # Index multiple reference repositories
         if args.multi_ref:
@@ -189,11 +200,13 @@ async def main_async(args):
             for i, ref in enumerate(multi_refs):
                 ref = ref.strip()
                 if not ref.isdigit():  # Only process paths, not repository IDs
-                    futures.append(submit_async_task(process_repository_indexing(ref, reference_repo_ids[i])))
+                    future = submit_async_task(process_repository_indexing(ref, reference_repo_ids[i]))
+                    futures.append(asyncio.wrap_future(future))
         
         # Documentation operations
         if args.share_docs:
-            futures.append(submit_async_task(process_share_docs(args.share_docs)))
+            future = submit_async_task(process_share_docs(args.share_docs))
+            futures.append(future)
         if args.search_docs:
             # Uses SearchEngine [5.0]
             results = await search_docs(args.search_docs, repo_id=repo_id)
@@ -201,7 +214,7 @@ async def main_async(args):
 
         # Wait for all futures to complete
         if futures:
-            await asyncio.gather(*[f.result() for f in futures], return_exceptions=True)
+            await asyncio.gather(*futures, return_exceptions=True)
         
         # TODO: Implement AI Assistant before enabling reference repository learning
         # Reference repository learning
@@ -224,13 +237,14 @@ async def main_async(args):
         if args.watch:
             log("Watch mode enabled: Starting file watcher...", level="info")
             
-            # The watcher receives an on_change callback
-            watcher_future = submit_async_task(watch_directory(repo_path, repo_id, on_change=handle_file_change))
-            await watcher_future
+            # Start the watcher directly since it's already an async function
+            await watch_directory(repo_path, repo_id, on_change=handle_file_change)
         else:
             # One-time graph analysis
             log("Invoking graph projection once after indexing.", level="info")
-            await auto_reinvoke_projection_once(repo_id)
+            graph_sync = await get_graph_sync()
+            await graph_sync.invalidate_projection(repo_id)
+            await graph_sync.ensure_projection(repo_id)
             # TODO: Implement graph analysis before enabling
             # await graph_analysis.analyze_code_structure(repo_id)
     except asyncio.CancelledError:
@@ -238,18 +252,7 @@ async def main_async(args):
         raise
     except Exception as e:
         log(f"Unexpected error: {e}", level="error")
-    finally:
-        # Cleanup database connections
-        await close_db_pool()
-        from db.connection import driver
-        await driver.close()
-        log("Cleanup complete.", level="info")
-
-async def cleanup():
-    """Clean up resources before exiting."""
-    from db.connection import driver
-    await driver.close()
-    log("Cleanup complete.", level="info")
+        raise
 
 @handle_async_errors(error_types=(Exception,))
 async def main():
@@ -290,13 +293,17 @@ async def main():
 
 if __name__ == "__main__":
     # Register cleanup handlers before starting
-    from utils.app_init import register_shutdown_handler
     from utils.async_runner import cleanup_tasks
-    from db.psql import close_db_pool
-    from db.connection import driver
     
-    register_shutdown_handler(cleanup_tasks)  # Should be first to ensure tasks are cleaned up
-    register_shutdown_handler(close_db_pool)
-    register_shutdown_handler(driver.close)
+    # Register handlers in correct order (database cleanup before async tasks)
+    register_shutdown_handler(connection_manager.cleanup)  # Database cleanup first
+    register_shutdown_handler(cleanup_tasks)  # Async tasks cleanup last
     
-    asyncio.run(main()) 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log_sync("KeyboardInterrupt caught – shutting down.", level="warning")
+        sys.exit(0)
+    except Exception as e:
+        log_sync(f"Fatal error in main process: {e}", level="error")
+        sys.exit(1) 

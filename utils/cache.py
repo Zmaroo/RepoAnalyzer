@@ -8,10 +8,10 @@ import random
 from typing import Any, Optional, Set, Dict, List, Tuple, Callable, Awaitable, TypedDict
 from datetime import datetime, timedelta
 from utils.logger import log
-from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, CacheError
+from utils.error_handling import handle_errors, handle_async_errors, AsyncErrorBoundary, CacheError
 from config import RedisConfig  # If we add Redis config later
 from parsers.models import FileClassification
-from utils.async_runner import submit_async_task, get_loop
+from utils.shutdown import register_shutdown_handler
 
 # Try to import redis; if not available, mark it accordingly
 try:
@@ -38,21 +38,24 @@ class CacheMetrics:
         self._log_interval = 3600  # Log stats every hour by default
         self._last_log_time = time.time()
     
-    def register_cache(self, cache_name: str):
+    @handle_async_errors
+    async def register_cache(self, cache_name: str):
         """Register a new cache instance for metrics tracking."""
-        if cache_name not in self._metrics:
-            self._metrics[cache_name] = {
-                "hits": 0,
-                "misses": 0,
-                "sets": 0,
-                "evictions": 0
-            }
+        async with self._lock:
+            if cache_name not in self._metrics:
+                self._metrics[cache_name] = {
+                    "hits": 0,
+                    "misses": 0,
+                    "sets": 0,
+                    "evictions": 0
+                }
+                log(f"Registered cache metrics for {cache_name}", level="debug")
     
     async def increment(self, cache_name: str, metric: str, amount: int = 1):
         """Increment a metric for the specified cache."""
         async with self._lock:
             if cache_name not in self._metrics:
-                self.register_cache(cache_name)
+                await self.register_cache(cache_name)
             
             if metric in self._metrics[cache_name]:
                 self._metrics[cache_name][metric] += amount
@@ -140,17 +143,22 @@ class UnifiedCache:
         self.name = name
         self._cache: Dict[str, Any] = {}
         self._ttl = ttl
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
+        register_shutdown_handler(self.cleanup)
     
     async def _track_metric(self, metric_name: str) -> None:
         """Track a cache metric asynchronously."""
         try:
-            future = submit_async_task(cache_metrics.increment(self.name, metric_name))
-            self._pending_tasks.add(future)
+            # Create a new coroutine each time
+            async def increment_metric():
+                await cache_metrics.increment(self.name, metric_name)
+            
+            task = asyncio.create_task(increment_metric())
+            self._pending_tasks.add(task)
             try:
-                await asyncio.wrap_future(future)
+                await task
             finally:
-                self._pending_tasks.remove(future)
+                self._pending_tasks.remove(task)
         except Exception as e:
             log(f"Error tracking cache metric: {e}", level="error")
     
@@ -189,7 +197,7 @@ class UnifiedCache:
     async def cleanup(self) -> None:
         """Clean up any pending tasks."""
         if self._pending_tasks:
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
             self._pending_tasks.clear()
 
 class CacheCoordinator:
@@ -199,7 +207,7 @@ class CacheCoordinator:
         self._caches: Dict[str, UnifiedCache] = {}
         self._lock = asyncio.Lock()
         self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Task] = set()
         
         # Cache instances
         self._repository_cache: Optional[UnifiedCache] = None
@@ -210,70 +218,76 @@ class CacheCoordinator:
         self._graph_cache: Optional[UnifiedCache] = None
         self._ast_cache: Optional[UnifiedCache] = None
         self._general_cache: Optional[UnifiedCache] = None
+        register_shutdown_handler(self.cleanup)
     
-    def register_cache(self, name: str, cache: UnifiedCache) -> None:
+    async def register_cache(self, name: str, cache: UnifiedCache) -> None:
         """Register a cache instance."""
-        self._caches[name] = cache
-        future = submit_async_task(cache_metrics.register_cache(name))
-        self._pending_tasks.add(future)
-        future.add_done_callback(lambda f: self._pending_tasks.remove(f) if f in self._pending_tasks else None)
+        async with self._lock:
+            self._caches[name] = cache
+            # Register with metrics asynchronously
+            await cache_metrics.register_cache(name)
+    
+    async def initialize(self) -> None:
+        """Initialize the cache coordinator."""
+        if not self._initialized:
+            self._initialized = True
+            log("Cache coordinator initialized", level="info")
     
     async def invalidate_all(self) -> None:
         """Invalidate all registered caches."""
         async with self._lock:
-            futures = []
+            tasks = []
             for cache in self._caches.values():
-                future = submit_async_task(cache.clear_async())
-                futures.append(future)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(cache.clear_async())
+                tasks.append(task)
+                self._pending_tasks.add(task)
             
             try:
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in futures], return_exceptions=True)
+                await asyncio.gather(*tasks, return_exceptions=True)
             finally:
-                for f in futures:
-                    if f in self._pending_tasks:
-                        self._pending_tasks.remove(f)
+                for task in tasks:
+                    if task in self._pending_tasks:
+                        self._pending_tasks.remove(task)
     
     async def invalidate_pattern(self, pattern: str) -> None:
         """Invalidate keys matching pattern across all caches."""
         async with self._lock:
-            futures = []
+            tasks = []
             for cache in self._caches.values():
-                future = submit_async_task(cache.clear_pattern_async(pattern))
-                futures.append(future)
-                self._pending_tasks.add(future)
+                task = asyncio.create_task(cache.clear_pattern_async(pattern))
+                tasks.append(task)
+                self._pending_tasks.add(task)
             
             try:
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in futures], return_exceptions=True)
+                await asyncio.gather(*tasks, return_exceptions=True)
             finally:
-                for f in futures:
-                    if f in self._pending_tasks:
-                        self._pending_tasks.remove(f)
+                for task in tasks:
+                    if task in self._pending_tasks:
+                        self._pending_tasks.remove(task)
     
     async def cleanup(self) -> None:
         """Clean up all cache resources."""
         # Clean up individual caches
-        futures = []
+        tasks = []
         for cache in self._caches.values():
-            future = submit_async_task(cache.cleanup())
-            futures.append(future)
-            self._pending_tasks.add(future)
+            task = asyncio.create_task(cache.cleanup())
+            tasks.append(task)
+            self._pending_tasks.add(task)
         
         try:
-            await asyncio.gather(*[asyncio.wrap_future(f) for f in futures], return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             # Clean up coordinator's pending tasks
             if self._pending_tasks:
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
 
 # Global coordinator instance
 cache_coordinator = CacheCoordinator()
 
-def initialize_caches():
-    """Initialize all cache instances."""
-    cache_coordinator.initialize()
-    return cache_coordinator
+async def initialize_caches():
+    """Initialize the caching system."""
+    await cache_coordinator.initialize()
 
 async def cleanup_caches():
     """Cleanup all caches."""
@@ -287,7 +301,7 @@ async def warm_common_patterns(limit: int = 50) -> bool:
     """Warm the pattern cache with commonly used patterns."""
     from parsers.pattern_processor import pattern_processor
     
-    with ErrorBoundary("warming common patterns"):
+    async with AsyncErrorBoundary("warming common patterns"):
         # Get common patterns from pattern processor
         patterns = pattern_processor.COMMON_PATTERNS
         if not patterns:
@@ -309,7 +323,7 @@ async def warm_language_specific_patterns(language: str) -> bool:
     """Warm the pattern cache with patterns specific to a programming language."""
     from parsers.pattern_processor import pattern_processor
     
-    with ErrorBoundary(f"warming patterns for language {language}"):
+    async with AsyncErrorBoundary(f"warming patterns for language {language}"):
         # Get language-specific patterns
         patterns = pattern_processor.get_patterns_for_file(
             FileClassification(language_id=language)

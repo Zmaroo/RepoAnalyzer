@@ -5,25 +5,26 @@ This parser processes .env files by extracting key=value pairs.
 Comments (lines starting with #) are skipped (or can be used as documentation).
 """
 
-from typing import Dict, List, Any, Optional, Tuple
+from .base_imports import *
+from typing import Dict, List, Any, Optional, Set, Tuple
 import asyncio
 from parsers.base_parser import BaseParser
 from parsers.types import FileType, ParserType, PatternCategory
-from parsers.models import EnvNode, PatternType
 from parsers.query_patterns.env import ENV_PATTERNS
 from utils.logger import log
-from utils.error_handling import handle_errors, ErrorBoundary, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.app_init import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 import re
+from parsers.custom_parsers.custom_parser_mixin import CustomParserMixin
 
-class EnvParser(BaseParser):
+class EnvParser(BaseParser, CustomParserMixin):
     """Parser for .env files."""
     
     def __init__(self, language_id: str = "env", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
+        BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
+        self._pending_tasks: Set[asyncio.Future] = set()
         self.patterns = self._compile_patterns(ENV_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
@@ -33,7 +34,7 @@ class EnvParser(BaseParser):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("ENV parser initialization"):
-                    # No special initialization needed yet
+                    await self._initialize_cache(self.language_id)
                     self._initialized = True
                     log("ENV parser initialized", level="info")
                     return True
@@ -48,10 +49,15 @@ class EnvParser(BaseParser):
         start_point: List[int],
         end_point: List[int],
         **kwargs
-    ) -> EnvNode:
+    ) -> EnvNodeDict:
         """Create a standardized ENV AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return EnvNode(**node_dict)
+        return {
+            **node_dict,
+            "name": kwargs.get("name"),
+            "value": kwargs.get("value"),
+            "value_type": kwargs.get("value_type")
+        }
 
     def _process_value(self, value: str) -> Tuple[str, str]:
         """Process a value that might be quoted or multiline."""
@@ -74,8 +80,13 @@ class EnvParser(BaseParser):
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="env file parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="env file parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
             try:
+                # Check cache first
+                cached_result = await self._check_parse_cache(source_code)
+                if cached_result:
+                    return cached_result
+                    
                 lines = source_code.splitlines()
                 ast = self._create_node(
                     "env_file",
@@ -133,6 +144,8 @@ class EnvParser(BaseParser):
                 if current_comment_block:
                     ast.metadata["trailing_comments"] = current_comment_block
                 
+                # Store result in cache
+                await self._store_parse_result(source_code, ast.__dict__)
                 return ast.__dict__
                 
             except (ValueError, KeyError, TypeError) as e:
@@ -147,28 +160,20 @@ class EnvParser(BaseParser):
             
     @handle_errors(error_types=(ParsingError, ProcessingError))
     async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """Extract patterns from env file content.
-        
-        Args:
-            source_code: The content of the env file
-            
-        Returns:
-            List of extracted pattern dictionaries
-        """
+        """Extract patterns from env file content."""
         if not self._initialized:
             await self.initialize()
             
-        with ErrorBoundary(operation_name="env pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
+        async with AsyncErrorBoundary(operation_name="env pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
             try:
-                patterns = []
+                # Check features cache first
+                ast = await self._parse_source(source_code)
+                cached_features = await self._check_features_cache(ast, source_code)
+                if cached_features:
+                    return cached_features
                 
-                # Parse the source first to get a structured representation
-                future = submit_async_task(self._parse_source(source_code))
-                self._pending_tasks.add(future)
-                try:
-                    ast = await asyncio.wrap_future(future)
-                finally:
-                    self._pending_tasks.remove(future)
+                # Extract patterns
+                patterns = []
                 
                 # Extract variable patterns
                 var_patterns = self._extract_variable_patterns(ast)
@@ -200,7 +205,9 @@ class EnvParser(BaseParser):
                             'style': comment["type"]
                         }
                     })
-                    
+                
+                # Store features in cache
+                await self._store_features_in_cache(ast, source_code, patterns)
                 return patterns
                 
             except (ValueError, KeyError, TypeError) as e:
@@ -210,14 +217,7 @@ class EnvParser(BaseParser):
     async def cleanup(self):
         """Clean up ENV parser resources."""
         try:
-            # Cancel and clean up any pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            self._initialized = False
+            await self._cleanup_cache()
             log("ENV parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up ENV parser: {e}", level="error")
