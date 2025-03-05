@@ -13,6 +13,7 @@ import json
 import time
 from datetime import datetime
 from utils.async_runner import get_loop, submit_async_task
+from utils.logger import log
 # The following import is circular, but explicitly used only when needed
 # from utils.logger import log
 
@@ -134,31 +135,24 @@ ERROR_CATEGORIES = {
     Exception: "general"
 }
 
-def handle_errors(error_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]] = (Exception,)):
-    """
-    Decorator for handling errors.
-    
-    Args:
-        error_types: Exception type(s) to catch. Can be a single exception type,
-                    a tuple of exception types, or a list of exception types.
-    """
-    # Ensure error_types is a tuple for the except clause
-    if isinstance(error_types, list):
-        error_types = tuple(error_types)
-    elif not isinstance(error_types, tuple) and isinstance(error_types, type):
-        error_types = (error_types,)
-        
-    def decorator(func: Callable) -> Callable:
+def handle_errors(error_types=None, default_return=None):
+    """Decorator for handling errors in synchronous functions."""
+    def decorator(func):
         @wraps(func)
-        def wrapper(*args, **kwargs) -> Any:
+        def wrapper(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
-            except error_types as e:
-                from utils.logger import log
+            except Exception as e:
+                if error_types and not isinstance(e, error_types):
+                    raise
                 log(f"Error in {func.__name__}: {str(e)}", level="error")
-                # Record the error for audit purposes
-                ErrorAudit.record_error(e, func.__name__, error_types)
-                return None
+                # Submit error recording as a background task
+                future = submit_async_task(ErrorAudit.record_error(e, func.__name__, error_types))
+                try:
+                    future.result(timeout=5)  # Wait up to 5 seconds for error recording
+                except Exception as record_error:
+                    log(f"Error recording error: {record_error}", level="error")
+                return default_return
         return wrapper
     return decorator
 
@@ -233,167 +227,33 @@ async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), erro
         error_container.duration = duration
         await error_metrics.record_operation(duration)
 
-def handle_async_errors(func=None, error_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]] = Exception, default_return=None):
-    """
-    Decorator for async functions to handle specified exceptions.
-    
-    Args:
-        func: The function to decorate (when used directly as @handle_async_errors)
-        error_types: Exception type(s) to catch. Can be a single exception type,
-                    a tuple of exception types, or a list of exception types.
-        default_return: Value to return if an exception occurs
-        
-    Returns:
-        Decorated function or decorator function depending on how it's called
-        
-    Example:
-        ```python
-        # Direct usage
-        @handle_async_errors
-        async def process_data_async(data):
-            # Process the data
-            return await async_process(data)
-            
-        # With parameters
-        @handle_async_errors(error_types=(ValueError, TypeError))
-        async def process_data_async(data):
-            # Process the data
-            return await async_process(data)
-        ```
-    """
-    import inspect
-    import asyncio
-    from typing import List, Dict, Optional, Awaitable, get_type_hints
-    
-    # Ensure error_types is a tuple for the except clause
-    if isinstance(error_types, list):
-        error_types = tuple(error_types)
-    elif not isinstance(error_types, tuple) and isinstance(error_types, type):
-        error_types = (error_types,)
-    
-    # Handle direct application of decorator
-    if func is not None and callable(func):
-        # For async generators, we should just return the original function
-        # to avoid breaking the asynccontextmanager protocol
-        if inspect.isasyncgenfunction(func):
-            return func
-        
-        # Define wrapper for regular async functions
-        @wraps(func)
-        async def direct_wrapper(*args, **kwargs):
-            try:
-                return await func(*args, **kwargs)
-            except error_types as e:
-                from utils.logger import log
-                log(f"Error in {func.__name__}: {e}", level="error")
-                
-                # Record the error for audit purposes
-                ErrorAudit.record_error(e, func.__name__, error_types)
-                
-                # Determine appropriate return value
-                if default_return is not None:
-                    return default_return
-                else:
-                    # Try to determine an appropriate return type
-                    try:
-                        signature = inspect.signature(func)
-                        return_type = signature.return_annotation
-                        
-                        # Handle different return types
-                        if return_type == bool:
-                            return False
-                        elif return_type in (int, float):
-                            return 0
-                        elif return_type == str:
-                            return ""
-                        elif return_type == list or str(return_type).startswith("typing.List"):
-                            return []
-                        elif return_type == dict or str(return_type).startswith("typing.Dict"):
-                            return {}
-                        elif return_type == set or str(return_type).startswith("typing.Set"):
-                            return set()
-                        elif return_type == tuple or str(return_type).startswith("typing.Tuple"):
-                            return ()
-                        else:
-                            return None
-                    except (ValueError, TypeError):
-                        return None
-                    
-        return direct_wrapper
-        
-    # Handle parameterized decorator
+def handle_async_errors(error_types=None, default_return=None):
+    """Decorator for handling errors in async functions."""
     def decorator(func):
-        # For async generators, we should just return the original function
-        # to avoid breaking the asynccontextmanager protocol
-        if inspect.isasyncgenfunction(func):
-            return func
-            
         @wraps(func)
         async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
-            except error_types as e:
-                from utils.logger import log
-                log(f"Error in {func.__name__}: {e}", level="error")
-                
-                # Record the error for audit purposes
-                ErrorAudit.record_error(e, func.__name__, error_types)
-                
-                # If default_return is explicitly provided, use that
-                if default_return is not None:
-                    return default_return
-                
-                # Otherwise, try to determine an appropriate return type
-                return_type = None
+            except Exception as e:
+                if error_types and not isinstance(e, error_types):
+                    raise
+                log(f"Error in {func.__name__}: {str(e)}", level="error")
+                # Submit error recording using async_runner
+                future = submit_async_task(ErrorAudit.record_error(e, func.__name__, error_types))
                 try:
-                    signature = inspect.signature(func)
-                    return_type = signature.return_annotation
-                except (ValueError, TypeError) as e:
-                    # These are the most common exceptions that can occur during signature inspection
-                    from utils.logger import log
-                    log(f"Error getting function signature for {func.__name__}: {e}", level="debug")
-                
-                # Handle different return types
-                if return_type == bool:
-                    return False
-                elif return_type in (int, float):
-                    return 0
-                elif return_type == str:
-                    return ""
-                elif return_type == list or str(return_type).startswith("typing.List"):
-                    return []
-                elif return_type == dict or str(return_type).startswith("typing.Dict"):
-                    return {}
-                elif return_type == set or str(return_type).startswith("typing.Set"):
-                    return set()
-                elif return_type == tuple or str(return_type).startswith("typing.Tuple"):
-                    return ()
-                else:
-                    return None
-                    
+                    await asyncio.wrap_future(future)
+                except Exception as record_error:
+                    log(f"Error recording error: {record_error}", level="error")
+                return default_return
         return wrapper
-        
     return decorator
 
 @contextmanager
 def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=None, reraise=True, severity=ErrorSeverity.ERROR):
-    """
-    Context manager for error handling.
-    
-    Args:
-        operation_name: A name describing the operation (used for logging)
-        error_types: A tuple of exception types to catch. Can also be a list or a single exception type.
-        error_message: An optional custom error message prefix
-        reraise: Whether to re-raise the exception (default True)
-        severity: Error severity level (default ERROR)
-    
-    Yields:
-        A simple namespace object with an 'error' attribute that will be None or
-        contain the caught exception.
-    """
+    """Context manager for error handling."""
     start_time = time.time()
 
-    # Ensure error_types is a tuple for the except clause
+    # Ensure error_types is a tuple
     if isinstance(error_types, list):
         error_types = tuple(error_types)
     elif not isinstance(error_types, tuple) and isinstance(error_types, type):
@@ -407,23 +267,26 @@ def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=N
             self.severity = severity
     
     error_container = ErrorContainer()
-    
-    # Use the error_message if provided, otherwise use operation_name
     msg_prefix = error_message if error_message else f"Error in {operation_name}"
     
     try:
         yield error_container
     except error_types as e:
-        from utils.logger import log
-        
         # Record error metrics asynchronously using submit_async_task
-        submit_async_task(error_metrics.record_error(severity))
+        metrics_future = submit_async_task(error_metrics.record_error(severity))
         
         # Enhanced error logging with severity
         log(f"{msg_prefix}: {str(e)}", level=severity.lower())
         
         # Record the error for audit purposes with severity
-        submit_async_task(ErrorAudit.record_error(e, operation_name or "unknown", error_types))
+        audit_future = submit_async_task(ErrorAudit.record_error(e, operation_name or "unknown", error_types))
+        
+        # Wait for error recording to complete
+        try:
+            metrics_future.result(timeout=5)
+            audit_future.result(timeout=5)
+        except Exception as record_error:
+            log(f"Error recording error metrics: {record_error}", level="error")
         
         # Store the error
         error_container.error = e
@@ -440,7 +303,11 @@ def ErrorBoundary(operation_name=None, error_types=(Exception,), error_message=N
         # Record performance metrics asynchronously
         duration = time.time() - start_time
         error_container.duration = duration
-        submit_async_task(error_metrics.record_operation(duration))
+        perf_future = submit_async_task(error_metrics.record_operation(duration))
+        try:
+            perf_future.result(timeout=5)
+        except Exception as e:
+            log(f"Error recording performance metrics: {e}", level="error")
 
 # New class for exception auditing
 class ErrorAudit:

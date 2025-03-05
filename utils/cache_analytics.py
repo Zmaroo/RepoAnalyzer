@@ -21,6 +21,7 @@ except ImportError:
 from utils.logger import log
 from utils.cache import cache_coordinator, UnifiedCache
 from utils.error_handling import handle_async_errors, ErrorBoundary, CacheError
+from utils.async_runner import submit_async_task, get_loop
 
 # Type for cache warmup functions
 WarmupFunc = Callable[[List[str]], Awaitable[Dict[str, Any]]]
@@ -68,8 +69,8 @@ class CacheAnalytics:
         self._warmup_interval = warmup_interval
         self._is_running = True
         
-        # Create a background task for monitoring
-        self._task = asyncio.create_task(self._monitoring_loop())
+        # Use submit_async_task for monitoring loop
+        self._task = submit_async_task(self._monitoring_loop())
         log("Started cache performance monitoring", level="info")
     
     @handle_async_errors
@@ -80,9 +81,7 @@ class CacheAnalytics:
             
         self._is_running = False
         if self._task:
-            self._task.cancel()
-            with ErrorBoundary("handling task cancellation"):
-                await self._task
+            await asyncio.wrap_future(self._task)
             self._task = None
             
         log("Stopped cache performance monitoring", level="info")
@@ -94,27 +93,24 @@ class CacheAnalytics:
             while self._is_running:
                 current_time = time.time()
                 
-                # Generate performance report
+                # Submit monitoring tasks using async_runner
                 if current_time - self._last_report_time >= self._report_interval:
-                    await self.generate_performance_report()
+                    report_future = submit_async_task(self.generate_performance_report())
+                    await asyncio.wrap_future(report_future)
                     self._last_report_time = current_time
                 
-                # Auto-warmup caches
                 if current_time - self._last_warmup_time >= self._warmup_interval:
-                    await self.warmup_all_caches()
+                    warmup_future = submit_async_task(self.warmup_all_caches())
+                    await asyncio.wrap_future(warmup_future)
                     self._last_warmup_time = current_time
                 
-                # Sleep to avoid high CPU usage
                 await asyncio.sleep(60)  # Check every minute
                 
         except asyncio.CancelledError:
             log("Cache monitoring loop cancelled", level="info")
             raise
-        except (asyncio.TimeoutError, ConnectionError, IOError) as e:
-            log(f"Network-related error in cache monitoring loop: {e}", level="error")
-            self._is_running = False
         except Exception as e:
-            log(f"Unexpected error in cache monitoring loop: {e}", level="error")
+            log(f"Error in monitoring loop: {e}", level="error")
             self._is_running = False
     
     @handle_async_errors
@@ -184,18 +180,23 @@ class CacheAnalytics:
     @handle_async_errors
     async def warmup_all_caches(self):
         """Warm up all registered caches with their most popular keys."""
-        # Get all registered caches
         caches = cache_coordinator._caches
         if not caches:
             return
         
+        # Submit warmup tasks using async_runner
+        warmup_futures = []
         for name, cache in caches.items():
             if not isinstance(cache, UnifiedCache):
                 continue
                 
             log(f"Auto-warming up cache: {name}", level="info")
-            with ErrorBoundary(f"warming up cache {name}"):
-                await self._warmup_cache_if_possible(name, cache)
+            future = submit_async_task(self._warmup_cache_if_possible(name, cache))
+            warmup_futures.append(future)
+        
+        # Wait for all warmup tasks to complete
+        if warmup_futures:
+            await asyncio.gather(*[asyncio.wrap_future(f) for f in warmup_futures], return_exceptions=True)
     
     @handle_async_errors
     async def _warmup_cache_if_possible(self, cache_name: str, cache: UnifiedCache):
@@ -286,9 +287,13 @@ class CacheAnalytics:
         """Clean up analytics resources."""
         try:
             await self.stop_monitoring()
-            # Generate and save final report
-            await self.generate_performance_report()
-            await self._save_metrics_history(await cache_coordinator.get_metrics())
+            # Submit final tasks using async_runner
+            report_future = submit_async_task(self.generate_performance_report())
+            metrics_future = submit_async_task(self._save_metrics_history(await cache_coordinator.get_metrics()))
+            await asyncio.gather(
+                asyncio.wrap_future(report_future),
+                asyncio.wrap_future(metrics_future)
+            )
         except Exception as e:
             log(f"Error cleaning up cache analytics: {e}", level="error")
 

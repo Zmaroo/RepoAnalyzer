@@ -20,14 +20,16 @@ This directory contains the core implementation of AI-powered code analysis tool
 - Code similarity analysis
 - Embedding generation and management
 - Integration with Neo4j and PostgreSQL
+- Uses GraphSync for projection management
 
 ### Graph Analysis (`graph_capabilities.py`)
 
-- Code structure analysis using Neo4j
+- Code structure analysis using Neo4j GDS
 - Dependency tracking and analysis
 - Code flow tracing
 - Reference analysis
 - Graph-based metrics
+- Centralized graph projection management via GraphSync
 
 ### Reference Repository Learning (`reference_repository_learning.py`)
 
@@ -37,6 +39,7 @@ This directory contains the core implementation of AI-powered code analysis tool
 - Architecture pattern recognition
 - Pattern-based recommendations
 - Cross-repository learning
+- Graph-based pattern analysis
 
 ## Configuration
 
@@ -44,6 +47,7 @@ The AI tools use configuration from the `config` package:
 
 - `parser_config`: Language parser settings
 - `neo4j_config`: Graph database settings
+- `rule_config`: Pattern learning rules
 
 ## Error Handling
 
@@ -102,10 +106,21 @@ async def analyze_repo(repo_id: int):
 - PyTorch for ML models
 - Tree-sitter for parsing
 
+## Graph Management
+
+The tools use a centralized graph management system through the GraphSync module:
+
+- Projection creation and updates
+- Cache state management
+- Graph algorithm coordination
+- Asynchronous task management
+
 ## Error Types
 
 - `ProcessingError`: General processing errors
 - `DatabaseError`: Database-related errors
 - `ParserError`: Code parsing errors
+- `Neo4jError`: Graph database errors
+- `TransactionError`: Transaction-related errors
 
 See individual module documentation for detailed API references.

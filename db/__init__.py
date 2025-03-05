@@ -13,24 +13,24 @@ Flow:
    - UnifiedIndexer [1.0] -> graph_sync.py: Graph projections
 
 3. Components:
-   - psql.py [6.1]: PostgreSQL connection and queries
-   - neo4j_ops.py [6.2]: Neo4j operations and graph management
-   - graph_sync.py [6.3]: Graph projection coordination
-   - transaction.py [6.4]: Multi-DB transaction management
-   - upsert_ops.py [6.5]: Unified data storage operations
-   - schema.py [6.6]: Database schema management
-   - retry_utils.py [6.7]: Database retry mechanisms with exponential backoff
+   - connection.py [6.1]: Centralized database connection management
+   - psql.py [6.2]: PostgreSQL operations
+   - neo4j_ops.py [6.3]: Neo4j operations and graph management
+   - graph_sync.py [6.4]: Graph projection coordination
+   - transaction.py [6.5]: Multi-DB transaction management
+   - upsert_ops.py [6.6]: Unified data storage operations
+   - schema.py [6.7]: Database schema management
+   - retry_utils.py [6.8]: Database retry mechanisms with exponential backoff
 """
 
+from .connection import connection_manager
 from .psql import (
     query,
     execute,
-    init_db_pool,
-    close_db_pool,
-    get_connection,
-    release_connection,
+    execute_many,
+    execute_batch,
+    execute_parallel_queries
 )
-# postgres upserts
 from .upsert_ops import (
     upsert_doc,
     upsert_code_snippet
@@ -39,11 +39,10 @@ from .neo4j_ops import (
     Neo4jTools,
     run_query,
     run_query_with_retry,
-    driver,
+    projections
 )
 from .graph_sync import graph_sync
 from .retry_utils import (
-    with_retry,
     RetryableError,
     NonRetryableError,
     RetryableNeo4jError,
@@ -52,34 +51,45 @@ from .retry_utils import (
     DatabaseRetryManager,
     default_retry_manager
 )
-
+from .schema import schema_manager
+from .transaction import transaction_scope
 
 __all__ = [
+    # Connection management
+    "connection_manager",
+    
     # PostgreSQL operations
     "query",
     "execute",
-    "init_db_pool",
-    "close_db_pool",
-    "get_connection",
-    "release_connection",
+    "execute_many",
+    "execute_batch",
+    "execute_parallel_queries",
+    
+    # Data storage operations
     "upsert_doc",
     "upsert_code_snippet",
     
     # Neo4j operations
+    "Neo4jTools",
     "run_query",
     "run_query_with_retry",
-    "driver",
-    "Neo4jTools",
+    "projections",
+    
+    # Graph operations
     "graph_sync",
-    "search_docs_common",
     
     # Retry utilities
-    "with_retry",
     "RetryableError",
     "NonRetryableError",
     "RetryableNeo4jError",
     "NonRetryableNeo4jError",
     "RetryConfig",
     "DatabaseRetryManager",
-    "default_retry_manager"
+    "default_retry_manager",
+    
+    # Schema management
+    "schema_manager",
+    
+    # Transaction management
+    "transaction_scope"
 ] 

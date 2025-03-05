@@ -48,6 +48,7 @@ import numpy as np
 import os
 import asyncio
 from config import ParserConfig
+from utils.async_runner import submit_async_task
 
 
 class AIAssistant:
@@ -74,21 +75,28 @@ class AIAssistant:
 
     @handle_async_errors(error_types=ProcessingError)
     async def analyze_repository(self, repo_id: int) -> Dict[str, Any]:
-        """[4.1.2] Perform comprehensive repository analysis concurrently."""
-        async with AsyncErrorBoundary(
-            operation_name="repository analysis",
-            error_types=ProcessingError,
-            severity=ErrorSeverity.ERROR
-        ):
-            structure_task = asyncio.create_task(self.analyze_code_structure(repo_id))
-            codebase_task = asyncio.create_task(self.code_understanding.analyze_codebase(repo_id))
-            docs_task = asyncio.create_task(self.analyze_documentation(repo_id))
-            structure, codebase, docs = await asyncio.gather(structure_task, codebase_task, docs_task)
+        """Analyze repository using AI tools."""
+        try:
+            # Submit tasks using async_runner
+            structure_future = submit_async_task(self.analyze_code_structure(repo_id))
+            codebase_future = submit_async_task(self.code_understanding.analyze_codebase(repo_id))
+            docs_future = submit_async_task(self.analyze_documentation(repo_id))
+            
+            # Wait for all tasks to complete
+            structure, codebase, docs = await asyncio.gather(
+                asyncio.wrap_future(structure_future),
+                asyncio.wrap_future(codebase_future),
+                asyncio.wrap_future(docs_future)
+            )
+            
             return {
                 "structure": structure,
                 "codebase": codebase,
                 "documentation": docs
             }
+        except Exception as e:
+            log(f"Error in repository analysis: {e}", level="error")
+            return {}
 
     @handle_async_errors(error_types=ProcessingError)
     async def analyze_code_structure(
@@ -422,37 +430,20 @@ class AIAssistant:
         repo_id: int,
         reference_repo_id: int
     ) -> Dict[str, Any]:
-        """[4.1.13] Analyze repository with reference to another one.
-        
-        This enhanced method uses graph-based repository comparison to identify structural
-        similarities, pattern matches, and areas for improvement based on the reference repository.
-        
-        Args:
-            repo_id: ID of the active repository to analyze
-            reference_repo_id: ID of the reference repository to compare against
-            
-        Returns:
-            Dict containing comprehensive analysis with repository comparison results
-        """
+        """Analyze repository with reference to another one."""
         async with AsyncErrorBoundary("repository analysis with reference"):
-            # First analyze the repository
-            analysis_task = asyncio.create_task(self.analyze_repository(repo_id))
-            
-            # Learn from reference repository if needed
-            reference_status_task = asyncio.create_task(
+            # Submit all analysis tasks using async_runner
+            analysis_future = submit_async_task(self.analyze_repository(repo_id))
+            reference_future = submit_async_task(
                 self.reference_learning.learn_from_repository(reference_repo_id)
             )
-            
-            # Compare repositories using graph projection capabilities
-            comparison_task = asyncio.create_task(
+            comparison_future = submit_async_task(
                 self.reference_learning.compare_with_reference_repository(
                     active_repo_id=repo_id,
                     reference_repo_id=reference_repo_id
                 )
             )
-            
-            # Apply reference patterns (this will generate recommendations)
-            patterns_task = asyncio.create_task(
+            patterns_future = submit_async_task(
                 self.reference_learning.apply_patterns_to_project(
                     reference_repo_id, repo_id
                 )
@@ -460,13 +451,16 @@ class AIAssistant:
             
             # Wait for all tasks to complete
             analysis, reference_status, comparison, patterns = await asyncio.gather(
-                analysis_task, reference_status_task, comparison_task, patterns_task
+                asyncio.wrap_future(analysis_future),
+                asyncio.wrap_future(reference_future),
+                asyncio.wrap_future(comparison_future),
+                asyncio.wrap_future(patterns_future)
             )
             
-            # Extract the most similar files for detailed analysis
+            # Process results
             similar_files = []
             if "similarities" in comparison:
-                for similarity in comparison["similarities"][:5]:  # Top 5 most similar
+                for similarity in comparison["similarities"][:5]:
                     similar_files.append({
                         "active_file": similarity.get("active_file"),
                         "reference_file": similarity.get("reference_file"),
@@ -474,8 +468,7 @@ class AIAssistant:
                         "similarity_score": similarity.get("similarity")
                     })
             
-            # Combine the results into a comprehensive analysis
-            combined_analysis = {
+            return {
                 **analysis,
                 "reference_patterns": patterns,
                 "repository_comparison": {
@@ -497,8 +490,6 @@ class AIAssistant:
                     }
                 }
             }
-            
-            return combined_analysis
 
     @handle_async_errors(error_types=ProcessingError)
     async def search_patterns(
@@ -539,9 +530,34 @@ class AIAssistant:
         self,
         repo_ids: List[int]
     ) -> Dict[str, Any]:
-        """[4.1.16] Deep learn from multiple reference repositories."""
+        """Deep learn from multiple reference repositories."""
         async with AsyncErrorBoundary("deep learning from multiple repositories"):
-            return await self.reference_learning.deep_learn_from_multiple_repositories(repo_ids)
+            # Submit learning tasks for each repository using async_runner
+            learning_futures = [
+                submit_async_task(self.reference_learning.learn_from_repository(repo_id))
+                for repo_id in repo_ids
+            ]
+            
+            # Wait for all learning tasks to complete
+            results = await asyncio.gather(
+                *[asyncio.wrap_future(f) for f in learning_futures],
+                return_exceptions=True
+            )
+            
+            # Process results
+            successful_repos = []
+            failed_repos = []
+            for repo_id, result in zip(repo_ids, results):
+                if isinstance(result, Exception):
+                    failed_repos.append({"repo_id": repo_id, "error": str(result)})
+                else:
+                    successful_repos.append({"repo_id": repo_id, "patterns": result})
+            
+            return {
+                "successful_repositories": successful_repos,
+                "failed_repositories": failed_repos,
+                "total_patterns": sum(len(r["patterns"]) for r in successful_repos)
+            }
     
     @handle_async_errors(error_types=ProcessingError)
     async def apply_cross_repository_patterns(
@@ -558,16 +574,25 @@ class AIAssistant:
     
     @handle_errors(error_types=ProcessingError)
     def close(self) -> None:
-        """[4.1.10] Cleanup all resources."""
+        """Cleanup all resources."""
         with ErrorBoundary(
             operation_name="resource cleanup",
             error_types=ProcessingError,
             severity=ErrorSeverity.WARNING
         ):
             try:
-                self.graph_analysis.cleanup()
-                self.code_understanding.cleanup()
-                self.reference_learning.cleanup()
+                # Submit cleanup tasks using async_runner
+                cleanup_futures = [
+                    submit_async_task(self.graph_analysis.cleanup()),
+                    submit_async_task(self.code_understanding.cleanup()),
+                    submit_async_task(self.reference_learning.cleanup())
+                ]
+                
+                # Wait for all cleanup tasks to complete
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(
+                    asyncio.gather(*[asyncio.wrap_future(f) for f in cleanup_futures])
+                )
                 log("All AI resources cleaned up.", level="debug")
             except Exception as e:
                 raise ProcessingError(f"Error during AI resource cleanup: {e}")

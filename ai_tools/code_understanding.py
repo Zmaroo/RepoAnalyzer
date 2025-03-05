@@ -7,7 +7,7 @@ Flow:
    - Embedding management
 
 2. Integration Points:
-   - Neo4jProjections [6.2]: Graph operations
+   - GraphSync [6.3]: Graph projections
    - SearchEngine [5.0]: Code search
    - CodeEmbedder [3.1]: Code embeddings
 
@@ -23,7 +23,6 @@ import numpy as np
 from utils.logger import log
 from db.neo4j_ops import run_query
 from db.psql import query
-from db.neo4j_ops import Neo4jProjections
 from utils.error_handling import (
     handle_errors,
     handle_async_errors,
@@ -43,6 +42,7 @@ from parsers.types import (
 )
 from config import ParserConfig
 from embedding.embedding_models import code_embedder
+from db.graph_sync import get_graph_sync
 import os
 # Remove direct imports from semantic.search - we'll import as needed
 # from semantic.search import search_code, search_engine
@@ -52,7 +52,6 @@ class CodeUnderstanding:
     
     def __init__(self):
         with ErrorBoundary("model initialization", error_types=ProcessingError, severity=ErrorSeverity.CRITICAL):
-            self.graph_projections = Neo4jProjections()
             self.embedder = code_embedder
             
             # Skip the language data path check during initialization
@@ -75,15 +74,36 @@ class CodeUnderstanding:
                 """
                 files = await query(files_query, [repo_id])
                 
-                # Create/update graph projection
-                graph_name = f"code-repo-{repo_id}"
-                await self.graph_projections.create_code_dependency_projection(graph_name)
+                # Get graph sync coordinator
+                graph_sync = await get_graph_sync()
                 
-                # Get community structure
-                communities = await self.graph_projections.run_community_detection(graph_name)
+                # Ensure code projection exists
+                await graph_sync.ensure_projection(repo_id)
                 
-                # Get central components
-                central_components = await self.graph_projections.run_centrality_analysis(graph_name)
+                # Get community structure using Neo4j GDS
+                community_query = """
+                CALL gds.louvain.stream('code-repo-' || $repo_id)
+                YIELD nodeId, communityId
+                WITH gds.util.asNode(nodeId) AS node, communityId
+                RETURN collect({
+                    file_path: node.file_path,
+                    community: communityId
+                }) AS communities
+                """
+                communities = await run_query(community_query, {"repo_id": repo_id})
+                
+                # Get central components using Neo4j GDS
+                centrality_query = """
+                CALL gds.pageRank.stream('code-repo-' || $repo_id)
+                YIELD nodeId, score
+                WITH gds.util.asNode(nodeId) AS node, score
+                WHERE score > 0.1
+                RETURN collect({
+                    file_path: node.file_path,
+                    centrality: score
+                }) AS central_components
+                """
+                central_components = await run_query(centrality_query, {"repo_id": repo_id})
                 
                 # Get embeddings
                 embeddings_query = """
@@ -94,8 +114,8 @@ class CodeUnderstanding:
                 code_embeddings = await query(embeddings_query, (repo_id,))
                 
                 return {
-                    "communities": communities,
-                    "central_components": central_components,
+                    "communities": communities[0]["communities"] if communities else [],
+                    "central_components": central_components[0]["central_components"] if central_components else [],
                     "embedded_files": len(code_embeddings) if code_embeddings else 0
                 }
             except Exception as e:
@@ -162,14 +182,14 @@ class CodeUnderstanding:
             await query(update_query, (embedding.tolist(), repo_id, file_path))
             
             # Update graph projection
-            graph_name = f"code-repo-{repo_id}"
-            await self.graph_projections.create_code_dependency_projection(graph_name)
+            graph_sync = await get_graph_sync()
+            await graph_sync.invalidate_projection(repo_id)
+            await graph_sync.ensure_projection(repo_id)
     
     @handle_errors(error_types=ProcessingError)
     def cleanup(self) -> None:
         """Clean up resources."""
-        with ErrorBoundary("model cleanup", severity=ErrorSeverity.WARNING):
-            self.graph_projections.close()
+        pass  # No cleanup needed anymore since we don't hold Neo4jProjections instance
 
 # Do not create global instance until implementation is ready
 code_understanding = None 

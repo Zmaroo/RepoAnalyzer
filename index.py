@@ -60,6 +60,8 @@ from semantic.search import (  # Updated import path
 # from ai_tools.ai_interface import AIAssistant
 from watcher.file_watcher import watch_directory
 from utils.error_handling import handle_async_errors, ErrorBoundary, handle_errors
+from utils.app_init import register_shutdown_handler, _initialize_components
+from utils.async_runner import submit_async_task, cleanup_tasks
 
 # TODO: Implement AI Assistant before enabling
 # ai_assistant = AIAssistant()
@@ -120,14 +122,13 @@ async def main_async(args):
     """Main async coordinator for indexing, documentation operations, and watch mode."""
     try:
         # Initialize application components including database pools
-        from utils.app_init import _initialize_components
         await _initialize_components()
         
         if args.clean:
             log("Cleaning databases and reinitializing schema...", level="info")
             await drop_all_tables()
             await create_all_tables()
-            create_schema_indexes_and_constraints()
+            await create_schema_indexes_and_constraints()
             
         repo_path = args.index if args.index else os.getcwd()
         repo_name = os.path.basename(os.path.abspath(repo_path))
@@ -174,13 +175,13 @@ async def main_async(args):
                     reference_repo_ids.append(ref_id)
         
         # [0.3] Processing Tasks
-        tasks = []
+        futures = []
         # Core indexing using UnifiedIndexer [1.0]
-        tasks.append(process_repository_indexing(repo_path, repo_id))
+        futures.append(submit_async_task(process_repository_indexing(repo_path, repo_id)))
         
         # Index reference repository if provided
         if args.learn_ref:
-            tasks.append(process_repository_indexing(args.learn_ref, reference_repo_id))
+            futures.append(submit_async_task(process_repository_indexing(args.learn_ref, reference_repo_id)))
         
         # Index multiple reference repositories
         if args.multi_ref:
@@ -188,19 +189,19 @@ async def main_async(args):
             for i, ref in enumerate(multi_refs):
                 ref = ref.strip()
                 if not ref.isdigit():  # Only process paths, not repository IDs
-                    tasks.append(process_repository_indexing(ref, reference_repo_ids[i]))
+                    futures.append(submit_async_task(process_repository_indexing(ref, reference_repo_ids[i])))
         
         # Documentation operations
         if args.share_docs:
-            tasks.append(process_share_docs(args.share_docs))
+            futures.append(submit_async_task(process_share_docs(args.share_docs)))
         if args.search_docs:
             # Uses SearchEngine [5.0]
             results = await search_docs(args.search_docs, repo_id=repo_id)
             log(f"Doc search results: {results}", level="info")
 
-        # Run primary tasks concurrently and tolerate individual failures
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        # Wait for all futures to complete
+        if futures:
+            await asyncio.gather(*[f.result() for f in futures], return_exceptions=True)
         
         # TODO: Implement AI Assistant before enabling reference repository learning
         # Reference repository learning
@@ -224,8 +225,8 @@ async def main_async(args):
             log("Watch mode enabled: Starting file watcher...", level="info")
             
             # The watcher receives an on_change callback
-            watcher_task = asyncio.create_task(watch_directory(repo_path, repo_id, on_change=handle_file_change))
-            await watcher_task
+            watcher_future = submit_async_task(watch_directory(repo_path, repo_id, on_change=handle_file_change))
+            await watcher_future
         else:
             # One-time graph analysis
             log("Invoking graph projection once after indexing.", level="info")
@@ -241,11 +242,17 @@ async def main_async(args):
         # Cleanup database connections
         await close_db_pool()
         from db.connection import driver
-        driver.close()
+        await driver.close()
         log("Cleanup complete.", level="info")
 
-@handle_errors(error_types=(Exception,))
-def main():
+async def cleanup():
+    """Clean up resources before exiting."""
+    from db.connection import driver
+    await driver.close()
+    log("Cleanup complete.", level="info")
+
+@handle_async_errors(error_types=(Exception,))
+async def main():
     """CLI entry point with argument parsing."""
     parser = argparse.ArgumentParser(description="Repository indexing and analysis tool.")
     parser.add_argument("--clean", action="store_true",
@@ -273,7 +280,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        asyncio.run(main_async(args))
+        await main_async(args)
     except KeyboardInterrupt:
         log("KeyboardInterrupt caught – shutting down.", level="warning")
         sys.exit(0)
@@ -282,4 +289,14 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main() 
+    # Register cleanup handlers before starting
+    from utils.app_init import register_shutdown_handler
+    from utils.async_runner import cleanup_tasks
+    from db.psql import close_db_pool
+    from db.connection import driver
+    
+    register_shutdown_handler(cleanup_tasks)  # Should be first to ensure tasks are cleaned up
+    register_shutdown_handler(close_db_pool)
+    register_shutdown_handler(driver.close)
+    
+    asyncio.run(main()) 

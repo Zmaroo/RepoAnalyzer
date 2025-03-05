@@ -9,7 +9,7 @@ Flow:
 2. Integration Points:
    - FileProcessor [2.0]: Code processing
    - SearchEngine [5.0]: Semantic search
-   - GraphSync [6.3]: Graph projections
+   - GraphSync [6.3]: Graph projections and algorithms
 
 3. Error Handling:
    - ProcessingError: AI operations

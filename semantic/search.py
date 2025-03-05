@@ -36,6 +36,7 @@ from utils.error_handling import (
     DatabaseError,
     ErrorBoundary
 )
+from utils.async_runner import submit_async_task
 import asyncio
 
 class SearchEngine:
@@ -73,22 +74,42 @@ class SearchEngine:
             return vector_results
         
         async def enhance_result(result: Dict) -> Dict:
-            similar_components, code_metrics = await asyncio.gather(
+            # Submit tasks using async_runner
+            components_future = submit_async_task(
                 graph_analysis.find_similar_components(
                     file_path=result['file_path'],
                     repo_id=result['repo_id'],
                     similarity_cutoff=0.8
-                ),
+                )
+            )
+            metrics_future = submit_async_task(
                 graph_analysis.get_code_metrics(
                     repo_id=result['repo_id'],
                     file_path=result['file_path']
                 )
             )
+            
+            # Wait for tasks to complete
+            similar_components, code_metrics = await asyncio.gather(
+                asyncio.wrap_future(components_future),
+                asyncio.wrap_future(metrics_future)
+            )
+            
             result['similar_components'] = similar_components
             result['code_metrics'] = code_metrics
             return result
         
-        enhanced_results = await asyncio.gather(*(enhance_result(result) for result in vector_results))
+        # Submit enhancement tasks using async_runner
+        enhancement_futures = [
+            submit_async_task(enhance_result(result))
+            for result in vector_results
+        ]
+        
+        # Wait for all enhancements to complete
+        enhanced_results = await asyncio.gather(
+            *[asyncio.wrap_future(f) for f in enhancement_futures]
+        )
+        
         return enhanced_results
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))

@@ -8,7 +8,7 @@ Flow:
 
 2. Integration Points:
    - Neo4jTools [6.2]: Graph operations
-   - Neo4jProjections [6.2]: Graph projections
+   - GraphSync [6.3]: Graph projections
    - GDS Library: Graph algorithms
 
 3. Error Handling:
@@ -17,8 +17,8 @@ Flow:
 """
 
 from typing import Dict, List, Optional, Any
+import asyncio
 from db.neo4j_ops import run_query, Neo4jTools
-from db.neo4j_ops import Neo4jProjections
 from utils.logger import log
 from utils.error_handling import (
     handle_async_errors,
@@ -38,6 +38,8 @@ from parsers.models import (
     FileClassification
 )
 from config import Neo4jConfig
+from utils.async_runner import submit_async_task
+from db.graph_sync import get_graph_sync
 
 class GraphAnalysis:
     """[4.3.1] Graph-based code analysis capabilities using GDS."""
@@ -45,7 +47,7 @@ class GraphAnalysis:
     def __init__(self):
         with ErrorBoundary("Neo4j tools initialization", severity=ErrorSeverity.CRITICAL):
             self.neo4j = Neo4jTools()
-            self.projections = Neo4jProjections()
+            self._pending_tasks = set()
             
             # Validate Neo4j configuration and plugins
             # Skip validation during initialization to avoid sync/async issues
@@ -54,16 +56,20 @@ class GraphAnalysis:
     
     async def _validate_plugins(self):
         """Validate that required plugins are installed."""
-        plugins_query = "CALL dbms.procedures()"
-        results = await run_query(plugins_query)
-        procedures = [r["name"] for r in results]
-        
-        required = ["gds.", "apoc."]
-        missing = [p for p in required if not any(proc.startswith(p) for proc in procedures)]
-        if missing:
-            log(f"Missing required Neo4j plugins: {', '.join(missing)}", level="warning")
-            return False
-        return True
+        future = submit_async_task(run_query("CALL dbms.procedures()"))
+        self._pending_tasks.add(future)
+        try:
+            results = await asyncio.wrap_future(future)
+            procedures = [r["name"] for r in results]
+            
+            required = ["gds.", "apoc."]
+            missing = [p for p in required if not any(proc.startswith(p) for proc in procedures)]
+            if missing:
+                log(f"Missing required Neo4j plugins: {', '.join(missing)}", level="warning")
+                return False
+            return True
+        finally:
+            self._pending_tasks.remove(future)
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_code_metrics(
@@ -73,28 +79,20 @@ class GraphAnalysis:
     ) -> Dict[str, Any]:
         """[4.3.2] Get advanced code metrics using GDS."""
         async with AsyncErrorBoundary("code metrics analysis", severity=ErrorSeverity.ERROR):
+            # Ensure code projection exists
+            graph_sync = await get_graph_sync()
+            await graph_sync.ensure_projection(repo_id)
+            
             file_filter = 'WHERE n.file_path = $file_path' if file_path else ''
             
             # Use GDS for centrality and community detection
             query = f"""
-            CALL gds.graph.project.cypher(
-                'code-graph',
-                'MATCH (n:Code) WHERE n.repo_id = $repo_id {file_filter} RETURN id(n) AS id',
-                'MATCH (n:Code)-[r]->(m:Code) WHERE n.repo_id = $repo_id RETURN id(n) AS source, id(m) AS target'
-            )
-            YIELD graphName
-            
-            CALL gds.pageRank.stream('code-graph')
+            CALL gds.pageRank.stream('code-repo-' || $repo_id)
             YIELD nodeId, score as pageRank
-            
-            CALL gds.louvain.stream('code-graph')
-            YIELD nodeId, communityId
-            
-            WITH nodeId, pageRank, communityId
-            MATCH (n:Code) WHERE id(n) = nodeId
+            WITH gds.util.asNode(nodeId) AS n, pageRank
+            WHERE n.repo_id = $repo_id {file_filter}
             RETURN n.file_path as file_path,
                    pageRank as centrality,
-                   communityId as community,
                    size((n)-->()) as outDegree,
                    apoc.node.degree(n) as totalDegree
             """
@@ -102,13 +100,14 @@ class GraphAnalysis:
             params = {"repo_id": repo_id}
             if file_path:
                 params["file_path"] = file_path
-                
-            results = await run_query(query, params)
             
-            # Cleanup temporary graph
-            await run_query("CALL gds.graph.drop('code-graph')")
-            
-            return results[0] if results else {}
+            future = submit_async_task(run_query(query, params))
+            self._pending_tasks.add(future)
+            try:
+                results = await asyncio.wrap_future(future)
+                return results[0] if results else {}
+            finally:
+                self._pending_tasks.remove(future)
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def analyze_code_structure(
@@ -117,19 +116,18 @@ class GraphAnalysis:
     ) -> Dict[str, Any]:
         """Analyze code structure using GDS algorithms."""
         async with AsyncErrorBoundary("structure analysis", severity=ErrorSeverity.ERROR):
-            query = """
-            CALL gds.graph.project.cypher(
-                'code-structure',
-                'MATCH (n:Code) WHERE n.repo_id = $repo_id RETURN id(n) AS id',
-                'MATCH (n:Code)-[r]->(m:Code) WHERE n.repo_id = $repo_id RETURN id(n) AS source, id(m) AS target'
-            )
+            # Ensure code projection exists
+            graph_sync = await get_graph_sync()
+            await graph_sync.ensure_projection(repo_id)
             
-            CALL gds.louvain.stream('code-structure')
+            # Run community detection
+            community_query = """
+            CALL gds.louvain.stream('code-repo-' || $repo_id)
             YIELD nodeId, communityId
             WITH gds.util.asNode(nodeId) as node, communityId
             WITH collect({file: node.file_path, community: communityId}) as communities
             
-            CALL gds.betweenness.stream('code-structure')
+            CALL gds.betweenness.stream('code-repo-' || $repo_id)
             YIELD nodeId, score
             WITH communities, gds.util.asNode(nodeId) as node, score
             WHERE score > 0
@@ -138,10 +136,13 @@ class GraphAnalysis:
             RETURN communities, central_files
             """
             
-            results = await run_query(query, {"repo_id": repo_id})
-            await run_query("CALL gds.graph.drop('code-structure')")
-            
-            return results[0] if results else {}
+            future = submit_async_task(run_query(community_query, {"repo_id": repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                results = await asyncio.wrap_future(future)
+                return results[0] if results else {}
+            finally:
+                self._pending_tasks.remove(future)
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def find_similar_components(
@@ -152,14 +153,12 @@ class GraphAnalysis:
     ) -> List[Dict[str, Any]]:
         """Find similar code components using node2vec."""
         async with AsyncErrorBoundary("similarity analysis", severity=ErrorSeverity.ERROR):
-            query = """
-            CALL gds.graph.project.cypher(
-                'similarity-graph',
-                'MATCH (n:Code) WHERE n.repo_id = $repo_id RETURN id(n) AS id',
-                'MATCH (n:Code)-[r]->(m:Code) WHERE n.repo_id = $repo_id RETURN id(n) AS source, id(m) AS target'
-            )
+            # Ensure code projection exists
+            graph_sync = await get_graph_sync()
+            await graph_sync.ensure_projection(repo_id)
             
-            CALL gds.node2vec.stream('similarity-graph', {
+            query = """
+            CALL gds.node2vec.stream('code-repo-' || $repo_id, {
                 walkLength: 80,
                 walks: 10,
                 dimensions: 128
@@ -184,17 +183,20 @@ class GraphAnalysis:
             ORDER BY score DESC
             """
             
-            results = await run_query(
+            future = submit_async_task(run_query(
                 query,
                 {
                     "repo_id": repo_id,
                     "file_path": file_path,
                     "cutoff": similarity_cutoff
                 }
-            )
-            
-            await run_query("CALL gds.graph.drop('similarity-graph')")
-            return results
+            ))
+            self._pending_tasks.add(future)
+            try:
+                results = await asyncio.wrap_future(future)
+                return results
+            finally:
+                self._pending_tasks.remove(future)
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_references(self, repo_id: int, file_path: str) -> list:
@@ -204,34 +206,125 @@ class GraphAnalysis:
             MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:RELATED_TO]->(m:Code)
             RETURN m.file_path as file_path
             """
-            results = await run_query(query, {"repo_id": repo_id, "file_path": file_path})
-            return results if results else []
+            future = submit_async_task(run_query(query, {"repo_id": repo_id, "file_path": file_path}))
+            self._pending_tasks.add(future)
+            try:
+                results = await asyncio.wrap_future(future)
+                return results if results else []
+            finally:
+                self._pending_tasks.remove(future)
+    
+    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
+    async def analyze_code_patterns(self, repo_id: int) -> Dict[str, Any]:
+        """Analyze code patterns in a repository using graph algorithms."""
+        async with AsyncErrorBoundary("pattern analysis", severity=ErrorSeverity.ERROR):
+            # Get graph sync coordinator
+            graph_sync = await get_graph_sync()
+            
+            # Ensure pattern projection exists
+            await graph_sync.ensure_pattern_projection(repo_id)
+            
+            # Run pattern similarity analysis
+            similarity_query = """
+            CALL gds.nodeSimilarity.stream('pattern-repo-' || $repo_id)
+            YIELD node1, node2, similarity
+            WITH gds.util.asNode(node1) AS pattern1, 
+                 gds.util.asNode(node2) AS pattern2, 
+                 similarity
+            WHERE pattern1:Pattern AND pattern2:Pattern AND similarity > 0.5
+            RETURN pattern1.pattern_id AS pattern1_id, 
+                   pattern2.pattern_id AS pattern2_id,
+                   pattern1.pattern_type AS pattern_type, 
+                   similarity
+            ORDER BY similarity DESC
+            LIMIT 100
+            """
+            future = submit_async_task(run_query(similarity_query, {"repo_id": repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                similarity_results = await asyncio.wrap_future(future)
+            finally:
+                self._pending_tasks.remove(future)
+            
+            # Find pattern clusters
+            cluster_query = """
+            CALL gds.louvain.stream('pattern-repo-' || $repo_id)
+            YIELD nodeId, communityId
+            WITH gds.util.asNode(nodeId) AS node, communityId
+            WHERE node:Pattern
+            RETURN communityId, 
+                   collect(node.pattern_id) AS patterns,
+                   collect(node.pattern_type) AS pattern_types,
+                   count(*) AS cluster_size
+            ORDER BY cluster_size DESC
+            """
+            future = submit_async_task(run_query(cluster_query, {"repo_id": repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                cluster_results = await asyncio.wrap_future(future)
+            finally:
+                self._pending_tasks.remove(future)
+            
+            # Get component dependencies
+            dependency_query = """
+            MATCH (c1:Code)-[:IMPORTS|CALLS|DEPENDS_ON]->(c2:Code)
+            WHERE c1.repo_id = $repo_id AND c2.repo_id = $repo_id
+            WITH split(c1.file_path, '/')[0] AS comp1, 
+                 split(c2.file_path, '/')[0] AS comp2, 
+                 count(*) AS weight
+            WHERE comp1 <> comp2
+            RETURN comp1 AS source_component, 
+                   comp2 AS target_component, 
+                   weight
+            ORDER BY weight DESC
+            """
+            future = submit_async_task(run_query(dependency_query, {"repo_id": repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                dependency_results = await asyncio.wrap_future(future)
+            finally:
+                self._pending_tasks.remove(future)
+            
+            return {
+                "similarities": similarity_results,
+                "clusters": cluster_results,
+                "dependencies": dependency_results
+            }
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def get_dependencies(self, repo_id: int, file_path: str, depth: int = 3) -> list:
         """Retrieve code dependencies up to a specified depth using variable-length relationships."""
         async with AsyncErrorBoundary("dependency retrieval", severity=ErrorSeverity.ERROR):
+            # Ensure code projection exists
+            graph_sync = await get_graph_sync()
+            await graph_sync.ensure_projection(repo_id)
+            
             query = """
             MATCH (n:Code {repo_id: $repo_id, file_path: $file_path})-[:DEPENDS_ON*1..$depth]->(dep:Code)
             RETURN dep.file_path as file_path
             """
-            results = await run_query(query, {"repo_id": repo_id, "file_path": file_path, "depth": depth})
-            return results if results else []
+            future = submit_async_task(run_query(query, {"repo_id": repo_id, "file_path": file_path, "depth": depth}))
+            self._pending_tasks.add(future)
+            try:
+                results = await asyncio.wrap_future(future)
+                return results if results else []
+            finally:
+                self._pending_tasks.remove(future)
     
     @handle_errors(error_types=(Exception,))
-    def close(self):
+    async def close(self):
         """Closes Neo4j connections and graph projections."""
         with ErrorBoundary("Neo4j connection cleanup", severity=ErrorSeverity.WARNING):
+            # Clean up any pending tasks
+            if self._pending_tasks:
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
+            
             if hasattr(self, 'neo4j'):
                 try:
-                    self.neo4j.close()
+                    await self.neo4j.close()
                 except Exception as e:
                     log(f"Error closing neo4j connection: {e}", level="error")
-            if hasattr(self, 'projections'):
-                try:
-                    self.projections.close()
-                except Exception as e:
-                    log(f"Error closing projections: {e}", level="error")
 
 # Do not create global instance until implementation is ready
 graph_analysis = None 

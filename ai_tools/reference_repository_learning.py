@@ -48,6 +48,7 @@ from ai_tools.code_understanding import CodeUnderstanding
 import os
 from db.graph_sync import graph_sync
 from neo4j.exceptions import Neo4jError
+from utils.async_runner import submit_async_task
 
 
 class ReferenceRepositoryLearning:
@@ -722,23 +723,47 @@ class ReferenceRepositoryLearning:
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def analyze_pattern_relationships(self, repo_id: int) -> Dict[str, Any]:
         """[4.4.4] Analyze relationships between patterns using graph algorithms."""
-        # Use the enhanced graph_sync for pattern projection management
-        await graph_sync.ensure_pattern_projection(repo_id)
+        from utils.async_runner import submit_async_task
         
-        pattern_graph_name = f"pattern-repo-{repo_id}"
-        
-        # Run pattern similarity analysis
-        similarity_results = await self.graph_projections.run_pattern_similarity(pattern_graph_name)
-        
-        # Find pattern clusters
-        pattern_clusters = await self.graph_projections.find_pattern_clusters(pattern_graph_name)
-        
-        return {
-            "pattern_similarities": similarity_results,
-            "pattern_clusters": pattern_clusters,
-            "total_similarities": len(similarity_results),
-            "total_clusters": len(pattern_clusters)
-        }
+        tasks = set()
+        try:
+            # Use the enhanced graph_sync for pattern projection management
+            future = submit_async_task(graph_sync.ensure_pattern_projection(repo_id))
+            tasks.add(future)
+            try:
+                await asyncio.wrap_future(future)
+            finally:
+                tasks.remove(future)
+            
+            pattern_graph_name = f"pattern-repo-{repo_id}"
+            
+            # Run pattern similarity analysis
+            future = submit_async_task(self.graph_projections.run_pattern_similarity(pattern_graph_name))
+            tasks.add(future)
+            try:
+                similarity_results = await asyncio.wrap_future(future)
+            finally:
+                tasks.remove(future)
+            
+            # Find pattern clusters
+            future = submit_async_task(self.graph_projections.find_pattern_clusters(pattern_graph_name))
+            tasks.add(future)
+            try:
+                pattern_clusters = await asyncio.wrap_future(future)
+            finally:
+                tasks.remove(future)
+            
+            return {
+                "pattern_similarities": similarity_results,
+                "pattern_clusters": pattern_clusters,
+                "total_similarities": len(similarity_results),
+                "total_clusters": len(pattern_clusters)
+            }
+        finally:
+            # Clean up any remaining tasks
+            if tasks:
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in tasks], return_exceptions=True)
+                tasks.clear()
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def compare_with_reference_repository(

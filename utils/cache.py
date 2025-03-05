@@ -11,6 +11,7 @@ from utils.logger import log
 from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, CacheError
 from config import RedisConfig  # If we add Redis config later
 from parsers.models import FileClassification
+from utils.async_runner import submit_async_task, get_loop
 
 # Try to import redis; if not available, mark it accordingly
 try:
@@ -135,99 +136,70 @@ cache_metrics = CacheMetrics()
 class UnifiedCache:
     """Enhanced caching implementation with better coordination."""
     
-    def __init__(
-        self, 
-        name: str, 
-        ttl: int = 3600,
-        min_ttl: int = 300,
-        max_ttl: int = 86400,  # 24 hours
-        adaptive_ttl: bool = True
-    ):
+    def __init__(self, name: str, ttl: int = 3600):
         self.name = name
-        self.default_ttl = ttl
-        self.min_ttl = min_ttl
-        self.max_ttl = max_ttl
-        self.adaptive_ttl = adaptive_ttl
-        self._local_cache: Dict[str, Any] = {}
-        self._local_timestamps: Dict[str, datetime] = {}
-        
+        self._cache: Dict[str, Any] = {}
+        self._ttl = ttl
+        self._pending_tasks: Set[asyncio.Future] = set()
+    
+    async def _track_metric(self, metric_name: str) -> None:
+        """Track a cache metric asynchronously."""
+        try:
+            future = submit_async_task(cache_metrics.increment(self.name, metric_name))
+            self._pending_tasks.add(future)
+            try:
+                await asyncio.wrap_future(future)
+            finally:
+                self._pending_tasks.remove(future)
+        except Exception as e:
+            log(f"Error tracking cache metric: {e}", level="error")
+    
+    @handle_async_errors
+    async def set_async(self, key: str, value: Any, expire: Optional[int] = None) -> None:
+        """Set a cache value asynchronously."""
+        self._cache[key] = value
+        await self._track_metric("sets")
+    
     @handle_async_errors
     async def get_async(self, key: str) -> Optional[Any]:
-        """Async get operation with metrics tracking."""
-        value = self._get_local(key)
-        hit = value is not None
-        
-        # Track metrics
-        if hit:
-            await cache_metrics.increment(self.name, "hits")
-        else:
-            await cache_metrics.increment(self.name, "misses")
-            
+        """Get a cache value asynchronously."""
+        value = self._cache.get(key)
+        metric = "hits" if value is not None else "misses"
+        await self._track_metric(metric)
         return value
     
     @handle_async_errors
-    async def set_async(self, key: str, value: Any, ttl: Optional[int] = None):
-        """Async set operation with metrics tracking."""
-        # Track metrics
-        await cache_metrics.increment(self.name, "sets")
-        
-        effective_ttl = ttl or self.default_ttl
-        self._set_local(key, value, effective_ttl)
+    async def clear_async(self) -> None:
+        """Clear cache asynchronously."""
+        evicted = len(self._cache)
+        self._cache.clear()
+        if evicted > 0:
+            await self._track_metric("evictions")
     
     @handle_async_errors
-    async def clear_async(self):
-        """Async cache clear with metrics tracking."""
-        evicted = len(self._local_cache)
-        self._local_cache.clear()
-        self._local_timestamps.clear()
-        
-        # Track metrics
-        await cache_metrics.increment(self.name, "evictions", evicted)
+    async def clear_pattern_async(self, pattern: str) -> None:
+        """Clear keys matching pattern asynchronously."""
+        keys = [k for k in self._cache if pattern in k]
+        evicted = len(keys)
+        for k in keys:
+            del self._cache[k]
+        if evicted > 0:
+            await self._track_metric("evictions")
     
-    @handle_async_errors
-    async def clear_pattern_async(self, pattern: str):
-        """Async pattern-based cache clear with metrics tracking."""
-        # Clear matching local cache entries
-        local_keys = [k for k in self._local_cache if pattern in k]
-        evicted = len(local_keys)
-        for k in local_keys:
-            del self._local_cache[k]
-            del self._local_timestamps[k]
-        
-        # Track metrics
-        await cache_metrics.increment(self.name, "evictions", evicted)
-    
-    def _get_local(self, key: str) -> Optional[Any]:
-        """Get from local cache with TTL check."""
-        if key in self._local_cache:
-            timestamp = self._local_timestamps.get(key)
-            if timestamp and datetime.now() - timestamp < timedelta(seconds=self.default_ttl):
-                return self._local_cache[key]
-            else:
-                del self._local_cache[key]
-                del self._local_timestamps[key]
-                # Track eviction
-                asyncio.create_task(cache_metrics.increment(self.name, "evictions"))
-        return None
-    
-    def _set_local(self, key: str, value: Any, ttl: int):
-        """Set in local cache with timestamp."""
-        self._local_cache[key] = value
-        self._local_timestamps[key] = datetime.now()
-
-def create_cache(name: str, ttl: int = 3600, adaptive_ttl: bool = True) -> UnifiedCache:
-    """Create and register a new cache instance."""
-    cache = UnifiedCache(name, ttl, adaptive_ttl=adaptive_ttl)
-    cache_coordinator.register_cache(name, cache)
-    return cache
+    async def cleanup(self) -> None:
+        """Clean up any pending tasks."""
+        if self._pending_tasks:
+            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+            self._pending_tasks.clear()
 
 class CacheCoordinator:
     """Coordinates caching across different subsystems."""
     
     def __init__(self):
-        self._caches: Dict[str, 'UnifiedCache'] = {}
+        self._caches: Dict[str, UnifiedCache] = {}
         self._lock = asyncio.Lock()
         self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
         
         # Cache instances
         self._repository_cache: Optional[UnifiedCache] = None
@@ -238,115 +210,62 @@ class CacheCoordinator:
         self._graph_cache: Optional[UnifiedCache] = None
         self._ast_cache: Optional[UnifiedCache] = None
         self._general_cache: Optional[UnifiedCache] = None
-        
-    def register_cache(self, name: str, cache: 'UnifiedCache'):
+    
+    def register_cache(self, name: str, cache: UnifiedCache) -> None:
         """Register a cache instance."""
         self._caches[name] = cache
-        cache_metrics.register_cache(name)
-        
-    def initialize(self):
-        """Initialize all cache instances."""
-        if self._initialized:
-            return
-            
-        # Create cache instances
-        self._repository_cache = UnifiedCache("repositories", ttl=3600)  # 1 hour
-        self._search_cache = UnifiedCache("search", ttl=300)  # 5 minutes
-        self._embedding_cache = UnifiedCache("embeddings", ttl=86400)  # 24 hours
-        self._pattern_cache = UnifiedCache("patterns", ttl=3600)  # 1 hour 
-        self._parser_cache = UnifiedCache("parsers", ttl=1800)  # 30 minutes
-        self._graph_cache = UnifiedCache("graph", ttl=3600)  # 1 hour
-        self._ast_cache = UnifiedCache("ast", ttl=7200)  # 2 hours
-        self._general_cache = UnifiedCache("general", ttl=3600)  # 1 hour
-        
-        # Register caches
-        self.register_cache("repositories", self._repository_cache)
-        self.register_cache("search", self._search_cache)
-        self.register_cache("embeddings", self._embedding_cache)
-        self.register_cache("patterns", self._pattern_cache)
-        self.register_cache("parsers", self._parser_cache)
-        self.register_cache("graph", self._graph_cache)
-        self.register_cache("ast", self._ast_cache)
-        self.register_cache("general", self._general_cache)
-        
-        self._initialized = True
-        
-    async def invalidate_all(self):
+        future = submit_async_task(cache_metrics.register_cache(name))
+        self._pending_tasks.add(future)
+        future.add_done_callback(lambda f: self._pending_tasks.remove(f) if f in self._pending_tasks else None)
+    
+    async def invalidate_all(self) -> None:
         """Invalidate all registered caches."""
         async with self._lock:
+            futures = []
             for cache in self._caches.values():
-                await cache.clear_async()
-                
-    async def invalidate_pattern(self, pattern: str):
+                future = submit_async_task(cache.clear_async())
+                futures.append(future)
+                self._pending_tasks.add(future)
+            
+            try:
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in futures], return_exceptions=True)
+            finally:
+                for f in futures:
+                    if f in self._pending_tasks:
+                        self._pending_tasks.remove(f)
+    
+    async def invalidate_pattern(self, pattern: str) -> None:
         """Invalidate keys matching pattern across all caches."""
         async with self._lock:
+            futures = []
             for cache in self._caches.values():
-                await cache.clear_pattern_async(pattern)
+                future = submit_async_task(cache.clear_pattern_async(pattern))
+                futures.append(future)
+                self._pending_tasks.add(future)
+            
+            try:
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in futures], return_exceptions=True)
+            finally:
+                for f in futures:
+                    if f in self._pending_tasks:
+                        self._pending_tasks.remove(f)
     
-    async def get_metrics(self) -> Dict:
-        """Get metrics for all registered caches."""
-        return cache_metrics.get_metrics()
-    
-    async def log_metrics(self):
-        """Log metrics for all registered caches."""
-        await cache_metrics.log_stats()
+    async def cleanup(self) -> None:
+        """Clean up all cache resources."""
+        # Clean up individual caches
+        futures = []
+        for cache in self._caches.values():
+            future = submit_async_task(cache.cleanup())
+            futures.append(future)
+            self._pending_tasks.add(future)
         
-    # Cache instance properties
-    @property
-    def repository_cache(self) -> UnifiedCache:
-        """Get repository cache instance."""
-        if not self._initialized:
-            raise RuntimeError("Cache coordinator not initialized")
-        return self._repository_cache
-    
-    @property
-    def search_cache(self) -> UnifiedCache:
-        """Get search cache instance."""
-        if not self._initialized:
-            raise RuntimeError("Cache coordinator not initialized")
-        return self._search_cache
-    
-    @property
-    def embedding_cache(self) -> UnifiedCache:
-        """Get embedding cache instance."""
-        if not self._initialized:
-            raise RuntimeError("Cache coordinator not initialized")
-        return self._embedding_cache
-    
-    @property
-    def pattern_cache(self) -> UnifiedCache:
-        """Get pattern cache instance."""
-        if not self._initialized:
-            raise RuntimeError("Cache coordinator not initialized")
-        return self._pattern_cache
-    
-    @property
-    def parser_cache(self) -> UnifiedCache:
-        """Get parser cache instance."""
-        if not self._initialized:
-            raise RuntimeError("Cache coordinator not initialized")
-        return self._parser_cache
-    
-    @property
-    def graph_cache(self) -> UnifiedCache:
-        """Get graph cache instance."""
-        if not self._initialized:
-            raise RuntimeError("Cache coordinator not initialized")
-        return self._graph_cache
-    
-    @property
-    def ast_cache(self) -> UnifiedCache:
-        """Get AST cache instance."""
-        if not self._initialized:
-            raise RuntimeError("Cache coordinator not initialized")
-        return self._ast_cache
-    
-    @property
-    def cache(self) -> UnifiedCache:
-        """Get general cache instance."""
-        if not self._initialized:
-            raise RuntimeError("Cache coordinator not initialized")
-        return self._general_cache
+        try:
+            await asyncio.gather(*[asyncio.wrap_future(f) for f in futures], return_exceptions=True)
+        finally:
+            # Clean up coordinator's pending tasks
+            if self._pending_tasks:
+                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                self._pending_tasks.clear()
 
 # Global coordinator instance
 cache_coordinator = CacheCoordinator()
@@ -359,7 +278,7 @@ def initialize_caches():
 async def cleanup_caches():
     """Cleanup all caches."""
     try:
-        await cache_coordinator.invalidate_all()
+        await cache_coordinator.cleanup()
     except Exception as e:
         log(f"Error cleaning up caches: {e}", level="error")
 

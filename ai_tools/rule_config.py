@@ -33,6 +33,55 @@ DEFAULT_THRESHOLDS = {
     "pattern_cluster_size": 2,     # Minimum size for a pattern cluster
 }
 
+# Graph projection configurations
+GRAPH_PROJECTIONS = {
+    "code": {
+        "name_template": "code-repo-{repo_id}",
+        "node_query": """
+        MATCH (n:Code) WHERE n.repo_id = $repo_id 
+        RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
+        """,
+        "relationship_query": """
+        MATCH (n:Code)-[r]->(m:Code) 
+        WHERE n.repo_id = $repo_id AND m.repo_id = $repo_id 
+        RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
+        """
+    },
+    "pattern": {
+        "name_template": "pattern-repo-{repo_id}",
+        "node_query": """
+        MATCH (n) 
+        WHERE (n:Pattern AND n.repo_id = $repo_id) OR 
+              (n:Code AND n.repo_id = $repo_id) OR 
+              (n:Repository AND n.id = $repo_id)
+        RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
+        """,
+        "relationship_query": """
+        MATCH (n:Pattern {repo_id: $repo_id})-[r:EXTRACTED_FROM]->(m:Code {repo_id: $repo_id})
+        RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
+        UNION
+        MATCH (n:Repository {id: $repo_id})-[r:REFERENCE_PATTERN|APPLIED_PATTERN]->(m:Pattern)
+        RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
+        """
+    },
+    "combined": {
+        "name_template": "active-reference-{active_repo_id}-{reference_repo_id}",
+        "node_query": """
+        MATCH (n) 
+        WHERE (n:Code AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR 
+              (n:Pattern AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id))
+        RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
+        """,
+        "relationship_query": """
+        MATCH (s)-[r]->(t)
+        WHERE (s:Code OR s:Pattern) AND (t:Code OR t:Pattern) AND
+              (s.repo_id = $active_repo_id OR s.repo_id = $reference_repo_id) AND
+              (t.repo_id = $active_repo_id OR t.repo_id = $reference_repo_id)
+        RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties
+        """
+    }
+}
+
 # Graph algorithm configurations
 GRAPH_ALGORITHMS = {
     "similarity": {
@@ -187,23 +236,39 @@ def get_default_thresholds() -> Dict[str, Any]:
     """Get a copy of the default threshold settings."""
     return DEFAULT_THRESHOLDS.copy()
 
-# Get extraction policy for a specific pattern type
-def get_policy_for_pattern(pattern_type: PatternType) -> Dict[str, Any]:
-    """Get the extraction policy for a specific pattern type."""
-    return EXTRACTION_POLICIES.get(pattern_type, 
-                                 EXTRACTION_POLICIES.get(PatternType.CODE_STRUCTURE))
+def get_projection_config(projection_type: str, **kwargs) -> Dict[str, Any]:
+    """Get configuration for a specific graph projection type.
+    
+    Args:
+        projection_type: Type of projection ('code', 'pattern', or 'combined')
+        **kwargs: Additional parameters for name template formatting
+        
+    Returns:
+        Dict containing projection configuration
+    """
+    config = GRAPH_PROJECTIONS.get(projection_type)
+    if not config:
+        raise ValueError(f"Unknown projection type: {projection_type}")
+    
+    return {
+        "name": config["name_template"].format(**kwargs),
+        "node_query": config["node_query"],
+        "relationship_query": config["relationship_query"]
+    }
 
-# Get algorithm configuration for a specific algorithm
 def get_algorithm_config(algorithm_type: str) -> Dict[str, Any]:
-    """Get the configuration for a graph algorithm."""
+    """Get configuration for a graph algorithm."""
     return GRAPH_ALGORITHMS.get(algorithm_type, GRAPH_ALGORITHMS["similarity"])
 
-# Get language-specific rules
+def get_extraction_policy(pattern_type: PatternType) -> Dict[str, Any]:
+    """Get extraction policy for a pattern type."""
+    return EXTRACTION_POLICIES.get(pattern_type, 
+                                 EXTRACTION_POLICIES[PatternType.CODE_STRUCTURE])
+
 def get_language_rules(language: str) -> Dict[str, Any]:
     """Get rules for a specific programming language."""
     return LANGUAGE_RULES.get(language.lower(), LANGUAGE_RULES["default"])
 
-# Get documentation pattern rules
 def get_doc_pattern_rules(doc_type: str) -> Dict[str, Any]:
     """Get rules for a specific documentation type."""
     return DOC_PATTERN_RULES.get(doc_type.lower(), DOC_PATTERN_RULES["default"]) 

@@ -13,13 +13,20 @@ import asyncio
 import time
 import random
 from functools import wraps
-from typing import Any, Callable, Dict, List, Optional, Type, Union
-
+from typing import Any, Callable, Dict, List, Optional, Type, Union, Set
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, ClientError
 from psycopg.errors import OperationalError as PostgresError
-
 from utils.logger import log
-from utils.error_handling import DatabaseError, Neo4jError, TransactionError, handle_async_errors, ErrorBoundary, PostgresError
+from utils.error_handling import (
+    DatabaseError, 
+    Neo4jError, 
+    TransactionError, 
+    handle_async_errors, 
+    ErrorBoundary,
+    PostgresError,
+    ErrorSeverity
+)
+from utils.async_runner import submit_async_task, get_loop
 
 # Error classes for retry mechanism
 class RetryableError(Exception):
@@ -165,6 +172,7 @@ class DatabaseRetryManager:
             config: Retry configuration (optional)
         """
         self.config = config or RetryConfig()
+        self._pending_tasks: Set[asyncio.Future] = set()
     
     async def execute_with_retry(
         self,
@@ -198,8 +206,13 @@ class DatabaseRetryManager:
                            reraise=True) as outer_error_boundary:
             while attempt <= self.config.max_retries:
                 try:
-                    # Execute the operation
-                    result = await operation_func(*args, **kwargs)
+                    # Execute the operation using submit_async_task
+                    future = submit_async_task(operation_func(*args, **kwargs))
+                    self._pending_tasks.add(future)
+                    try:
+                        result = await asyncio.wrap_future(future)
+                    finally:
+                        self._pending_tasks.remove(future)
                     
                     # If successful and not the first attempt, log success after retry
                     if attempt > 0:
@@ -245,21 +258,28 @@ class DatabaseRetryManager:
                         level="warn"
                     )
                     
-                    # Wait before retrying
-                    await asyncio.sleep(delay)
+                    # Wait before retrying using submit_async_task
+                    future = submit_async_task(asyncio.sleep(delay))
+                    self._pending_tasks.add(future)
+                    try:
+                        await asyncio.wrap_future(future)
+                    finally:
+                        self._pending_tasks.remove(future)
             
             # If we get here, all retries failed
             total_time = time.time() - start_time
             error_msg = (
-                f"All {self.config.max_retries} retries failed for '{operation_name}' "
-                f"(total time: {total_time:.2f}s): {str(last_error)}"
+                f"Operation '{operation_name}' failed after {self.config.max_retries} retries "
+                f"(total time: {total_time:.2f}s). Last error: {str(last_error)}"
             )
             log(error_msg, level="error")
-            raise DatabaseError(error_msg) from last_error
-        
-        if outer_error_boundary.error:
-            log(f"Unexpected error in retry mechanism: {outer_error_boundary.error}", level="error")
-            raise DatabaseError(f"Retry mechanism failed: {str(outer_error_boundary.error)}")
+            raise DatabaseError(error_msg)
+    
+    async def cleanup(self):
+        """Clean up any pending tasks."""
+        if self._pending_tasks:
+            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+            self._pending_tasks.clear()
     
     def retry(
         self,
@@ -268,9 +288,7 @@ class DatabaseRetryManager:
         max_delay: Optional[float] = None
     ):
         """
-        Decorator to apply retry logic to a function.
-        
-        This decorator can be used to wrap async functions that need retry logic.
+        Decorator for retrying operations with custom retry parameters.
         
         Args:
             max_retries: Override default max retries
@@ -278,43 +296,38 @@ class DatabaseRetryManager:
             max_delay: Override default max delay
             
         Returns:
-            Callable: Decorated function with retry logic
+            Callable: Decorator function
         """
         def decorator(func):
             @wraps(func)
             async def wrapper(*args, **kwargs):
                 # Create a custom retry config if any parameters are overridden
-                config = None
                 if any(param is not None for param in [max_retries, base_delay, max_delay]):
-                    config = RetryConfig(
-                        max_retries=max_retries if max_retries is not None else self.config.max_retries,
-                        base_delay=base_delay if base_delay is not None else self.config.base_delay,
-                        max_delay=max_delay if max_delay is not None else self.config.max_delay,
+                    custom_config = RetryConfig(
+                        max_retries=max_retries or self.config.max_retries,
+                        base_delay=base_delay or self.config.base_delay,
+                        max_delay=max_delay or self.config.max_delay,
                         jitter_factor=self.config.jitter_factor
                     )
-                
-                # Use a new manager with custom config if provided
-                manager = self if config is None else DatabaseRetryManager(config)
-                
-                return await manager.execute_with_retry(func, *args, **kwargs)
-            
+                    temp_manager = DatabaseRetryManager(custom_config)
+                    return await temp_manager.execute_with_retry(func, *args, **kwargs)
+                else:
+                    return await self.execute_with_retry(func, *args, **kwargs)
             return wrapper
-        
         return decorator
 
-# Create a default instance for easy access
+# Default retry manager instance
 default_retry_manager = DatabaseRetryManager()
 
-# Decorator factory for easy use
 def with_retry(
     max_retries: Optional[int] = None,
     base_delay: Optional[float] = None,
     max_delay: Optional[float] = None
 ):
     """
-    Decorator factory to apply retry logic to a function.
+    Decorator for retrying operations with custom retry parameters.
     
-    This decorator can be used to wrap async functions that need retry logic.
+    This is a convenience wrapper around DatabaseRetryManager.retry.
     
     Args:
         max_retries: Override default max retries
@@ -322,7 +335,7 @@ def with_retry(
         max_delay: Override default max delay
         
     Returns:
-        Callable: Decorated function with retry logic
+        Callable: Decorator function
     """
     return default_retry_manager.retry(
         max_retries=max_retries,

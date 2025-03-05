@@ -1,7 +1,12 @@
 """[6.3] Graph synchronization and projection coordination.
 
-This module provides functionality for managing Neo4j graph projections, 
-which are in-memory subgraphs optimized for graph algorithms. 
+This module provides centralized management of Neo4j graph projections:
+1. Projection creation and updates
+2. Cache state management
+3. Graph algorithm coordination
+4. Asynchronous task management
+
+All database operations use the centralized connection manager.
 
 Asynchronous Architecture:
 -------------------------
@@ -27,95 +32,91 @@ Flow:
 Usage Examples:
 -------------
 # Creating a projection for a repository
-await graph_sync.ensure_projection(repo_id)
+coordinator = await get_graph_sync()
+await coordinator.ensure_projection(repo_id)
 
 # Invalidating a projection after major changes
-await graph_sync.invalidate_projection(repo_id)
+coordinator = await get_graph_sync()
+await coordinator.invalidate_projection(repo_id)
 
 # Queueing an update with debouncing (useful for file changes)
-await graph_sync.queue_projection_update(repo_id)
+coordinator = await get_graph_sync()
+await coordinator.queue_projection_update(repo_id)
 
 # Auto-reinvoking projection for all repositories
 await auto_reinvoke_projection_once()
 
 # Auto-reinvoking projection for a specific repository
 await auto_reinvoke_projection_once(repo_id)
+
+# Comparing repository structures
+coordinator = await get_graph_sync()
+await coordinator.compare_repository_structures(active_repo_id, reference_repo_id)
+
+# Synchronizing graph nodes and relationships
+coordinator = await get_graph_sync()
+await coordinator.sync_graph(nodes, relationships)
+
+# Creating pattern projections
+coordinator = await get_graph_sync()
+await coordinator.ensure_pattern_projection(repo_id)
 """
 
 import asyncio
 from typing import Optional, Set, Dict, Any, List
 from utils.logger import log
-from db.connection import driver
+from db.connection import connection_manager
 from utils.cache import create_cache
-from utils.error_handling import DatabaseError, Neo4jError, TransactionError, handle_async_errors, ErrorBoundary, AsyncErrorBoundary, ErrorSeverity
-from db.neo4j_ops import run_query
-from db.retry_utils import with_retry
+from utils.error_handling import (
+    DatabaseError, 
+    Neo4jError, 
+    TransactionError, 
+    handle_async_errors, 
+    ErrorBoundary, 
+    AsyncErrorBoundary, 
+    ErrorSeverity
+)
+from utils.async_runner import submit_async_task
 
 # Cache for graph states
 graph_cache = create_cache("graph_state", ttl=300)
-
-# Global projection cache
-_projections = {}
 
 class ProjectionError(DatabaseError):
     """Graph projection specific errors."""
     pass
 
 class GraphSyncCoordinator:
-    """[6.3.1] Coordinates graph operations and projections.
-    
-    This class is responsible for managing Neo4j graph projections:
-    - Creating and updating projections 
-    - Tracking projection state in cache
-    - Handling concurrent updates with locking
-    - Providing debounced updates for file changes
-    
-    All methods are asynchronous and should be awaited.
-    """
+    """Coordinates graph operations and projections."""
     
     def __init__(self):
         self._lock = asyncio.Lock()
         self._active_projections: Set[str] = set()
         self._pending_updates: Dict[int, asyncio.Event] = {}
+        self._pending_tasks: Set[asyncio.Future] = set()
         self._update_task = None
-        
+        self._projections: Dict[str, Dict[str, bool]] = {}
+    
     @handle_async_errors(error_types=(Neo4jError, ProjectionError, Exception))
     async def ensure_projection(self, repo_id: int) -> bool:
-        """[6.3.2] Ensures graph projection exists and is up to date.
-        
-        This method checks if a projection exists for the specified repository,
-        creates it if missing, and validates its state. It uses a cache to 
-        avoid unnecessary database operations.
-        
-        Args:
-            repo_id: Repository ID to ensure projection for
-            
-        Returns:
-            bool: True if projection exists or was successfully created
-            
-        Raises:
-            ProjectionError: If projection creation fails
-            
-        Example:
-            ```python
-            # Ensure projection exists for repository 123
-            success = await graph_sync.ensure_projection(123)
-            if success:
-                # Projection is ready for use
-                pass
-            ```
-        """
+        """Ensures graph projection exists and is up to date."""
         projection_name = f"code-repo-{repo_id}"
         
         async with self._lock:
-            with ErrorBoundary(operation_name="ensure_graph_projection", error_types=(Neo4jError,), reraise=True, severity=ErrorSeverity.CRITICAL) as error_boundary:
+            with ErrorBoundary(
+                operation_name="ensure_graph_projection", 
+                error_types=(Neo4jError,), 
+                reraise=True, 
+                severity=ErrorSeverity.CRITICAL
+            ) as error_boundary:
                 # Check if projection exists and is valid
-                if await self._is_projection_valid(projection_name):
+                is_valid = await self._is_projection_valid(projection_name)
+                if is_valid:
                     return True
                 
                 # Create or update projection
                 await self._create_projection(repo_id, projection_name)
                 self._active_projections.add(projection_name)
+                self._projections[projection_name] = {"valid": True}
                 
                 log("Graph projection ensured", level="debug", context={
                     "repo_id": repo_id,
@@ -127,57 +128,113 @@ class GraphSyncCoordinator:
                 log(f"Error in graph projection: {str(error_boundary.error)}", level="error")
                 raise ProjectionError(f"Failed to ensure projection for repo {repo_id}: {str(error_boundary.error)}")
     
+    @handle_async_errors(error_types=(Neo4jError, TransactionError))
+    async def ensure_pattern_projection(self, repo_id: int) -> bool:
+        """Ensures pattern graph projection exists and is valid."""
+        graph_name = f"pattern-repo-{repo_id}"
+        
+        async with self._lock:
+            with ErrorBoundary(
+                operation_name="pattern_graph_projection", 
+                error_types=(Neo4jError,), 
+                reraise=True, 
+                severity=ErrorSeverity.CRITICAL
+            ) as error_boundary:
+                # Check if projection exists and is valid
+                if graph_name in self._projections and self._projections[graph_name]["valid"]:
+                    log(f"Using cached pattern graph projection: {graph_name}", level="debug")
+                    return True
+                
+                # Create pattern projection
+                await self._create_pattern_projection(repo_id, graph_name)
+                self._projections[graph_name] = {"valid": True}
+                return True
+            
+            if error_boundary.error:
+                log(f"Error in pattern graph projection: {str(error_boundary.error)}", level="error")
+                raise ProjectionError(f"Failed to ensure pattern projection for repo {repo_id}: {str(error_boundary.error)}")
+    
     @handle_async_errors(error_types=[Neo4jError, ProjectionError, DatabaseError])
     async def invalidate_projection(self, repo_id: int) -> None:
-        """[6.3.3] Invalidates existing projection for repository.
-        
-        This method drops the in-memory projection for the specified repository
-        and clears associated cache entries. This is useful when the underlying
-        graph structure has changed significantly.
-        
-        Args:
-            repo_id: Repository ID to invalidate projection for
-            
-        Example:
-            ```python
-            # After major changes to the repository structure
-            await graph_sync.invalidate_projection(123)
-            # Later, re-create the projection when needed
-            await graph_sync.ensure_projection(123)
-            ```
-        """
+        """Invalidates existing projection for repository."""
         projection_name = f"code-repo-{repo_id}"
         
         async with self._lock:
-            with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception], error_message=f"Error invalidating projection for repo {repo_id}", severity=ErrorSeverity.WARNING) as error_boundary:
+            with ErrorBoundary(
+                error_types=[Neo4jError, DatabaseError, Exception], 
+                error_message=f"Error invalidating projection for repo {repo_id}", 
+                severity=ErrorSeverity.WARNING
+            ) as error_boundary:
                 if projection_name in self._active_projections:
                     await self._drop_projection(projection_name)
                     self._active_projections.remove(projection_name)
+                    if projection_name in self._projections:
+                        self._projections[projection_name]["valid"] = False
+                
                 await graph_cache.clear_pattern_async(f"graph:{repo_id}:*")
             
             if error_boundary.error:
                 log(f"Error invalidating projection: {error_boundary.error}", level="error")
     
+    @handle_async_errors(error_types=[Neo4jError, ProjectionError, DatabaseError])
+    async def invalidate_pattern_projection(self, repo_id: int) -> None:
+        """Invalidates existing pattern projection for repository."""
+        graph_name = f"pattern-repo-{repo_id}"
+        
+        async with self._lock:
+            with ErrorBoundary(
+                error_types=[Neo4jError, DatabaseError, Exception], 
+                error_message=f"Error invalidating pattern projection for repo {repo_id}", 
+                severity=ErrorSeverity.WARNING
+            ) as error_boundary:
+                if graph_name in self._projections:
+                    self._projections[graph_name]["valid"] = False
+                    await self._drop_projection(graph_name)
+                    log(f"Invalidated pattern graph projection: {graph_name}", level="debug")
+                
+                await graph_cache.clear_pattern_async(f"pattern:{repo_id}:*")
+            
+            if error_boundary.error:
+                log(f"Error invalidating pattern projection: {error_boundary.error}", level="error")
+    
     @handle_async_errors(error_types=[Neo4jError, DatabaseError])
     async def _is_projection_valid(self, projection_name: str) -> bool:
         """Checks if projection exists and is valid."""
-        with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception], error_message="Error checking graph projection", severity=ErrorSeverity.ERROR) as error_boundary:
+        with ErrorBoundary(
+            error_types=[Neo4jError, DatabaseError, Exception], 
+            error_message="Error checking graph projection", 
+            severity=ErrorSeverity.ERROR
+        ) as error_boundary:
+            # Check in-memory cache first
+            if projection_name in self._projections and self._projections[projection_name]["valid"]:
+                return True
+            
+            # Check distributed cache next
             result = await graph_cache.get_async(f"projection:{projection_name}")
             if result:
                 return True
             
-            query = """
-            CALL gds.graph.exists($projection)
-            YIELD exists
-            """
-            response = await run_query(query, {"projection": projection_name})
-            exists = response[0].get("exists", False) if response else False
-            
-            if exists:
-                await graph_cache.set_async(f"projection:{projection_name}", "valid", expire=3600)
-                return True
-            
-            return False
+            # Finally check database
+            session = await connection_manager.get_session()
+            try:
+                query = "CALL gds.graph.exists($projection) YIELD exists"
+                future = submit_async_task(session.run(query, {"projection": projection_name}))
+                self._pending_tasks.add(future)
+                try:
+                    result = await asyncio.wrap_future(future)
+                    data = await result.data()
+                    exists = data[0].get("exists", False) if data else False
+                finally:
+                    self._pending_tasks.remove(future)
+                
+                if exists:
+                    await graph_cache.set_async(f"projection:{projection_name}", "valid", expire=3600)
+                    self._projections[projection_name] = {"valid": True}
+                    return True
+                
+                return False
+            finally:
+                await session.close()
             
         if error_boundary.error:
             log(f"Error checking projection validity: {error_boundary.error}", level="error")
@@ -186,425 +243,319 @@ class GraphSyncCoordinator:
     @handle_async_errors(error_types=(Neo4jError, DatabaseError))
     async def _create_projection(self, repo_id: int, projection_name: str) -> None:
         """Creates or updates graph projection."""
-        projection_query = f"""
-        CALL gds.graph.project.cypher(
-            '{projection_name}',
-            'MATCH (n:Code) WHERE n.repo_id = $repo_id RETURN id(n) AS id, labels(n) AS labels',
-            'MATCH (n:Code)-[r]->(m:Code) WHERE n.repo_id = $repo_id AND m.repo_id = $repo_id 
-             RETURN id(n) AS source, id(m) AS target, type(r) AS type',
-            {{
-                validateRelationships: false
-            }}
-        )
-        """
-        with ErrorBoundary(operation_name="create_graph_projection", error_types=(Neo4jError, DatabaseError), reraise=True, severity=ErrorSeverity.CRITICAL) as error_boundary:
-            await run_query(projection_query, {"repo_id": repo_id})
-            await graph_cache.set_async(f"projection:{projection_name}", True)
-            log(f"Created graph projection: {projection_name}", level="info")
+        # Check if we already have nodes for this repo
+        session = await connection_manager.get_session()
+        try:
+            count_query = """
+            MATCH (n:Code {repo_id: $repo_id})
+            RETURN count(n) as count
+            """
+            future = submit_async_task(session.run(count_query, {"repo_id": repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                result = await asyncio.wrap_future(future)
+                data = await result.data()
+                node_count = data[0]["count"] if data else 0
+            finally:
+                self._pending_tasks.remove(future)
+            
+            if node_count == 0:
+                log(f"No nodes found for repo {repo_id}, skipping projection", level="warn")
+                return
+            
+            projection_query = f"""
+            CALL gds.graph.project.cypher(
+                '{projection_name}',
+                'MATCH (n:Code) WHERE n.repo_id = $repo_id RETURN id(n) AS id, labels(n) AS labels',
+                'MATCH (n:Code)-[r]->(m:Code) WHERE n.repo_id = $repo_id AND m.repo_id = $repo_id 
+                 RETURN id(n) AS source, id(m) AS target, type(r) AS type',
+                {{
+                    validateRelationships: false
+                }}
+            )
+            """
+            
+            future = submit_async_task(session.run(projection_query, {"repo_id": repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                await asyncio.wrap_future(future)
+                await graph_cache.set_async(f"projection:{projection_name}", True)
+                log(f"Created graph projection: {projection_name}", level="info")
+            finally:
+                self._pending_tasks.remove(future)
+        finally:
+            await session.close()
+    
+    @handle_async_errors(error_types=(Neo4jError, DatabaseError))
+    async def _create_pattern_projection(self, repo_id: int, graph_name: str) -> None:
+        """Creates a Neo4j in-memory graph projection for patterns."""
+        session = await connection_manager.get_session()
+        try:
+            # Check if we already have pattern nodes
+            count_query = """
+            MATCH (p:Pattern {repo_id: $repo_id})
+            RETURN count(p) as count
+            """
+            future = submit_async_task(session.run(count_query, {"repo_id": repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                result = await asyncio.wrap_future(future)
+                data = await result.data()
+                pattern_count = data[0]["count"] if data else 0
+            finally:
+                self._pending_tasks.remove(future)
+            
+            if pattern_count == 0:
+                log(f"No pattern nodes found for repo {repo_id}, skipping pattern projection", level="warn")
+                return
+            
+            projection_query = """
+            CALL gds.graph.project.cypher(
+                $graph_name,
+                'MATCH (n) WHERE (n:Pattern AND n.repo_id = $repo_id) OR (n:Code AND n.repo_id = $repo_id) OR (n:Repository AND n.id = $repo_id) 
+                 RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
+                'MATCH (n:Pattern {repo_id: $repo_id})-[r:EXTRACTED_FROM]->(m:Code {repo_id: $repo_id}) 
+                 RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
+                 UNION
+                 MATCH (n:Repository {id: $repo_id})-[r:REFERENCE_PATTERN|APPLIED_PATTERN]->(m:Pattern) 
+                 RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties',
+                {validateRelationships: false}
+            )
+            """
+            
+            future = submit_async_task(session.run(projection_query, {"graph_name": graph_name, "repo_id": repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                await asyncio.wrap_future(future)
+                await graph_cache.set_async(f"projection:{graph_name}", True)
+                log(f"Created pattern graph projection: {graph_name}", level="info")
+            finally:
+                self._pending_tasks.remove(future)
+        finally:
+            await session.close()
     
     @handle_async_errors(error_types=[Neo4jError, DatabaseError])
     async def _drop_projection(self, projection_name: str) -> None:
         """Drops existing graph projection."""
-        with ErrorBoundary(error_types=[Neo4jError, DatabaseError, Exception], error_message="Error dropping graph projection", severity=ErrorSeverity.WARNING) as error_boundary:
+        session = await connection_manager.get_session()
+        try:
             query = "CALL gds.graph.drop($projection)"
-            await run_query(query, {"projection": projection_name})
-            await graph_cache.clear_pattern_async(f"projection:{projection_name}")
-            log(f"Dropped graph projection: {projection_name}", level="info")
-        
-        if error_boundary.error:
-            log(f"Error dropping projection: {error_boundary.error}", level="error")
+            future = submit_async_task(session.run(query, {"projection": projection_name}))
+            self._pending_tasks.add(future)
+            try:
+                await asyncio.wrap_future(future)
+                await graph_cache.clear_pattern_async(f"projection:{projection_name}")
+                log(f"Dropped graph projection: {projection_name}", level="info")
+            finally:
+                self._pending_tasks.remove(future)
+        finally:
+            await session.close()
 
     async def queue_projection_update(self, repo_id: int) -> None:
-        """[6.3.4] Queue projection update with debouncing.
-        
-        This method is useful for handling frequent updates (e.g., file changes)
-        by using a debounce pattern to avoid excessive projection recreation.
-        
-        Args:
-            repo_id: Repository ID to queue update for
-            
-        Example:
-            ```python
-            # When files have changed
-            for file_change in file_changes:
-                await process_file(file_change)
-                # Queue update instead of immediate projection recreation
-                await graph_sync.queue_projection_update(repo_id)
-            ```
-        """
+        """Queue projection update with debouncing."""
         if repo_id not in self._pending_updates:
             self._pending_updates[repo_id] = asyncio.Event()
         
         if not self._update_task or self._update_task.done():
-            self._update_task = asyncio.create_task(self._process_updates())
+            self._update_task = submit_async_task(self._process_updates())
+            self._pending_tasks.add(self._update_task)
     
     async def _process_updates(self) -> None:
         """Process queued updates with debouncing."""
-        await asyncio.sleep(1.0)  # Debounce window
-        async with self._lock:
-            for repo_id, event in self._pending_updates.items():
-                await self.ensure_projection(repo_id)
-                event.set()
-            self._pending_updates.clear()
-
-# Create a singleton instance of GraphSyncCoordinator
-graph_sync = GraphSyncCoordinator()
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError, DatabaseError))
-async def sync_graph(nodes: List[Dict[str, Any]], relationships: List[Dict[str, Any]]) -> bool:
-    """[6.3.7] Synchronize graph with provided nodes and relationships.
+        try:
+            await asyncio.sleep(1.0)  # Debounce window
+            async with self._lock:
+                futures = []
+                for repo_id, event in self._pending_updates.items():
+                    future = submit_async_task(self.ensure_projection(repo_id))
+                    futures.append((future, event))
+                    self._pending_tasks.add(future)
+                
+                try:
+                    for future, event in futures:
+                        await asyncio.wrap_future(future)
+                        event.set()
+                finally:
+                    for future, _ in futures:
+                        if future in self._pending_tasks:
+                            self._pending_tasks.remove(future)
+                self._pending_updates.clear()
+        finally:
+            if self._update_task in self._pending_tasks:
+                self._pending_tasks.remove(self._update_task)
     
-    This function is used to update the graph with new nodes and relationships.
-    It's a lower-level function compared to the GraphSyncCoordinator methods.
-    
-    Args:
-        nodes: List of node dictionaries with properties
-        relationships: List of relationship dictionaries with properties
+    @handle_async_errors(error_types=(Neo4jError, TransactionError))
+    async def create_repository_with_reference_projection(self, active_repo_id: int, reference_repo_id: int) -> None:
+        """Creates a combined graph projection of active and reference repositories."""
+        graph_name = f"active-reference-{active_repo_id}-{reference_repo_id}"
         
+        session = await connection_manager.get_session()
+        try:
+            projection_query = """
+            CALL gds.graph.project.cypher(
+                $graph_name,
+                'MATCH (n) WHERE (n:Code AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR 
+                                (n:Pattern AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id))
+                 RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
+                'MATCH (s)-[r]->(t) 
+                 WHERE (s:Code OR s:Pattern) AND (t:Code OR t:Pattern) AND 
+                       (s.repo_id = $active_repo_id OR s.repo_id = $reference_repo_id) AND
+                       (t.repo_id = $active_repo_id OR t.repo_id = $reference_repo_id)
+                 RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties',
+                {validateRelationships: false}
+            )
+            """
+            
+            future = submit_async_task(session.run(projection_query, {
+                "graph_name": graph_name,
+                "active_repo_id": active_repo_id,
+                "reference_repo_id": reference_repo_id
+            }))
+            self._pending_tasks.add(future)
+            try:
+                await asyncio.wrap_future(future)
+                log(f"Created combined active-reference graph projection: {graph_name}", level="info")
+            finally:
+                self._pending_tasks.remove(future)
+        finally:
+            await session.close()
+    
+    @handle_async_errors(error_types=(Neo4jError, TransactionError))
+    async def compare_repository_structures(self, active_repo_id: int, reference_repo_id: int) -> dict:
+        """Compares the structure of an active repository with a reference repository."""
+        # Create combined projection if needed
+        graph_name = f"active-reference-{active_repo_id}-{reference_repo_id}"
+        
+        try:
+            await self.create_repository_with_reference_projection(active_repo_id, reference_repo_id)
+        except Exception as e:
+            log(f"Error creating combined projection: {e}", level="error")
+            return {"error": str(e)}
+        
+        session = await connection_manager.get_session()
+        try:
+            # Run similarity algorithm
+            similarity_query = """
+            CALL gds.nodeSimilarity.stream($graph_name, {
+                topK: 10,
+                similarityCutoff: 0.5
+            })
+            YIELD node1, node2, similarity
+            WITH gds.util.asNode(node1) AS n1, gds.util.asNode(node2) AS n2, similarity
+            WHERE n1.repo_id <> n2.repo_id  // Only compare nodes from different repos
+            RETURN n1.file_path AS active_file, 
+                   n2.file_path AS reference_file, 
+                   n1.language AS language,
+                   similarity
+            ORDER BY similarity DESC
+            LIMIT 20
+            """
+            
+            future = submit_async_task(session.run(similarity_query, {"graph_name": graph_name}))
+            self._pending_tasks.add(future)
+            try:
+                result = await asyncio.wrap_future(future)
+                similarity_results = await result.data()
+            finally:
+                self._pending_tasks.remove(future)
+            
+            # Get structure statistics for each repo
+            active_stats_query = """
+            MATCH (c:Code {repo_id: $repo_id})
+            RETURN c.language AS language, count(*) AS file_count
+            ORDER BY file_count DESC
+            """
+            
+            future = submit_async_task(session.run(active_stats_query, {"repo_id": active_repo_id}))
+            self._pending_tasks.add(future)
+            try:
+                result = await asyncio.wrap_future(future)
+                active_stats = await result.data()
+            finally:
+                self._pending_tasks.remove(future)
+            
+            return {
+                "similarities": similarity_results,
+                "active_stats": active_stats
+            }
+        finally:
+            await session.close()
+    
+    @handle_async_errors(error_types=(Neo4jError, TransactionError, DatabaseError))
+    async def sync_graph(self, nodes: List[Dict[str, Any]], relationships: List[Dict[str, Any]]) -> bool:
+        """Synchronize graph with provided nodes and relationships.
+        
+        Args:
+            nodes: List of node dictionaries with properties
+            relationships: List of relationship dictionaries with properties
+            
+        Returns:
+            bool: True if synchronization was successful
+        """
+        session = await connection_manager.get_session()
+        try:
+            tx = await session.begin_transaction()
+            try:
+                # Create nodes
+                for node in nodes:
+                    labels = ":".join(node.get("labels", []))
+                    properties = node.get("properties", {})
+                    node_id = node.get("id")
+                    
+                    # Create node with properties
+                    query = f"CREATE (n:{labels} {{id: $id}}) SET n += $properties RETURN n"
+                    await tx.run(query, {"id": node_id, "properties": properties})
+                
+                # Create relationships
+                for rel in relationships:
+                    rel_type = rel.get("type")
+                    start_node = rel.get("start_node")
+                    end_node = rel.get("end_node")
+                    properties = rel.get("properties", {})
+                    
+                    # Create relationship with properties
+                    query = """
+                    MATCH (a), (b) 
+                    WHERE a.id = $start_id AND b.id = $end_id
+                    CREATE (a)-[r:`{rel_type}` {{id: $id}}]->(b)
+                    SET r += $properties
+                    RETURN r
+                    """.replace("{rel_type}", rel_type)
+                    
+                    await tx.run(query, {
+                        "start_id": start_node,
+                        "end_id": end_node,
+                        "id": rel.get("id"),
+                        "properties": properties
+                    })
+                
+                # Commit the transaction
+                await tx.commit()
+                return True
+            except Exception as e:
+                log(f"Error in graph synchronization: {str(e)}", level="error")
+                await tx.rollback()
+                return False
+        finally:
+            await session.close()
+    
+    async def cleanup(self) -> None:
+        """Clean up any pending tasks."""
+        if self._pending_tasks:
+            await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+            self._pending_tasks.clear()
+
+# Create singleton instance of GraphSyncCoordinator
+_graph_sync = GraphSyncCoordinator()
+
+# Export with proper async handling
+async def get_graph_sync() -> GraphSyncCoordinator:
+    """Get the graph sync coordinator instance.
+    
     Returns:
-        bool: True if synchronization was successful
-        
-    Example:
-        ```python
-        nodes = [
-            {"id": "n1", "labels": ["Person"], "properties": {"name": "Alice"}},
-            {"id": "n2", "labels": ["Person"], "properties": {"name": "Bob"}}
-        ]
-        relationships = [
-            {"id": "r1", "type": "KNOWS", "start_node": "n1", "end_node": "n2", 
-             "properties": {"since": 2020}}
-        ]
-        success = await sync_graph(nodes, relationships)
-        ```
+        GraphSyncCoordinator: The singleton graph sync coordinator instance
     """
-    session = None
-    tx = None
-    
-    with ErrorBoundary(operation_name="graph_sync_session", error_types=(Neo4jError, TransactionError), reraise=False, severity=ErrorSeverity.ERROR) as session_boundary:
-        # Get a driver session and run transaction manually
-        session = driver.session()
-        tx = await session.begin_transaction()
-        
-        with ErrorBoundary(operation_name="graph_sync_transaction", error_types=(Neo4jError, TransactionError), reraise=False, severity=ErrorSeverity.ERROR) as tx_boundary:
-            # Create nodes
-            for node in nodes:
-                labels = ":".join(node.get("labels", []))
-                properties = node.get("properties", {})
-                node_id = node.get("id")
-                
-                # Create node with properties
-                query = f"CREATE (n:{labels} {{id: $id}}) SET n += $properties RETURN n"
-                await tx.run(query, {"id": node_id, "properties": properties})
-            
-            # Create relationships
-            for rel in relationships:
-                rel_type = rel.get("type")
-                start_node = rel.get("start_node")
-                end_node = rel.get("end_node")
-                properties = rel.get("properties", {})
-                
-                # Create relationship with properties
-                query = """
-                MATCH (a), (b) 
-                WHERE a.id = $start_id AND b.id = $end_id
-                CREATE (a)-[r:`{rel_type}` {{id: $id}}]->(b)
-                SET r += $properties
-                RETURN r
-                """.replace("{rel_type}", rel_type)
-                
-                await tx.run(query, {
-                    "start_id": start_node,
-                    "end_id": end_node,
-                    "id": rel.get("id"),
-                    "properties": properties
-                })
-            
-            # Commit the transaction
-            await tx.commit()
-            
-            if session:
-                await session.close()
-            return True
-    
-    # Error handling
-    if tx_boundary.error:
-        log(f"Error in graph synchronization: {str(tx_boundary.error)}", level="error")
-        if tx:
-            await tx.rollback()
-    
-    if session_boundary.error:
-        log(f"Error in graph synchronization session: {str(session_boundary.error)}", level="error")
-    
-    if session:
-        await session.close()
-    
-    return False
+    return _graph_sync
 
-async def graph_sync_from_file(file_path: str) -> bool:
-    # Implementation needed
-    return False  # Placeholder return, actual implementation needed
-
-async def graph_sync_from_search(query: str) -> bool:
-    # Implementation needed
-    return False  # Placeholder return, actual implementation needed
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError))
-async def ensure_projection(repo_id: int) -> bool:
-    """[6.3.1] Ensures graph projection exists and is valid."""
-    async with AsyncErrorBoundary("graph projection", severity=ErrorSeverity.ERROR):
-        # Check if projection exists
-        graph_name = f"code-repo-{repo_id}"
-        if graph_name in _projections and _projections[graph_name]["valid"]:
-            log(f"Using cached graph projection: {graph_name}", level="debug")
-            return True
-        
-        # Create graph projection
-        try:
-            await create_repository_projection(repo_id)
-            _projections[graph_name] = {"valid": True}
-            return True
-        except Neo4jError as e:
-            log(f"Neo4j error creating graph projection: {e}", level="error")
-            raise Neo4jError(f"Failed to create graph projection: {e}")
-        except TransactionError as e:
-            log(f"Transaction error creating graph projection: {e}", level="error")
-            raise Neo4jError(f"Failed to create graph projection due to transaction error: {e}")
-        except Exception as e:
-            log(f"Unexpected error creating graph projection: {e}", level="error")
-            raise Neo4jError(f"Failed to create graph projection: {e}")
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError))
-async def invalidate_projection(repo_id: int) -> None:
-    """[6.3.2] Invalidates an existing projection for re-creation."""
-    graph_name = f"code-repo-{repo_id}"
-    
-    if graph_name in _projections:
-        _projections[graph_name]["valid"] = False
-        log(f"Invalidated graph projection: {graph_name}", level="debug")
-    
-    # Try to drop the existing projection
-    try:
-        await with_retry(run_query)(
-            "CALL gds.graph.drop($graph_name, false)",
-            {"graph_name": graph_name}
-        )
-        log(f"Dropped graph projection: {graph_name}", level="debug")
-    except Neo4jError as e:
-        # This is likely because the projection doesn't exist, which is OK
-        log(f"Neo4j error dropping graph projection (may not exist): {e}", level="debug")
-    except TransactionError as e:
-        log(f"Transaction error dropping graph projection: {e}", level="warning")
-    except Exception as e:
-        log(f"Unexpected error dropping graph projection: {e}", level="error")
-        raise Neo4jError(f"Failed to drop graph projection: {e}")
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError))
-async def create_repository_projection(repo_id: int) -> None:
-    """[6.3.3] Creates a Neo4j in-memory graph projection for a repository."""
-    graph_name = f"code-repo-{repo_id}"
-    
-    # Check if we already have nodes for this repo
-    count_query = """
-    MATCH (n:Code {repo_id: $repo_id})
-    RETURN count(n) as count
-    """
-    result = await run_query(count_query, {"repo_id": repo_id})
-    node_count = result[0]["count"] if result else 0
-    
-    if node_count == 0:
-        log(f"No nodes found for repo {repo_id}, skipping projection", level="warn")
-        return
-    
-    # Create the graph projection
-    projection_query = """
-    CALL gds.graph.project.cypher(
-        $graph_name,
-        'MATCH (n:Code {repo_id: $repo_id}) RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
-        'MATCH (s:Code {repo_id: $repo_id})-[r:CALLS|IMPORTS|DEPENDS_ON|CONTAINS]->(t:Code {repo_id: $repo_id}) 
-         RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties',
-        {validateRelationships: false}
-    )
-    """
-    
-    await run_query(projection_query, {
-        "graph_name": graph_name,
-        "repo_id": repo_id
-    })
-    
-    log(f"Created graph projection: {graph_name}", level="info")
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError))
-async def create_pattern_projection(repo_id: int) -> None:
-    """[6.3.5] Creates a Neo4j in-memory graph projection for patterns."""
-    graph_name = f"pattern-repo-{repo_id}"
-    
-    # Check if we already have pattern nodes for this repo
-    count_query = """
-    MATCH (p:Pattern {repo_id: $repo_id})
-    RETURN count(p) as count
-    """
-    result = await run_query(count_query, {"repo_id": repo_id})
-    pattern_count = result[0]["count"] if result else 0
-    
-    if pattern_count == 0:
-        log(f"No pattern nodes found for repo {repo_id}, skipping pattern projection", level="warn")
-        return
-    
-    # Create the pattern graph projection
-    projection_query = """
-    CALL gds.graph.project.cypher(
-        $graph_name,
-        'MATCH (n) WHERE (n:Pattern AND n.repo_id = $repo_id) OR (n:Code AND n.repo_id = $repo_id) OR (n:Repository AND n.id = $repo_id) 
-         RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
-        'MATCH (n:Pattern {repo_id: $repo_id})-[r:EXTRACTED_FROM]->(m:Code {repo_id: $repo_id}) 
-         RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
-         UNION
-         MATCH (n:Repository {id: $repo_id})-[r:REFERENCE_PATTERN|APPLIED_PATTERN]->(m:Pattern) 
-         RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties',
-        {validateRelationships: false}
-    )
-    """
-    
-    await run_query(projection_query, {
-        "graph_name": graph_name,
-        "repo_id": repo_id
-    })
-    
-    log(f"Created pattern graph projection: {graph_name}", level="info")
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError))
-async def ensure_pattern_projection(repo_id: int) -> bool:
-    """[6.3.6] Ensures pattern graph projection exists and is valid."""
-    async with AsyncErrorBoundary("pattern graph projection", severity=ErrorSeverity.ERROR):
-        # Check if projection exists
-        graph_name = f"pattern-repo-{repo_id}"
-        if graph_name in _projections and _projections[graph_name]["valid"]:
-            log(f"Using cached pattern graph projection: {graph_name}", level="debug")
-            return True
-        
-        # Create graph projection
-        try:
-            await create_pattern_projection(repo_id)
-            _projections[graph_name] = {"valid": True}
-            return True
-        except Neo4jError as e:
-            log(f"Neo4j error creating pattern graph projection: {e}", level="error")
-            raise Neo4jError(f"Failed to create pattern graph projection: {e}")
-        except TransactionError as e:
-            log(f"Transaction error creating pattern graph projection: {e}", level="error")
-            raise Neo4jError(f"Failed to create pattern graph projection due to transaction error: {e}")
-        except Exception as e:
-            log(f"Unexpected error creating pattern graph projection: {e}", level="error")
-            raise Neo4jError(f"Failed to create pattern graph projection: {e}")
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError))
-async def invalidate_pattern_projection(repo_id: int) -> None:
-    """[6.3.7] Invalidates an existing pattern projection for re-creation."""
-    graph_name = f"pattern-repo-{repo_id}"
-    
-    if graph_name in _projections:
-        _projections[graph_name]["valid"] = False
-        log(f"Invalidated pattern graph projection: {graph_name}", level="debug")
-    
-    # Try to drop the existing projection
-    try:
-        await with_retry(run_query)(
-            "CALL gds.graph.drop($graph_name, false)",
-            {"graph_name": graph_name}
-        )
-        log(f"Dropped pattern graph projection: {graph_name}", level="debug")
-    except Neo4jError as e:
-        # This is likely because the projection doesn't exist, which is OK
-        log(f"Neo4j error dropping pattern graph projection (may not exist): {e}", level="debug")
-    except TransactionError as e:
-        log(f"Transaction error dropping pattern graph projection: {e}", level="warning")
-    except Exception as e:
-        log(f"Unexpected error dropping pattern graph projection: {e}", level="error")
-        raise Neo4jError(f"Failed to drop pattern graph projection: {e}")
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError))
-async def create_repository_with_reference_projection(active_repo_id: int, reference_repo_id: int) -> None:
-    """[6.3.8] Creates a combined graph projection of active and reference repositories."""
-    graph_name = f"active-reference-{active_repo_id}-{reference_repo_id}"
-    
-    # Create the combined graph projection
-    projection_query = """
-    CALL gds.graph.project.cypher(
-        $graph_name,
-        'MATCH (n) WHERE (n:Code AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR 
-                         (n:Pattern AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id))
-         RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
-        'MATCH (s)-[r]->(t) 
-         WHERE (s:Code OR s:Pattern) AND (t:Code OR t:Pattern) AND 
-               (s.repo_id = $active_repo_id OR s.repo_id = $reference_repo_id) AND
-               (t.repo_id = $active_repo_id OR t.repo_id = $reference_repo_id)
-         RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties',
-        {validateRelationships: false}
-    )
-    """
-    
-    await run_query(projection_query, {
-        "graph_name": graph_name,
-        "active_repo_id": active_repo_id,
-        "reference_repo_id": reference_repo_id
-    })
-    
-    log(f"Created combined active-reference graph projection: {graph_name}", level="info")
-
-@handle_async_errors(error_types=(Neo4jError, TransactionError))
-async def compare_repository_structures(active_repo_id: int, reference_repo_id: int) -> dict:
-    """[6.3.9] Compares the structure of an active repository with a reference repository."""
-    # Create combined projection if needed
-    graph_name = f"active-reference-{active_repo_id}-{reference_repo_id}"
-    
-    try:
-        await create_repository_with_reference_projection(active_repo_id, reference_repo_id)
-    except Neo4jError as e:
-        log(f"Neo4j error creating combined projection: {e}", level="error")
-        return {"error": f"Database error: {str(e)}"}
-    except TransactionError as e:
-        log(f"Transaction error creating combined projection: {e}", level="error")
-        return {"error": f"Transaction error: {str(e)}"}
-    except Exception as e:
-        log(f"Unexpected error creating combined projection: {e}", level="error")
-        return {"error": f"Unexpected error: {str(e)}"}
-    
-    # Run similarity algorithm
-    similarity_query = """
-    CALL gds.nodeSimilarity.stream($graph_name, {
-        topK: 10,
-        similarityCutoff: 0.5
-    })
-    YIELD node1, node2, similarity
-    WITH gds.util.asNode(node1) AS n1, gds.util.asNode(node2) AS n2, similarity
-    WHERE n1.repo_id <> n2.repo_id  // Only compare nodes from different repos
-    RETURN n1.file_path AS active_file, 
-           n2.file_path AS reference_file, 
-           n1.language AS language,
-           similarity
-    ORDER BY similarity DESC
-    LIMIT 20
-    """
-    
-    similarity_results = await run_query(similarity_query, {"graph_name": graph_name})
-    
-    # Get structure statistics for each repo
-    active_stats_query = """
-    MATCH (c:Code {repo_id: $repo_id})
-    RETURN c.language AS language, count(*) AS file_count
-    ORDER BY file_count DESC
-    """
-    
-    active_stats = await run_query(active_stats_query, {"repo_id": active_repo_id})
-    reference_stats = await run_query(active_stats_query, {"repo_id": reference_repo_id})
-    
-    return {
-        "similarities": similarity_results,
-        "active_repo_stats": active_stats,
-        "reference_repo_stats": reference_stats,
-        "similarity_count": len(similarity_results)
-    }
-
-# Export with boundary protection
-# Wrap the existing global instance with error boundary
-# graph_sync = AsyncErrorBoundary("graph_sync_coordinator", graph_sync) 
+# For backward compatibility and direct access
+graph_sync = _graph_sync 

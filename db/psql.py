@@ -1,9 +1,11 @@
-import asyncpg
+"""[6.1] PostgreSQL database operations.
+
+This module provides high-level database operations using the centralized connection manager.
+All connection management is handled by the connection_manager.
+"""
+
 import asyncio
-import logging
-from psycopg2.extras import RealDictCursor, Json
-from psycopg2 import pool
-from config import PostgresConfig
+from typing import Optional, List, Dict, Any, Tuple
 from utils.logger import log
 from utils.error_handling import (
     handle_async_errors,
@@ -14,122 +16,115 @@ from utils.error_handling import (
     ErrorSeverity
 )
 from db.retry_utils import DatabaseRetryManager, RetryConfig
+from utils.async_runner import submit_async_task, get_loop
+from db.connection import connection_manager
 
-import os
-
-# Define your PostgreSQL configuration using environment variables or hardcoded values.
-DATABASE_CONFIG = {
-    "user": PostgresConfig.user,
-    "password": PostgresConfig.password,
-    "database": PostgresConfig.database,
-    "host": PostgresConfig.host,
-    "port": PostgresConfig.port,
-}
-
-_pool = None
-# Initialize retry manager with default configuration
-_retry_manager = DatabaseRetryManager()
-
-class ConnectionError(DatabaseError):
-    """Database connection specific errors."""
-    pass
-
-@handle_async_errors(error_types=(ConnectionError, PostgresError))
-async def init_db_pool() -> None:
-    """[6.1.1] Initialize the database connection pool."""
-    global _pool
-    try:
-        async with AsyncErrorBoundary("db pool initialization", error_types=ConnectionError, severity=ErrorSeverity.CRITICAL):
-            _pool = await asyncpg.create_pool(
-                user=PostgresConfig.user,
-                password=PostgresConfig.password,
-                database=PostgresConfig.database,
-                host=PostgresConfig.host,
-                port=PostgresConfig.port,
-                min_size=5,
-                max_size=20
-            )
-            
-            # Test connection
-            async with _pool.acquire() as conn:
-                await conn.execute('SELECT 1')
-                
-            log("Database pool initialized", level="info", context={
-                "host": PostgresConfig.host,
-                "database": PostgresConfig.database,
-                "pool_size": _pool.get_size()
-            })
-            
-    except Exception as e:
-        log("Failed to initialize database pool", level="error", context={"error": str(e)})
-        raise ConnectionError(f"Failed to initialize database pool: {str(e)}")
-
-@handle_async_errors(error_types=DatabaseError)
-async def close_db_pool() -> None:
-    """Close the database connection pool."""
-    global _pool
-    if _pool:
-        await _pool.close()
-        _pool = None
+# Initialize retry manager for database operations
+_retry_manager = DatabaseRetryManager(RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0))
 
 @handle_async_errors(error_types=DatabaseError, default_return=[])
-async def query(sql: str, params: tuple = None) -> list:
+async def query(sql: str, params: tuple = None) -> List[Dict[str, Any]]:
     """Execute a query and return results."""
-    if not _pool:
-        raise DatabaseError("Database pool not initialized")
-    
     async def _execute_query():
-        async with _pool.acquire() as conn:
+        conn = await connection_manager.get_postgres_connection()
+        try:
             async with conn.transaction():
                 if params:
-                    results = await conn.fetch(sql, *params)
+                    future = submit_async_task(conn.fetch(sql, *params))
                 else:
-                    results = await conn.fetch(sql)
-                return [dict(row) for row in results]
+                    future = submit_async_task(conn.fetch(sql))
+                try:
+                    results = await asyncio.wrap_future(future)
+                    return [dict(row) for row in results]
+                finally:
+                    await connection_manager.release_postgres_connection(conn)
+        except Exception as e:
+            await connection_manager.release_postgres_connection(conn)
+            raise
     
-    # Use retry manager to execute the query with retry logic
     return await _retry_manager.execute_with_retry(_execute_query)
 
 @handle_async_errors(error_types=DatabaseError)
 async def execute(sql: str, params: tuple = None) -> None:
     """Execute a SQL command."""
-    if not _pool:
-        raise DatabaseError("Database pool not initialized")
-    
     async def _execute_command():
-        async with _pool.acquire() as conn:
+        conn = await connection_manager.get_postgres_connection()
+        try:
             async with conn.transaction():
                 if params:
-                    await conn.execute(sql, *params)
+                    future = submit_async_task(conn.execute(sql, *params))
                 else:
-                    await conn.execute(sql)
+                    future = submit_async_task(conn.execute(sql))
+                await asyncio.wrap_future(future)
+        finally:
+            await connection_manager.release_postgres_connection(conn)
     
-    # Use retry manager to execute the command with retry logic
     await _retry_manager.execute_with_retry(_execute_command)
 
 @handle_async_errors(error_types=DatabaseError)
 async def execute_many(sql: str, params_list: list) -> None:
     """Execute a SQL command with multiple parameter sets."""
-    if not _pool:
-        raise DatabaseError("Database pool not initialized")
-    
     async def _execute_many_command():
-        async with _pool.acquire() as conn:
+        conn = await connection_manager.get_postgres_connection()
+        try:
             async with conn.transaction():
-                await conn.executemany(sql, params_list)
+                future = submit_async_task(conn.executemany(sql, params_list))
+                await asyncio.wrap_future(future)
+        finally:
+            await connection_manager.release_postgres_connection(conn)
     
-    # Use retry manager to execute the command with retry logic
     await _retry_manager.execute_with_retry(_execute_many_command)
 
-@handle_async_errors(error_types=DatabaseError)
-async def get_connection():
-    """Get a database connection from the pool."""
-    if not _pool:
-        raise DatabaseError("Database pool not initialized")
-    return await _pool.acquire()
+async def execute_batch(
+    sql: str,
+    params_list: List[Tuple],
+    batch_size: int = 1000
+) -> None:
+    """Execute a batch of SQL commands efficiently."""
+    async def _execute_batch():
+        conn = await connection_manager.get_postgres_connection()
+        try:
+            async with conn.transaction():
+                for i in range(0, len(params_list), batch_size):
+                    batch = params_list[i:i + batch_size]
+                    future = submit_async_task(conn.executemany(sql, batch))
+                    await asyncio.wrap_future(future)
+        finally:
+            await connection_manager.release_postgres_connection(conn)
+    
+    await _retry_manager.execute_with_retry(_execute_batch)
 
-@handle_async_errors(error_types=DatabaseError)
-async def release_connection(conn):
-    """Release a database connection back to the pool."""
-    await _pool.release(conn)
+async def execute_parallel_queries(
+    queries: List[Tuple[str, Optional[Tuple]]]
+) -> List[List[Dict[str, Any]]]:
+    """Execute multiple queries in parallel."""
+    async def _execute_single_query(sql: str, params: Optional[Tuple] = None) -> List[Dict[str, Any]]:
+        conn = await connection_manager.get_postgres_connection()
+        try:
+            async with conn.transaction():
+                if params:
+                    future = submit_async_task(conn.fetch(sql, *params))
+                else:
+                    future = submit_async_task(conn.fetch(sql))
+                results = await asyncio.wrap_future(future)
+                return [dict(row) for row in results]
+        finally:
+            await connection_manager.release_postgres_connection(conn)
+    
+    # Create tasks for all queries
+    tasks = []
+    for sql, params in queries:
+        future = submit_async_task(_execute_single_query(sql, params))
+        tasks.append(future)
+    
+    # Wait for all queries to complete
+    results = await asyncio.gather(*[asyncio.wrap_future(f) for f in tasks], return_exceptions=True)
+    
+    # Check for errors
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            log(f"Error executing query {i}: {result}", level="error")
+            raise DatabaseError(f"Failed to execute parallel query {i}: {str(result)}")
+    
+    return results
 
