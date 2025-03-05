@@ -45,7 +45,7 @@ from db.neo4j_ops import (
     create_schema_indexes_and_constraints,
     auto_reinvoke_projection_once
 )
-from db.psql import close_db_pool, query  # Asynchronous cleanup method.
+from db.psql import close_db_pool, query, init_db_pool  # Asynchronous cleanup method.
 from db.schema import create_all_tables, drop_all_tables
 from indexer.unified_indexer import process_repository_indexing
 from db.upsert_ops import upsert_repository, share_docs_with_repo
@@ -55,13 +55,14 @@ from semantic.search import (  # Updated import path
     search_docs,
     search_engine
 )
-from ai_tools.graph_capabilities import graph_analysis  # Add graph analysis
-from ai_tools.ai_interface import AIAssistant  # Add AI Assistant
+# TODO: Implement AI tools before enabling these imports
+# from ai_tools.graph_capabilities import graph_analysis
+# from ai_tools.ai_interface import AIAssistant
 from watcher.file_watcher import watch_directory
 from utils.error_handling import handle_async_errors, ErrorBoundary, handle_errors
 
-# Create AI Assistant instance
-ai_assistant = AIAssistant()
+# TODO: Implement AI Assistant before enabling
+# ai_assistant = AIAssistant()
 
 # ------------------------------------------------------------------
 # Asynchronous tasks delegating major responsibilities.
@@ -84,29 +85,31 @@ async def handle_file_change(file_path: str, repo_id: int):
     log(f"File changed: {file_path}", level="info")
     await process_repository_indexing(file_path, repo_id, single_file=True)
     await auto_reinvoke_projection_once(repo_id)
-    await graph_analysis.analyze_code_structure(repo_id)
+    # TODO: Implement graph analysis before enabling
+    # await graph_analysis.analyze_code_structure(repo_id)
 
-@handle_async_errors
-async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int = None):
-    """
-    Learn patterns from a reference repository and optionally apply them to an active repo.
-    """
-    with ErrorBoundary("learning from reference repository"):
-        # Add support for deep learning from multiple repositories
-        if isinstance(reference_repo_id, list):
-            learn_result = await ai_assistant.deep_learn_from_multiple_repositories(reference_repo_id)
-        else:
-            # Learn from single reference repository
-            learn_result = await ai_assistant.learn_from_reference_repo(reference_repo_id)
-        
-        log(f"Learned patterns from reference repo: {learn_result}", level="info")
-        
-        # Apply patterns to active repository if specified
-        if active_repo_id:
-            apply_result = await ai_assistant.apply_reference_patterns(reference_repo_id, active_repo_id)
-            log(f"Applied patterns to active repo: {apply_result}", level="info")
-            return apply_result
-        return learn_result
+# TODO: Implement AI Assistant before enabling
+# @handle_async_errors
+# async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int = None):
+#     """
+#     Learn patterns from a reference repository and optionally apply them to an active repo.
+#     """
+#     with ErrorBoundary("learning from reference repository"):
+#         # Add support for deep learning from multiple repositories
+#         if isinstance(reference_repo_id, list):
+#             learn_result = await ai_assistant.deep_learn_from_multiple_repositories(reference_repo_id)
+#         else:
+#             # Learn from single reference repository
+#             learn_result = await ai_assistant.learn_from_reference_repo(reference_repo_id)
+#         
+#         log(f"Learned patterns from reference repo: {learn_result}", level="info")
+#         
+#         # Apply patterns to active repository if specified
+#         if active_repo_id:
+#             apply_result = await ai_assistant.apply_reference_patterns(reference_repo_id, active_repo_id)
+#             log(f"Applied patterns to active repo: {apply_result}", level="info")
+#             return apply_result
+#         return learn_result
 
 # ------------------------------------------------------------------
 # Main async routine assembling tasks (indexing, sharing, searching).
@@ -116,6 +119,10 @@ async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int 
 async def main_async(args):
     """Main async coordinator for indexing, documentation operations, and watch mode."""
     try:
+        # Initialize application components including database pools
+        from utils.app_init import _initialize_components
+        await _initialize_components()
+        
         if args.clean:
             log("Cleaning databases and reinitializing schema...", level="info")
             await drop_all_tables()
@@ -195,21 +202,22 @@ async def main_async(args):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         
+        # TODO: Implement AI Assistant before enabling reference repository learning
         # Reference repository learning
-        if args.deep_learning and len(reference_repo_ids) >= 2:
-            # Deep learning from multiple reference repositories
-            log(f"Starting deep learning from {len(reference_repo_ids)} reference repositories", level="info")
-            deep_learning_result = await ai_assistant.deep_learn_from_multiple_repositories(reference_repo_ids)
-            
-            if args.apply_ref_patterns:
-                # Apply patterns from all reference repositories to the active repo
-                await ai_assistant.apply_cross_repository_patterns(repo_id, reference_repo_ids)
-                
-            log(f"Deep learning complete: {deep_learning_result}", level="info")
-        elif reference_repo_id or reference_repo_ids:
-            # Regular learning from a single reference repository
-            repo_to_learn = reference_repo_id or reference_repo_ids[0]
-            await learn_from_reference_repo(repo_to_learn, repo_id if args.apply_ref_patterns else None)
+        # if args.deep_learning and len(reference_repo_ids) >= 2:
+        #     # Deep learning from multiple reference repositories
+        #     log(f"Starting deep learning from {len(reference_repo_ids)} reference repositories", level="info")
+        #     deep_learning_result = await ai_assistant.deep_learn_from_multiple_repositories(reference_repo_ids)
+        #     
+        #     if args.apply_ref_patterns:
+        #         # Apply patterns from all reference repositories to the active repo
+        #         await ai_assistant.apply_cross_repository_patterns(repo_id, reference_repo_ids)
+        #         
+        #     log(f"Deep learning complete: {deep_learning_result}", level="info")
+        # elif reference_repo_id or reference_repo_ids:
+        #     # Regular learning from a single reference repository
+        #     repo_to_learn = reference_repo_id or reference_repo_ids[0]
+        #     await learn_from_reference_repo(repo_to_learn, repo_id if args.apply_ref_patterns else None)
         
         # [0.4] Watch Mode
         if args.watch:
@@ -222,15 +230,18 @@ async def main_async(args):
             # One-time graph analysis
             log("Invoking graph projection once after indexing.", level="info")
             await auto_reinvoke_projection_once(repo_id)
-            await graph_analysis.analyze_code_structure(repo_id)
+            # TODO: Implement graph analysis before enabling
+            # await graph_analysis.analyze_code_structure(repo_id)
     except asyncio.CancelledError:
         log("Indexing was cancelled.", level="info")
         raise
     except Exception as e:
         log(f"Unexpected error: {e}", level="error")
     finally:
+        # Cleanup database connections
         await close_db_pool()
-        ai_assistant.close()
+        from db.connection import driver
+        driver.close()
         log("Cleanup complete.", level="info")
 
 @handle_errors(error_types=(Exception,))

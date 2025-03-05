@@ -37,6 +37,7 @@ class CacheAnalytics:
         self._task = None
         # Dictionary to store warmup functions for each cache
         self._warmup_funcs: Dict[str, WarmupFunc] = {}
+        self._coordinator = None  # Will be set during initialization
     
     def register_warmup_function(self, cache_name: str, func: WarmupFunc) -> None:
         """Register a function to warm up a specific cache.
@@ -281,6 +282,16 @@ class CacheAnalytics:
                     f"Consider decreasing TTL for fresher data.", 
                     level="info")
 
+    async def cleanup(self):
+        """Clean up analytics resources."""
+        try:
+            await self.stop_monitoring()
+            # Generate and save final report
+            await self.generate_performance_report()
+            await self._save_metrics_history(await cache_coordinator.get_metrics())
+        except Exception as e:
+            log(f"Error cleaning up cache analytics: {e}", level="error")
+
 # Create global instance
 cache_analytics = CacheAnalytics()
 
@@ -306,19 +317,24 @@ async def example_warmup_function(keys: List[str]) -> Dict[str, Any]:
 # Register example warmup function (for demonstration)
 # cache_analytics.register_warmup_function("query", example_warmup_function)
 
-# Async initialization function
+# Update the initialization function
 async def initialize_cache_analytics(
+    coordinator,
     auto_start: bool = True,
     report_interval: int = 3600,
     warmup_interval: int = 86400
 ):
-    """Initialize cache analytics with optional auto-start.
+    """Initialize cache analytics with coordinator.
     
     Args:
+        coordinator: The cache coordinator instance
         auto_start: Whether to automatically start monitoring
         report_interval: Seconds between performance reports
         warmup_interval: Seconds between cache warmup operations
     """
+    # Initialize analytics with the coordinator
+    cache_analytics._coordinator = coordinator
+    
     if auto_start:
         await cache_analytics.start_monitoring(
             report_interval=report_interval,
@@ -326,7 +342,9 @@ async def initialize_cache_analytics(
         )
     return cache_analytics
 
-# Synchronous convenience function
+# Remove the old start function since it's replaced by initialize_cache_analytics
 def start_cache_analytics():
-    """Start cache analytics in a background task."""
-    asyncio.create_task(initialize_cache_analytics()) 
+    """Deprecated: Use initialize_cache_analytics instead."""
+    from utils.logger import log
+    log("start_cache_analytics is deprecated, use initialize_cache_analytics instead",
+        level="warning") 

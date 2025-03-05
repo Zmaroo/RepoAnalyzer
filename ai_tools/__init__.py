@@ -23,15 +23,13 @@ from utils.error_handling import (
     AsyncErrorBoundary
 )
 
-from .ai_interface import AIAssistant, ai_assistant
-from .code_understanding import CodeUnderstanding, code_understanding
-from .graph_capabilities import GraphAnalysis, graph_analysis
+# Import classes but not instances
+from .ai_interface import AIAssistant
+from .code_understanding import CodeUnderstanding
+from .graph_capabilities import GraphAnalysis
 
 __all__ = [
     'AIAssistant',
-    'ai_assistant',
     'CodeUnderstanding',
-    'code_understanding',
-    'GraphAnalysis',
-    'graph_analysis'
+    'GraphAnalysis'
 ]

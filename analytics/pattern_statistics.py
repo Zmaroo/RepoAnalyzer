@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from parsers.models import PatternType
 from utils.logger import log
 from utils.error_handling import ErrorBoundary, handle_errors
-from utils.cache import pattern_cache
+from utils.cache import cache_coordinator
 
 class PatternStatisticsType(Enum):
     """Types of pattern statistics that can be collected."""
@@ -586,7 +586,7 @@ class PatternStatisticsManager:
     async def _load_metrics_from_cache(self):
         """Load metrics from cache."""
         with ErrorBoundary("Failed to load pattern statistics from cache"):
-            cached_metrics = await pattern_cache.get_async("pattern_statistics:metrics")
+            cached_metrics = await cache_coordinator.pattern_cache.get_async("pattern_statistics:metrics")
             if cached_metrics:
                 self.metrics = cached_metrics
                 log.info(f"Loaded {len(self.metrics)} pattern metrics from cache")
@@ -594,7 +594,7 @@ class PatternStatisticsManager:
     async def _save_metrics_to_cache(self):
         """Save metrics to cache."""
         with ErrorBoundary("Failed to save pattern statistics to cache"):
-            await pattern_cache.set_async("pattern_statistics:metrics", self.metrics)
+            await cache_coordinator.pattern_cache.set_async("pattern_statistics:metrics", self.metrics)
             log.info(f"Saved {len(self.metrics)} pattern metrics to cache")
 
 # Global instance

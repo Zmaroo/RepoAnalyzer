@@ -170,5 +170,5 @@ class CodeUnderstanding:
         with ErrorBoundary("model cleanup"):
             self.graph_projections.close()
 
-# Global instance
-code_understanding = CodeUnderstanding() 
+# Do not create global instance until implementation is ready
+code_understanding = None 

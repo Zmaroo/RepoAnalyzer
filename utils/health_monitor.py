@@ -525,6 +525,15 @@ class HealthMonitor:
             else:
                 log(f"Unknown alert metric: {metric}", level="warning")
 
+    def cleanup(self):
+        """Clean up health monitor resources."""
+        try:
+            self.stop_monitoring()
+            # Save final health report
+            self.save_health_report()
+        except Exception as e:
+            log(f"Error cleaning up health monitor: {e}", level="error")
+
 # Context manager for monitoring operation health
 @contextmanager
 def monitor_operation(name: str, component: str, health_monitor: Optional['HealthMonitor'] = None):

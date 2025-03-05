@@ -12,6 +12,7 @@ import os
 import importlib
 from parsers.language_mapping import is_supported_language
 from utils.error_handling import ErrorBoundary
+from utils.cache import cache_coordinator
 
 # Try to import pattern statistics
 try:
@@ -219,7 +220,7 @@ class PatternProcessor:
         from parsers.models import PatternMatch
         import hashlib
         import asyncio
-        from utils.cache import ast_cache
+        from utils.cache import cache_coordinator
         
         start_time = time.time()
         
@@ -235,7 +236,7 @@ class PatternProcessor:
             cache_key = f"ast:{pattern.language_id}:{source_hash}"
             
             # Try to get from cache
-            cached_ast = asyncio.run(ast_cache.get_async(cache_key))
+            cached_ast = asyncio.run(cache_coordinator.ast_cache.get_async(cache_key))
             if cached_ast and "tree" in cached_ast:
                 log(f"Using cached AST for pattern processing", level="debug")
                 
@@ -254,7 +255,7 @@ class PatternProcessor:
                 cache_data = {
                     "tree": self._convert_tree_to_dict(tree.root_node)
                 }
-                asyncio.run(ast_cache.set_async(cache_key, cache_data))
+                asyncio.run(cache_coordinator.ast_cache.set_async(cache_key, cache_data))
                 log(f"AST cached for pattern processing", level="debug")
                 
             # Execute the tree-sitter query

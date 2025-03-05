@@ -10,7 +10,7 @@ from utils.error_handling import handle_errors, ProcessingError, ErrorBoundary
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from parsers.models import PatternMatch, ProcessedPattern
 from parsers.types import FileType, ParserType
-from utils.cache import ast_cache
+from utils.cache import cache_coordinator
 
 class TreeSitterError(ProcessingError):
     """Tree-sitter specific errors."""
@@ -43,7 +43,7 @@ class TreeSitterParser(BaseParser):
         cache_key = f"ast:{self.language_id}:{source_hash}"
         
         # First try to get from cache
-        cached_ast = await ast_cache.get_async(cache_key)
+        cached_ast = await cache_coordinator.get_async(cache_key)
         if cached_ast and "tree" in cached_ast:
             log(f"AST cache hit for {self.language_id}", level="debug")
             
@@ -82,7 +82,7 @@ class TreeSitterParser(BaseParser):
             
             # Cache the AST for future use
             cache_data = {"tree": ast_dict["tree"], "metadata": {"language": self.language_id}}
-            await ast_cache.set_async(cache_key, cache_data)
+            await cache_coordinator.set_async(cache_key, cache_data)
             log(f"AST cached for {self.language_id}", level="debug")
             
             return ast_dict

@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 from parsers.tree_sitter_parser import TreeSitterParser
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from parsers.types import FileType, ParserType
-from utils.cache import ast_cache
+from utils.cache import cache_coordinator
 
 class TestASTCache(unittest.TestCase):
     """Test cases for AST caching."""
@@ -15,7 +15,7 @@ class TestASTCache(unittest.TestCase):
     def setUp(self):
         """Set up the test case."""
         # Clear cache before each test
-        asyncio.run(ast_cache.clear_async())
+        asyncio.run(cache_coordinator.ast_cache.clear_async())
         
         # Choose a language that's widely supported
         self.parser = TreeSitterParser("python", FileType.CODE)

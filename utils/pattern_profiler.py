@@ -152,6 +152,15 @@ class PatternProfiler:
             self.compilation_count = {}
             self.total_compilation_time = 0.0
 
+    def cleanup(self):
+        """Clean up and save final report."""
+        try:
+            if self.enabled:
+                self.save_report()
+                self.reset()
+        except Exception as e:
+            log(f"Error cleaning up pattern profiler: {e}", level="error")
+
 # Global instance
 pattern_profiler = PatternProfiler()
 

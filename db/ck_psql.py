@@ -2,7 +2,7 @@ from db.psql import query, close_db_pool
 import asyncio
 from pprint import pprint
 from utils.error_handling import handle_async_errors, ErrorBoundary, PostgresError
-from utils.logging import log
+from utils.logger import log
 
 @handle_async_errors(error_types=[PostgresError])
 async def check_all_postgres_tables():

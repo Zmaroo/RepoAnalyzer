@@ -25,31 +25,87 @@ def _cleanup_on_exit() -> None:
     # Execute all registered shutdown handlers
     for handler in _shutdown_handlers:
         try:
-            handler()
+            # If handler is async, run it in a new event loop
+            if asyncio.iscoroutinefunction(handler):
+                asyncio.run(handler())
+            else:
+                handler()
         except Exception as e:
             log(f"Error in shutdown handler: {e}", level="error")
-    
-    # Clean up async tasks
-    cleanup_tasks()
     
     log("Cleanup completed", level="info")
 
 async def _initialize_components():
     """Initialize all application components asynchronously."""
     try:
-        # Start cache analytics
-        start_cache_analytics()
-        log("Cache analytics started", level="info")
+        # Initialize logging first
+        from utils.logger import logger
+        logger._initialize_logger()
+        log("Logging system initialized", level="info")
         
-        # Initialize other components here
-        # ...
+        # Initialize error handling
+        from utils.error_handling import ErrorAudit
+        ErrorAudit.analyze_codebase(os.getcwd())
+        log("Error handling initialized", level="info")
+        
+        # Initialize databases
+        from db.psql import init_db_pool
+        await init_db_pool()
+        log("PostgreSQL pool initialized", level="info")
+        
+        from db.neo4j_ops import create_schema_indexes_and_constraints
+        create_schema_indexes_and_constraints()
+        log("Neo4j schema initialized", level="info")
+        
+        # Initialize caching system in proper order
+        from utils.cache import initialize_caches, cleanup_caches, cache_coordinator
+        from utils.cache_analytics import initialize_cache_analytics, cache_analytics
+        
+        # Initialize base caching first
+        initialize_caches()
+        log("Base cache system initialized", level="info")
+        
+        # Initialize cache analytics with the coordinator
+        await initialize_cache_analytics(cache_coordinator)
+        log("Cache analytics initialized", level="info")
+        
+        # Initialize health monitoring
+        from utils.health_monitor import global_health_monitor
+        global_health_monitor.start_monitoring()
+        log("Health monitoring started", level="info")
+        
+        # Initialize pattern profiler
+        from utils.pattern_profiler import pattern_profiler
+        pattern_profiler.configure(sampling_rate=1.0, enabled=True)
+        log("Pattern profiler initialized", level="info")
+        
+        # Register cleanup handlers in reverse initialization order
+        from db.psql import close_db_pool
+        from db.connection import driver as neo4j_driver
+        
+        # Pattern profiler cleanup
+        register_shutdown_handler(pattern_profiler.cleanup)
+        
+        # Health monitoring cleanup
+        register_shutdown_handler(global_health_monitor.cleanup)
+        
+        # Cache system cleanup (should be after components that might use cache)
+        register_shutdown_handler(lambda: asyncio.run(cache_analytics.cleanup()))
+        register_shutdown_handler(lambda: asyncio.run(cleanup_caches()))
+        
+        # Database cleanup (should be last as other cleanups might need DB)
+        register_shutdown_handler(lambda: asyncio.run(close_db_pool()))
+        register_shutdown_handler(neo4j_driver.close)
+        
+        # Async tasks cleanup should be very last
+        register_shutdown_handler(cleanup_tasks)
         
         log("Application components initialized successfully", level="info")
     except Exception as e:
         log(f"Error initializing application components: {e}", level="error")
         raise
 
-def initialize_application():
+async def initialize_application():
     """Initialize the application and all its components."""
     try:
         log("Initializing application...", level="info")
@@ -57,9 +113,8 @@ def initialize_application():
         # Register the cleanup handler
         atexit.register(_cleanup_on_exit)
         
-        # Initialize components asynchronously
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(_initialize_components())
+        # Initialize components
+        await _initialize_components()
         
         log("Application initialized successfully", level="info")
         return True
@@ -68,6 +123,7 @@ def initialize_application():
         return False
 
 if __name__ == "__main__":
-    success = initialize_application()
+    loop = asyncio.get_event_loop()
+    success = loop.run_until_complete(initialize_application())
     if not success:
         sys.exit(1) 

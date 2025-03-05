@@ -8,8 +8,9 @@ import random
 from typing import Any, Optional, Set, Dict, List, Tuple, Callable, Awaitable, TypedDict
 from datetime import datetime, timedelta
 from utils.logger import log
-from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary
+from utils.error_handling import handle_errors, handle_async_errors, ErrorBoundary, CacheError
 from config import RedisConfig  # If we add Redis config later
+from parsers.models import FileClassification
 
 # Try to import redis; if not available, mark it accordingly
 try:
@@ -131,17 +132,144 @@ class CacheMetrics:
 # Global metrics instance
 cache_metrics = CacheMetrics()
 
+class UnifiedCache:
+    """Enhanced caching implementation with better coordination."""
+    
+    def __init__(
+        self, 
+        name: str, 
+        ttl: int = 3600,
+        min_ttl: int = 300,
+        max_ttl: int = 86400,  # 24 hours
+        adaptive_ttl: bool = True
+    ):
+        self.name = name
+        self.default_ttl = ttl
+        self.min_ttl = min_ttl
+        self.max_ttl = max_ttl
+        self.adaptive_ttl = adaptive_ttl
+        self._local_cache: Dict[str, Any] = {}
+        self._local_timestamps: Dict[str, datetime] = {}
+        
+    @handle_async_errors
+    async def get_async(self, key: str) -> Optional[Any]:
+        """Async get operation with metrics tracking."""
+        value = self._get_local(key)
+        hit = value is not None
+        
+        # Track metrics
+        if hit:
+            await cache_metrics.increment(self.name, "hits")
+        else:
+            await cache_metrics.increment(self.name, "misses")
+            
+        return value
+    
+    @handle_async_errors
+    async def set_async(self, key: str, value: Any, ttl: Optional[int] = None):
+        """Async set operation with metrics tracking."""
+        # Track metrics
+        await cache_metrics.increment(self.name, "sets")
+        
+        effective_ttl = ttl or self.default_ttl
+        self._set_local(key, value, effective_ttl)
+    
+    @handle_async_errors
+    async def clear_async(self):
+        """Async cache clear with metrics tracking."""
+        evicted = len(self._local_cache)
+        self._local_cache.clear()
+        self._local_timestamps.clear()
+        
+        # Track metrics
+        await cache_metrics.increment(self.name, "evictions", evicted)
+    
+    @handle_async_errors
+    async def clear_pattern_async(self, pattern: str):
+        """Async pattern-based cache clear with metrics tracking."""
+        # Clear matching local cache entries
+        local_keys = [k for k in self._local_cache if pattern in k]
+        evicted = len(local_keys)
+        for k in local_keys:
+            del self._local_cache[k]
+            del self._local_timestamps[k]
+        
+        # Track metrics
+        await cache_metrics.increment(self.name, "evictions", evicted)
+    
+    def _get_local(self, key: str) -> Optional[Any]:
+        """Get from local cache with TTL check."""
+        if key in self._local_cache:
+            timestamp = self._local_timestamps.get(key)
+            if timestamp and datetime.now() - timestamp < timedelta(seconds=self.default_ttl):
+                return self._local_cache[key]
+            else:
+                del self._local_cache[key]
+                del self._local_timestamps[key]
+                # Track eviction
+                asyncio.create_task(cache_metrics.increment(self.name, "evictions"))
+        return None
+    
+    def _set_local(self, key: str, value: Any, ttl: int):
+        """Set in local cache with timestamp."""
+        self._local_cache[key] = value
+        self._local_timestamps[key] = datetime.now()
+
+def create_cache(name: str, ttl: int = 3600, adaptive_ttl: bool = True) -> UnifiedCache:
+    """Create and register a new cache instance."""
+    cache = UnifiedCache(name, ttl, adaptive_ttl=adaptive_ttl)
+    cache_coordinator.register_cache(name, cache)
+    return cache
+
 class CacheCoordinator:
     """Coordinates caching across different subsystems."""
     
     def __init__(self):
         self._caches: Dict[str, 'UnifiedCache'] = {}
         self._lock = asyncio.Lock()
+        self._initialized = False
+        
+        # Cache instances
+        self._repository_cache: Optional[UnifiedCache] = None
+        self._search_cache: Optional[UnifiedCache] = None
+        self._embedding_cache: Optional[UnifiedCache] = None
+        self._pattern_cache: Optional[UnifiedCache] = None
+        self._parser_cache: Optional[UnifiedCache] = None
+        self._graph_cache: Optional[UnifiedCache] = None
+        self._ast_cache: Optional[UnifiedCache] = None
+        self._general_cache: Optional[UnifiedCache] = None
         
     def register_cache(self, name: str, cache: 'UnifiedCache'):
         """Register a cache instance."""
         self._caches[name] = cache
         cache_metrics.register_cache(name)
+        
+    def initialize(self):
+        """Initialize all cache instances."""
+        if self._initialized:
+            return
+            
+        # Create cache instances
+        self._repository_cache = UnifiedCache("repositories", ttl=3600)  # 1 hour
+        self._search_cache = UnifiedCache("search", ttl=300)  # 5 minutes
+        self._embedding_cache = UnifiedCache("embeddings", ttl=86400)  # 24 hours
+        self._pattern_cache = UnifiedCache("patterns", ttl=3600)  # 1 hour 
+        self._parser_cache = UnifiedCache("parsers", ttl=1800)  # 30 minutes
+        self._graph_cache = UnifiedCache("graph", ttl=3600)  # 1 hour
+        self._ast_cache = UnifiedCache("ast", ttl=7200)  # 2 hours
+        self._general_cache = UnifiedCache("general", ttl=3600)  # 1 hour
+        
+        # Register caches
+        self.register_cache("repositories", self._repository_cache)
+        self.register_cache("search", self._search_cache)
+        self.register_cache("embeddings", self._embedding_cache)
+        self.register_cache("patterns", self._pattern_cache)
+        self.register_cache("parsers", self._parser_cache)
+        self.register_cache("graph", self._graph_cache)
+        self.register_cache("ast", self._ast_cache)
+        self.register_cache("general", self._general_cache)
+        
+        self._initialized = True
         
     async def invalidate_all(self):
         """Invalidate all registered caches."""
@@ -162,328 +290,121 @@ class CacheCoordinator:
     async def log_metrics(self):
         """Log metrics for all registered caches."""
         await cache_metrics.log_stats()
+        
+    # Cache instance properties
+    @property
+    def repository_cache(self) -> UnifiedCache:
+        """Get repository cache instance."""
+        if not self._initialized:
+            raise RuntimeError("Cache coordinator not initialized")
+        return self._repository_cache
+    
+    @property
+    def search_cache(self) -> UnifiedCache:
+        """Get search cache instance."""
+        if not self._initialized:
+            raise RuntimeError("Cache coordinator not initialized")
+        return self._search_cache
+    
+    @property
+    def embedding_cache(self) -> UnifiedCache:
+        """Get embedding cache instance."""
+        if not self._initialized:
+            raise RuntimeError("Cache coordinator not initialized")
+        return self._embedding_cache
+    
+    @property
+    def pattern_cache(self) -> UnifiedCache:
+        """Get pattern cache instance."""
+        if not self._initialized:
+            raise RuntimeError("Cache coordinator not initialized")
+        return self._pattern_cache
+    
+    @property
+    def parser_cache(self) -> UnifiedCache:
+        """Get parser cache instance."""
+        if not self._initialized:
+            raise RuntimeError("Cache coordinator not initialized")
+        return self._parser_cache
+    
+    @property
+    def graph_cache(self) -> UnifiedCache:
+        """Get graph cache instance."""
+        if not self._initialized:
+            raise RuntimeError("Cache coordinator not initialized")
+        return self._graph_cache
+    
+    @property
+    def ast_cache(self) -> UnifiedCache:
+        """Get AST cache instance."""
+        if not self._initialized:
+            raise RuntimeError("Cache coordinator not initialized")
+        return self._ast_cache
+    
+    @property
+    def cache(self) -> UnifiedCache:
+        """Get general cache instance."""
+        if not self._initialized:
+            raise RuntimeError("Cache coordinator not initialized")
+        return self._general_cache
 
-# Cache key usage tracking for adaptive TTL
-class KeyUsageTracker:
-    """Tracks usage patterns of cache keys for adaptive TTL."""
-    
-    def __init__(self, sample_rate: float = 0.1, max_tracked_keys: int = 10000):
-        self._access_counts: Dict[str, int] = {}
-        self._last_accessed: Dict[str, float] = {}
-        self._sample_rate = sample_rate  # Only track a percentage of accesses to reduce overhead
-        self._max_tracked_keys = max_tracked_keys
-        self._lock = asyncio.Lock()
-    
-    async def record_access(self, key: str):
-        """Record a key access, sampling to reduce performance impact."""
-        # Only track a percentage of accesses to reduce overhead
-        if random.random() > self._sample_rate:
-            return
-            
-        async with self._lock:
-            # If we're tracking too many keys, remove the least recently used
-            if len(self._access_counts) >= self._max_tracked_keys:
-                self._prune_least_used()
-                
-            # Update access count and timestamp
-            self._access_counts[key] = self._access_counts.get(key, 0) + 1
-            self._last_accessed[key] = time.time()
-    
-    def _prune_least_used(self):
-        """Remove the least recently used keys to keep memory usage controlled."""
-        if not self._last_accessed:
-            return
-            
-        # Sort by last access time and remove oldest 10%
-        sorted_keys = sorted(self._last_accessed.items(), key=lambda x: x[1])
-        keys_to_remove = sorted_keys[:max(int(len(sorted_keys) * 0.1), 1)]
-        
-        for key, _ in keys_to_remove:
-            if key in self._access_counts:
-                del self._access_counts[key]
-            if key in self._last_accessed:
-                del self._last_accessed[key]
-    
-    async def get_popular_keys(self, limit: int = 100) -> List[Tuple[str, int]]:
-        """Get the most frequently accessed keys for cache warming."""
-        async with self._lock:
-            # Sort by access count (descending)
-            sorted_keys = sorted(
-                self._access_counts.items(), 
-                key=lambda x: x[1], 
-                reverse=True
-            )[:limit]
-            return sorted_keys
-    
-    def get_adaptive_ttl(self, key: str, default_ttl: int, min_ttl: int, max_ttl: int) -> int:
-        """
-        Calculate an adaptive TTL based on key usage pattern.
-        
-        More frequently accessed keys get longer TTLs, up to max_ttl.
-        """
-        access_count = self._access_counts.get(key, 0)
-        
-        if access_count == 0:
-            return default_ttl
-            
-        # Simple adaptive algorithm: scale TTL based on access frequency
-        # More sophisticated algorithms could be implemented
-        if access_count <= 5:
-            return default_ttl
-        elif access_count <= 20:
-            return min(default_ttl * 2, max_ttl)
-        else:
-            return max_ttl
-
-class UnifiedCache:
-    """Enhanced caching implementation with better coordination."""
-    
-    def __init__(
-        self, 
-        name: str, 
-        ttl: int = 3600,
-        min_ttl: int = 300,
-        max_ttl: int = 86400,  # 24 hours
-        adaptive_ttl: bool = True
-    ):
-        self.name = name
-        self.default_ttl = ttl
-        self.min_ttl = min_ttl
-        self.max_ttl = max_ttl
-        self.adaptive_ttl = adaptive_ttl
-        self._local_cache: Dict[str, Any] = {}
-        self._local_timestamps: Dict[str, datetime] = {}
-        self._usage_tracker = KeyUsageTracker()
-        
-        # Redis configuration
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        self.use_redis = redis_url and redis_url.lower() != "none"
-        
-        if self.use_redis:
-            try:
-                import redis
-                self._redis = redis.from_url(redis_url)
-                self._redis_available = True
-            except (ImportError, Exception) as e:
-                log(f"Redis not available for cache {name}: {e}", level="warning")
-                self._redis_available = False
-                self.use_redis = False
-        else:
-            self._redis_available = False
-        
-    @handle_async_errors
-    async def get_async(self, key: str) -> Optional[Any]:
-        """Async get operation with metrics tracking."""
-        value = None
-        hit = False
-        
-        if self.use_redis:
-            with ErrorBoundary("retrieving from Redis", error_types=(redis.RedisError, ConnectionError, TimeoutError, json.JSONDecodeError)):
-                value = await asyncio.to_thread(self._redis.get, f"{self.name}:{key}")
-                if value:
-                    value = json.loads(value)
-                    hit = True
-            
-            if value is None:  # Fallback to local cache if Redis failed
-                value = self._get_local(key)
-                hit = value is not None
-        else:
-            value = self._get_local(key)
-            hit = value is not None
-        
-        # Track metrics
-        if hit:
-            await cache_metrics.increment(self.name, "hits")
-        else:
-            await cache_metrics.increment(self.name, "misses")
-        
-        # Record access for adaptive TTL
-        if self.adaptive_ttl and hit:
-            await self._usage_tracker.record_access(key)
-            
-        return value
-    
-    @handle_async_errors
-    async def set_async(self, key: str, value: Any, ttl: Optional[int] = None):
-        """Async set operation with metrics tracking."""
-        # Track metrics
-        await cache_metrics.increment(self.name, "sets")
-        
-        # Calculate adaptive TTL if enabled
-        if self.adaptive_ttl and ttl is None:
-            effective_ttl = self._usage_tracker.get_adaptive_ttl(
-                key, self.default_ttl, self.min_ttl, self.max_ttl
-            )
-        else:
-            effective_ttl = ttl or self.default_ttl
-            
-        if self.use_redis:
-            with ErrorBoundary("storing in Redis", error_types=(redis.RedisError, ConnectionError, TimeoutError, TypeError)):
-                await asyncio.to_thread(
-                    self._redis.set,
-                    f"{self.name}:{key}",
-                    json.dumps(value),
-                    ex=effective_ttl
-                )
-            # If Redis failed, fall back to local cache
-            if not self.use_redis:
-                self._set_local(key, value, effective_ttl)
-        else:
-            self._set_local(key, value, effective_ttl)
-    
-    @handle_async_errors
-    async def clear_async(self):
-        """Async cache clear with metrics tracking."""
-        evicted = 0
-        
-        if self.use_redis:
-            with ErrorBoundary("clearing Redis cache", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
-                pattern = f"{self.name}:*"
-                keys = await asyncio.to_thread(self._redis.keys, pattern)
-                if keys:
-                    evicted = len(keys)
-                    await asyncio.to_thread(self._redis.delete, *keys)
-        
-        # Clear local cache
-        evicted += len(self._local_cache)
-        self._local_cache.clear()
-        self._local_timestamps.clear()
-        
-        # Track metrics
-        await cache_metrics.increment(self.name, "evictions", evicted)
-    
-    @handle_async_errors
-    async def clear_pattern_async(self, pattern: str):
-        """Async pattern-based cache clear with metrics tracking."""
-        evicted = 0
-        
-        if self.use_redis:
-            with ErrorBoundary("clearing Redis cache pattern", error_types=(redis.RedisError, ConnectionError, TimeoutError)):
-                full_pattern = f"{self.name}:{pattern}"
-                keys = await asyncio.to_thread(self._redis.keys, full_pattern)
-                if keys:
-                    evicted = len(keys)
-                    await asyncio.to_thread(self._redis.delete, *keys)
-        
-        # Clear matching local cache entries
-        local_keys = [k for k in self._local_cache if pattern in k]
-        evicted += len(local_keys)
-        for k in local_keys:
-            del self._local_cache[k]
-            del self._local_timestamps[k]
-        
-        # Track metrics
-        await cache_metrics.increment(self.name, "evictions", evicted)
-    
-    async def warmup(self, keys_values: Dict[str, Any], ttl: Optional[int] = None):
-        """
-        Pre-populate the cache with key-value pairs.
-        
-        Args:
-            keys_values: Dictionary of key-value pairs to cache
-            ttl: Optional TTL override for these values
-        """
-        for key, value in keys_values.items():
-            await self.set_async(key, value, ttl)
-        
-        log(f"Warmed up cache '{self.name}' with {len(keys_values)} entries", level="info")
-    
-    @handle_async_errors
-    async def warmup_from_function(
-        self,
-        keys: List[str],
-        fetch_func: Callable[[List[str]], Awaitable[Dict[str, Any]]],
-        ttl: Optional[int] = None
-    ):
-        """
-        Pre-populate the cache by fetching values for the specified keys.
-        
-        Args:
-            keys: List of keys to warm up
-            fetch_func: Async function that takes a list of keys and returns a dict of results
-            ttl: Optional TTL override for these values
-        """
-        if not keys:
-            return
-            
-        with ErrorBoundary(f"warming up cache '{self.name}'"):
-            # Fetch values for the given keys
-            values = await fetch_func(keys)
-            
-            # Only cache values that were successfully retrieved
-            await self.warmup(values, ttl)
-    
-    @handle_async_errors
-    async def auto_warmup(
-        self,
-        fetch_func: Callable[[List[str]], Awaitable[Dict[str, Any]]],
-        limit: int = 50
-    ):
-        """
-        Automatically warm up cache with the most popular keys.
-        
-        Args:
-            fetch_func: Async function that takes a list of keys and returns a dict of results
-            limit: Maximum number of keys to warm up
-        """
-        with ErrorBoundary(f"auto-warming cache '{self.name}'"):
-            # Get most popular keys
-            popular_keys = await self._usage_tracker.get_popular_keys(limit)
-            
-            if popular_keys:
-                keys = [k for k, _ in popular_keys]
-                await self.warmup_from_function(keys, fetch_func)
-                log(f"Auto-warmed up {len(keys)} popular keys for cache '{self.name}'", level="info")
-    
-    def _get_local(self, key: str) -> Optional[Any]:
-        """Get from local cache with TTL check."""
-        if key in self._local_cache:
-            timestamp = self._local_timestamps.get(key)
-            if timestamp and datetime.now() - timestamp < timedelta(seconds=self.default_ttl):
-                return self._local_cache[key]
-            else:
-                del self._local_cache[key]
-                del self._local_timestamps[key]
-                # Track eviction
-                asyncio.create_task(cache_metrics.increment(self.name, "evictions"))
-        return None
-    
-    def _set_local(self, key: str, value: Any, ttl: int):
-        """Set in local cache with timestamp."""
-        self._local_cache[key] = value
-        self._local_timestamps[key] = datetime.now()
-
-# Global instances
+# Global coordinator instance
 cache_coordinator = CacheCoordinator()
 
-def create_cache(name: str, ttl: int = 3600, adaptive_ttl: bool = True) -> UnifiedCache:
-    """Create and register a new cache instance."""
-    cache = UnifiedCache(name, ttl, adaptive_ttl=adaptive_ttl)
-    cache_coordinator.register_cache(name, cache)
-    return cache
+def initialize_caches():
+    """Initialize all cache instances."""
+    cache_coordinator.initialize()
+    return cache_coordinator
 
-# Create default caches
-parser_cache = create_cache("parser", ttl=3600)
-embedding_cache = create_cache("embedding", ttl=7200)
-query_cache = create_cache("query", ttl=1800)
-# Add a general cache instance for modules that need a default cache
-cache = create_cache("general", ttl=3600)
+async def cleanup_caches():
+    """Cleanup all caches."""
+    try:
+        await cache_coordinator.invalidate_all()
+    except Exception as e:
+        log(f"Error cleaning up caches: {e}", level="error")
 
-# Global cache instances with appropriate TTLs
-repository_cache = UnifiedCache("repositories", ttl=3600)  # 1 hour
-search_cache = UnifiedCache("search", ttl=300)  # 5 minutes
-embedding_cache = UnifiedCache("embeddings", ttl=86400)  # 24 hours
-pattern_cache = UnifiedCache("patterns", ttl=3600)  # 1 hour 
-parser_cache = UnifiedCache("parsers", ttl=1800)  # 30 minutes
-graph_cache = UnifiedCache("graph", ttl=3600)  # 1 hour
-ast_cache = UnifiedCache("ast", ttl=7200)  # 2 hours
+@handle_async_errors
+async def warm_common_patterns(limit: int = 50) -> bool:
+    """Warm the pattern cache with commonly used patterns."""
+    from parsers.pattern_processor import pattern_processor
+    
+    with ErrorBoundary("warming common patterns"):
+        # Get common patterns from pattern processor
+        patterns = pattern_processor.COMMON_PATTERNS
+        if not patterns:
+            log("No common patterns found for warming", level="warning")
+            return False
+        
+        # Convert patterns to cache format
+        cache_patterns = {
+            name: {'pattern': pattern.pattern if hasattr(pattern, 'pattern') else str(pattern)}
+            for name, pattern in patterns.items()
+        }
+        
+        await pattern_cache.warmup(cache_patterns)
+        log(f"Warmed pattern cache with {len(patterns)} common patterns", level="info")
+        return True
 
-# Register caches with coordinator
-cache_coordinator = CacheCoordinator()
-cache_coordinator.register_cache("repositories", repository_cache)
-cache_coordinator.register_cache("search", search_cache)
-cache_coordinator.register_cache("embeddings", embedding_cache)
-cache_coordinator.register_cache("patterns", pattern_cache)
-cache_coordinator.register_cache("parsers", parser_cache)
-cache_coordinator.register_cache("graph", graph_cache)
-cache_coordinator.register_cache("ast", ast_cache) 
+@handle_async_errors
+async def warm_language_specific_patterns(language: str) -> bool:
+    """Warm the pattern cache with patterns specific to a programming language."""
+    from parsers.pattern_processor import pattern_processor
+    
+    with ErrorBoundary(f"warming patterns for language {language}"):
+        # Get language-specific patterns
+        patterns = pattern_processor.get_patterns_for_file(
+            FileClassification(language_id=language)
+        )
+        if not patterns:
+            log(f"No patterns found for language '{language}'", level="warning")
+            return False
+        
+        # Convert patterns to cache format
+        cache_patterns = {
+            name: {'pattern': pattern.pattern if hasattr(pattern, 'pattern') else str(pattern)}
+            for name, pattern in patterns.items()
+        }
+        
+        await pattern_cache.warmup(cache_patterns)
+        log(f"Warmed pattern cache with {len(patterns)} patterns for language '{language}'", level="info")
+        return True 

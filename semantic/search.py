@@ -21,7 +21,7 @@ from db.psql import query
 from typing import List, Dict, Optional
 import torch
 from utils.logger import log
-from utils.cache import cache
+from utils.cache import cache_coordinator
 from embedding.embedding_models import code_embedder, doc_embedder
 from ai_tools.graph_capabilities import graph_analysis
 from parsers.models import (

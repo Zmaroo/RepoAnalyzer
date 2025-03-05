@@ -232,5 +232,5 @@ class GraphAnalysis:
                 except Exception as e:
                     log(f"Error closing projections: {e}", level="error")
 
-# Global instance
-graph_analysis = GraphAnalysis() 
+# Do not create global instance until implementation is ready
+graph_analysis = None 

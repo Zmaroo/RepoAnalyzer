@@ -10,6 +10,7 @@ from parsers.models import PatternType, QueryPattern
 from utils.logger import log
 from .parser_interfaces import BaseParserInterface
 from utils.error_handling import ErrorBoundary
+from utils.cache import cache_coordinator
 
 class BaseParser(BaseParserInterface):
     """Base implementation for parsers.

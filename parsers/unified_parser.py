@@ -33,7 +33,7 @@ from parsers.language_mapping import (
 from utils.error_handling import handle_async_errors, ParsingError, AsyncErrorBoundary
 from utils.encoding import encode_query_pattern
 from utils.logger import log
-from utils.cache import parser_cache
+from utils.cache import cache_coordinator
 
 class UnifiedParser:
     """Unified parsing interface."""
@@ -43,7 +43,7 @@ class UnifiedParser:
         """Parse file content using appropriate parser."""
         # Check if the complete parsed result is already cached
         parse_cache_key = f"parse:{file_path}:{hash(content)}"
-        cached_result = await parser_cache.get_async(parse_cache_key)
+        cached_result = await cache_coordinator.get_async(parse_cache_key)
         if cached_result:
             return ParserResult(**cached_result)
         
@@ -99,7 +99,7 @@ class UnifiedParser:
 
             # Cache the complete parsed result
             cached_result = asdict(result)
-            await parser_cache.set_async(parse_cache_key, cached_result)
+            await cache_coordinator.set_async(parse_cache_key, cached_result)
             return result
         
         return None

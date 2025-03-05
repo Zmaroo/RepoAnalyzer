@@ -541,5 +541,5 @@ class AIAssistant:
         from semantic.search import semantic_search
         return await semantic_search(query, "code", repo_id, limit)
 
-# Global instance
-ai_assistant = AIAssistant()
+# Do not create global instance until implementation is ready
+ai_assistant = None
