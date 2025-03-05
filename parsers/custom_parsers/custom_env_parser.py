@@ -6,16 +6,7 @@ Comments (lines starting with #) are skipped (or can be used as documentation).
 """
 
 from .base_imports import *
-from typing import Dict, List, Any, Optional, Set, Tuple
-import asyncio
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.env import ENV_PATTERNS
-from utils.logger import log
-from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.shutdown import register_shutdown_handler
 import re
-from parsers.custom_parsers.custom_parser_mixin import CustomParserMixin
 
 class EnvParser(BaseParser, CustomParserMixin):
     """Parser for .env files."""
@@ -23,9 +14,6 @@ class EnvParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "env", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        self.patterns = self._compile_patterns(ENV_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -35,6 +23,7 @@ class EnvParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("ENV parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("ENV parser initialized", level="info")
                     return True

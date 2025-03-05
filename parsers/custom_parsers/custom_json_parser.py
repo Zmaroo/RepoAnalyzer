@@ -1,35 +1,44 @@
-"""Custom parser for JSON files with enhanced documentation and pattern extraction."""
-
 from .base_imports import *
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory, ParserResult, ParserConfig
-from parsers.query_patterns.json import JSON_PATTERNS
-from utils.logger import log
-from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.shutdown import register_shutdown_handler
 import json
 import re
 from collections import Counter
-import asyncio
 
-class JsonParser(BaseParser):
+
+class JsonParser(BaseParser, CustomParserMixin):
     """Parser for JSON files with enhanced documentation and structure analysis."""
 
     def __init__(self, language_id: str = "json", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        self.patterns = self._compile_patterns(JSON_PATTERNS)
+        BaseParser.__init__(self, language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.DOCUMENTATION,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
 
     async def initialize(self) -> bool:
         """Initialize parser resources."""
         if not self._initialized:
             try:
-                # No special initialization needed yet
-                self._initialized = True
-                log("JSON parser initialized", level="info")
-                return True
+                async with AsyncErrorBoundary("JSON parser initialization"):
+                    # Initialize base resources
+                    await self._initialize_cache(self.language_id)
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
+                    self._initialized = True
+                    log("JSON parser initialized", level="info")
+                    return True
             except Exception as e:
                 log(f"Error initializing JSON parser: {e}", level="error")
                 raise
@@ -597,14 +606,178 @@ class JsonParser(BaseParser):
             
         return dict(type_counter)
 
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process JSON with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("JSON AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse JSON"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in JSON AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code understanding capability."""
+        understanding = {}
+        
+        # Analyze structure
+        understanding["structure"] = {
+            "type": ast.get("type"),
+            "depth": ast.get("metadata", {}).get("max_depth", 0),
+            "child_count": len(ast.get("children", [])),
+            "schema_type": ast.get("schema_type")
+        }
+        
+        # Analyze patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze naming conventions
+        understanding["naming"] = await self._analyze_naming_conventions(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with code generation capability."""
+        suggestions = []
+        
+        # Generate schema suggestions
+        if schema_suggestions := await self._generate_schema_suggestions(ast):
+            suggestions.extend(schema_suggestions)
+        
+        # Generate structure suggestions
+        if structure_suggestions := await self._generate_structure_suggestions(ast):
+            suggestions.extend(structure_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code modification capability."""
+        modifications = {}
+        
+        # Suggest structure improvements
+        if improvements := await self._suggest_structure_improvements(ast):
+            modifications["structure_improvements"] = improvements
+        
+        # Suggest naming improvements
+        if naming := await self._suggest_naming_improvements(ast):
+            modifications["naming_improvements"] = naming
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code review capability."""
+        review = {}
+        
+        # Review structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review patterns
+        if pattern_review := await self._review_patterns(ast):
+            review["patterns"] = pattern_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn naming patterns
+        if naming_patterns := await self._learn_naming_patterns(ast):
+            patterns.extend(naming_patterns)
+        
+        return patterns
+
     async def cleanup(self):
-        """Clean up JSON parser resources."""
+        """Clean up parser resources."""
         try:
-            # Cancel and clean up any pending tasks
+            # Clean up base resources
+            await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
             self._initialized = False

@@ -1,24 +1,15 @@
 """Custom parser for plaintext with enhanced documentation and pattern extraction features."""
 
 from .base_imports import *
-import asyncio
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.plaintext import PLAINTEXT_PATTERNS
-from utils.logger import log
-import re
 from collections import Counter
-from utils.error_handling import handle_errors, handle_async_errors, AsyncErrorBoundary, ProcessingError, ParsingError, ErrorSeverity
-from utils.shutdown import register_shutdown_handler
+import re
 
-class PlaintextParser(BaseParser):
+class PlaintextParser(BaseParser, CustomParserMixin):
     """Parser for plaintext files with enhanced pattern extraction capabilities."""
     
     def __init__(self, language_id: str = "plaintext", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
-        self.patterns = self._compile_patterns(PLAINTEXT_PATTERNS)
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
+        BaseParser.__init__(self, language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         register_shutdown_handler(self.cleanup)
 
     @handle_async_errors(error_types=(Exception,))
@@ -28,6 +19,7 @@ class PlaintextParser(BaseParser):
             try:
                 async with AsyncErrorBoundary("Plaintext parser initialization"):
                     # No special initialization needed yet
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("Plaintext parser initialized", level="info")
                     return True

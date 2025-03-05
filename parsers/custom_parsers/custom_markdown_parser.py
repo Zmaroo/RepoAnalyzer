@@ -1,6 +1,7 @@
 """Custom parser for Markdown with enhanced documentation features."""
 
 from .base_imports import *
+import re
 
 class MarkdownParser(BaseParser, CustomParserMixin):
     """Parser for Markdown files."""
@@ -10,7 +11,6 @@ class MarkdownParser(BaseParser, CustomParserMixin):
         CustomParserMixin.__init__(self)
         self._initialized = False
         self._pending_tasks: Set[asyncio.Future] = set()
-        self.patterns = self._compile_patterns(MARKDOWN_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -20,6 +20,7 @@ class MarkdownParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("Markdown parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("Markdown parser initialized", level="info")
                     return True

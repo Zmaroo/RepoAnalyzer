@@ -11,9 +11,15 @@ class CobaltParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "cobalt", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
-        self.patterns = self._compile_patterns(COBALT_PATTERNS)
         self._initialized = False
         self._pending_tasks: Set[asyncio.Future] = set()
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -23,6 +29,15 @@ class CobaltParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("Cobalt parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("Cobalt parser initialized", level="info")
                     return True
@@ -31,10 +46,196 @@ class CobaltParser(BaseParser, CustomParserMixin):
                 raise
         return True
 
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process Cobalt code with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("Cobalt AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse Cobalt code"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in Cobalt AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code understanding capability."""
+        understanding = {}
+        
+        # Analyze code structure
+        understanding["structure"] = {
+            "functions": self._extract_function_patterns(ast),
+            "classes": self._extract_class_patterns(ast),
+            "variables": self._extract_variable_patterns(ast)[0]
+        }
+        
+        # Analyze code patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze code style
+        understanding["style"] = await self._analyze_code_style(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with code generation capability."""
+        suggestions = []
+        
+        # Generate function suggestions
+        if function_suggestions := await self._generate_function_suggestions(ast):
+            suggestions.extend(function_suggestions)
+        
+        # Generate class suggestions
+        if class_suggestions := await self._generate_class_suggestions(ast):
+            suggestions.extend(class_suggestions)
+        
+        # Generate error handling suggestions
+        if error_suggestions := await self._generate_error_handling_suggestions(ast):
+            suggestions.extend(error_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code modification capability."""
+        modifications = {}
+        
+        # Suggest code improvements
+        if improvements := await self._suggest_code_improvements(ast):
+            modifications["code_improvements"] = improvements
+        
+        # Suggest refactoring opportunities
+        if refactoring := await self._suggest_refactoring(ast):
+            modifications["refactoring"] = refactoring
+        
+        # Suggest optimization opportunities
+        if optimization := await self._suggest_optimization(ast):
+            modifications["optimization"] = optimization
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code review capability."""
+        review = {}
+        
+        # Review code structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review code style
+        if style_review := await self._review_style(ast):
+            review["style"] = style_review
+        
+        # Review error handling
+        if error_review := await self._review_error_handling(ast):
+            review["error_handling"] = error_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn code structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn coding style patterns
+        if style_patterns := await self._learn_style_patterns(ast):
+            patterns.extend(style_patterns)
+        
+        # Learn error handling patterns
+        if error_patterns := await self._learn_error_handling_patterns(ast):
+            patterns.extend(error_patterns)
+        
+        return patterns
+
     async def cleanup(self):
         """Clean up parser resources."""
         try:
+            # Clean up base resources
             await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
             log("Cobalt parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up Cobalt parser: {e}", level="error")
@@ -131,12 +332,11 @@ class CobaltParser(BaseParser, CustomParserMixin):
                 # Look for declarations that open new scopes.
                 for pattern_name in ['function', 'class', 'namespace']:
                     if pattern_name in self.patterns and (match := self.patterns[pattern_name].match(line)):
-                        node_data = COBALT_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
                         node = self._create_node(
                             pattern_name,
                             line_start,
                             None,  # End point to be set when scope closes.
-                            **node_data
+                            **self.patterns[pattern_name].extract(match)
                         )
                         if current_doc:
                             node.metadata["documentation"] = "\n".join(current_doc)
@@ -169,16 +369,11 @@ class CobaltParser(BaseParser, CustomParserMixin):
                     continue
                 
                 if match := pattern.match(line):
-                    category = next(
-                        cat for cat, patterns in COBALT_PATTERNS.items()
-                        if pattern_name in patterns
-                    )
-                    node_data = COBALT_PATTERNS[category][pattern_name].extract(match)
                     node = self._create_node(
                         pattern_name,
                         line_start,
                         line_end,
-                        **node_data
+                        **pattern.extract(match)
                     )
                     current_scope[-1].children.append(node)
                     break

@@ -42,6 +42,84 @@ class TransactionCoordinator:
         self.neo4j_transaction = None
         self.pg_conn = None
         self.neo4j_session = None
+        self._ai_operation_stats = {
+            "total_transactions": 0,
+            "pattern_transactions": 0,
+            "ai_enhanced_transactions": 0,
+            "failed_transactions": 0
+        }
+    
+    async def track_ai_operation(self, operation_type: str) -> None:
+        """Track AI operation statistics."""
+        self._ai_operation_stats["total_transactions"] += 1
+        if operation_type == "pattern":
+            self._ai_operation_stats["pattern_transactions"] += 1
+        if operation_type == "ai_enhanced":
+            self._ai_operation_stats["ai_enhanced_transactions"] += 1
+    
+    async def _start_postgres(self) -> None:
+        """Start PostgreSQL transaction with AI operation settings."""
+        if not self.pg_conn:
+            self.pg_conn = await connection_manager.get_connection()
+            # Configure for AI operations
+            await self.pg_conn.execute("""
+                SET SESSION statement_timeout = '300s';  -- 5 minutes for AI operations
+                SET SESSION idle_in_transaction_session_timeout = '60s';
+            """)
+        self.pg_transaction = self.pg_conn.transaction()
+        await self.pg_transaction.start()
+    
+    async def _start_neo4j(self) -> None:
+        """Start Neo4j transaction with AI operation settings."""
+        if not self.neo4j_session:
+            self.neo4j_session = await connection_manager.get_session()
+        self.neo4j_transaction = await self.neo4j_session.begin_transaction(
+            timeout=300,  # 5 minutes for AI operations
+            metadata={"type": "ai_pattern_processor"}
+        )
+    
+    async def track_pattern_change(
+        self,
+        pattern_id: int,
+        operation_type: str = "update",
+        is_ai_enhanced: bool = False
+    ) -> None:
+        """Track pattern changes for cache invalidation."""
+        await cache_coordinator.track_change(f"pattern:{pattern_id}")
+        if is_ai_enhanced:
+            await cache_coordinator.track_change(f"ai_pattern:{pattern_id}")
+        await self.track_ai_operation("pattern" if not is_ai_enhanced else "ai_enhanced")
+    
+    async def _invalidate_caches(self) -> None:
+        """Invalidate relevant caches after transaction."""
+        try:
+            changes = await cache_coordinator.get_tracked_changes()
+            for change in changes:
+                if change.startswith("pattern:"):
+                    pattern_id = change.split(":")[1]
+                    await cache_coordinator.invalidate(f"pattern_cache:{pattern_id}")
+                    await cache_coordinator.invalidate(f"pattern_metrics:{pattern_id}")
+                elif change.startswith("ai_pattern:"):
+                    pattern_id = change.split(":")[1]
+                    await cache_coordinator.invalidate(f"ai_insights:{pattern_id}")
+                    await cache_coordinator.invalidate(f"ai_metrics:{pattern_id}")
+                    await cache_coordinator.invalidate(f"ai_recommendations:{pattern_id}")
+        except Exception as e:
+            log(f"Error invalidating caches: {e}", level="error")
+            raise CacheError(f"Failed to invalidate caches: {str(e)}")
+    
+    def get_stats(self) -> Dict[str, int]:
+        """Get AI operation statistics."""
+        return self._ai_operation_stats.copy()
+    
+    def reset_stats(self) -> None:
+        """Reset AI operation statistics."""
+        self._ai_operation_stats = {
+            "total_transactions": 0,
+            "pattern_transactions": 0,
+            "ai_enhanced_transactions": 0,
+            "failed_transactions": 0
+        }
     
     async def ensure_initialized(self):
         """Ensure the instance is properly initialized before use."""

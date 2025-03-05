@@ -1,17 +1,10 @@
 """Custom parser for INI files with enhanced documentation features."""
 
 from .base_imports import *
-from typing import Dict, List, Any, Optional, Set, Tuple
 import configparser
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.ini import INI_PATTERNS
-from utils.logger import log
-from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.shutdown import register_shutdown_handler
 import re
 from collections import Counter
-from parsers.custom_parsers.custom_parser_mixin import CustomParserMixin
+
 
 class IniParser(BaseParser, CustomParserMixin):
     """Parser for INI files."""
@@ -19,7 +12,6 @@ class IniParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "ini", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
-        self.patterns = self._compile_patterns(INI_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -29,6 +21,7 @@ class IniParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("INI parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("INI parser initialized", level="info")
                     return True

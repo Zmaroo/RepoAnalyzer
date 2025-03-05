@@ -7,18 +7,9 @@ key-value property lines beneath each section.
 """
 
 from .base_imports import *
-from typing import Dict, List, Any, Optional, Set, Tuple
-import asyncio
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
-from utils.logger import log
-from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.shutdown import register_shutdown_handler
-import re
-from collections import Counter
 import configparser
-from parsers.custom_parsers.custom_parser_mixin import CustomParserMixin
+import re
+
 
 class EditorconfigParser(BaseParser, CustomParserMixin):
     """Parser for EditorConfig files."""
@@ -26,9 +17,13 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "editorconfig", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
-        self._initialized = False
-        self._pending_tasks: set[asyncio.Future] = set()
-        self.patterns = self._compile_patterns(EDITORCONFIG_PATTERNS)
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
         
         # Compile regex patterns for parsing
@@ -43,6 +38,15 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("EditorConfig parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("EditorConfig parser initialized", level="info")
                     return True
@@ -50,6 +54,60 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
                 log(f"Error initializing EditorConfig parser: {e}", level="error")
                 raise
         return True
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process EditorConfig with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("EditorConfig AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse EditorConfig"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in EditorConfig AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
 
     def _create_node(
         self,
@@ -217,9 +275,30 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
                 return []
     
     async def cleanup(self):
-        """Clean up EditorConfig parser resources."""
+        """Clean up parser resources."""
         try:
+            # Clean up base resources
             await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
             log("EditorConfig parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up EditorConfig parser: {e}", level="error")

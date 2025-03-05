@@ -10,7 +10,6 @@ class HTMLParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "html", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.MARKUP, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
-        self.patterns = self._compile_patterns(HTML_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -20,6 +19,7 @@ class HTMLParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("HTML parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("HTML parser initialized", level="info")
                     return True
@@ -115,7 +115,7 @@ class HTMLParser(BaseParser, CustomParserMixin):
                             pattern_name,
                             [source_code.count('\n', 0, match.start()), match.start()],
                             [source_code.count('\n', 0, match.end()), match.end()],
-                            **HTML_PATTERNS[PatternCategory.DOCUMENTATION][pattern_name].extract(match)
+                            **self.patterns[pattern_name].extract(match)
                         )
                         ast['children'].append(node)
                 
@@ -140,7 +140,7 @@ class HTMLParser(BaseParser, CustomParserMixin):
                             pattern_name,
                             [source_code.count('\n', 0, match.start()), match.start()],
                             [source_code.count('\n', 0, match.end()), match.end()],
-                            **HTML_PATTERNS[PatternCategory.SYNTAX][pattern_name].extract(match)
+                            **self.patterns[pattern_name].extract(match)
                         )
                         ast['children'].append(node)
                 

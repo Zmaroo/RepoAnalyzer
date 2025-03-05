@@ -2,14 +2,19 @@
 
 from typing import Dict, Any, List, Optional, Union, Generator, Tuple, Callable, TypeVar, cast, Awaitable, Set
 from tree_sitter import Node, Query, QueryError, Parser, Language, TreeCursor
-from .types import FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics, ExtractedFeatures, PatternCategory
-from parsers.models import QueryResult, FileClassification
+from .types import (
+    FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics,
+    ExtractedFeatures, PatternCategory, PatternPurpose,
+    AICapability, AIContext, AIProcessingResult
+)
+from parsers.models import QueryResult, FileClassification, PATTERN_CATEGORIES
 from parsers.language_support import language_registry
 from utils.logger import log
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors
 from utils.shutdown import register_shutdown_handler
 from parsers.pattern_processor import PatternProcessor, PatternMatch, pattern_processor
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
+from parsers.parser_interfaces import AIParserInterface
 from abc import ABC, abstractmethod
 import asyncio
 from utils.error_handling import ProcessingError, ErrorSeverity
@@ -19,16 +24,24 @@ from utils.cache import UnifiedCache, cache_coordinator
 # Support both sync and async extractors
 ExtractorFn = Union[Callable[[Any], Dict[str, Any]], Callable[[Any], Awaitable[Dict[str, Any]]]]
 
-class BaseFeatureExtractor(ABC):
+class BaseFeatureExtractor(ABC, AIParserInterface):
     """[3.2.0] Abstract base class for feature extraction."""
     
     def __init__(self, language_id: str):
         """Private constructor - use create() instead."""
+        super().__init__(
+            language_id=language_id,
+            file_type=FileType.CODE,
+            capabilities={
+                AICapability.CODE_UNDERSTANDING,
+                AICapability.CODE_GENERATION,
+                AICapability.CODE_MODIFICATION
+            }
+        )
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
-        self.language_id = language_id
-        self._lock = asyncio.Lock()
         self._cache = None
+        self._lock = asyncio.Lock()
     
     async def _initialize_cache(self):
         """Initialize cache based on extractor type."""
@@ -129,6 +142,350 @@ class BaseFeatureExtractor(ABC):
         except Exception as e:
             await log(f"Error cleaning up feature extractor for {self.language_id}: {e}", level="error")
             raise ProcessingError(f"Failed to cleanup feature extractor for {self.language_id}: {e}")
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process source code with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary(f"{self.language_id} feature extraction AI processing"):
+            try:
+                results = AIProcessingResult(success=True)
+                
+                # Extract features first
+                features = await self.extract_features(source_code)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(features, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(features, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(features, context)
+                    results.ai_insights.update(modification)
+                
+                return results
+            except Exception as e:
+                log(f"Error in feature extraction AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+    
+    async def _process_with_understanding(
+        self,
+        features: ExtractedFeatures,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code understanding capability."""
+        understanding = {}
+        
+        # Analyze feature categories
+        for category in features.features:
+            category_understanding = await self._analyze_feature_category(
+                category,
+                features.features[category],
+                context
+            )
+            if category_understanding:
+                understanding[category] = category_understanding
+        
+        # Add documentation insights
+        if features.documentation:
+            understanding["documentation"] = features.documentation
+        
+        # Add complexity insights
+        if features.metrics:
+            understanding["complexity"] = features.metrics
+        
+        return understanding
+    
+    async def _process_with_generation(
+        self,
+        features: ExtractedFeatures,
+        context: AIContext
+    ) -> List[str]:
+        """Process with code generation capability."""
+        suggestions = []
+        
+        # Generate suggestions based on features
+        for category in features.features:
+            category_suggestions = await self._generate_from_category(
+                category,
+                features.features[category],
+                context
+            )
+            suggestions.extend(category_suggestions)
+        
+        return suggestions
+    
+    async def _process_with_modification(
+        self,
+        features: ExtractedFeatures,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code modification capability."""
+        insights = {}
+        
+        # Analyze modification opportunities
+        for category in features.features:
+            category_insights = await self._analyze_modification_opportunities(
+                category,
+                features.features[category],
+                context
+            )
+            if category_insights:
+                insights[category] = category_insights
+        
+        return insights
+    
+    async def _analyze_feature_category(
+        self,
+        category: str,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze features in a category."""
+        analysis = {
+            "patterns": self._identify_patterns(features),
+            "relationships": self._analyze_relationships(features),
+            "metrics": self._calculate_metrics(features)
+        }
+        
+        # Add category-specific analysis
+        if category == "syntax":
+            analysis.update(self._analyze_syntax(features))
+        elif category == "semantics":
+            analysis.update(self._analyze_semantics(features))
+        elif category == "documentation":
+            analysis.update(self._analyze_documentation(features))
+        
+        return analysis
+    
+    async def _generate_from_category(
+        self,
+        category: str,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Generate suggestions from category features."""
+        suggestions = []
+        
+        # Generate category-specific suggestions
+        if category == "syntax":
+            suggestions.extend(self._generate_syntax_suggestions(features, context))
+        elif category == "semantics":
+            suggestions.extend(self._generate_semantic_suggestions(features, context))
+        elif category == "documentation":
+            suggestions.extend(self._generate_documentation_suggestions(features, context))
+        
+        return suggestions
+    
+    async def _analyze_modification_opportunities(
+        self,
+        category: str,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze opportunities for code modification."""
+        opportunities = {
+            "improvements": [],
+            "refactoring": [],
+            "optimizations": []
+        }
+        
+        # Analyze category-specific opportunities
+        if category == "syntax":
+            opportunities.update(self._analyze_syntax_modifications(features, context))
+        elif category == "semantics":
+            opportunities.update(self._analyze_semantic_modifications(features, context))
+        elif category == "documentation":
+            opportunities.update(self._analyze_documentation_modifications(features, context))
+        
+        return opportunities
+    
+    def _identify_patterns(self, features: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Identify patterns in features."""
+        patterns = []
+        
+        for feature_type, feature_data in features.items():
+            if isinstance(feature_data, dict):
+                patterns.extend(self._extract_patterns_from_dict(feature_type, feature_data))
+            elif isinstance(feature_data, list):
+                patterns.extend(self._extract_patterns_from_list(feature_type, feature_data))
+        
+        return patterns
+    
+    def _analyze_relationships(self, features: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze relationships between features."""
+        relationships = {
+            "dependencies": [],
+            "hierarchy": [],
+            "usage": []
+        }
+        
+        # Analyze feature relationships
+        for feature1 in features:
+            for feature2 in features:
+                if feature1 != feature2:
+                    if self._are_dependent(features[feature1], features[feature2]):
+                        relationships["dependencies"].append((feature1, feature2))
+                    if self._has_hierarchy(features[feature1], features[feature2]):
+                        relationships["hierarchy"].append((feature1, feature2))
+                    if self._has_usage(features[feature1], features[feature2]):
+                        relationships["usage"].append((feature1, feature2))
+        
+        return relationships
+    
+    def _calculate_metrics(self, features: Dict[str, Any]) -> Dict[str, float]:
+        """Calculate metrics for features."""
+        return {
+            "complexity": self._calculate_complexity(features),
+            "cohesion": self._calculate_cohesion(features),
+            "coupling": self._calculate_coupling(features)
+        }
+    
+    def _analyze_syntax(self, features: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze syntax-specific features."""
+        return {
+            "structure": self._analyze_code_structure(features),
+            "style": self._analyze_coding_style(features),
+            "patterns": self._identify_syntax_patterns(features)
+        }
+    
+    def _analyze_semantics(self, features: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze semantic features."""
+        return {
+            "types": self._analyze_type_usage(features),
+            "flow": self._analyze_control_flow(features),
+            "data": self._analyze_data_flow(features)
+        }
+    
+    def _analyze_documentation(self, features: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze documentation features."""
+        return {
+            "coverage": self._analyze_doc_coverage(features),
+            "quality": self._analyze_doc_quality(features),
+            "patterns": self._identify_doc_patterns(features)
+        }
+    
+    def _generate_syntax_suggestions(
+        self,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Generate syntax-related suggestions."""
+        suggestions = []
+        
+        # Check structure
+        structure_issues = self._check_structure_issues(features)
+        if structure_issues:
+            suggestions.extend(structure_issues)
+        
+        # Check style
+        style_issues = self._check_style_issues(features, context)
+        if style_issues:
+            suggestions.extend(style_issues)
+        
+        return suggestions
+    
+    def _generate_semantic_suggestions(
+        self,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Generate semantic suggestions."""
+        suggestions = []
+        
+        # Check types
+        type_issues = self._check_type_issues(features)
+        if type_issues:
+            suggestions.extend(type_issues)
+        
+        # Check flow
+        flow_issues = self._check_flow_issues(features)
+        if flow_issues:
+            suggestions.extend(flow_issues)
+        
+        return suggestions
+    
+    def _generate_documentation_suggestions(
+        self,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Generate documentation suggestions."""
+        suggestions = []
+        
+        # Check coverage
+        coverage_issues = self._check_doc_coverage(features)
+        if coverage_issues:
+            suggestions.extend(coverage_issues)
+        
+        # Check quality
+        quality_issues = self._check_doc_quality(features)
+        if quality_issues:
+            suggestions.extend(quality_issues)
+        
+        return suggestions
+    
+    def _analyze_syntax_modifications(
+        self,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze syntax modification opportunities."""
+        return {
+            "structure_improvements": self._find_structure_improvements(features),
+            "style_improvements": self._find_style_improvements(features, context),
+            "pattern_improvements": self._find_pattern_improvements(features)
+        }
+    
+    def _analyze_semantic_modifications(
+        self,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze semantic modification opportunities."""
+        return {
+            "type_improvements": self._find_type_improvements(features),
+            "flow_improvements": self._find_flow_improvements(features),
+            "data_improvements": self._find_data_improvements(features)
+        }
+    
+    def _analyze_documentation_modifications(
+        self,
+        features: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze documentation modification opportunities."""
+        return {
+            "coverage_improvements": self._find_coverage_improvements(features),
+            "quality_improvements": self._find_quality_improvements(features),
+            "pattern_improvements": self._find_doc_pattern_improvements(features)
+        }
+
+    async def extract_cross_repo_features(
+        self,
+        repo_features: Dict[int, Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Extract features across repositories."""
+        common_features = await self._find_common_features(repo_features)
+        insights = await self._generate_cross_repo_insights(common_features)
+        return {
+            "common_features": common_features,
+            "insights": insights
+        }
 
 class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     """[3.2.1] Tree-sitter specific feature extraction."""
@@ -575,6 +932,133 @@ class CustomFeatureExtractor(BaseFeatureExtractor):
             
         return documentation
     
+    async def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
+        """Calculate code complexity metrics based on extracted features."""
+        # Reuse same logic as TreeSitterFeatureExtractor
+        metrics = ComplexityMetrics()
+        
+        # Count lines of code
+        lines = source_code.splitlines()
+        metrics.lines_of_code = {
+            'total': len(lines),
+            'code': len([l for l in lines if l.strip() and not l.strip().startswith(('#', '//', '/*', '*', '"""', "'''"))]),
+            'comment': len([l for l in lines if l.strip() and l.strip().startswith(('#', '//', '/*', '*', '"""', "'''"))]),
+            'blank': len([l for l in lines if not l.strip()])
+        }
+        
+        # Basic complexity metrics for custom parsers
+        # (more limited than tree-sitter but still useful)
+        syntax_features = features.get(PatternCategory.SYNTAX.value, {})
+        
+        # Count branches
+        branch_count = 0
+        for branch_type in ['if', 'for', 'while', 'case', 'switch']:
+            if branch_type in syntax_features:
+                branch_count += len(syntax_features[branch_type])
+        
+        metrics.cyclomatic = branch_count + 1
+        metrics.cognitive = branch_count
+        
+        return metrics
+
+class UnifiedFeatureExtractor(BaseFeatureExtractor):
+    """[3.2.3] Unified feature extraction."""
+    
+    async def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
+        """Extract features using the unified category system."""
+        features = {category: {} for category in PatternCategory}
+        
+        # Extract features by category and purpose
+        for category in PatternCategory:
+            for purpose in PatternPurpose:
+                extracted = await self._extract_features_for_purpose(
+                    ast,
+                    source_code,
+                    category,
+                    purpose
+                )
+                if extracted:
+                    features[category][purpose.value] = extracted
+        
+        # Create documentation features
+        documentation = await self._extract_documentation(
+            features[PatternCategory.DOCUMENTATION]
+        )
+        
+        # Calculate complexity metrics
+        metrics = await self._calculate_metrics(
+            features[PatternCategory.SYNTAX],
+            source_code
+        )
+        
+        return ExtractedFeatures(
+            features=features,
+            documentation=documentation,
+            metrics=metrics
+        )
+    
+    async def _extract_features_for_purpose(
+        self,
+        ast: Dict[str, Any],
+        source_code: str,
+        category: PatternCategory,
+        purpose: PatternPurpose
+    ) -> Dict[str, Any]:
+        """Extract features for a specific category and purpose."""
+        features = {}
+        
+        # Get valid pattern types for this category/purpose
+        valid_types = PATTERN_CATEGORIES.get(category, {}).get(self.file_type, {}).get(purpose, [])
+        
+        if not valid_types:
+            return features
+            
+        # Extract features based on pattern types
+        for pattern_type in valid_types:
+            if pattern := self._patterns.get(category, {}).get(purpose, {}).get(pattern_type):
+                matches = await self._process_pattern(source_code, pattern)
+                if matches:
+                    features[pattern_type] = matches
+        
+        return features
+
+    @handle_async_errors(error_types=(Exception,))
+    async def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
+        """Extract documentation features from parsed content."""
+        doc_features = features.get(PatternCategory.DOCUMENTATION.value, {})
+        
+        # Initialize Documentation object
+        documentation = Documentation()
+        
+        # Extract docstrings
+        if 'docstring' in doc_features:
+            documentation.docstrings = doc_features['docstring']
+            
+            # Combine docstring content
+            for doc in documentation.docstrings:
+                if 'text' in doc:
+                    documentation.content += doc['text'] + "\n"
+        
+        # Extract comments
+        if 'comment' in doc_features:
+            documentation.comments = doc_features['comment']
+        
+        # Extract TODOs
+        for comment_type in ['todo', 'fixme', 'note', 'warning']:
+            if comment_type in doc_features:
+                documentation.todos.extend(doc_features[comment_type])
+        
+        # Extract metadata (author, version, etc.)
+        if 'metadata' in doc_features:
+            documentation.metadata = {
+                item.get('key', ''): item.get('value', '')
+                for item in doc_features.get('metadata', [])
+                if 'key' in item and 'value' in item
+            }
+            
+        return documentation
+    
+    @handle_async_errors(error_types=(Exception,))
     async def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
         """Calculate code complexity metrics based on extracted features."""
         # Reuse same logic as TreeSitterFeatureExtractor

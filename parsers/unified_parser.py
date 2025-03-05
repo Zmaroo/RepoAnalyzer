@@ -19,18 +19,26 @@ Pipeline Stages:
    - Returns: Optional[ParserResult]
 """
 
-from typing import Optional, Set, Dict, Any
+from typing import Optional, Set, Dict, Any, List, Union
 import asyncio
-from parsers.types import FileType, FeatureCategory, ParserType, ParserResult
-from parsers.models import FileClassification, PATTERN_CATEGORIES
-from dataclasses import asdict
-
-from parsers.language_support import language_registry
+from dataclasses import dataclass, field
+from parsers.types import (
+    FileType, ParserType, AICapability, AIContext, AIProcessingResult,
+    InteractionType, ConfidenceLevel
+)
+from parsers.models import (
+    FileClassification, ParserResult, BaseNodeDict,
+    TreeSitterNodeDict
+)
+from parsers.parser_interfaces import BaseParserInterface, AIParserInterface
 from parsers.language_mapping import (
-    detect_language, 
-    get_parser_info_for_language, 
+    get_parser_type,
+    get_file_type,
+    get_ai_capabilities,
     get_complete_language_info
 )
+from parsers.tree_sitter_parser import get_tree_sitter_parser
+from parsers.custom_parsers import get_custom_parser
 from utils.error_handling import handle_async_errors, ParsingError, AsyncErrorBoundary, ErrorSeverity, ProcessingError
 from utils.encoding import encode_query_pattern
 from utils.logger import log
@@ -40,130 +48,342 @@ from db.transaction import transaction_scope
 from db.upsert_ops import coordinator as upsert_coordinator
 from utils.health_monitor import global_health_monitor
 
-class UnifiedParser:
-    """Unified parsing interface."""
+@dataclass
+class UnifiedParser(BaseParserInterface, AIParserInterface):
+    """[5.1] Unified parser implementation with AI capabilities."""
     
-    def __init__(self):
-        """Private constructor - use create() instead."""
+    def __init__(self, language_id: str):
+        """Initialize unified parser."""
+        super().__init__(
+            language_id=language_id,
+            file_type=FileType.CODE,
+            parser_type=ParserType.HYBRID,
+            capabilities={
+                AICapability.CODE_UNDERSTANDING,
+                AICapability.CODE_GENERATION,
+                AICapability.CODE_MODIFICATION,
+                AICapability.CODE_REVIEW,
+                AICapability.DOCUMENTATION,
+                AICapability.LEARNING
+            }
+        )
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
-        self._lock = asyncio.Lock()
+        self._tree_sitter_parser = None
+        self._custom_parser = None
         self._cache = None
-        self._component_states = {
-            'language_registry': False,
-            'upsert_coordinator': False,
-            'cache_coordinator': False
-        }
+        self._lock = asyncio.Lock()
     
     async def ensure_initialized(self):
-        """Ensure the instance is properly initialized before use."""
+        """Ensure the parser is initialized."""
         if not self._initialized:
-            raise ProcessingError("UnifiedParser instance not initialized. Use create() to initialize.")
+            raise ProcessingError(f"Unified parser not initialized for {self.language_id}. Use create() to initialize.")
         return True
     
     @classmethod
-    async def create(cls) -> 'UnifiedParser':
-        """Async factory method to create and initialize a UnifiedParser instance."""
-        instance = cls()
+    async def create(cls, language_id: str) -> 'UnifiedParser':
+        """[5.1.1] Create and initialize a unified parser instance."""
+        instance = cls(language_id)
         try:
-            async with AsyncErrorBoundary(
-                operation_name="unified parser initialization",
-                error_types=ProcessingError,
-                severity=ErrorSeverity.CRITICAL
-            ):
+            async with AsyncErrorBoundary(f"unified_parser_initialization_{language_id}"):
+                # Get language information
+                language_info = get_complete_language_info(language_id)
+                
+                # Initialize tree-sitter parser if available
+                if language_info["parser_type"] == ParserType.TREE_SITTER:
+                    instance._tree_sitter_parser = await get_tree_sitter_parser(language_id)
+                
+                # Initialize custom parser if available
+                if (language_info["parser_type"] == ParserType.CUSTOM or
+                    language_info["fallback_parser_type"] == ParserType.CUSTOM):
+                    instance._custom_parser = await get_custom_parser(language_id)
+                
                 # Initialize cache
-                instance._cache = UnifiedCache("unified_parser")
+                instance._cache = UnifiedCache(f"unified_parser_{language_id}")
                 await cache_coordinator.register_cache(instance._cache)
-                
-                # Initialize components with proper error handling
-                components = [
-                    ('cache_coordinator', cache_coordinator.initialize()),
-                    ('upsert_coordinator', upsert_coordinator.initialize()),
-                    ('language_registry', language_registry.initialize())
-                ]
-                
-                for component_name, init_coro in components:
-                    try:
-                        task = asyncio.create_task(init_coro)
-                        instance._pending_tasks.add(task)
-                        try:
-                            await task
-                            instance._component_states[component_name] = True
-                        finally:
-                            instance._pending_tasks.remove(task)
-                    except Exception as e:
-                        await log(f"Error initializing {component_name}: {e}", level="error")
-                        raise ProcessingError(f"Failed to initialize {component_name}: {e}")
                 
                 # Register shutdown handler
                 register_shutdown_handler(instance.cleanup)
                 
-                # Initialize health monitoring
-                global_health_monitor.register_component("unified_parser")
-                
                 instance._initialized = True
-                await log("Unified parser initialized", level="info")
+                log(f"Unified parser initialized for {language_id}", level="info")
                 return instance
         except Exception as e:
-            await log(f"Error initializing unified parser: {e}", level="error")
+            log(f"Error initializing unified parser for {language_id}: {e}", level="error")
             # Cleanup on initialization failure
             await instance.cleanup()
-            raise ProcessingError(f"Failed to initialize unified parser: {e}")
+            raise ProcessingError(f"Failed to initialize unified parser for {language_id}: {e}")
     
-    @handle_async_errors(error_types=(ProcessingError,))
-    async def parse_file(self, file_path: str, content: str) -> Optional[ParserResult]:
-        """Parse a file and extract features."""
+    async def parse(self, source_code: str) -> Optional[ParserResult]:
+        """[5.1.2] Parse source code using available parsers."""
         if not self._initialized:
             await self.ensure_initialized()
-        
-        async with self._lock:
-            # Check cache first
-            cache_key = f"parse_result_{file_path}"
-            if self._cache:
+            
+        async with AsyncErrorBoundary(f"unified_parse_{self.language_id}"):
+            try:
+                # Check cache first
+                cache_key = f"ast:{hash(source_code)}"
                 cached_result = await self._cache.get(cache_key)
                 if cached_result:
                     return ParserResult(**cached_result)
-            
-            try:
-                # Create task for language detection
-                detect_task = asyncio.create_task(detect_language(file_path, content))
-                self._pending_tasks.add(detect_task)
-                try:
-                    language_id = await detect_task
-                finally:
-                    self._pending_tasks.remove(detect_task)
                 
-                if not language_id:
-                    return None
+                # Try tree-sitter parser first
+                if self._tree_sitter_parser:
+                    result = await self._tree_sitter_parser.parse(source_code)
+                    if result and result.success:
+                        # Cache successful result
+                        await self._cache.set(cache_key, result.__dict__)
+                        return result
                 
-                # Get parser for language
-                parser = await language_registry.get_parser(language_id)
-                if not parser:
-                    return None
+                # Fall back to custom parser
+                if self._custom_parser:
+                    result = await self._custom_parser.parse(source_code)
+                    if result and result.success:
+                        # Cache successful result
+                        await self._cache.set(cache_key, result.__dict__)
+                        return result
                 
-                # Parse content
-                task = asyncio.create_task(parser.parse(content))
-                self._pending_tasks.add(task)
-                try:
-                    result = await task
-                finally:
-                    self._pending_tasks.remove(task)
-                
-                # Cache result
-                if self._cache and result:
-                    await self._cache.set(cache_key, asdict(result))
-                
-                return result
+                return None
             except Exception as e:
-                await log(f"Error parsing file {file_path}: {e}", level="error")
-                raise ProcessingError(f"Failed to parse file {file_path}: {e}")
+                log(f"Error parsing {self.language_id} code: {e}", level="error")
+                return None
+    
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """[5.1.3] Process source code with AI assistance."""
+        if not self._initialized:
+            await self.ensure_initialized()
+            
+        async with AsyncErrorBoundary(f"unified_ai_processing_{self.language_id}"):
+            try:
+                results = AIProcessingResult(success=True)
+                
+                # Parse source code first
+                parse_result = await self.parse(source_code)
+                if not parse_result or not parse_result.success:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse source code"
+                    )
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(parse_result, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(parse_result, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(parse_result, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(parse_result, context)
+                    results.ai_insights.update(review)
+                
+                # Process with documentation capability
+                if AICapability.DOCUMENTATION in self.capabilities:
+                    documentation = await self._process_with_documentation(parse_result, context)
+                    results.ai_insights.update(documentation)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(parse_result, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in unified AI processing for {self.language_id}: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+    
+    async def _process_with_understanding(
+        self,
+        parse_result: ParserResult,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """[5.1.4] Process with code understanding capability."""
+        understanding = {}
+        
+        # Try tree-sitter parser first
+        if self._tree_sitter_parser:
+            tree_sitter_understanding = await self._tree_sitter_parser._process_with_understanding(
+                parse_result,
+                context
+            )
+            understanding.update(tree_sitter_understanding)
+        
+        # Add custom parser insights
+        if self._custom_parser:
+            custom_understanding = await self._custom_parser._process_with_understanding(
+                parse_result,
+                context
+            )
+            understanding.update(custom_understanding)
+        
+        return understanding
+    
+    async def _process_with_generation(
+        self,
+        parse_result: ParserResult,
+        context: AIContext
+    ) -> List[str]:
+        """[5.1.5] Process with code generation capability."""
+        suggestions = []
+        
+        # Try tree-sitter parser first
+        if self._tree_sitter_parser:
+            tree_sitter_suggestions = await self._tree_sitter_parser._process_with_generation(
+                parse_result,
+                context
+            )
+            suggestions.extend(tree_sitter_suggestions)
+        
+        # Add custom parser suggestions
+        if self._custom_parser:
+            custom_suggestions = await self._custom_parser._process_with_generation(
+                parse_result,
+                context
+            )
+            suggestions.extend(custom_suggestions)
+        
+        return suggestions
+    
+    async def _process_with_modification(
+        self,
+        parse_result: ParserResult,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """[5.1.6] Process with code modification capability."""
+        insights = {}
+        
+        # Try tree-sitter parser first
+        if self._tree_sitter_parser:
+            tree_sitter_insights = await self._tree_sitter_parser._process_with_modification(
+                parse_result,
+                context
+            )
+            insights.update(tree_sitter_insights)
+        
+        # Add custom parser insights
+        if self._custom_parser:
+            custom_insights = await self._custom_parser._process_with_modification(
+                parse_result,
+                context
+            )
+            insights.update(custom_insights)
+        
+        return insights
+    
+    async def _process_with_review(
+        self,
+        parse_result: ParserResult,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """[5.1.7] Process with code review capability."""
+        review = {}
+        
+        # Try tree-sitter parser first
+        if self._tree_sitter_parser:
+            tree_sitter_review = await self._tree_sitter_parser._process_with_review(
+                parse_result,
+                context
+            )
+            review.update(tree_sitter_review)
+        
+        # Add custom parser review
+        if self._custom_parser:
+            custom_review = await self._custom_parser._process_with_review(
+                parse_result,
+                context
+            )
+            review.update(custom_review)
+        
+        return review
+    
+    async def _process_with_documentation(
+        self,
+        parse_result: ParserResult,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """[5.1.8] Process with documentation capability."""
+        documentation = {}
+        
+        # Try tree-sitter parser first
+        if self._tree_sitter_parser:
+            tree_sitter_docs = await self._tree_sitter_parser._process_with_documentation(
+                parse_result,
+                context
+            )
+            documentation.update(tree_sitter_docs)
+        
+        # Add custom parser documentation
+        if self._custom_parser:
+            custom_docs = await self._custom_parser._process_with_documentation(
+                parse_result,
+                context
+            )
+            documentation.update(custom_docs)
+        
+        return documentation
+    
+    async def _process_with_learning(
+        self,
+        parse_result: ParserResult,
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """[5.1.9] Process with learning capability."""
+        patterns = []
+        
+        # Try tree-sitter parser first
+        if self._tree_sitter_parser:
+            tree_sitter_patterns = await self._tree_sitter_parser._process_with_learning(
+                parse_result,
+                context
+            )
+            patterns.extend(tree_sitter_patterns)
+        
+        # Add custom parser patterns
+        if self._custom_parser:
+            custom_patterns = await self._custom_parser._process_with_learning(
+                parse_result,
+                context
+            )
+            patterns.extend(custom_patterns)
+        
+        return patterns
     
     async def cleanup(self):
-        """Clean up parser resources."""
+        """[5.1.10] Clean up parser resources."""
         try:
             if not self._initialized:
                 return
                 
+            # Clean up tree-sitter parser
+            if self._tree_sitter_parser:
+                await self._tree_sitter_parser.cleanup()
+                self._tree_sitter_parser = None
+            
+            # Clean up custom parser
+            if self._custom_parser:
+                await self._custom_parser.cleanup()
+                self._custom_parser = None
+            
+            # Clean up cache
+            if self._cache:
+                await cache_coordinator.unregister_cache(self._cache)
+                self._cache = None
+            
             # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
@@ -172,41 +392,52 @@ class UnifiedParser:
                 await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
-            # Cleanup components in reverse initialization order
-            cleanup_order = [
-                ('language_registry', language_registry),
-                ('upsert_coordinator', upsert_coordinator),
-                ('cache_coordinator', cache_coordinator)
-            ]
-            
-            for component_name, component in cleanup_order:
-                if self._component_states.get(component_name):
-                    try:
-                        await component.cleanup()
-                        self._component_states[component_name] = False
-                    except Exception as e:
-                        await log(f"Error cleaning up {component_name}: {e}", level="error")
-            
-            # Cleanup cache
-            if self._cache:
-                await cache_coordinator.unregister_cache(self._cache)
-                self._cache = None
-            
-            # Unregister from health monitoring
-            global_health_monitor.unregister_component("unified_parser")
-            
             self._initialized = False
-            await log("Unified parser cleaned up", level="info")
+            log(f"Unified parser cleaned up for {self.language_id}", level="info")
         except Exception as e:
-            await log(f"Error cleaning up unified parser: {e}", level="error")
-            raise ProcessingError(f"Failed to cleanup unified parser: {e}")
+            log(f"Error cleaning up unified parser for {self.language_id}: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup unified parser for {self.language_id}: {e}")
 
-# Global instance
-_unified_parser = None
+    async def process_with_deep_learning(
+        self,
+        source_code: str,
+        context: AIContext,
+        repositories: List[int]
+    ) -> AIProcessingResult:
+        """Process with deep learning capabilities."""
+        results = AIProcessingResult(success=True)
 
-async def get_unified_parser() -> UnifiedParser:
-    """Get the global unified parser instance."""
-    global _unified_parser
-    if not _unified_parser:
-        _unified_parser = await UnifiedParser.create()
-    return _unified_parser 
+        # Process with tree-sitter parser if available
+        if self._tree_sitter_parser:
+            tree_sitter_results = await self._tree_sitter_parser.process_deep_learning(
+                source_code,
+                context,
+                repositories
+            )
+            results.ai_insights.update(tree_sitter_results.ai_insights)
+
+        # Add custom parser insights
+        if self._custom_parser:
+            custom_results = await self._custom_parser.process_deep_learning(
+                source_code,
+                context,
+                repositories
+            )
+            results.ai_insights.update(custom_results.ai_insights)
+
+        return results
+
+# Global instance cache
+_parser_instances: Dict[str, UnifiedParser] = {}
+
+async def get_unified_parser(language_id: str) -> Optional[UnifiedParser]:
+    """[5.2] Get a unified parser instance for a language."""
+    if language_id not in _parser_instances:
+        try:
+            parser = await UnifiedParser.create(language_id)
+            _parser_instances[language_id] = parser
+        except Exception as e:
+            log(f"Error creating unified parser for {language_id}: {e}", level="error")
+            return None
+    
+    return _parser_instances[language_id] 

@@ -1,11 +1,14 @@
-"""Language support registry and utilities."""
+"""[1.0] Language support registry and utilities."""
 
-from typing import Dict, Optional, Set, Tuple, List
+from typing import Dict, Optional, Set, Tuple, List, Any
 import asyncio
 import os
-from parsers.parser_interfaces import BaseParserInterface, ParserRegistryInterface
+from parsers.parser_interfaces import BaseParserInterface, ParserRegistryInterface, AIParserInterface
 from parsers.models import FileClassification, LanguageFeatures, FileMetadata
-from parsers.types import ParserType, FileType
+from parsers.types import (
+    ParserType, FileType, AICapability, AIContext, AIProcessingResult,
+    InteractionType, ConfidenceLevel
+)
 from parsers.language_mapping import (
     TREE_SITTER_LANGUAGES,
     CUSTOM_PARSER_LANGUAGES,
@@ -19,22 +22,24 @@ from parsers.language_mapping import (
     get_parser_info_for_language
 )
 from utils.logger import log
-from utils.error_handling import AsyncErrorBoundary, ErrorSeverity, handle_async_errors
+from utils.error_handling import AsyncErrorBoundary, ErrorSeverity, handle_async_errors, ProcessingError
 from utils.shutdown import register_shutdown_handler
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
+from abc import ABC, abstractmethod
 
 @dataclass
 class ParserAvailability:
-    """Information about available parsers for a language."""
+    """[1.1] Information about available parsers for a language."""
     has_custom_parser: bool
     has_tree_sitter: bool
     preferred_type: ParserType
     file_type: FileType
     fallback_type: Optional[ParserType] = None
+    ai_capabilities: Set[AICapability] = field(default_factory=set)
 
 def get_parser_availability(language: str) -> ParserAvailability:
-    """Get information about available parsers for a language."""
+    """[1.2] Get information about available parsers for a language."""
     normalized = normalize_language_name(language)
     
     # Use the new parser info function to get comprehensive parser information
@@ -46,12 +51,25 @@ def get_parser_availability(language: str) -> ParserAvailability:
     has_custom = normalized in CUSTOM_PARSER_CLASSES
     has_tree_sitter = normalized in TREE_SITTER_LANGUAGES
     
+    # Determine AI capabilities based on parser type
+    ai_capabilities = {
+        AICapability.CODE_UNDERSTANDING,
+        AICapability.CODE_GENERATION,
+        AICapability.CODE_MODIFICATION
+    }
+    
+    # Add additional capabilities for tree-sitter parsers
+    if has_tree_sitter:
+        ai_capabilities.add(AICapability.CODE_REVIEW)
+        ai_capabilities.add(AICapability.LEARNING)
+    
     return ParserAvailability(
         has_custom_parser=has_custom,
         has_tree_sitter=has_tree_sitter,
         preferred_type=parser_info["parser_type"],
         file_type=parser_info["file_type"],
-        fallback_type=parser_info.get("fallback_parser_type")
+        fallback_type=parser_info.get("fallback_parser_type"),
+        ai_capabilities=ai_capabilities
     )
 
 def determine_file_type(language: str) -> FileType:
@@ -129,18 +147,19 @@ async def get_extensions_for_language(language: str) -> Set[str]:
     return set()
 
 class LanguageRegistry(ParserRegistryInterface):
-    """Registry for language parsers."""
+    """[1.3] Registry for language parsers."""
     
     def __init__(self):
         self._parsers: Dict[str, BaseParserInterface] = {}
         self._fallback_parsers: Dict[str, BaseParserInterface] = {}
+        self._ai_parsers: Dict[str, AIParserInterface] = {}
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
     async def initialize(self):
-        """Initialize language registry resources."""
+        """[1.3.1] Initialize language registry resources."""
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("language registry initialization"):
@@ -164,6 +183,9 @@ class LanguageRegistry(ParserRegistryInterface):
                                 parser = await task
                                 if parser:
                                     self._parsers[language] = parser
+                                    # Initialize AI parser if supported
+                                    if isinstance(parser, AIParserInterface):
+                                        self._ai_parsers[language] = parser
                             finally:
                                 self._pending_tasks.remove(task)
                     
@@ -175,10 +197,7 @@ class LanguageRegistry(ParserRegistryInterface):
 
     @handle_async_errors(error_types=(Exception,))
     async def get_parser(self, classification: FileClassification) -> Optional[BaseParserInterface]:
-        """
-        Get the appropriate parser for a file classification.
-        Will try the primary parser first, then fall back to alternatives if needed.
-        """
+        """[1.3.2] Get the appropriate parser for a file classification."""
         if not self._initialized:
             await self.initialize()
             
@@ -200,6 +219,9 @@ class LanguageRegistry(ParserRegistryInterface):
                 parser = await task
                 if parser:
                     self._parsers[language] = parser
+                    # Initialize AI parser if supported
+                    if isinstance(parser, AIParserInterface):
+                        self._ai_parsers[language] = parser
                     return parser
             finally:
                 self._pending_tasks.remove(task)
@@ -225,6 +247,9 @@ class LanguageRegistry(ParserRegistryInterface):
                     fallback_parser = await task
                     if fallback_parser:
                         self._fallback_parsers[fallback_key] = fallback_parser
+                        # Initialize AI parser if supported
+                        if isinstance(fallback_parser, AIParserInterface):
+                            self._ai_parsers[f"{language}_fallback"] = fallback_parser
                         log(f"Using fallback parser type {fallback_type} for {language}", level="info")
                         return fallback_parser
                 finally:
@@ -248,9 +273,48 @@ class LanguageRegistry(ParserRegistryInterface):
                 finally:
                     self._pending_tasks.remove(task)
         
-        # No parser available
         return None
-    
+
+    async def get_ai_parser(self, language: str) -> Optional[AIParserInterface]:
+        """[1.3.3] Get an AI-capable parser for a language."""
+        if not self._initialized:
+            await self.initialize()
+            
+        # Check if we already have an AI parser for this language
+        if language in self._ai_parsers:
+            return self._ai_parsers[language]
+            
+        # Try to get a regular parser and check if it supports AI
+        parser_info = get_parser_info_for_language(language)
+        classification = FileClassification(
+            language_id=language,
+            parser_type=parser_info["parser_type"],
+            file_type=parser_info["file_type"]
+        )
+        
+        parser = await self.get_parser(classification)
+        if isinstance(parser, AIParserInterface):
+            self._ai_parsers[language] = parser
+            return parser
+            
+        return None
+
+    async def process_with_ai(
+        self,
+        language: str,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """[1.3.4] Process source code with AI assistance."""
+        parser = await self.get_ai_parser(language)
+        if not parser:
+            return AIProcessingResult(
+                success=False,
+                response=f"No AI-capable parser available for {language}"
+            )
+            
+        return await parser.process_with_ai(source_code, context)
+
     async def _create_parser(self, language: str, parser_type: ParserType, file_type: FileType) -> Optional[BaseParserInterface]:
         """Create a new parser instance of the specified type."""
         async with AsyncErrorBoundary(f"create_parser_{language}_{parser_type.name}", error_types=(Exception,)):
@@ -290,39 +354,56 @@ class LanguageRegistry(ParserRegistryInterface):
         return get_langs()
 
     async def cleanup(self):
-        """Clean up all parser resources."""
+        """[1.3.5] Clean up language registry resources."""
         try:
+            if not self._initialized:
+                return
+                
             # Clean up all parsers
-            cleanup_tasks = []
-            
-            # Clean up primary parsers
             for parser in self._parsers.values():
-                task = asyncio.create_task(parser.cleanup())
-                cleanup_tasks.append(task)
+                await parser.cleanup()
+            self._parsers.clear()
             
             # Clean up fallback parsers
             for parser in self._fallback_parsers.values():
-                task = asyncio.create_task(parser.cleanup())
-                cleanup_tasks.append(task)
+                await parser.cleanup()
+            self._fallback_parsers.clear()
             
-            # Wait for all cleanup tasks
-            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            # Clean up AI parsers (may overlap with other parsers)
+            self._ai_parsers.clear()
             
-            # Clean up any remaining pending tasks
+            # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
-                    task.cancel()
+                    if not task.done():
+                        task.cancel()
                 await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
-            
-            # Clear parser dictionaries
-            self._parsers.clear()
-            self._fallback_parsers.clear()
             
             self._initialized = False
             log("Language registry cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up language registry: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup language registry: {e}")
 
 # Global instance
 language_registry = LanguageRegistry() 
+
+class AIParserInterface(ABC):
+    @abstractmethod
+    async def process_deep_learning(
+        self,
+        source_code: str,
+        context: AIContext,
+        repositories: List[int]
+    ) -> AIProcessingResult:
+        """Process with deep learning capabilities."""
+        pass
+
+    @abstractmethod
+    async def learn_from_repositories(
+        self,
+        repo_ids: List[int]
+    ) -> Dict[str, Any]:
+        """Learn patterns from multiple repositories."""
+        pass 

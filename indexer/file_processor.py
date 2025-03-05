@@ -1,21 +1,10 @@
-"""[2.0] File processing coordination.
+"""[2.0] File processor with pattern-based analysis.
 
-Flow:
-1. File Processing:
-   - Async file reading with encoding detection
-   - Language detection and classification
-   - Content parsing and feature extraction
-   - Embedding generation
-   
-2. Storage:
-   - Code files: AST, features, and embeddings
-   - Doc files: Content and embeddings
-   
-3. Resource Management:
-   - Concurrent operation limits
-   - Proper error handling
-   - Cache management
-   - Request-level caching for improved performance
+This module provides file processing capabilities with:
+1. Pattern-based file processing
+2. AI-assisted file analysis
+3. Pattern extraction
+4. Cross-repository pattern learning
 """
 
 from typing import Optional, Dict, List, Set, Tuple, Any
@@ -39,96 +28,257 @@ from utils.error_handling import (
 import aiofiles
 import asyncio
 from indexer.common import async_read_file
-from embedding.embedding_models import code_embedder, doc_embedder
+from embedding.embedding_models import code_embedder, doc_embedder, arch_embedder
 from utils.request_cache import cached_in_request
 from parsers.file_classification import classify_file
 from parsers.models import FileClassification
 from utils.shutdown import register_shutdown_handler
+from utils.async_runner import submit_async_task
+from parsers.types import ExtractedFeatures
 
 # Initialize upsert coordinator
 _upsert_coordinator = UpsertCoordinator()
 
 class FileProcessor:
-    """[2.1] Core file processing coordinator."""
+    """File processor with AI-assisted analysis."""
     
     def __init__(self):
-        """Private constructor - use create() instead."""
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
-        self._unified_parser = None
-        self._code_embedder = None
-        self._doc_embedder = None
-        self._upsert_coordinator = None
+        self._pattern_cache = {}
+        self._processing_stats = {
+            "total_files": 0,
+            "pattern_matches": 0,
+            "ai_insights": 0,
+            "failed_files": 0
+        }
     
-    async def ensure_initialized(self):
-        """Ensure the instance is properly initialized before use."""
+    async def initialize(self):
+        """Initialize the processor."""
         if not self._initialized:
-            raise ProcessingError("FileProcessor not initialized. Use create() to initialize.")
-        return True
-    
-    @classmethod
-    async def create(cls) -> 'FileProcessor':
-        """Async factory method to create and initialize a FileProcessor instance."""
-        instance = cls()
-        try:
-            async with AsyncErrorBoundary(
-                operation_name="file processor initialization",
-                error_types=ProcessingError,
-                severity=ErrorSeverity.CRITICAL
-            ):
-                # Initialize required components
-                from parsers.unified_parser import unified_parser
-                from embedding.embedding_models import code_embedder, doc_embedder
-                from db.upsert_ops import coordinator as upsert_coordinator
-                
-                # Initialize unified parser
-                instance._unified_parser = await unified_parser.ensure_initialized()
-                
+            try:
                 # Initialize embedders
-                if not code_embedder or not doc_embedder:
-                    await init_embedders()
-                instance._code_embedder = code_embedder
-                instance._doc_embedder = doc_embedder
+                await code_embedder.initialize()
+                await doc_embedder.initialize()
+                await arch_embedder.initialize()
                 
-                # Initialize upsert coordinator
-                instance._upsert_coordinator = await upsert_coordinator.ensure_initialized()
-                
-                # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
-                
-                # Initialize health monitoring
-                from utils.health_monitor import global_health_monitor
-                global_health_monitor.register_component("file_processor")
-                
-                instance._initialized = True
-                await log("File processor initialized", level="info")
-                return instance
-        except Exception as e:
-            await log(f"Error initializing file processor: {e}", level="error")
-            # Cleanup on initialization failure
-            await instance.cleanup()
-            raise ProcessingError(f"Failed to initialize file processor: {e}")
+                self._initialized = True
+                log("File processor initialized with AI support", level="info")
+            except Exception as e:
+                log(f"Error initializing file processor: {e}", level="error")
+                raise
     
-    async def process_file(self, file_path: str, repo_id: int, repo_path: str) -> Optional[Dict]:
-        """Process a single file for indexing."""
+    async def process_file(
+        self,
+        file_path: str,
+        content: str,
+        language: str,
+        reference_patterns: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Process file with pattern recognition and AI analysis."""
         if not self._initialized:
-            await self.ensure_initialized()
-            
+            await self.initialize()
+        
+        self._processing_stats["total_files"] += 1
+        
         try:
-            if not is_processable_file(file_path):
-                await log(f"File not processable: {file_path}", level="debug")
-                return None
-                
-            task = asyncio.create_task(self._process_single_file(file_path, repo_id, repo_path))
-            self._pending_tasks.add(task)
-            task.add_done_callback(lambda t: self._pending_tasks.remove(t) if t in self._pending_tasks else None)
-            return await task
+            # Generate embeddings with pattern awareness
+            code_embedding = await code_embedder.embed_code(
+                content,
+                language,
+                context={"file_path": file_path},
+                pattern_type="code"
+            )
+            
+            # Extract features
+            features = await self._extract_features(content, language)
+            
+            # Match against reference patterns
+            patterns = []
+            if reference_patterns:
+                patterns = await self._match_patterns(
+                    content,
+                    code_embedding,
+                    reference_patterns,
+                    features
+                )
+                self._processing_stats["pattern_matches"] += len(patterns)
+            
+            # Generate AI insights
+            insights = await self._generate_ai_insights(
+                content,
+                language,
+                features,
+                patterns
+            )
+            self._processing_stats["ai_insights"] += len(insights)
+            
+            return {
+                "features": features.to_dict(),
+                "patterns": patterns,
+                "insights": insights,
+                "embedding": code_embedding
+            }
         except Exception as e:
-            await log(f"Error processing file {file_path}: {e}", level="error")
-            raise ProcessingError(f"Failed to process file {file_path}: {e}")
+            self._processing_stats["failed_files"] += 1
+            log(f"Error processing file {file_path}: {e}", level="error")
+            raise
+    
+    async def _extract_features(
+        self,
+        content: str,
+        language: str
+    ) -> ExtractedFeatures:
+        """Extract code features with AI assistance."""
+        # This is a placeholder - actual implementation would use language-specific parsers
+        features = ExtractedFeatures()
+        features.language = language
+        return features
+    
+    async def _match_patterns(
+        self,
+        content: str,
+        embedding: List[float],
+        reference_patterns: List[Dict[str, Any]],
+        features: ExtractedFeatures
+    ) -> List[Dict[str, Any]]:
+        """Match content against reference patterns."""
+        matches = []
+        
+        for pattern in reference_patterns:
+            # Generate pattern embedding
+            pattern_embedding = await code_embedder.embed_pattern(pattern)
+            
+            # Calculate similarity
+            similarity = self._calculate_similarity(embedding, pattern_embedding)
+            
+            if similarity > 0.8:  # High confidence threshold
+                match = {
+                    "pattern_id": pattern["id"],
+                    "pattern_type": pattern["type"],
+                    "similarity": similarity,
+                    "confidence": self._calculate_confidence(
+                        similarity,
+                        features,
+                        pattern
+                    )
+                }
+                matches.append(match)
+        
+        return matches
+    
+    def _calculate_similarity(
+        self,
+        embedding1: List[float],
+        embedding2: List[float]
+    ) -> float:
+        """Calculate cosine similarity between embeddings."""
+        import numpy as np
+        vec1 = np.array(embedding1)
+        vec2 = np.array(embedding2)
+        return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+    
+    def _calculate_confidence(
+        self,
+        similarity: float,
+        features: ExtractedFeatures,
+        pattern: Dict[str, Any]
+    ) -> float:
+        """Calculate confidence score for pattern match."""
+        # Base confidence from similarity
+        confidence = similarity
+        
+        # Adjust based on feature matching
+        if pattern.get("language") == features.language:
+            confidence *= 1.1
+        
+        if pattern.get("complexity") and features.complexity:
+            complexity_diff = abs(pattern["complexity"] - features.complexity)
+            confidence *= (1.0 - (complexity_diff / 10.0))
+        
+        # Cap at 1.0
+        return min(1.0, confidence)
+    
+    async def _generate_ai_insights(
+        self,
+        content: str,
+        language: str,
+        features: ExtractedFeatures,
+        patterns: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Generate AI insights for the file."""
+        insights = []
+        
+        # Add pattern-based insights
+        for pattern in patterns:
+            insight = {
+                "type": "pattern_match",
+                "pattern_id": pattern["pattern_id"],
+                "confidence": pattern["confidence"],
+                "recommendations": await self._generate_recommendations(
+                    content,
+                    pattern
+                )
+            }
+            insights.append(insight)
+        
+        # Add language-specific insights
+        lang_insights = await self._generate_language_insights(
+            content,
+            language,
+            features
+        )
+        insights.extend(lang_insights)
+        
+        return insights
+    
+    async def _generate_recommendations(
+        self,
+        content: str,
+        pattern: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Generate recommendations based on pattern match."""
+        # This is a placeholder - actual implementation would use AI models
+        return [
+            {
+                "type": "improvement",
+                "description": "Consider refactoring to better match the pattern",
+                "priority": "medium"
+            }
+        ]
+    
+    async def _generate_language_insights(
+        self,
+        content: str,
+        language: str,
+        features: ExtractedFeatures
+    ) -> List[Dict[str, Any]]:
+        """Generate language-specific insights."""
+        # This is a placeholder - actual implementation would use language-specific analysis
+        return [
+            {
+                "type": "language_specific",
+                "language": language,
+                "description": "Language-specific insight",
+                "confidence": 0.8
+            }
+        ]
+    
+    def get_stats(self) -> Dict[str, int]:
+        """Get processing statistics."""
+        return self._processing_stats.copy()
+    
+    def reset_stats(self) -> None:
+        """Reset processing statistics."""
+        self._processing_stats = {
+            "total_files": 0,
+            "pattern_matches": 0,
+            "ai_insights": 0,
+            "failed_files": 0
+        }
     
     async def cleanup(self):
-        """Clean up all resources."""
+        """Clean up processor resources."""
         try:
             # Cancel all pending tasks
             if self._pending_tasks:
@@ -138,40 +288,27 @@ class FileProcessor:
                 await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
-            # Clean up components in reverse initialization order
-            if self._upsert_coordinator:
-                await self._upsert_coordinator.cleanup()
-            if self._code_embedder:
-                await self._code_embedder.cleanup()
-            if self._doc_embedder:
-                await self._doc_embedder.cleanup()
-            if self._unified_parser:
-                await self._unified_parser.cleanup()
-            
-            # Unregister from health monitoring
-            from utils.health_monitor import global_health_monitor
-            global_health_monitor.unregister_component("file_processor")
+            # Clear pattern cache
+            self._pattern_cache.clear()
             
             self._initialized = False
-            await log("File processor cleaned up", level="info")
+            log("File processor cleaned up", level="info")
         except Exception as e:
-            await log(f"Error cleaning up file processor: {e}", level="error")
-            raise ProcessingError(f"Failed to cleanup file processor: {e}")
+            log(f"Error cleaning up file processor: {e}", level="error")
+
+# Create global instance
+processor = FileProcessor()
+
+# Export with proper async handling
+async def get_processor() -> FileProcessor:
+    """Get the file processor instance.
     
-    def clear_cache(self):
-        """Clear all caches."""
-        # Each parser manages its own cache
-        pass
-
-# Global instance
-file_processor = None
-
-async def get_file_processor() -> FileProcessor:
-    """Get the global file processor instance."""
-    global file_processor
-    if not file_processor:
-        file_processor = await FileProcessor.create()
-    return file_processor
+    Returns:
+        FileProcessor: The singleton file processor instance
+    """
+    if not processor._initialized:
+        await processor.initialize()
+    return processor
 
 # Cache-enabled utility functions
 

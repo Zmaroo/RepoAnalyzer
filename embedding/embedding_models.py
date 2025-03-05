@@ -1,9 +1,13 @@
-"""Unified embedding models for code and documentation."""
+"""Embedding models with pattern-aware and context-sensitive capabilities.
+
+This module provides embedding generation for code, documentation, and patterns,
+with support for context-sensitive analysis and pattern similarity.
+"""
 
 import torch
 from transformers import AutoTokenizer, AutoModel
 import numpy as np
-from typing import Union, Optional, Set
+from typing import Union, Optional, Set, List, Dict, Any
 from utils.logger import log
 from utils.cache import UnifiedCache, cache_coordinator
 from parsers.models import FileType, FileClassification  # Add imports from models
@@ -11,137 +15,175 @@ from utils.error_handling import (
     handle_errors,
     handle_async_errors,
     ProcessingError,
-    AsyncErrorBoundary
+    AsyncErrorBoundary,
+    ErrorSeverity
 )
 import asyncio
+from utils.async_runner import submit_async_task
 
-# Create cache instance
-embedding_cache = UnifiedCache("embeddings", ttl=7200)
+# Initialize cache for embeddings
+embedding_cache = UnifiedCache("embeddings", ttl=3600)
 
 # Register cache asynchronously - will be done when the module is used
 async def initialize():
     """Initialize the embedding models module."""
     await cache_coordinator.register_cache("embeddings", embedding_cache)
 
-class BaseEmbedder:
-    """Base class for embedding models."""
+class PatternAwareEmbedder:
+    """Base class for pattern-aware embedding generation."""
+    
+    def __init__(self):
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._context_window = 1000  # Default context window size
+        self._pattern_cache = {}
+    
+    async def initialize(self):
+        """Initialize the embedder."""
+        if not self._initialized:
+            # Initialize model and resources
+            self._initialized = True
+            log("Pattern-aware embedder initialized", level="info")
+    
+    async def embed_with_context(
+        self,
+        text: str,
+        context: Optional[Dict[str, Any]] = None,
+        pattern_type: Optional[str] = None
+    ) -> List[float]:
+        """Generate embeddings with contextual information."""
+        if not self._initialized:
+            await self.initialize()
+        
+        # Include context in embedding generation
+        if context:
+            text = self._enrich_with_context(text, context)
+        
+        # Apply pattern-specific processing
+        if pattern_type:
+            text = self._apply_pattern_processing(text, pattern_type)
+        
+        # Generate base embedding
+        embedding = await self._generate_base_embedding(text)
+        
+        # Enhance with pattern information if available
+        if pattern_type:
+            embedding = await self._enhance_with_pattern(embedding, pattern_type)
+        
+        return embedding
+    
+    def _enrich_with_context(self, text: str, context: Dict[str, Any]) -> str:
+        """Enrich text with contextual information."""
+        enriched = text
+        
+        if context.get("file_path"):
+            enriched = f"File: {context['file_path']}\n{enriched}"
+        
+        if context.get("language"):
+            enriched = f"Language: {context['language']}\n{enriched}"
+        
+        if context.get("dependencies"):
+            deps = ", ".join(context["dependencies"])
+            enriched = f"Dependencies: {deps}\n{enriched}"
+        
+        return enriched
+    
+    def _apply_pattern_processing(self, text: str, pattern_type: str) -> str:
+        """Apply pattern-specific text processing."""
+        # Add pattern-specific markers and structure
+        if pattern_type == "code_pattern":
+            return f"[CODE_PATTERN]\n{text}\n[/CODE_PATTERN]"
+        elif pattern_type == "doc_pattern":
+            return f"[DOC_PATTERN]\n{text}\n[/DOC_PATTERN]"
+        elif pattern_type == "arch_pattern":
+            return f"[ARCH_PATTERN]\n{text}\n[/ARCH_PATTERN]"
+        return text
+    
+    async def _enhance_with_pattern(
+        self,
+        base_embedding: List[float],
+        pattern_type: str
+    ) -> List[float]:
+        """Enhance embedding with pattern-specific information."""
+        # Apply pattern-specific enhancement
+        # This is a placeholder - actual implementation would depend on the model
+        return base_embedding
+
+class CodeEmbedder(PatternAwareEmbedder):
+    """Code-specific embedder with pattern awareness."""
     
     def __init__(self):
         """Private constructor - use create() instead."""
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Task] = set()
-        self._lock = asyncio.Lock()
-        self.model_name = None
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.tokenizer = None
-        self.model = None
-        self._cache = None
-    
-    async def ensure_initialized(self):
-        """Ensure the instance is properly initialized before use."""
-        if not self._initialized:
-            raise ProcessingError("Embedder not initialized. Use create() to initialize.")
-        if not self.model:
-            raise ProcessingError("Model not initialized")
-        if not self.tokenizer:
-            raise ProcessingError("Tokenizer not initialized")
-        if not self._cache:
-            raise ProcessingError("Cache not initialized")
-        return True
+        super().__init__()
     
     @classmethod
-    async def create(cls, model_name: str) -> 'BaseEmbedder':
-        """Async factory method to create and initialize an embedder."""
+    async def create(cls) -> 'CodeEmbedder':
+        """Async factory method to create and initialize a CodeEmbedder."""
         instance = cls()
-        instance.model_name = model_name
         
         try:
             async with AsyncErrorBoundary(
-                operation_name=f"{model_name} embedder initialization",
+                operation_name="CodeEmbedder initialization",
                 error_types=ProcessingError,
                 severity=ErrorSeverity.CRITICAL
             ):
                 # Initialize model and tokenizer
-                instance.tokenizer = AutoTokenizer.from_pretrained(model_name)
-                instance.model = AutoModel.from_pretrained(model_name).to(instance.device)
+                instance.tokenizer = AutoTokenizer.from_pretrained('microsoft/graphcodebert-base')
+                instance.model = AutoModel.from_pretrained('microsoft/graphcodebert-base').to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
                 instance.model.eval()
                 
                 # Initialize cache
-                instance._cache = UnifiedCache(f"embeddings_{model_name}", ttl=7200)
-                await cache_coordinator.register_cache(f"embeddings_{model_name}", instance._cache)
+                instance._cache = UnifiedCache(f"embeddings_microsoft_graphcodebert-base", ttl=7200)
+                await cache_coordinator.register_cache(f"embeddings_microsoft_graphcodebert-base", instance._cache)
                 
                 # Register shutdown handler
                 register_shutdown_handler(instance.cleanup)
                 
                 # Initialize health monitoring
                 from utils.health_monitor import global_health_monitor
-                global_health_monitor.register_component(f"embedder_{model_name}")
+                global_health_monitor.register_component(f"embedder_microsoft_graphcodebert-base")
                 
                 instance._initialized = True
-                await log(f"{model_name} embedder initialized", level="info")
+                await log("CodeEmbedder initialized", level="info")
                 return instance
         except Exception as e:
-            await log(f"Error initializing {model_name} embedder: {e}", level="error")
+            await log(f"Error initializing CodeEmbedder: {e}", level="error")
             # Cleanup on initialization failure
             await instance.cleanup()
-            raise ProcessingError(f"Failed to initialize {model_name} embedder: {e}")
+            raise ProcessingError(f"Failed to initialize CodeEmbedder: {e}")
     
-    @handle_async_errors(error_types=ProcessingError)
-    async def _compute_embedding(self, text: str) -> np.ndarray:
-        """Compute embedding for text."""
-        if not self._initialized:
-            await self.ensure_initialized()
-            
-        async with AsyncErrorBoundary("embedding computation"):
-            async with self._lock:
-                inputs = self.tokenizer(
-                    text,
-                    padding=True,
-                    truncation=True,
-                    max_length=512,
-                    return_tensors="pt"
-                ).to(self.device)
-                
-                with torch.no_grad():
-                    outputs = self.model(**inputs)
-                
-                return outputs.last_hidden_state[:, 0, :].cpu().numpy()
+    async def embed_code(
+        self,
+        code: str,
+        language: str,
+        context: Optional[Dict[str, Any]] = None,
+        pattern_type: Optional[str] = None
+    ) -> List[float]:
+        """Generate code embeddings with pattern awareness."""
+        # Add language-specific context
+        if context is None:
+            context = {}
+        context["language"] = language
+        
+        return await self.embed_with_context(code, context, pattern_type)
     
-    @handle_async_errors(error_types=ProcessingError)
-    async def embed_async(self, text: str) -> Optional[np.ndarray]:
-        """Compute embedding asynchronously with caching."""
-        if not self._initialized:
-            await self.ensure_initialized()
-            
-        cache_key = f"{self.__class__.__name__}:{hash(text)}"
+    async def embed_pattern(
+        self,
+        pattern: Dict[str, Any]
+    ) -> List[float]:
+        """Generate embeddings for code patterns."""
+        context = {
+            "pattern_type": pattern["type"],
+            "language": pattern.get("language"),
+            "complexity": pattern.get("complexity"),
+            "dependencies": pattern.get("dependencies", [])
+        }
         
-        # Check cache
-        task = asyncio.create_task(self._cache.get_async(cache_key))
-        self._pending_tasks.add(task)
-        try:
-            cached = await task
-            if cached is not None:
-                return np.array(cached)
-        finally:
-            self._pending_tasks.remove(task)
-        
-        # Compute new embedding
-        task = asyncio.create_task(self._compute_embedding(text))
-        self._pending_tasks.add(task)
-        try:
-            embedding = await task
-        finally:
-            self._pending_tasks.remove(task)
-        
-        # Cache result
-        task = asyncio.create_task(self._cache.set_async(cache_key, embedding.tolist()))
-        self._pending_tasks.add(task)
-        try:
-            await task
-        finally:
-            self._pending_tasks.remove(task)
-        
-        return embedding
+        return await self.embed_with_context(
+            pattern["content"],
+            context,
+            pattern_type="code_pattern"
+        )
     
     async def cleanup(self):
         """Clean up model resources."""
@@ -159,7 +201,7 @@ class BaseEmbedder:
             
             # Clean up cache
             if self._cache:
-                await cache_coordinator.unregister_cache(f"embeddings_{self.model_name}")
+                await cache_coordinator.unregister_cache(f"embeddings_microsoft_graphcodebert-base")
                 self._cache = None
             
             # Clean up model resources
@@ -172,32 +214,16 @@ class BaseEmbedder:
             
             # Unregister from health monitoring
             from utils.health_monitor import global_health_monitor
-            global_health_monitor.unregister_component(f"embedder_{self.model_name}")
+            global_health_monitor.unregister_component(f"embedder_microsoft_graphcodebert-base")
             
             self._initialized = False
-            await log(f"{self.model_name} embedder cleaned up", level="info")
+            await log("CodeEmbedder cleaned up", level="info")
         except Exception as e:
-            await log(f"Error cleaning up {self.model_name} embedder: {e}", level="error")
-            raise ProcessingError(f"Failed to cleanup {self.model_name} embedder: {e}")
+            await log(f"Error cleaning up CodeEmbedder: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup CodeEmbedder: {e}")
 
-class CodeEmbedder(BaseEmbedder):
-    """Code-specific embedding model using GraphCodeBERT."""
-    
-    def __init__(self):
-        """Private constructor - use create() instead."""
-        super().__init__()
-    
-    @classmethod
-    async def create(cls) -> 'CodeEmbedder':
-        """Async factory method to create and initialize a CodeEmbedder."""
-        return await super().create('microsoft/graphcodebert-base')
-    
-    async def embed_code(self, code: str) -> Optional[np.ndarray]:
-        """Alias for embed_async to maintain compatibility with tests."""
-        return await self.embed_async(code)
-
-class DocEmbedder(BaseEmbedder):
-    """Documentation-specific embedding model."""
+class DocEmbedder(PatternAwareEmbedder):
+    """Documentation-specific embedder with pattern awareness."""
     
     def __init__(self):
         """Private constructor - use create() instead."""
@@ -206,28 +232,178 @@ class DocEmbedder(BaseEmbedder):
     @classmethod
     async def create(cls) -> 'DocEmbedder':
         """Async factory method to create and initialize a DocEmbedder."""
-        return await super().create('sentence-transformers/all-mpnet-base-v2')
+        instance = cls()
+        
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="DocEmbedder initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize model and tokenizer
+                instance.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-mpnet-base-v2')
+                instance.model = AutoModel.from_pretrained('sentence-transformers/all-mpnet-base-v2').to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+                instance.model.eval()
+                
+                # Initialize cache
+                instance._cache = UnifiedCache(f"embeddings_sentence-transformers_all-mpnet-base-v2", ttl=7200)
+                await cache_coordinator.register_cache(f"embeddings_sentence-transformers_all-mpnet-base-v2", instance._cache)
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component(f"embedder_sentence-transformers_all-mpnet-base-v2")
+                
+                instance._initialized = True
+                await log("DocEmbedder initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing DocEmbedder: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize DocEmbedder: {e}")
+    
+    async def embed_doc(
+        self,
+        text: str,
+        doc_type: str,
+        context: Optional[Dict[str, Any]] = None,
+        pattern_type: Optional[str] = None
+    ) -> List[float]:
+        """Generate documentation embeddings with pattern awareness."""
+        if context is None:
+            context = {}
+        context["doc_type"] = doc_type
+        
+        return await self.embed_with_context(text, context, pattern_type)
+    
+    async def embed_pattern(
+        self,
+        pattern: Dict[str, Any]
+    ) -> List[float]:
+        """Generate embeddings for documentation patterns."""
+        context = {
+            "pattern_type": pattern["type"],
+            "doc_type": pattern.get("doc_type"),
+            "structure": pattern.get("structure")
+        }
+        
+        return await self.embed_with_context(
+            pattern["content"],
+            context,
+            pattern_type="doc_pattern"
+        )
+    
+    async def cleanup(self):
+        """Clean up model resources."""
+        try:
+            if not self._initialized:
+                return
+                
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clean up cache
+            if self._cache:
+                await cache_coordinator.unregister_cache(f"embeddings_sentence-transformers_all-mpnet-base-v2")
+                self._cache = None
+            
+            # Clean up model resources
+            if self.model:
+                del self.model
+            if self.tokenizer:
+                del self.tokenizer
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component(f"embedder_sentence-transformers_all-mpnet-base-v2")
+            
+            self._initialized = False
+            await log("DocEmbedder cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up DocEmbedder: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup DocEmbedder: {e}")
 
-# Global instances - these need to be initialized before use
-_code_embedder = None
-_doc_embedder = None
+class ArchitectureEmbedder(PatternAwareEmbedder):
+    """Architecture-specific embedder with pattern awareness."""
+    
+    async def embed_architecture(
+        self,
+        structure: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+        pattern_type: Optional[str] = None
+    ) -> List[float]:
+        """Generate architecture embeddings with pattern awareness."""
+        # Convert structure to text representation
+        text = self._structure_to_text(structure)
+        
+        if context is None:
+            context = {}
+        context["structure_type"] = structure.get("type")
+        
+        return await self.embed_with_context(text, context, pattern_type)
+    
+    def _structure_to_text(self, structure: Dict[str, Any]) -> str:
+        """Convert architecture structure to text representation."""
+        text_parts = []
+        
+        if "components" in structure:
+            text_parts.append("Components:")
+            for comp in structure["components"]:
+                text_parts.append(f"- {comp['name']}: {comp.get('description', '')}")
+        
+        if "relationships" in structure:
+            text_parts.append("\nRelationships:")
+            for rel in structure["relationships"]:
+                text_parts.append(
+                    f"- {rel['source']} -> {rel['target']}: {rel.get('type', '')}"
+                )
+        
+        return "\n".join(text_parts)
+    
+    async def embed_pattern(
+        self,
+        pattern: Dict[str, Any]
+    ) -> List[float]:
+        """Generate embeddings for architecture patterns."""
+        context = {
+            "pattern_type": pattern["type"],
+            "components": len(pattern.get("components", [])),
+            "relationships": len(pattern.get("relationships", []))
+        }
+        
+        return await self.embed_with_context(
+            self._structure_to_text(pattern),
+            context,
+            pattern_type="arch_pattern"
+        )
+
+# Global instances
+code_embedder = CodeEmbedder()
+doc_embedder = DocEmbedder()
+arch_embedder = ArchitectureEmbedder()
 
 async def init_embedders():
-    """Initialize the global embedder instances."""
-    global _code_embedder, _doc_embedder
-    
+    """Initialize all embedders."""
     try:
-        async with AsyncErrorBoundary("embedder initialization"):
-            # Initialize code embedder
-            _code_embedder = await CodeEmbedder.create()
-            
-            # Initialize doc embedder
-            _doc_embedder = await DocEmbedder.create()
-            
-            await log("Embedders initialized", level="info")
+        await asyncio.gather(
+            code_embedder.initialize(),
+            doc_embedder.initialize(),
+            arch_embedder.initialize()
+        )
+        log("All embedders initialized", level="info")
     except Exception as e:
-        await log(f"Error initializing embedders: {e}", level="error")
-        raise ProcessingError(f"Failed to initialize embedders: {e}")
+        log(f"Error initializing embedders: {e}", level="error")
+        raise
 
 # Export with proper async handling
 async def get_code_embedder() -> CodeEmbedder:
@@ -236,10 +412,10 @@ async def get_code_embedder() -> CodeEmbedder:
     Returns:
         CodeEmbedder: The singleton code embedder instance
     """
-    global _code_embedder
-    if not _code_embedder:
-        _code_embedder = await CodeEmbedder.create()
-    return _code_embedder
+    global code_embedder
+    if not code_embedder:
+        code_embedder = await CodeEmbedder.create()
+    return code_embedder
 
 async def get_doc_embedder() -> DocEmbedder:
     """Get the doc embedder instance.
@@ -247,7 +423,7 @@ async def get_doc_embedder() -> DocEmbedder:
     Returns:
         DocEmbedder: The singleton doc embedder instance
     """
-    global _doc_embedder
-    if not _doc_embedder:
-        _doc_embedder = await DocEmbedder.create()
-    return _doc_embedder
+    global doc_embedder
+    if not doc_embedder:
+        doc_embedder = await DocEmbedder.create()
+    return doc_embedder

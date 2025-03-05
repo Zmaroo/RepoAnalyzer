@@ -28,7 +28,7 @@ from parsers.types import ParserResult, FileType, ExtractedFeatures
 from parsers.models import FileClassification
 from parsers.language_support import language_registry
 from parsers.query_patterns import initialize_pattern_system
-from db.upsert_ops import UpsertCoordinator  # Use UpsertCoordinator for database operations
+from db.upsert_ops import UpsertCoordinator, upsert_coordinator
 from db.transaction import transaction_scope
 from db.graph_sync import graph_sync
 from indexer.file_processor import FileProcessor
@@ -41,6 +41,8 @@ from utils.error_handling import (
 )
 from utils.request_cache import request_cache_context, cached_in_request
 from utils.shutdown import register_shutdown_handler
+from utils.async_runner import submit_async_task
+from embedding.embedding_models import code_embedder, doc_embedder, arch_embedder
 
 # Initialize pattern system
 _pattern_system_initialized = False
@@ -64,6 +66,14 @@ class UnifiedIndexer:
         self._pending_tasks: Set[asyncio.Task] = set()
         self._processing_coordinator = None
         self._file_processor = None
+        self._pattern_cache = {}
+        self._pattern_stats = {
+            "total_patterns": 0,
+            "code_patterns": 0,
+            "doc_patterns": 0,
+            "arch_patterns": 0,
+            "pattern_matches": 0
+        }
     
     async def ensure_initialized(self):
         """Ensure the instance is properly initialized before use."""
@@ -128,11 +138,183 @@ class UnifiedIndexer:
             from utils.health_monitor import global_health_monitor
             global_health_monitor.unregister_component("unified_indexer")
             
+            # Clear pattern cache
+            self._pattern_cache.clear()
+            
             self._initialized = False
             await log("Unified indexer cleaned up", level="info")
         except Exception as e:
             await log(f"Error cleaning up unified indexer: {e}", level="error")
             raise ProcessingError(f"Failed to cleanup unified indexer: {e}")
+
+    async def index_with_patterns(
+        self,
+        repo_id: int,
+        file_path: str,
+        content: str,
+        features: ExtractedFeatures,
+        reference_patterns: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Index content with pattern recognition."""
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        # Generate embeddings with pattern awareness
+        code_embedding = await code_embedder.embed_code(
+            content,
+            features.language,
+            context={"file_path": file_path, "repo_id": repo_id},
+            pattern_type="code"
+        )
+        
+        # Extract patterns if available
+        patterns = []
+        if reference_patterns:
+            patterns = await self._match_patterns(
+                content,
+                code_embedding,
+                reference_patterns,
+                features
+            )
+        
+        # Store content with pattern information
+        async with transaction_scope() as txn:
+            await upsert_coordinator.store_parsed_content(
+                repo_id=repo_id,
+                file_path=file_path,
+                ast=features.ast,
+                features=features,
+                patterns=patterns
+            )
+        
+        return {
+            "patterns": patterns,
+            "embedding": code_embedding
+        }
+    
+    async def _match_patterns(
+        self,
+        content: str,
+        embedding: List[float],
+        reference_patterns: List[Dict[str, Any]],
+        features: ExtractedFeatures
+    ) -> List[Dict[str, Any]]:
+        """Match content against reference patterns."""
+        matches = []
+        
+        for pattern in reference_patterns:
+            # Generate pattern embedding
+            pattern_embedding = await code_embedder.embed_pattern(pattern)
+            
+            # Calculate similarity
+            similarity = self._calculate_similarity(embedding, pattern_embedding)
+            
+            if similarity > 0.8:  # High confidence threshold
+                match = {
+                    "pattern_id": pattern["id"],
+                    "pattern_type": pattern["type"],
+                    "similarity": similarity,
+                    "confidence": self._calculate_confidence(
+                        similarity,
+                        features,
+                        pattern
+                    )
+                }
+                matches.append(match)
+                self._pattern_stats["pattern_matches"] += 1
+        
+        return matches
+    
+    def _calculate_similarity(
+        self,
+        embedding1: List[float],
+        embedding2: List[float]
+    ) -> float:
+        """Calculate cosine similarity between embeddings."""
+        import numpy as np
+        vec1 = np.array(embedding1)
+        vec2 = np.array(embedding2)
+        return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+    
+    def _calculate_confidence(
+        self,
+        similarity: float,
+        features: ExtractedFeatures,
+        pattern: Dict[str, Any]
+    ) -> float:
+        """Calculate confidence score for pattern match."""
+        # Base confidence from similarity
+        confidence = similarity
+        
+        # Adjust based on feature matching
+        if pattern.get("language") == features.language:
+            confidence *= 1.1
+        
+        if pattern.get("complexity") and features.complexity:
+            complexity_diff = abs(pattern["complexity"] - features.complexity)
+            confidence *= (1.0 - (complexity_diff / 10.0))
+        
+        # Cap at 1.0
+        return min(1.0, confidence)
+    
+    async def learn_patterns(
+        self,
+        repo_id: int,
+        content: str,
+        features: ExtractedFeatures,
+        pattern_type: str
+    ) -> Dict[str, Any]:
+        """Learn new patterns from content."""
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        # Generate embeddings for pattern learning
+        embedding = await code_embedder.embed_code(
+            content,
+            features.language,
+            context={"pattern_type": pattern_type},
+            pattern_type="pattern_learning"
+        )
+        
+        # Extract pattern features
+        pattern = {
+            "type": pattern_type,
+            "language": features.language,
+            "content": content,
+            "complexity": features.complexity,
+            "dependencies": features.dependencies,
+            "embedding": embedding,
+            "features": features.to_dict()
+        }
+        
+        # Store pattern
+        async with transaction_scope() as txn:
+            pattern_id = await upsert_coordinator.upsert_pattern(
+                pattern,
+                repo_id,
+                pattern_type
+            )
+            pattern["id"] = pattern_id
+        
+        # Update stats
+        self._pattern_stats["total_patterns"] += 1
+        self._pattern_stats[f"{pattern_type}_patterns"] += 1
+        
+        return pattern
+    
+    def get_stats(self) -> Dict[str, int]:
+        """Get pattern processing statistics."""
+        return self._pattern_stats.copy()
+    
+    def reset_stats(self) -> None:
+        """Reset pattern processing statistics."""
+        self._pattern_stats = {
+            "total_patterns": 0,
+            "code_patterns": 0,
+            "doc_patterns": 0,
+            "arch_patterns": 0,
+            "pattern_matches": 0
+        }
 
 class ProcessingCoordinator:
     """[1.2] Coordinates file processing tasks."""
@@ -317,5 +499,16 @@ def index_active_project_sync() -> None:
     loop = asyncio.get_event_loop()
     loop.run_until_complete(index_active_project())
 
-if __name__ == "__main__":
-    index_active_project_sync() 
+# Create global instance
+indexer = UnifiedIndexer()
+
+# Export with proper async handling
+async def get_indexer() -> UnifiedIndexer:
+    """Get the unified indexer instance.
+    
+    Returns:
+        UnifiedIndexer: The singleton unified indexer instance
+    """
+    if not indexer._initialized:
+        await indexer.ensure_initialized()
+    return indexer 

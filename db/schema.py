@@ -8,7 +8,7 @@ This module provides centralized schema management for all databases:
 """
 
 import asyncio
-from typing import Set
+from typing import Set, Dict, Any, List, Optional
 from utils.logger import log
 from utils.error_handling import (
     handle_async_errors,
@@ -22,6 +22,7 @@ from db.retry_utils import DatabaseRetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
 from utils.shutdown import register_shutdown_handler
+from db.transaction import transaction_scope
 
 class SchemaError(DatabaseError):
     """Schema management specific errors."""
@@ -383,3 +384,287 @@ async def cleanup_schema():
         raise DatabaseError(f"Failed to cleanup schema manager resources: {e}")
 
 register_shutdown_handler(cleanup_schema)
+
+async def create_all_tables(self):
+    """Create all database tables."""
+    if self._initialized:
+        return
+        
+    async with transaction_scope() as txn:
+        # Create base tables
+        await self._create_base_tables(txn)
+        
+        # Create AI pattern tables
+        await self._create_ai_pattern_tables(txn)
+        
+        # Create indexes
+        await self._create_indexes(txn)
+        
+        self._initialized = True
+
+async def _create_base_tables(self, txn):
+    """Create base database tables."""
+    # Create repositories table
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS repositories (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL,
+            source_url TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create files table
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS files (
+            id SERIAL PRIMARY KEY,
+            repo_id INTEGER REFERENCES repositories(id),
+            path TEXT NOT NULL,
+            language TEXT,
+            content TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create code snippets table
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS code_snippets (
+            id SERIAL PRIMARY KEY,
+            file_id INTEGER REFERENCES files(id),
+            content TEXT NOT NULL,
+            language TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create documentation table
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS documentation (
+            id SERIAL PRIMARY KEY,
+            file_id INTEGER REFERENCES files(id),
+            content TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+async def _create_ai_pattern_tables(self, txn):
+    """Create AI pattern storage tables."""
+    # Create code patterns table
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS code_patterns (
+            id SERIAL PRIMARY KEY,
+            repo_id INTEGER REFERENCES repositories(id),
+            file_path TEXT NOT NULL,
+            pattern_type TEXT NOT NULL,
+            language TEXT NOT NULL,
+            content TEXT NOT NULL,
+            confidence FLOAT NOT NULL,
+            complexity INTEGER,
+            dependencies TEXT[],
+            documentation TEXT,
+            metadata JSONB,
+            embedding VECTOR(1536),
+            ai_insights JSONB,  -- Store AI-generated insights
+            ai_confidence FLOAT,  -- AI confidence in pattern
+            ai_metrics JSONB,  -- AI-specific metrics
+            ai_recommendations JSONB,  -- AI recommendations
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create documentation patterns table
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS doc_patterns (
+            id SERIAL PRIMARY KEY,
+            repo_id INTEGER REFERENCES repositories(id),
+            file_path TEXT NOT NULL,
+            pattern_type TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            confidence FLOAT NOT NULL,
+            structure JSONB,
+            metadata JSONB,
+            embedding VECTOR(1536),
+            ai_insights JSONB,  -- Store AI-generated insights
+            ai_confidence FLOAT,  -- AI confidence in pattern
+            ai_metrics JSONB,  -- AI-specific metrics
+            ai_recommendations JSONB,  -- AI recommendations
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create architecture patterns table
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS arch_patterns (
+            id SERIAL PRIMARY KEY,
+            repo_id INTEGER REFERENCES repositories(id),
+            pattern_type TEXT NOT NULL,
+            structure JSONB NOT NULL,
+            dependencies JSONB,
+            confidence FLOAT NOT NULL,
+            metadata JSONB,
+            embedding VECTOR(1536),
+            ai_insights JSONB,  -- Store AI-generated insights
+            ai_confidence FLOAT,  -- AI confidence in pattern
+            ai_metrics JSONB,  -- AI-specific metrics
+            ai_recommendations JSONB,  -- AI recommendations
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create pattern relationships table with AI enhancements
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS pattern_relationships (
+            id SERIAL PRIMARY KEY,
+            source_pattern_id INTEGER NOT NULL,
+            target_pattern_id INTEGER NOT NULL,
+            relationship_type TEXT NOT NULL,
+            strength FLOAT NOT NULL,
+            metadata JSONB,
+            ai_relationship_type TEXT,  -- AI-detected relationship type
+            ai_relationship_strength FLOAT,  -- AI-calculated relationship strength
+            ai_insights JSONB,  -- AI insights about the relationship
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_pattern_id, target_pattern_id, relationship_type)
+        )
+    """)
+    
+    # Create pattern metrics table with AI enhancements
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS pattern_metrics (
+            id SERIAL PRIMARY KEY,
+            pattern_id INTEGER NOT NULL,
+            pattern_type TEXT NOT NULL,
+            complexity_score FLOAT,
+            maintainability_score FLOAT,
+            reusability_score FLOAT,
+            usage_count INTEGER DEFAULT 0,
+            last_used TIMESTAMP WITH TIME ZONE,
+            metadata JSONB,
+            ai_quality_score FLOAT,  -- AI-calculated quality score
+            ai_impact_score FLOAT,  -- AI-calculated impact score
+            ai_trend_analysis JSONB,  -- AI trend analysis
+            ai_recommendations JSONB,  -- AI recommendations
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(pattern_id, pattern_type)
+        )
+    """)
+    
+    # Create pattern learning history table with AI enhancements
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS pattern_learning_history (
+            id SERIAL PRIMARY KEY,
+            repo_id INTEGER REFERENCES repositories(id),
+            pattern_id INTEGER NOT NULL,
+            pattern_type TEXT NOT NULL,
+            learning_type TEXT NOT NULL,
+            confidence FLOAT NOT NULL,
+            metadata JSONB,
+            ai_learning_insights JSONB,  -- AI learning insights
+            ai_learning_progress JSONB,  -- AI learning progress tracking
+            ai_adaptation_metrics JSONB,  -- AI adaptation metrics
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Create pattern cross-repository analysis table
+    await txn.execute("""
+        CREATE TABLE IF NOT EXISTS pattern_cross_repo_analysis (
+            id SERIAL PRIMARY KEY,
+            pattern_id INTEGER NOT NULL,
+            source_repo_id INTEGER REFERENCES repositories(id),
+            target_repo_id INTEGER REFERENCES repositories(id),
+            similarity_score FLOAT NOT NULL,
+            adaptation_score FLOAT NOT NULL,
+            conflict_score FLOAT NOT NULL,
+            ai_insights JSONB,  -- AI cross-repo insights
+            ai_recommendations JSONB,  -- AI cross-repo recommendations
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(pattern_id, source_repo_id, target_repo_id)
+        )
+    """)
+
+async def _create_indexes(self, txn):
+    """Create database indexes."""
+    # Create indexes for code patterns
+    await txn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_code_patterns_repo_id ON code_patterns(repo_id);
+        CREATE INDEX IF NOT EXISTS idx_code_patterns_pattern_type ON code_patterns(pattern_type);
+        CREATE INDEX IF NOT EXISTS idx_code_patterns_language ON code_patterns(language);
+        CREATE INDEX IF NOT EXISTS idx_code_patterns_confidence ON code_patterns(confidence);
+        CREATE INDEX IF NOT EXISTS idx_code_patterns_ai_confidence ON code_patterns(ai_confidence);
+        CREATE INDEX IF NOT EXISTS idx_code_patterns_embedding ON code_patterns USING ivfflat (embedding vector_cosine_ops);
+    """)
+    
+    # Create indexes for documentation patterns
+    await txn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_doc_patterns_repo_id ON doc_patterns(repo_id);
+        CREATE INDEX IF NOT EXISTS idx_doc_patterns_pattern_type ON doc_patterns(pattern_type);
+        CREATE INDEX IF NOT EXISTS idx_doc_patterns_doc_type ON doc_patterns(doc_type);
+        CREATE INDEX IF NOT EXISTS idx_doc_patterns_confidence ON doc_patterns(confidence);
+        CREATE INDEX IF NOT EXISTS idx_doc_patterns_ai_confidence ON doc_patterns(ai_confidence);
+        CREATE INDEX IF NOT EXISTS idx_doc_patterns_embedding ON doc_patterns USING ivfflat (embedding vector_cosine_ops);
+    """)
+    
+    # Create indexes for architecture patterns
+    await txn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_arch_patterns_repo_id ON arch_patterns(repo_id);
+        CREATE INDEX IF NOT EXISTS idx_arch_patterns_pattern_type ON arch_patterns(pattern_type);
+        CREATE INDEX IF NOT EXISTS idx_arch_patterns_confidence ON arch_patterns(confidence);
+        CREATE INDEX IF NOT EXISTS idx_arch_patterns_ai_confidence ON arch_patterns(ai_confidence);
+        CREATE INDEX IF NOT EXISTS idx_arch_patterns_embedding ON arch_patterns USING ivfflat (embedding vector_cosine_ops);
+    """)
+    
+    # Create indexes for pattern relationships
+    await txn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pattern_relationships_source ON pattern_relationships(source_pattern_id);
+        CREATE INDEX IF NOT EXISTS idx_pattern_relationships_target ON pattern_relationships(target_pattern_id);
+        CREATE INDEX IF NOT EXISTS idx_pattern_relationships_type ON pattern_relationships(relationship_type);
+        CREATE INDEX IF NOT EXISTS idx_pattern_relationships_ai_type ON pattern_relationships(ai_relationship_type);
+        CREATE INDEX IF NOT EXISTS idx_pattern_relationships_strength ON pattern_relationships(strength);
+        CREATE INDEX IF NOT EXISTS idx_pattern_relationships_ai_strength ON pattern_relationships(ai_relationship_strength);
+    """)
+    
+    # Create indexes for pattern metrics
+    await txn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pattern_metrics_pattern_id ON pattern_metrics(pattern_id);
+        CREATE INDEX IF NOT EXISTS idx_pattern_metrics_pattern_type ON pattern_metrics(pattern_type);
+        CREATE INDEX IF NOT EXISTS idx_pattern_metrics_complexity ON pattern_metrics(complexity_score);
+        CREATE INDEX IF NOT EXISTS idx_pattern_metrics_maintainability ON pattern_metrics(maintainability_score);
+        CREATE INDEX IF NOT EXISTS idx_pattern_metrics_reusability ON pattern_metrics(reusability_score);
+        CREATE INDEX IF NOT EXISTS idx_pattern_metrics_usage ON pattern_metrics(usage_count);
+        CREATE INDEX IF NOT EXISTS idx_pattern_metrics_ai_quality ON pattern_metrics(ai_quality_score);
+        CREATE INDEX IF NOT EXISTS idx_pattern_metrics_ai_impact ON pattern_metrics(ai_impact_score);
+    """)
+    
+    # Create indexes for pattern learning history
+    await txn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pattern_learning_repo_id ON pattern_learning_history(repo_id);
+        CREATE INDEX IF NOT EXISTS idx_pattern_learning_pattern_id ON pattern_learning_history(pattern_id);
+        CREATE INDEX IF NOT EXISTS idx_pattern_learning_type ON pattern_learning_history(learning_type);
+        CREATE INDEX IF NOT EXISTS idx_pattern_learning_confidence ON pattern_learning_history(confidence);
+        CREATE INDEX IF NOT EXISTS idx_pattern_learning_created_at ON pattern_learning_history(created_at);
+    """)
+    
+    # Create indexes for cross-repository analysis
+    await txn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_cross_repo_pattern_id ON pattern_cross_repo_analysis(pattern_id);
+        CREATE INDEX IF NOT EXISTS idx_cross_repo_source ON pattern_cross_repo_analysis(source_repo_id);
+        CREATE INDEX IF NOT EXISTS idx_cross_repo_target ON pattern_cross_repo_analysis(target_repo_id);
+        CREATE INDEX IF NOT EXISTS idx_cross_repo_similarity ON pattern_cross_repo_analysis(similarity_score);
+        CREATE INDEX IF NOT EXISTS idx_cross_repo_adaptation ON pattern_cross_repo_analysis(adaptation_score);
+        CREATE INDEX IF NOT EXISTS idx_cross_repo_conflict ON pattern_cross_repo_analysis(conflict_score);
+    """)

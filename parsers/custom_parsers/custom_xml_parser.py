@@ -2,17 +2,15 @@
 
 from .base_imports import *
 import xml.etree.ElementTree as ET
-import re
 from collections import Counter
+import re
 
-class XmlParser(BaseParser):
+class XmlParser(BaseParser, CustomParserMixin):
     """Parser for XML files."""
     
     def __init__(self, language_id: str = "xml", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Task] = set()
-        self.patterns = self._compile_patterns(XML_PATTERNS)
+        BaseParser.__init__(self, language_id, file_type or FileType.DATA, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -22,6 +20,7 @@ class XmlParser(BaseParser):
             try:
                 async with AsyncErrorBoundary("XML parser initialization"):
                     # No special initialization needed yet
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("XML parser initialized", level="info")
                     return True
@@ -103,7 +102,7 @@ class XmlParser(BaseParser):
                             if match := self.patterns[pattern_name].match(line):
                                 node = self._create_node(
                                     pattern_name, line_start, line_end,
-                                    **pattern_obj.extract(match)
+                                    **self.patterns[pattern_name].extract(match)
                                 )
                                 ast.children.append(node)
                 try:

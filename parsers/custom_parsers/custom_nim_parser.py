@@ -1,6 +1,8 @@
 """Custom parser for Nim with enhanced documentation and pattern extraction features."""
 
 from .base_imports import *
+import re
+from collections import Counter
 
 class NimParser(BaseParser, CustomParserMixin):
     """Parser for Nim files with enhanced pattern extraction capabilities."""
@@ -8,7 +10,6 @@ class NimParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "nim", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
-        self.patterns = self._compile_patterns(NIM_PATTERNS)
         self._initialized = False
         self._pending_tasks: Set[asyncio.Future] = set()
         register_shutdown_handler(self.cleanup)
@@ -20,6 +21,7 @@ class NimParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("Nim parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("Nim parser initialized", level="info")
                     return True
@@ -62,7 +64,7 @@ class NimParser(BaseParser, CustomParserMixin):
         for param in params:
             if match := self.patterns['parameter'].match(param):
                 param_nodes.append(
-                    NIM_PATTERNS[PatternCategory.SEMANTICS]['parameter'].extract(match)
+                    self.patterns['parameter'].extract(match)
                 )
         return param_nodes
 
@@ -116,7 +118,7 @@ class NimParser(BaseParser, CustomParserMixin):
                     "docstring",
                     line_start,
                     line_end,
-                    **NIM_PATTERNS[PatternCategory.DOCUMENTATION]['docstring'].extract(doc_match)
+                    **self.patterns['docstring'].extract(doc_match)
                 )
                 current_doc.append(node)
                 continue
@@ -127,7 +129,7 @@ class NimParser(BaseParser, CustomParserMixin):
                     "proc",
                     line_start,
                     line_end,
-                    **NIM_PATTERNS[PatternCategory.SYNTAX]['proc'].extract(proc_match)
+                    **self.patterns['proc'].extract(proc_match)
                 )
                 node.metadata["parameters"] = self._process_parameters(node.metadata.get("parameters", ""))
                 if current_doc:
@@ -136,22 +138,18 @@ class NimParser(BaseParser, CustomParserMixin):
                 ast.children.append(node)
                 continue
 
-            # Process other patterns
-            for pattern_name, category in [
-                ('type', PatternCategory.SYNTAX),
-                ('import', PatternCategory.STRUCTURE),
-                ('variable', PatternCategory.SEMANTICS)
-            ]:
-                if match := self.patterns[pattern_name].match(line):
+            # Process other declarations.
+            for pattern_name, pattern in self.patterns.items():
+                if pattern_name in ['docstring', 'comment', 'function', 'class', 'namespace']:
+                    continue
+                
+                if match := pattern.match(line):
                     node = self._create_node(
                         pattern_name,
                         line_start,
                         line_end,
-                        **NIM_PATTERNS[category][pattern_name].extract(match)
+                        **pattern.extract(match)
                     )
-                    if current_doc:
-                        node.metadata["documentation"] = current_doc
-                        current_doc = []
                     ast.children.append(node)
                     break
 

@@ -3,7 +3,11 @@
 from typing import Dict, List, Any, Optional, Set, Type, TYPE_CHECKING, Union, Tuple
 import asyncio
 from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
+from parsers.types import (
+    FileType, ParserType, PatternCategory,
+    AICapability, AIContext, AIProcessingResult,
+    AIConfidenceMetrics, InteractionType
+)
 from parsers.models import (
     FileClassification,
     PatternType,
@@ -26,7 +30,8 @@ from parsers.models import (
     NimNodeDict,
     OcamlNodeDict,
     PlaintextNodeDict,
-    RstNodeDict
+    RstNodeDict,
+    AIPatternResult
 )
 from utils.logger import log
 from utils.error_handling import (
@@ -40,24 +45,9 @@ from utils.error_handling import (
 from utils.shutdown import register_shutdown_handler
 from utils.cache import cache_coordinator, UnifiedCache
 from utils.health_monitor import global_health_monitor
-
-# Import pattern definitions
-from parsers.query_patterns.asciidoc import ASCIIDOC_PATTERNS
-from parsers.query_patterns.markdown import MARKDOWN_PATTERNS
-from parsers.query_patterns.yaml import YAML_PATTERNS
-from parsers.query_patterns.json import JSON_PATTERNS
-from parsers.query_patterns.xml import XML_PATTERNS
-from parsers.query_patterns.html import HTML_PATTERNS
-from parsers.query_patterns.ini import INI_PATTERNS
-from parsers.query_patterns.toml import TOML_PATTERNS
-from parsers.query_patterns.env import ENV_PATTERNS
-from parsers.query_patterns.graphql import GRAPHQL_PATTERNS
-from parsers.query_patterns.nim import NIM_PATTERNS
-from parsers.query_patterns.ocaml import OCAML_PATTERNS
-from parsers.query_patterns.rst import RST_PATTERNS
-from parsers.query_patterns.cobalt import COBALT_PATTERNS
-from parsers.query_patterns.editorconfig import EDITORCONFIG_PATTERNS
-from parsers.query_patterns.plaintext import PLAINTEXT_PATTERNS
+from parsers.pattern_processor import PatternProcessor
+from parsers.ai_pattern_processor import AIPatternProcessor
+from parsers.parser_interfaces import AIParserInterface
 
 class CustomParserMixin:
     """Mixin class providing common functionality for custom parsers."""
@@ -68,6 +58,18 @@ class CustomParserMixin:
         self._lock = asyncio.Lock()
         self._pending_tasks: Set[asyncio.Task] = set()
         self._initialized = False
+        self._ai_processor = None
+        self._pattern_processor = None
+        self._pattern_memory: Dict[str, float] = {}
+        self._interaction_history: List[Dict[str, Any]] = []
+        self._capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.DOCUMENTATION,
+            AICapability.LEARNING
+        }
     
     async def _initialize_cache(self, parser_name: str):
         """Initialize cache for custom parser."""

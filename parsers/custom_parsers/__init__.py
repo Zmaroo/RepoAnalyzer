@@ -9,6 +9,7 @@ Each parser must:
 3. Handle initialization and cleanup
 4. Support async operations
 5. Support caching through CustomParserMixin
+6. Support AI capabilities through AIParserInterface
 """
 
 import asyncio
@@ -18,6 +19,8 @@ from utils.logger import log
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
 from utils.shutdown import register_shutdown_handler
 from .base_imports import CustomParserMixin
+from parsers.pattern_processor import PatternProcessor
+from parsers.ai_pattern_processor import AIPatternProcessor
 
 # Import all custom parser classes
 from .custom_asciidoc_parser import AsciidocParser
@@ -61,17 +64,24 @@ CUSTOM_PARSER_CLASSES: Dict[str, Type[BaseParser]] = {
 _initialized = False
 _pending_tasks: Set[asyncio.Task] = set()
 _initialized_parsers: Dict[str, BaseParser] = {}
+_pattern_processor = None
+_ai_processor = None
 
 @handle_async_errors(error_types=(Exception,))
 async def initialize_custom_parsers():
     """Initialize all custom parser resources."""
-    global _initialized
+    global _initialized, _pattern_processor, _ai_processor
     
     if _initialized:
         return
     
     try:
         async with AsyncErrorBoundary("custom parsers initialization"):
+            # Initialize pattern processor first
+            _pattern_processor = await PatternProcessor.create()
+            _ai_processor = AIPatternProcessor(_pattern_processor)
+            await _ai_processor.initialize()
+            
             # Initialize commonly used parsers first
             common_parsers = {'markdown', 'json', 'yaml', 'html', 'xml'}
             for language in common_parsers:
@@ -82,6 +92,8 @@ async def initialize_custom_parsers():
                     _pending_tasks.add(task)
                     try:
                         await task
+                        # Initialize AI capabilities
+                        await parser._ai_processor.initialize()
                         _initialized_parsers[language] = parser
                     finally:
                         _pending_tasks.remove(task)
@@ -94,7 +106,7 @@ async def initialize_custom_parsers():
 
 async def cleanup_custom_parsers():
     """Clean up all custom parser resources."""
-    global _initialized
+    global _initialized, _pattern_processor, _ai_processor
     
     try:
         # Clean up all initialized parsers
@@ -104,6 +116,12 @@ async def cleanup_custom_parsers():
             task = asyncio.create_task(parser.cleanup())
             cleanup_tasks.append(task)
             _pending_tasks.add(task)
+        
+        # Clean up pattern processor and AI processor
+        if _pattern_processor:
+            cleanup_tasks.append(asyncio.create_task(_pattern_processor.cleanup()))
+        if _ai_processor:
+            cleanup_tasks.append(asyncio.create_task(_ai_processor.cleanup()))
         
         # Wait for all cleanup tasks
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
@@ -117,6 +135,8 @@ async def cleanup_custom_parsers():
         
         # Clear initialized parsers
         _initialized_parsers.clear()
+        _pattern_processor = None
+        _ai_processor = None
         
         _initialized = False
         log("Custom parsers cleaned up", level="info")

@@ -1,9 +1,10 @@
-"""Query patterns for Nim files."""
+"""Nim language patterns."""
 
 from typing import Dict, Any, List, Match, Optional
 import re
 from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
+from parsers.types import FileType, QueryPattern, PatternCategory, PatternPurpose, PatternInfo
+from parsers.models import PATTERN_CATEGORIES
 
 # Language identifier
 LANGUAGE = "nim"
@@ -11,108 +12,222 @@ LANGUAGE = "nim"
 def extract_proc(match: Match) -> Dict[str, Any]:
     """Extract procedure information."""
     return {
-        "type": "proc",
         "name": match.group(1),
         "parameters": match.group(2),
         "return_type": match.group(3),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
+        "category": PatternCategory.SYNTAX,
+        "purpose": PatternPurpose.UNDERSTANDING
     }
 
 def extract_type(match: Match) -> Dict[str, Any]:
     """Extract type information."""
     return {
-        "type": "type",
         "name": match.group(1),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
+        "category": PatternCategory.SEMANTICS,
+        "purpose": PatternPurpose.UNDERSTANDING
     }
 
+# Nim patterns organized by category and purpose
 NIM_PATTERNS = {
     PatternCategory.SYNTAX: {
-        "proc": QueryPattern(
-            pattern=r'^proc\s+(\w+)\*?\s*\((.*?)\)(?:\s*:\s*(\w+))?\s*=',
-            extract=extract_proc,
-            description="Matches Nim procedure definitions",
-            examples=["proc add*(x, y: int): int ="]
-        ),
-        "type": QueryPattern(
-            pattern=r'^type\s+(\w+)\*?\s*=\s*(?:object|enum|tuple|ref\s+object)',
-            extract=extract_type,
-            description="Matches Nim type definitions",
-            examples=["type Person* = object"]
-        )
-    },
-    
-    PatternCategory.STRUCTURE: {
-        "import": QueryPattern(
-            pattern=r'^import\s+(.*?)(?:\s+except\s+.*)?$',
-            extract=lambda m: {
-                "type": "import",
-                "modules": [mod.strip() for mod in m.group(1).split(',')],
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches import statements",
-            examples=["import strutils, sequtils"]
-        ),
-        "module": QueryPattern(
-            pattern=r'^module\s+(\w+)',
-            extract=lambda m: {
-                "type": "module",
-                "name": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches module declarations",
-            examples=["module mymodule"]
-        )
-    },
-    
-    PatternCategory.DOCUMENTATION: {
-        "docstring": QueryPattern(
-            pattern=r'^##\s*(.*)$',
-            extract=lambda m: {
-                "type": "docstring",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches documentation strings",
-            examples=["## This is a docstring"]
-        ),
-        "comment": QueryPattern(
-            pattern=r'^#\s*(.*)$',
-            extract=lambda m: {
-                "type": "comment",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches comments",
-            examples=["# This is a comment"]
-        )
+        PatternPurpose.UNDERSTANDING: {
+            "proc": QueryPattern(
+                pattern=r'^proc\s+(\w+)\*?\s*\((.*?)\)(?:\s*:\s*(\w+))?\s*=',
+                extract=extract_proc,
+                description="Matches Nim procedure definitions",
+                examples=["proc add*(x, y: int): int ="]
+            ),
+            "type": QueryPattern(
+                pattern=r'^type\s+(\w+)\*?\s*=\s*(?:object|enum|tuple|ref\s+object)',
+                extract=extract_type,
+                description="Matches Nim type definitions",
+                examples=["type Person* = object"]
+            )
+        },
+        PatternPurpose.MODIFICATION: {
+            "proc_body": QueryPattern(
+                pattern=r'proc\s+\w+[^=]+=\s*(.*?)(?:\n\s*\w+|$)',
+                description="Matches procedure bodies for modification",
+                examples=["proc test = echo \"test\""]
+            )
+        },
+        PatternPurpose.VALIDATION: {
+            "naming_convention": QueryPattern(
+                pattern=r'^(?:proc|type|var|let|const)\s+([A-Z]\w+|\w+)',
+                description="Validates Nim naming conventions",
+                examples=["proc PascalCase", "var camelCase"]
+            )
+        }
     },
     
     PatternCategory.SEMANTICS: {
-        "variable": QueryPattern(
-            pattern=r'^(var|let|const)\s+(\w+)\*?\s*(?::\s*(\w+))?\s*=\s*(.+)$',
-            extract=lambda m: {
-                "type": "variable",
-                "kind": m.group(1),
-                "name": m.group(2),
-                "value_type": m.group(3),
-                "value": m.group(4),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches variable declarations",
-            examples=["var x: int = 42", "let name = \"John\""]
-        ),
-        "parameter": QueryPattern(
-            pattern=r'(\w+)(?:\s*:\s*(\w+))?',
-            extract=lambda m: {
-                "type": "parameter",
-                "name": m.group(1),
-                "value_type": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches procedure parameters",
-            examples=["x: int", "name: string"]
-        )
+        PatternPurpose.UNDERSTANDING: {
+            "variable": QueryPattern(
+                pattern=r'^(?:var|let|const)\s+(\w+)\*?\s*(?::\s*([^=]+))?\s*(?:=\s*(.+))?$',
+                description="Matches variable declarations",
+                examples=["var x: int = 5"]
+            )
+        },
+        PatternPurpose.VALIDATION: {
+            "type_check": QueryPattern(
+                pattern=r':\s*([^=\s]+)(?:\s*=|$)',
+                description="Validates type annotations",
+                examples=["x: int", "y: seq[string]"]
+            )
+        }
+    },
+    
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "docstring": QueryPattern(
+                pattern=r'##\s*(.+)$',
+                description="Matches Nim documentation strings",
+                examples=["## This is a docstring"]
+            ),
+            "comment": QueryPattern(
+                pattern=r'#\s*(.+)$',
+                description="Matches single-line comments",
+                examples=["# This is a comment"]
+            )
+        },
+        PatternPurpose.VALIDATION: {
+            "missing_doc": QueryPattern(
+                pattern=r'^proc\s+\w+\*[^#\n]+\n',
+                description="Detects exported procs without documentation",
+                examples=["proc public* = echo \"no docs\""]
+            )
+        }
+    },
+    
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "import": QueryPattern(
+                pattern=r'^import\s+(.*?)(?:\s+except\s+.*)?$',
+                description="Matches import statements",
+                examples=["import strutils, sequtils"]
+            ),
+            "module": QueryPattern(
+                pattern=r'^module\s+(\w+)',
+                description="Matches module declarations",
+                examples=["module mymodule"]
+            )
+        },
+        PatternPurpose.VALIDATION: {
+            "circular_import": QueryPattern(
+                pattern=r'(?:^|\n)import\s+([^#\n]+)',
+                description="Detects potential circular imports",
+                examples=["import a, b, a"]
+            )
+        }
+    },
+    
+    PatternCategory.CODE_PATTERNS: {
+        PatternPurpose.UNDERSTANDING: {
+            "error_handling": QueryPattern(
+                pattern=r'try:.*?except\s+(\w+):\s*\n',
+                description="Identifies error handling patterns",
+                examples=["try: doSomething()\nexcept IOError: discard"]
+            )
+        },
+        PatternPurpose.MODIFICATION: {
+            "refactoring": QueryPattern(
+                pattern=r'(?:proc|type|var)\s+(\w+)\*?\s*=',
+                description="Identifies elements that might need refactoring",
+                examples=["proc longFunction = ..."]
+            )
+        }
+    },
+    
+    PatternCategory.LEARNING: {
+        PatternPurpose.LEARNING: {
+            "best_practice": QueryPattern(
+                pattern=r'proc\s+\w+\*.*?=.*?(?:result|return)',
+                description="Identifies common Nim idioms and practices",
+                examples=["proc calc*: int = result = 42"]
+            ),
+            "anti_pattern": QueryPattern(
+                pattern=r'var\s+\w+\s*(?!:)',
+                description="Identifies potential anti-patterns",
+                examples=["var x = 5  # missing type annotation"]
+            )
+        }
+    },
+    
+    PatternCategory.CONTEXT: {
+        PatternPurpose.EXPLANATION: {
+            "code_context": QueryPattern(
+                pattern=r'(?:type|proc|var|let|const)\s+(\w+).*?(?:=|\{|\()',
+                description="Identifies context for code explanations",
+                examples=["type Person = object", "proc add(x, y: int) = x + y"]
+            ),
+            "usage_context": QueryPattern(
+                pattern=r'(\w+)\s*(?:\(|=|\.)',
+                description="Identifies usage context",
+                examples=["person.name", "add(1, 2)"]
+            )
+        }
+    },
+    
+    PatternCategory.DEPENDENCIES: {
+        PatternPurpose.UNDERSTANDING: {
+            "direct_imports": QueryPattern(
+                pattern=r'^import\s+(.*?)$',
+                description="Identifies direct dependencies",
+                examples=["import strutils"]
+            ),
+            "package_refs": QueryPattern(
+                pattern=r'(?:from|import)\s+(\w+)/\w+',
+                description="Identifies package references",
+                examples=["from nimble/pkgs import pkg"]
+            )
+        }
+    },
+    
+    PatternCategory.BEST_PRACTICES: {
+        PatternPurpose.SUGGESTION: {
+            "type_hints": QueryPattern(
+                pattern=r'(?:proc|var|let)\s+\w+\s*(?!:)',
+                description="Suggests adding type hints",
+                examples=["var x = 5  # Missing type hint"]
+            ),
+            "export_hints": QueryPattern(
+                pattern=r'^(?:proc|type)\s+\w+[^*\n]*$',
+                description="Suggests considering exports",
+                examples=["proc publicApi = discard  # Consider exporting"]
+            )
+        }
+    },
+    
+    PatternCategory.COMMON_ISSUES: {
+        PatternPurpose.DEBUGGING: {
+            "nil_access": QueryPattern(
+                pattern=r'(\w+)(?:\.\w+|\[\w+\])',
+                description="Potential nil access points",
+                examples=["obj.field", "arr[idx]"]
+            ),
+            "resource_cleanup": QueryPattern(
+                pattern=r'(?:open|new)\s*\(',
+                description="Resource allocation without cleanup",
+                examples=["open(\"file.txt\")", "new(obj)"]
+            )
+        }
+    },
+    
+    PatternCategory.USER_PATTERNS: {
+        PatternPurpose.COMPLETION: {
+            "common_completions": QueryPattern(
+                pattern=r'(\w+)(?:\.|:|\()',
+                description="Common completion points",
+                examples=["obj.", "proc("]
+            )
+        },
+        PatternPurpose.UNDERSTANDING: {
+            "coding_style": QueryPattern(
+                pattern=r'(?:proc|type|var|let|const)\s+([A-Z]\w+|\w+)',
+                description="User's naming style",
+                examples=["proc myFunction", "type MyType"]
+            )
+        }
     }
 }
 
@@ -372,5 +487,21 @@ PATTERN_RELATIONSHIPS = {
     "variable": {
         "can_contain": ["docstring"],
         "can_be_contained_by": ["module", "proc"]
+    },
+    "context": {
+        "influences": ["explanation", "suggestion", "completion"],
+        "depends_on": ["module", "proc", "type"]
+    },
+    "best_practice": {
+        "influences": ["suggestion", "validation"],
+        "applies_to": ["proc", "type", "variable"]
+    },
+    "common_issue": {
+        "influences": ["debugging", "validation"],
+        "relates_to": ["error_handling", "resource_management"]
+    },
+    "user_style": {
+        "influences": ["completion", "suggestion"],
+        "learns_from": ["naming", "formatting", "documentation"]
     }
 } 

@@ -6,17 +6,7 @@ enum, or schema definitions from a GraphQL file.
 """
 
 from .base_imports import *
-from typing import Dict, List, Any, Optional, Set, Tuple
-import asyncio
 import re
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.graphql import GRAPHQL_PATTERNS
-from utils.logger import log
-from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.shutdown import register_shutdown_handler
-from collections import Counter
-from parsers.custom_parsers.custom_parser_mixin import CustomParserMixin
 
 class GraphQLParser(BaseParser, CustomParserMixin):
     """Parser for GraphQL files."""
@@ -24,9 +14,6 @@ class GraphQLParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "graphql", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.SCHEMA, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        self.patterns = self._compile_patterns(GRAPHQL_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -36,6 +23,7 @@ class GraphQLParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("GraphQL parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("GraphQL parser initialized", level="info")
                     return True

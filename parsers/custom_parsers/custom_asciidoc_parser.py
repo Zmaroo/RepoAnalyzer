@@ -2,13 +2,6 @@
 
 from .base_imports import *
 import re
-from utils.error_handling import (
-    handle_errors,
-    handle_async_errors,
-    ProcessingError,
-    AsyncErrorBoundary,
-    ErrorSeverity
-)
 
 class AsciidocParser(BaseParser, CustomParserMixin):
     """Parser for AsciiDoc files."""
@@ -16,9 +9,12 @@ class AsciidocParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "asciidoc", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
-        self.patterns = self._compile_patterns(ASCIIDOC_PATTERNS)
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.DOCUMENTATION,
+            AICapability.LEARNING,
+            AICapability.CODE_REVIEW
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -28,6 +24,15 @@ class AsciidocParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("AsciiDoc parser initialization"):
                     await self._initialize_cache(self.language_id)
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("AsciiDoc parser initialized", level="info")
                     return True
@@ -36,10 +41,169 @@ class AsciidocParser(BaseParser, CustomParserMixin):
                 raise
         return True
 
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process AsciiDoc with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("AsciiDoc AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse AsciiDoc"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with documentation capability
+                if AICapability.DOCUMENTATION in self.capabilities:
+                    documentation = await self._process_with_documentation(ast, context)
+                    results.ai_insights.update(documentation)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in AsciiDoc AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document understanding capability."""
+        understanding = {}
+        
+        # Analyze document structure
+        understanding["structure"] = {
+            "sections": self._extract_section_patterns(ast),
+            "blocks": self._extract_code_block_patterns(ast),
+            "lists": self._extract_list_patterns(ast)
+        }
+        
+        # Analyze document patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze document style
+        understanding["style"] = await self._analyze_document_style(ast)
+        
+        return understanding
+
+    async def _process_with_documentation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with documentation capability."""
+        documentation = {}
+        
+        # Generate section summaries
+        if summaries := await self._generate_section_summaries(ast):
+            documentation["section_summaries"] = summaries
+        
+        # Extract code examples
+        if examples := await self._extract_code_examples(ast):
+            documentation["code_examples"] = examples
+        
+        # Generate cross-references
+        if references := await self._generate_cross_references(ast):
+            documentation["cross_references"] = references
+        
+        return documentation
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document review capability."""
+        review = {}
+        
+        # Review document structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review document style
+        if style_review := await self._review_style(ast):
+            review["style"] = style_review
+        
+        # Review code blocks
+        if code_review := await self._review_code_blocks(ast):
+            review["code_blocks"] = code_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn document structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn documentation style patterns
+        if style_patterns := await self._learn_style_patterns(ast):
+            patterns.extend(style_patterns)
+        
+        # Learn code block patterns
+        if code_patterns := await self._learn_code_block_patterns(ast):
+            patterns.extend(code_patterns)
+        
+        return patterns
+
     async def cleanup(self):
-        """Clean up AsciiDoc parser resources."""
+        """Clean up parser resources."""
         try:
+            # Clean up base resources
             await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
             log("AsciiDoc parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up AsciiDoc parser: {e}", level="error")

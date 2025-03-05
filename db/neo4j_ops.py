@@ -203,7 +203,7 @@ async def cleanup_neo4j():
 
 register_shutdown_handler(cleanup_neo4j)
 
-@handle_async_errors(error_types=(DatabaseError, Neo4jError))
+@handle_async_errors(error_types=DatabaseError)
 async def create_schema_indexes_and_constraints():
     """Create Neo4j schema indexes and constraints."""
     async with AsyncErrorBoundary(
@@ -219,13 +219,23 @@ async def create_schema_indexes_and_constraints():
             await run_query("CREATE INDEX IF NOT EXISTS FOR (d:Documentation) ON (d.repo_id, d.path)")
             await run_query("CREATE INDEX IF NOT EXISTS FOR (r:Repository) ON (r.id)")
             await run_query("CREATE INDEX IF NOT EXISTS FOR (l:Language) ON (l.name)")
-            await run_query("CREATE INDEX IF NOT EXISTS FOR (p:Pattern) ON (p.id)")
-            await run_query("CREATE INDEX IF NOT EXISTS FOR (f:Feature) ON (f.name)")
+            
+            # Enhanced pattern indexes
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (p:Pattern) ON (p.id, p.type)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (p:Pattern) ON (p.confidence)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (p:Pattern) ON (p.ai_confidence)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (p:Pattern) ON (p.language)")
+            
+            # AI-specific indexes
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (ai:AIInsight) ON (ai.type)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (ai:AIMetric) ON (ai.metric_type)")
+            await run_query("CREATE INDEX IF NOT EXISTS FOR (ai:AIRecommendation) ON (ai.priority)")
             
             # Create constraints for uniqueness
             await run_query("CREATE CONSTRAINT IF NOT EXISTS FOR (r:Repository) REQUIRE r.id IS UNIQUE")
             await run_query("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Code) REQUIRE (c.repo_id, c.file_path) IS UNIQUE")
             await run_query("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Pattern) REQUIRE p.id IS UNIQUE")
+            await run_query("CREATE CONSTRAINT IF NOT EXISTS FOR (ai:AIInsight) REQUIRE ai.id IS UNIQUE")
             
             log("Created Neo4j schema indexes and constraints", level="info")
         finally:
@@ -330,4 +340,251 @@ class Neo4jProjections:
             self._pending_tasks.clear()
 
 # Create global instance
-projections = Neo4jProjections() 
+projections = Neo4jProjections()
+
+@handle_async_errors(error_types=DatabaseError)
+async def store_pattern_node(pattern_data: dict) -> None:
+    """Store pattern node with AI enhancements."""
+    session = await connection_manager.get_session()
+    try:
+        # Create pattern node
+        pattern_query = """
+        MERGE (p:Pattern {id: $id})
+        SET p += $properties,
+            p.updated_at = timestamp()
+        """
+        pattern_props = {
+            "id": pattern_data["pattern_id"],
+            "type": pattern_data["pattern_type"],
+            "language": pattern_data.get("language"),
+            "confidence": pattern_data.get("confidence", 0.7),
+            "ai_confidence": pattern_data.get("ai_confidence"),
+            "complexity": pattern_data.get("complexity"),
+            "embedding": pattern_data.get("embedding")
+        }
+        
+        await session.run(pattern_query, {
+            "id": pattern_data["pattern_id"],
+            "properties": pattern_props
+        })
+        
+        # Store AI insights if available
+        if pattern_data.get("ai_insights"):
+            insights_query = """
+            MATCH (p:Pattern {id: $pattern_id})
+            MERGE (ai:AIInsight {id: $insight_id})
+            SET ai += $properties
+            MERGE (p)-[r:HAS_INSIGHT]->(ai)
+            """
+            
+            for i, insight in enumerate(pattern_data["ai_insights"]):
+                insight_id = f"{pattern_data['pattern_id']}_insight_{i}"
+                await session.run(insights_query, {
+                    "pattern_id": pattern_data["pattern_id"],
+                    "insight_id": insight_id,
+                    "properties": insight
+                })
+        
+        # Store AI metrics if available
+        if pattern_data.get("ai_metrics"):
+            metrics_query = """
+            MATCH (p:Pattern {id: $pattern_id})
+            MERGE (m:AIMetric {id: $metric_id})
+            SET m += $properties
+            MERGE (p)-[r:HAS_METRIC]->(m)
+            """
+            
+            for metric_type, value in pattern_data["ai_metrics"].items():
+                metric_id = f"{pattern_data['pattern_id']}_{metric_type}"
+                await session.run(metrics_query, {
+                    "pattern_id": pattern_data["pattern_id"],
+                    "metric_id": metric_id,
+                    "properties": {
+                        "type": metric_type,
+                        "value": value,
+                        "updated_at": pattern_data.get("updated_at")
+                    }
+                })
+        
+        # Store AI recommendations if available
+        if pattern_data.get("ai_recommendations"):
+            rec_query = """
+            MATCH (p:Pattern {id: $pattern_id})
+            MERGE (r:AIRecommendation {id: $rec_id})
+            SET r += $properties
+            MERGE (p)-[rel:HAS_RECOMMENDATION]->(r)
+            """
+            
+            for i, rec in enumerate(pattern_data["ai_recommendations"]):
+                rec_id = f"{pattern_data['pattern_id']}_rec_{i}"
+                await session.run(rec_query, {
+                    "pattern_id": pattern_data["pattern_id"],
+                    "rec_id": rec_id,
+                    "properties": {
+                        "description": rec["description"],
+                        "priority": rec.get("priority", "medium"),
+                        "created_at": pattern_data.get("created_at")
+                    }
+                })
+        
+        log(f"Stored pattern node with AI enhancements: {pattern_data['pattern_id']}", level="debug")
+    finally:
+        await session.close()
+
+@handle_async_errors(error_types=DatabaseError)
+async def store_pattern_relationships(
+    pattern_id: int,
+    relationships: List[Dict[str, Any]]
+) -> None:
+    """Store pattern relationships with AI insights."""
+    session = await connection_manager.get_session()
+    try:
+        relationship_query = """
+        MATCH (p1:Pattern {id: $source_id})
+        MATCH (p2:Pattern {id: $target_id})
+        MERGE (p1)-[r:$rel_type]->(p2)
+        SET r += $properties
+        """
+        
+        for rel in relationships:
+            properties = {
+                "strength": rel["strength"],
+                "ai_strength": rel.get("ai_strength"),
+                "ai_insights": rel.get("ai_insights"),
+                "created_at": rel.get("created_at"),
+                "updated_at": rel.get("updated_at")
+            }
+            
+            await session.run(relationship_query, {
+                "source_id": pattern_id,
+                "target_id": rel["target_id"],
+                "rel_type": rel["relationship_type"],
+                "properties": properties
+            })
+        
+        log(f"Stored pattern relationships for pattern: {pattern_id}", level="debug")
+    finally:
+        await session.close()
+
+@handle_async_errors(error_types=DatabaseError)
+async def find_similar_patterns(
+    repo_id: int,
+    file_path: Optional[str] = None,
+    limit: int = 10
+) -> List[Dict[str, Any]]:
+    """Find similar patterns using graph algorithms."""
+    session = await connection_manager.get_session()
+    try:
+        # Ensure pattern projection exists
+        graph_sync = await get_graph_sync()
+        await graph_sync.ensure_pattern_projection(repo_id)
+        
+        # Use node similarity algorithm
+        query = """
+        CALL gds.nodeSimilarity.stream('pattern-repo-' || $repo_id, {
+            nodeProjection: ['Pattern'],
+            relationshipProjection: {
+                SIMILAR_TO: {
+                    type: 'SIMILAR_TO',
+                    orientation: 'UNDIRECTED',
+                    properties: ['ai_strength', 'strength']
+                }
+            },
+            similarityCutoff: 0.5,
+            topK: $limit
+        })
+        YIELD node1, node2, similarity
+        WITH gds.util.asNode(node1) AS pattern1,
+             gds.util.asNode(node2) AS pattern2,
+             similarity
+        WHERE pattern1.repo_id = $repo_id
+        RETURN pattern1.id as pattern_id,
+               pattern1.type as pattern_type,
+               pattern1.language as language,
+               pattern1.confidence as confidence,
+               pattern1.ai_confidence as ai_confidence,
+               pattern2.id as similar_pattern_id,
+               similarity
+        ORDER BY similarity DESC
+        LIMIT $limit
+        """
+        
+        params = {"repo_id": repo_id, "limit": limit}
+        if file_path:
+            params["file_path"] = file_path
+        
+        result = await session.run(query, params)
+        return await result.data()
+    finally:
+        await session.close()
+
+@handle_async_errors(error_types=DatabaseError)
+async def get_pattern_insights(
+    pattern_id: int
+) -> Dict[str, Any]:
+    """Get all AI insights for a pattern."""
+    session = await connection_manager.get_session()
+    try:
+        query = """
+        MATCH (p:Pattern {id: $pattern_id})
+        OPTIONAL MATCH (p)-[:HAS_INSIGHT]->(i:AIInsight)
+        OPTIONAL MATCH (p)-[:HAS_METRIC]->(m:AIMetric)
+        OPTIONAL MATCH (p)-[:HAS_RECOMMENDATION]->(r:AIRecommendation)
+        RETURN p.id as pattern_id,
+               p.type as pattern_type,
+               p.confidence as confidence,
+               p.ai_confidence as ai_confidence,
+               collect(DISTINCT i) as insights,
+               collect(DISTINCT m) as metrics,
+               collect(DISTINCT r) as recommendations
+        """
+        
+        result = await session.run(query, {"pattern_id": pattern_id})
+        data = await result.data()
+        return data[0] if data else {}
+    finally:
+        await session.close()
+
+@handle_async_errors(error_types=DatabaseError)
+async def analyze_pattern_trends(
+    repo_id: int,
+    pattern_type: Optional[str] = None,
+    time_window: int = 30  # days
+) -> List[Dict[str, Any]]:
+    """Analyze pattern trends using AI metrics."""
+    session = await connection_manager.get_session()
+    try:
+        query = """
+        MATCH (p:Pattern)-[:HAS_METRIC]->(m:AIMetric)
+        WHERE p.repo_id = $repo_id
+        AND m.updated_at >= timestamp() - (1000 * 60 * 60 * 24 * $time_window)
+        WITH p, m
+        ORDER BY m.updated_at
+        WITH p,
+             collect(m) as metrics,
+             avg(m.value) as avg_value,
+             min(m.value) as min_value,
+             max(m.value) as max_value
+        RETURN p.id as pattern_id,
+               p.type as pattern_type,
+               p.ai_confidence as ai_confidence,
+               avg_value,
+               min_value,
+               max_value,
+               metrics
+        ORDER BY avg_value DESC
+        """
+        
+        params = {
+            "repo_id": repo_id,
+            "time_window": time_window
+        }
+        if pattern_type:
+            params["pattern_type"] = pattern_type
+            query = query.replace("WHERE p.repo_id = $repo_id", 
+                                "WHERE p.repo_id = $repo_id AND p.type = $pattern_type")
+        
+        result = await session.run(query, params)
+        return await result.data()
+    finally:
+        await session.close() 

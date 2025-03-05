@@ -10,10 +10,77 @@ from dataclasses import dataclass, field
 import re
 import asyncio
 
-from .types import FileType, FeatureCategory, ParserType, ParserResult, ParserConfig, ParsingStatistics
-from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
+from .types import (
+    FileType, FeatureCategory, ParserType, ParserResult, ParserConfig, ParsingStatistics,
+    AICapability, AIContext, AIProcessingResult
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity, ProcessingError
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
+
+@dataclass
+class AIParserInterface(ABC):
+    """Interface for AI-enabled parsers."""
+    
+    language_id: str
+    file_type: FileType
+    capabilities: Set[AICapability] = field(default_factory=set)
+    _initialized: bool = False
+    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
+    
+    def __post_init__(self):
+        """Post initialization setup."""
+        register_shutdown_handler(self.cleanup)
+    
+    @abstractmethod
+    @handle_async_errors(error_types=(Exception,))
+    async def initialize(self) -> bool:
+        """Initialize AI parser resources."""
+        if not self._initialized:
+            try:
+                async with AsyncErrorBoundary(f"{self.language_id} AI parser initialization"):
+                    # Subclasses should implement their initialization logic here
+                    self._initialized = True
+                    log(f"{self.language_id} AI parser initialized", level="info")
+                    return True
+            except Exception as e:
+                log(f"Error initializing {self.language_id} AI parser: {e}", level="error")
+                raise
+        return True
+    
+    @abstractmethod
+    @handle_async_errors(error_types=(Exception,))
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process source code with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary(f"{self.language_id} AI processing"):
+            try:
+                # Subclasses should implement their AI processing logic here
+                pass
+            except Exception as e:
+                log(f"Error in {self.language_id} AI processing: {e}", level="error")
+                raise
+    
+    @abstractmethod
+    async def cleanup(self):
+        """Clean up AI parser resources."""
+        try:
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            self._initialized = False
+            log(f"{self.language_id} AI parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up {self.language_id} AI parser: {e}", level="error")
 
 @dataclass
 class BaseParserInterface(ABC):
@@ -27,6 +94,7 @@ class BaseParserInterface(ABC):
     language_id: str
     file_type: FileType
     parser_type: ParserType = ParserType.UNKNOWN  # Default value; subclasses must override
+    ai_capabilities: Set[AICapability] = field(default_factory=set)
     _initialized: bool = False
     config: ParserConfig = field(default_factory=lambda: ParserConfig())
     stats: ParsingStatistics = field(default_factory=lambda: ParsingStatistics())
@@ -44,7 +112,14 @@ class BaseParserInterface(ABC):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary(f"{self.language_id} parser initialization"):
-                    # Subclasses should implement their initialization logic here
+                    # Initialize AI capabilities if supported
+                    if AICapability.CODE_UNDERSTANDING in self.ai_capabilities:
+                        await self._initialize_ai_understanding()
+                    if AICapability.CODE_GENERATION in self.ai_capabilities:
+                        await self._initialize_ai_generation()
+                    if AICapability.CODE_MODIFICATION in self.ai_capabilities:
+                        await self._initialize_ai_modification()
+                    
                     self._initialized = True
                     log(f"{self.language_id} parser initialized", level="info")
                     return True
@@ -52,6 +127,18 @@ class BaseParserInterface(ABC):
                 log(f"Error initializing {self.language_id} parser: {e}", level="error")
                 raise
         return True
+    
+    async def _initialize_ai_understanding(self):
+        """Initialize AI code understanding capabilities."""
+        pass
+    
+    async def _initialize_ai_generation(self):
+        """Initialize AI code generation capabilities."""
+        pass
+    
+    async def _initialize_ai_modification(self):
+        """Initialize AI code modification capabilities."""
+        pass
     
     @abstractmethod
     @handle_async_errors(error_types=(Exception,))

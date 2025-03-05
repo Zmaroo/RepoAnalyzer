@@ -11,7 +11,7 @@ All database operations use the centralized connection manager and transaction c
 
 import json
 import asyncio
-from typing import Dict, Optional, Set, List
+from typing import Dict, Optional, Set, List, Any
 from utils.logger import log
 from utils.error_handling import (
     AsyncErrorBoundary,
@@ -30,6 +30,8 @@ from db.transaction import transaction_scope
 from parsers.types import ParserResult, ExtractedFeatures
 from embedding.embedding_models import doc_embedder
 from utils.shutdown import register_shutdown_handler
+from db.graph_sync import get_graph_sync
+from db.neo4j_ops import get_neo4j_ops
 
 # Initialize retry manager for upsert operations
 _retry_manager = DatabaseRetryManager(RetryConfig(max_retries=5))  # More retries for upsert operations
@@ -361,9 +363,200 @@ class UpsertCoordinator:
             })
             
             # Get graph sync instance
-            from db.graph_sync import get_graph_sync
             graph_sync = await get_graph_sync()
             await graph_sync.ensure_projection(repo_id)
+    
+    @handle_async_errors(error_types=DatabaseError)
+    async def upsert_pattern(
+        self,
+        pattern_data: Dict[str, Any],
+        repo_id: int,
+        pattern_type: str,
+        transaction: Optional[Transaction] = None
+    ) -> int:
+        """Upsert a pattern with AI enhancements."""
+        async with self._get_transaction(transaction) as txn:
+            # Prepare base pattern data
+            pattern_values = {
+                "repo_id": repo_id,
+                "pattern_type": pattern_type,
+                "language": pattern_data.get("language"),
+                "content": pattern_data.get("content"),
+                "confidence": pattern_data.get("confidence", 0.7),
+                "complexity": pattern_data.get("complexity"),
+                "dependencies": pattern_data.get("dependencies", []),
+                "documentation": pattern_data.get("documentation"),
+                "metadata": pattern_data.get("metadata", {}),
+                "embedding": pattern_data.get("embedding"),
+                "ai_insights": pattern_data.get("ai_insights", {}),
+                "ai_confidence": pattern_data.get("ai_confidence"),
+                "ai_metrics": pattern_data.get("ai_metrics", {}),
+                "ai_recommendations": pattern_data.get("ai_recommendations", {}),
+                "updated_at": "CURRENT_TIMESTAMP"
+            }
+            
+            # Upsert pattern
+            query = """
+            INSERT INTO code_patterns (
+                repo_id, pattern_type, language, content, confidence,
+                complexity, dependencies, documentation, metadata,
+                embedding, ai_insights, ai_confidence, ai_metrics,
+                ai_recommendations, updated_at
+            )
+            VALUES (
+                :repo_id, :pattern_type, :language, :content, :confidence,
+                :complexity, :dependencies, :documentation, :metadata,
+                :embedding, :ai_insights, :ai_confidence, :ai_metrics,
+                :ai_recommendations, :updated_at
+            )
+            ON CONFLICT (repo_id, pattern_type, language, content)
+            DO UPDATE SET
+                confidence = EXCLUDED.confidence,
+                complexity = EXCLUDED.complexity,
+                dependencies = EXCLUDED.dependencies,
+                documentation = EXCLUDED.documentation,
+                metadata = EXCLUDED.metadata,
+                embedding = EXCLUDED.embedding,
+                ai_insights = EXCLUDED.ai_insights,
+                ai_confidence = EXCLUDED.ai_confidence,
+                ai_metrics = EXCLUDED.ai_metrics,
+                ai_recommendations = EXCLUDED.ai_recommendations,
+                updated_at = EXCLUDED.updated_at
+            RETURNING id
+            """
+            
+            result = await txn.execute(query, pattern_values)
+            pattern_id = result[0][0]
+            
+            # Store pattern metrics
+            if pattern_data.get("metrics"):
+                await self._store_pattern_metrics(pattern_id, pattern_data["metrics"], txn)
+            
+            # Store pattern relationships
+            if pattern_data.get("relationships"):
+                await self._store_pattern_relationships(pattern_id, pattern_data["relationships"], txn)
+            
+            # Store in Neo4j
+            await self._store_in_neo4j(pattern_id, pattern_data, txn)
+            
+            return pattern_id
+
+    async def _store_pattern_metrics(
+        self,
+        pattern_id: int,
+        metrics: Dict[str, Any],
+        transaction: Transaction
+    ) -> None:
+        """Store pattern metrics with AI enhancements."""
+        query = """
+        INSERT INTO pattern_metrics (
+            pattern_id, pattern_type, complexity_score,
+            maintainability_score, reusability_score,
+            usage_count, last_used, metadata,
+            ai_quality_score, ai_impact_score,
+            ai_trend_analysis, ai_recommendations
+        )
+        VALUES (
+            :pattern_id, :pattern_type, :complexity_score,
+            :maintainability_score, :reusability_score,
+            :usage_count, :last_used, :metadata,
+            :ai_quality_score, :ai_impact_score,
+            :ai_trend_analysis, :ai_recommendations
+        )
+        ON CONFLICT (pattern_id, pattern_type)
+        DO UPDATE SET
+            complexity_score = EXCLUDED.complexity_score,
+            maintainability_score = EXCLUDED.maintainability_score,
+            reusability_score = EXCLUDED.reusability_score,
+            usage_count = pattern_metrics.usage_count + 1,
+            last_used = CURRENT_TIMESTAMP,
+            metadata = EXCLUDED.metadata,
+            ai_quality_score = EXCLUDED.ai_quality_score,
+            ai_impact_score = EXCLUDED.ai_impact_score,
+            ai_trend_analysis = EXCLUDED.ai_trend_analysis,
+            ai_recommendations = EXCLUDED.ai_recommendations
+        """
+        
+        values = {
+            "pattern_id": pattern_id,
+            "pattern_type": metrics.get("pattern_type"),
+            "complexity_score": metrics.get("complexity_score"),
+            "maintainability_score": metrics.get("maintainability_score"),
+            "reusability_score": metrics.get("reusability_score"),
+            "usage_count": metrics.get("usage_count", 1),
+            "last_used": "CURRENT_TIMESTAMP",
+            "metadata": metrics.get("metadata", {}),
+            "ai_quality_score": metrics.get("ai_quality_score"),
+            "ai_impact_score": metrics.get("ai_impact_score"),
+            "ai_trend_analysis": metrics.get("ai_trend_analysis", {}),
+            "ai_recommendations": metrics.get("ai_recommendations", {})
+        }
+        
+        await transaction.execute(query, values)
+
+    async def _store_pattern_relationships(
+        self,
+        pattern_id: int,
+        relationships: List[Dict[str, Any]],
+        transaction: Transaction
+    ) -> None:
+        """Store pattern relationships with AI insights."""
+        query = """
+        INSERT INTO pattern_relationships (
+            source_pattern_id, target_pattern_id,
+            relationship_type, strength, metadata,
+            ai_relationship_type, ai_relationship_strength,
+            ai_insights
+        )
+        VALUES (
+            :source_pattern_id, :target_pattern_id,
+            :relationship_type, :strength, :metadata,
+            :ai_relationship_type, :ai_relationship_strength,
+            :ai_insights
+        )
+        ON CONFLICT (source_pattern_id, target_pattern_id, relationship_type)
+        DO UPDATE SET
+            strength = EXCLUDED.strength,
+            metadata = EXCLUDED.metadata,
+            ai_relationship_type = EXCLUDED.ai_relationship_type,
+            ai_relationship_strength = EXCLUDED.ai_relationship_strength,
+            ai_insights = EXCLUDED.ai_insights,
+            updated_at = CURRENT_TIMESTAMP
+        """
+        
+        for rel in relationships:
+            values = {
+                "source_pattern_id": pattern_id,
+                "target_pattern_id": rel["target_id"],
+                "relationship_type": rel["type"],
+                "strength": rel.get("strength", 0.5),
+                "metadata": rel.get("metadata", {}),
+                "ai_relationship_type": rel.get("ai_relationship_type"),
+                "ai_relationship_strength": rel.get("ai_relationship_strength"),
+                "ai_insights": rel.get("ai_insights", {})
+            }
+            
+            await transaction.execute(query, values)
+
+    async def _store_in_neo4j(
+        self,
+        pattern_id: int,
+        pattern_data: Dict[str, Any],
+        transaction: Transaction
+    ) -> None:
+        """Store pattern in Neo4j with AI enhancements."""
+        neo4j_ops = await get_neo4j_ops()
+        
+        # Store pattern node
+        await neo4j_ops.store_pattern_node(pattern_data)
+        
+        # Store relationships if available
+        if pattern_data.get("relationships"):
+            await neo4j_ops.store_pattern_relationships(pattern_id, pattern_data["relationships"])
+        
+        # Ensure graph projections are updated
+        graph_sync = await get_graph_sync()
+        await graph_sync.ensure_pattern_projection(pattern_data["repo_id"])
     
     async def cleanup(self):
         """Clean up all resources."""

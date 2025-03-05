@@ -1,4 +1,8 @@
-"""Unified pattern processing and query system."""
+"""[6.0] Pattern processing and validation.
+
+This module provides pattern processing capabilities for code analysis and manipulation,
+including AI-assisted pattern processing and validation.
+"""
 
 from typing import Dict, Any, List, Union, Callable, Optional, Set
 from dataclasses import dataclass, field
@@ -6,8 +10,14 @@ import asyncio
 from parsers.language_mapping import TREE_SITTER_LANGUAGES, CUSTOM_PARSER_LANGUAGES, normalize_language_name
 import re
 import time
-from parsers.types import ParserType
-from parsers.models import PatternDefinition, PatternMatch, FileClassification, PatternType
+from parsers.types import (
+    ParserType, PatternCategory, PatternPurpose, FileType, 
+    PatternDefinition, QueryPattern, AICapability, AIContext, 
+    AIProcessingResult, InteractionType, ConfidenceLevel, 
+    PatternType, PatternInfo, ExtractedFeatures
+)
+from parsers.models import PatternMatch, PATTERN_CATEGORIES, ProcessedPattern, QueryResult, AIPatternResult
+from parsers.parser_interfaces import AIParserInterface
 from utils.logger import log
 import os
 import importlib
@@ -25,17 +35,36 @@ from utils.async_runner import submit_async_task
 from db.transaction import transaction_scope
 from db.upsert_ops import UpsertCoordinator
 from utils.health_monitor import global_health_monitor
+from enum import Enum
+import numpy as np
+from parsers.ai_pattern_processor import get_processor as get_ai_processor
+from embedding.embedding_models import code_embedder, doc_embedder, arch_embedder
 
 # Create coordinator instance
 upsert_coordinator = UpsertCoordinator()
+
+@dataclass
+class FileClassification:
+    """Classification information for a file."""
+    language_id: str
+    parser_type: ParserType
+    file_type: FileType
+    confidence: float = 1.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+# Mock pattern statistics module if import fails
+class MockPatternStats:
+    async def track_pattern_execution(self, **kwargs):
+        pass
 
 # Try to import pattern statistics
 try:
     from analytics.pattern_statistics import pattern_statistics
     PATTERN_STATS_ENABLED = True
 except ImportError:
+    pattern_statistics = MockPatternStats()
     PATTERN_STATS_ENABLED = False
-    log("Pattern statistics module not available, statistics collection disabled", level="warning")
+    log("Pattern statistics module not available, using mock implementation", level="warning")
 
 # Add these common patterns at the top level
 COMMON_PATTERNS = {
@@ -46,6 +75,53 @@ COMMON_PATTERNS = {
     'email': re.compile(r'\b[\w\.-]+@[\w\.-]+\.\w+\b'),
     'path': re.compile(r'(?:^|[\s(])(?:/[\w.-]+)+|\b[\w.-]+/[\w.-/]+')
 }
+
+class AnalyticsType(Enum):
+    """Types of pattern analytics."""
+    PERFORMANCE = "performance"
+    USAGE = "usage"
+    OPTIMIZATION = "optimization"
+    TRENDS = "trends"
+
+@dataclass
+class PatternAnalytics:
+    """Pattern analytics data."""
+    pattern_id: str
+    language: str
+    execution_times: List[float] = field(default_factory=list)
+    memory_usage: List[int] = field(default_factory=list)
+    usage_count: int = 0
+    match_rates: List[float] = field(default_factory=list)
+    timestamps: List[float] = field(default_factory=list)
+    
+    def add_execution(self, execution_time: float, memory_bytes: int, matches: int):
+        """Add execution data."""
+        self.execution_times.append(execution_time)
+        self.memory_usage.append(memory_bytes)
+        self.match_rates.append(matches / max(1, self.usage_count))
+        self.timestamps.append(time.time())
+        self.usage_count += 1
+        
+        # Keep history manageable
+        max_history = 1000
+        if len(self.execution_times) > max_history:
+            self.execution_times = self.execution_times[-max_history:]
+            self.memory_usage = self.memory_usage[-max_history:]
+            self.match_rates = self.match_rates[-max_history:]
+            self.timestamps = self.timestamps[-max_history:]
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get analytics metrics."""
+        if not self.execution_times:
+            return {}
+            
+        return {
+            'avg_execution_time': np.mean(self.execution_times),
+            'max_execution_time': max(self.execution_times),
+            'avg_memory_usage': np.mean(self.memory_usage),
+            'avg_match_rate': np.mean(self.match_rates),
+            'usage_frequency': self.usage_count / (time.time() - min(self.timestamps))
+        }
 
 @dataclass
 class CompiledPattern:
@@ -99,216 +175,712 @@ def compile_patterns(pattern_defs: Dict[str, Any]) -> Dict[str, Any]:
                 log(f"Error compiling pattern {name}: {e}", level="error")
     return compiled
 
-class PatternProcessor:
-    """Central pattern processing system."""
+@dataclass
+class ProcessedPattern:
+    """Result of pattern processing with purpose information."""
+    pattern_name: str
+    category: PatternCategory
+    purpose: PatternPurpose
+    matches: List[Dict[str, Any]] = field(default_factory=list)
+    confidence: float = 1.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
+
+class PatternProcessor(AIParserInterface):
+    """[6.1] Pattern processing system with AI capabilities."""
     
     def __init__(self):
-        """Private constructor - use create() instead."""
-        # Initialize dictionaries for all supported languages first
-        self._tree_sitter_patterns = {lang: {} for lang in TREE_SITTER_LANGUAGES}
-        self._regex_patterns = {lang: {} for lang in CUSTOM_PARSER_LANGUAGES}
-        
-        # Used to track which language patterns have been loaded
-        self._loaded_languages = set()
-        
-        # Import block extractor
-        from parsers.block_extractor import block_extractor
-        self.block_extractor = block_extractor
-        
-        # Track languages with tree-sitter support
-        self.tree_sitter_languages = TREE_SITTER_LANGUAGES
-        
-        # Initialize state tracking
+        """Initialize pattern processor."""
+        super().__init__(
+            language_id="pattern_processor",
+            file_type=FileType.CODE,
+            capabilities={
+                AICapability.CODE_UNDERSTANDING,
+                AICapability.CODE_GENERATION,
+                AICapability.CODE_MODIFICATION,
+                AICapability.CODE_REVIEW,
+                AICapability.LEARNING
+            }
+        )
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
-        self._lock = asyncio.Lock()
+        self._patterns: Dict[str, Dict[str, Any]] = {}
         self._cache = None
-        
-        # Register shutdown handler
-        register_shutdown_handler(self.cleanup)
+        self._lock = asyncio.Lock()
+        self._ai_processor = None
+        self._processing_stats = {
+            "total_patterns": 0,
+            "ai_enhanced_patterns": 0,
+            "pattern_matches": 0,
+            "failed_patterns": 0
+        }
     
     async def ensure_initialized(self):
-        """Ensure the instance is properly initialized before use."""
+        """Ensure the processor is initialized."""
         if not self._initialized:
-            raise ProcessingError("PatternProcessor not initialized. Use create() to initialize.")
+            raise ProcessingError("Pattern processor not initialized. Use create() to initialize.")
         return True
     
     @classmethod
     async def create(cls) -> 'PatternProcessor':
-        """Async factory method to create and initialize a PatternProcessor instance."""
+        """[6.1.1] Create and initialize a pattern processor instance."""
         instance = cls()
         try:
-            async with AsyncErrorBoundary(
-                operation_name="pattern processor initialization",
-                error_types=ProcessingError,
-                severity=ErrorSeverity.CRITICAL
-            ):
+            async with AsyncErrorBoundary("pattern processor initialization"):
                 # Initialize cache
                 instance._cache = UnifiedCache("pattern_processor")
                 await cache_coordinator.register_cache(instance._cache)
                 
-                # Initialize cache coordinator
-                task = asyncio.create_task(cache_coordinator.initialize())
-                instance._pending_tasks.add(task)
-                try:
-                    await task
-                finally:
-                    instance._pending_tasks.remove(task)
+                # Load patterns
+                await instance._load_patterns()
                 
-                # Initialize upsert coordinator
-                task = asyncio.create_task(upsert_coordinator.initialize())
-                instance._pending_tasks.add(task)
-                try:
-                    await task
-                finally:
-                    instance._pending_tasks.remove(task)
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
                 
-                # Load initial patterns
-                for language in TREE_SITTER_LANGUAGES:
-                    task = asyncio.create_task(instance._ensure_patterns_loaded(language))
-                    instance._pending_tasks.add(task)
-                    try:
-                        await task
-                    finally:
-                        instance._pending_tasks.remove(task)
+                # Initialize AI processor
+                instance._ai_processor = await get_ai_processor()
                 
-                # Register with health monitoring
-                global_health_monitor.register_component("pattern_processor")
+                # Initialize embedders
+                await code_embedder.initialize()
+                await doc_embedder.initialize()
+                await arch_embedder.initialize()
                 
                 instance._initialized = True
-                await log("Pattern processor initialized", level="info")
+                log("Pattern processor initialized with AI integration", level="info")
                 return instance
         except Exception as e:
-            await log(f"Error initializing pattern processor: {e}", level="error")
+            log(f"Error initializing pattern processor: {e}", level="error")
             # Cleanup on initialization failure
             await instance.cleanup()
             raise ProcessingError(f"Failed to initialize pattern processor: {e}")
     
-    @handle_async_errors(error_types=(Exception,))
-    async def _ensure_patterns_loaded(self, language: str):
-        """Ensure patterns for a language are loaded."""
+    async def process_pattern(
+        self,
+        pattern_name: str,
+        source_code: str,
+        language_id: str
+    ) -> ProcessedPattern:
+        """[6.1.2] Process a pattern on source code."""
         if not self._initialized:
             await self.ensure_initialized()
-
-        normalized_lang = normalize_language_name(language)
+            
+        async with AsyncErrorBoundary(f"process_pattern_{pattern_name}"):
+            try:
+                # Check cache first
+                cache_key = f"pattern:{pattern_name}:{hash(source_code)}"
+                cached_result = await self._cache.get(cache_key)
+                if cached_result:
+                    return ProcessedPattern(**cached_result)
+                
+                # Get pattern definition
+                pattern = self._patterns.get(pattern_name)
+                if not pattern:
+                    raise ProcessingError(f"Pattern {pattern_name} not found")
+                
+                # Process pattern
+                matches = await self._process_pattern_matches(pattern, source_code, language_id)
+                
+                # Create result
+                result = ProcessedPattern(
+                    pattern_name=pattern_name,
+                    matches=matches,
+                    metadata=pattern.get("metadata", {}),
+                    error=None
+                )
+                
+                # Cache result
+                await self._cache.set(cache_key, result.__dict__)
+                
+                return result
+            except Exception as e:
+                log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                return ProcessedPattern(
+                    pattern_name=pattern_name,
+                    matches=[],
+                    metadata={},
+                    error=str(e)
+                )
+    
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """[6.1.3] Process patterns with AI assistance."""
+        if not self._initialized:
+            await self.ensure_initialized()
+            
+        async with AsyncErrorBoundary("pattern processor AI processing"):
+            try:
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(source_code, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(source_code, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(source_code, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(source_code, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(source_code, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in pattern processor AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+    
+    async def _process_with_understanding(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """[6.1.4] Process with code understanding capability."""
+        understanding = {}
         
-        # Check cache only for custom parser patterns
-        # Tree-sitter patterns are managed by tree-sitter-language-pack
-        if normalized_lang in CUSTOM_PARSER_LANGUAGES:
-            cache_key = f"patterns_{normalized_lang}"
+        # Process patterns by category
+        for category in PatternCategory:
+            category_patterns = await self._get_patterns_for_category(
+                category,
+                context.project.file_type
+            )
+            if category_patterns:
+                understanding[category.value] = await self._process_category_patterns(
+                    category_patterns,
+                    source_code,
+                    context
+                )
+        
+        return understanding
+    
+    async def _process_with_generation(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> List[str]:
+        """[6.1.5] Process with code generation capability."""
+        suggestions = []
+        
+        # Get generation patterns
+        generation_patterns = await self._get_patterns_for_purpose(
+            PatternPurpose.GENERATION,
+            context.project.file_type
+        )
+        
+        # Process each pattern
+        for pattern in generation_patterns:
+            pattern_result = await self.process_pattern(
+                pattern["name"],
+                source_code,
+                context.project.language_id
+            )
+            if pattern_result.matches:
+                suggestions.extend(self._generate_suggestions(pattern_result, context))
+        
+        return suggestions
+    
+    async def _process_with_modification(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """[6.1.6] Process with code modification capability."""
+        insights = {}
+        
+        # Get modification patterns
+        modification_patterns = await self._get_patterns_for_purpose(
+            PatternPurpose.MODIFICATION,
+            context.project.file_type
+        )
+        
+        # Process each pattern
+        for pattern in modification_patterns:
+            pattern_result = await self.process_pattern(
+                pattern["name"],
+                source_code,
+                context.project.language_id
+            )
+            if pattern_result.matches:
+                insights[pattern["name"]] = await self._analyze_modification_impact(
+                    pattern_result,
+                    context
+                )
+        
+        return insights
+    
+    async def _process_with_review(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """[6.1.7] Process with code review capability."""
+        review = {}
+        
+        # Get review patterns
+        review_patterns = await self._get_patterns_for_purpose(
+            PatternPurpose.VALIDATION,
+            context.project.file_type
+        )
+        
+        # Process each pattern
+        for pattern in review_patterns:
+            pattern_result = await self.process_pattern(
+                pattern["name"],
+                source_code,
+                context.project.language_id
+            )
+            if pattern_result.matches:
+                review[pattern["name"]] = await self._analyze_review_findings(
+                    pattern_result,
+                    context
+                )
+        
+        return review
+    
+    async def _process_with_learning(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """[6.1.8] Process with learning capability."""
+        patterns = []
+        
+        # Get learning patterns
+        learning_patterns = await self._get_patterns_for_purpose(
+            PatternPurpose.LEARNING,
+            context.project.file_type
+        )
+        
+        # Process each pattern
+        for pattern in learning_patterns:
+            pattern_result = await self.process_pattern(
+                pattern["name"],
+                source_code,
+                context.project.language_id
+            )
+            if pattern_result.matches:
+                learned = await self._learn_from_pattern(pattern_result, context)
+                if learned:
+                    patterns.append(learned)
+        
+        return patterns
+    
+    async def _load_patterns(self):
+        """[6.1.9] Load pattern definitions."""
+        try:
+            # Load patterns from pattern categories
+            for category in PatternCategory:
+                for file_type in PATTERN_CATEGORIES.get(category, {}):
+                    for purpose, patterns in PATTERN_CATEGORIES[category][file_type].items():
+                        for pattern_name in patterns:
+                            self._patterns[pattern_name] = {
+                                "name": pattern_name,
+                                "category": category,
+                                "purpose": purpose,
+                                "file_type": file_type
+                            }
+            
+            log(f"Loaded {len(self._patterns)} patterns", level="info")
+        except Exception as e:
+            log(f"Error loading patterns: {e}", level="error")
+            raise ProcessingError(f"Failed to load patterns: {e}")
+    
+    async def cleanup(self):
+        """[6.1.10] Clean up processor resources."""
+        try:
+            if not self._initialized:
+                return
+                
+            # Clear patterns
+            self._patterns.clear()
+            
+            # Clean up cache
             if self._cache:
-                cached_patterns = await self._cache.get(cache_key)
-                if cached_patterns:
-                    self._regex_patterns[normalized_lang] = cached_patterns
-                    self._loaded_languages.add(normalized_lang)
-                    return
-        
-        # Skip if already loaded
-        if normalized_lang in self._loaded_languages:
-            return
+                await cache_coordinator.unregister_cache(self._cache)
+                self._cache = None
             
-        # Load the patterns based on parser type
-        async with AsyncErrorBoundary(f"load_patterns_{normalized_lang}", error_types=(Exception,)):
-            if normalized_lang in TREE_SITTER_LANGUAGES:
-                await self._load_tree_sitter_patterns(normalized_lang)
-            elif normalized_lang in CUSTOM_PARSER_LANGUAGES:
-                await self._load_custom_patterns(normalized_lang)
-                
-                # Cache only custom parser patterns
-                if self._cache and normalized_lang in CUSTOM_PARSER_LANGUAGES:
-                    await self._cache.set(f"patterns_{normalized_lang}", 
-                                        self._regex_patterns[normalized_lang])
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
             
-            # Mark as loaded
-            self._loaded_languages.add(normalized_lang)
-    
-    @handle_async_errors(error_types=(Exception,))
-    async def _load_tree_sitter_patterns(self, language: str):
-        """Load tree-sitter specific patterns for a language."""
-        from parsers.query_patterns import get_patterns_for_language
-        
-        async with AsyncErrorBoundary(f"load_tree_sitter_patterns_{language}"):
-            task = asyncio.create_task(get_patterns_for_language(language))
-            self._pending_tasks.add(task)
-            try:
-                patterns = await task
-                if patterns:
-                    # Compile and initialize each pattern
-                    for pattern_name, pattern in patterns.items():
-                        compiled = CompiledPattern(
-                            tree_sitter=pattern.get('pattern'),
-                            extract=pattern.get('extract'),
-                            definition=pattern.get('definition')
-                        )
-                        await compiled.initialize()
-                        patterns[pattern_name] = compiled
-                    
-                    self._tree_sitter_patterns[language] = patterns
-                    log(f"Loaded {len(patterns)} tree-sitter patterns for {language}", level="debug")
-            finally:
-                self._pending_tasks.remove(task)
-    
-    @handle_async_errors(error_types=(Exception,))
-    async def _load_custom_patterns(self, language: str):
-        """Load custom parser patterns for a language."""
-        from parsers.query_patterns import get_patterns_for_language
-        
-        async with AsyncErrorBoundary(f"load_custom_patterns_{language}"):
-            task = asyncio.create_task(get_patterns_for_language(language))
-            self._pending_tasks.add(task)
-            try:
-                patterns = await task
-                if patterns:
-                    # Compile and initialize each pattern
-                    for pattern_name, pattern in patterns.items():
-                        compiled = CompiledPattern(
-                            regex=re.compile(pattern['pattern'], re.DOTALL),
-                            extract=pattern.get('extract'),
-                            definition=pattern.get('definition')
-                        )
-                        await compiled.initialize()
-                        patterns[pattern_name] = compiled
-                    
-                    self._regex_patterns[language] = patterns
-                    log(f"Loaded {len(patterns)} regex patterns for {language}", level="debug")
-            finally:
-                self._pending_tasks.remove(task)
+            # Cleanup AI processor
+            self._ai_processor = None
+            
+            self._initialized = False
+            log("Pattern processor cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up pattern processor: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup pattern processor: {e}")
 
-    @handle_async_errors(error_types=(Exception,))
-    async def get_patterns_for_file(self, classification: FileClassification) -> dict:
-        """
-        Get patterns based on parser type and language.
-        Ensures patterns are loaded before returning them.
+    def get_stats(self) -> Dict[str, int]:
+        """Get processing statistics."""
+        return self._processing_stats.copy()
+    
+    def reset_stats(self) -> None:
+        """Reset processing statistics."""
+        self._processing_stats = {
+            "total_patterns": 0,
+            "ai_enhanced_patterns": 0,
+            "pattern_matches": 0,
+            "failed_patterns": 0
+        }
+
+    async def process_deep_learning(
+        self,
+        source_code: str,
+        context: AIContext,
+        repositories: List[int]
+    ) -> AIProcessingResult:
+        """Process with deep learning capabilities."""
+        results = await self._ai_processor.deep_learn_from_multiple_repositories(
+            repositories,
+            source_code=source_code,
+            context=context
+        )
+        return AIProcessingResult(
+            success=True,
+            ai_insights=results
+        )
+
+    async def analyze_pattern_relationships(
+        self,
+        patterns: List[Dict[str, Any]]
+    ) -> List[PatternRelationship]:
+        """Analyze relationships between patterns."""
+        relationships = []
+        for i, pattern1 in enumerate(patterns):
+            for pattern2 in patterns[i+1:]:
+                relationship = await self._analyze_pattern_relationship(
+                    pattern1,
+                    pattern2
+                )
+                if relationship:
+                    relationships.append(relationship)
+        return relationships
+
+# Global instance
+pattern_processor = None
+
+async def get_pattern_processor() -> PatternProcessor:
+    """[6.2] Get the global pattern processor instance."""
+    global pattern_processor
+    if not pattern_processor:
+        pattern_processor = await PatternProcessor.create()
+    return pattern_processor
+
+async def process_pattern(
+    pattern_name: str,
+    source_code: str,
+    language_id: str
+) -> ProcessedPattern:
+    """[6.3] Process a pattern on source code."""
+    processor = await get_pattern_processor()
+    return await processor.process_pattern(pattern_name, source_code, language_id)
+
+async def validate_pattern(
+    pattern_name: str,
+    source_code: str,
+    language_id: str
+) -> bool:
+    """[6.4] Validate a pattern definition."""
+    processor = await get_pattern_processor()
+    try:
+        result = await processor.process_pattern(pattern_name, source_code, language_id)
+        return result.error is None
+    except Exception:
+        return False
+
+async def process_for_purpose(
+    self,
+    source_code: str,
+    purpose: PatternPurpose,
+    file_type: FileType = FileType.CODE,
+    categories: Optional[List[PatternCategory]] = None
+) -> List[ProcessedPattern]:
+    """Process patterns for a specific purpose."""
+    if not self._initialized:
+        await self.initialize()
         
-        Args:
-            classification: File classification containing language and parser type
-            
-        Returns:
-            Dictionary of patterns for the specified language
-        """
-        if not self._initialized:
-            await self.ensure_initialized()
-            
-            async with AsyncErrorBoundary(f"get_patterns_{classification.language_id}"):
-                # Make sure patterns are loaded for this language
-                await self._ensure_patterns_loaded(classification.language_id)
+    results = []
+    categories = categories or list(PatternCategory)
+    
+    for category in categories:
+        # Get patterns for this category and purpose
+        patterns = self._patterns[category][purpose]
+        
+        # Get valid pattern types for this category/file_type/purpose combo
+        valid_types = PATTERN_CATEGORIES.get(category, {}).get(file_type, {}).get(purpose, [])
+        
+        for pattern_name, pattern in patterns.items():
+            if pattern_name in valid_types:
+                matches = await self._process_pattern(source_code, pattern)
+                if matches:
+                    results.append(ProcessedPattern(
+                        pattern_name=pattern_name,
+                        category=category,
+                        purpose=purpose,
+                        matches=matches
+                    ))
+    
+    return results
+
+async def _process_pattern(self, source_code: str, pattern: QueryPattern) -> List[Dict[str, Any]]:
+    """Process a single pattern against source code."""
+    start_time = time.time()
+    matches = []
+    
+    try:
+        if isinstance(pattern.pattern, str):
+            # Check pattern cache first
+            cache_key = f"{pattern.pattern}:{hash(source_code)}"
+            if cache_key in self._pattern_cache:
+                matches = self._pattern_cache[cache_key]
+            else:
+                # Regex pattern
+                for match in re.finditer(pattern.pattern, source_code, re.MULTILINE | re.DOTALL):
+                    result = {
+                        'text': match.group(0),
+                        'start': match.start(),
+                        'end': match.end(),
+                        'groups': match.groups(),
+                        'named_groups': match.groupdict()
+                    }
+                    
+                    if pattern.extract:
+                        try:
+                            extracted = pattern.extract(result)
+                            if extracted:
+                                result.update(extracted)
+                        except Exception as e:
+                            log(f"Error in pattern extraction: {e}", level="error")
+                    
+                    matches.append(result)
                 
-                # Return the appropriate pattern set
-                patterns = (self._tree_sitter_patterns if classification.parser_type == ParserType.TREE_SITTER 
-                           else self._regex_patterns)
-                return patterns.get(classification.language_id, {})
+                # Cache the results
+                self._pattern_cache[cache_key] = matches
+                
+                # Keep cache size manageable
+                if len(self._pattern_cache) > 1000:  # Arbitrary limit
+                    # Remove oldest entries
+                    sorted_keys = sorted(
+                        self._pattern_cache.keys(),
+                        key=lambda k: self._metrics.get(k, {}).get('last_used', 0)
+                    )
+                    for key in sorted_keys[:100]:  # Remove oldest 100 entries
+                        del self._pattern_cache[key]
+    finally:
+        # Track metrics
+        execution_time = time.time() - start_time
+        self._track_metrics(pattern.pattern_name, execution_time, len(matches))
+    
+    return matches
+
+async def suggest_modifications(
+    self,
+    source_code: str,
+    file_type: FileType = FileType.CODE
+) -> List[ProcessedPattern]:
+    """Find patterns suggesting possible code modifications."""
+    return await self.process_for_purpose(
+        source_code,
+        PatternPurpose.MODIFICATION,
+        file_type,
+        [PatternCategory.SYNTAX, PatternCategory.CODE_PATTERNS]
+    )
+
+async def validate_code(
+    self,
+    source_code: str,
+    file_type: FileType = FileType.CODE
+) -> List[ProcessedPattern]:
+    """Find patterns related to code validation."""
+    return await self.process_for_purpose(
+        source_code,
+        PatternPurpose.VALIDATION,
+        file_type
+    )
+
+async def learn_patterns(
+    self,
+    source_code: str,
+    file_type: FileType = FileType.CODE
+) -> List[ProcessedPattern]:
+    """Extract learning patterns from code."""
+    return await self.process_for_purpose(
+        source_code,
+        PatternPurpose.LEARNING,
+        file_type,
+        [PatternCategory.LEARNING, PatternCategory.CODE_PATTERNS]
+    )
+
+async def understand_code(
+    self,
+    source_code: str,
+    file_type: FileType = FileType.CODE
+) -> Dict[PatternCategory, List[ProcessedPattern]]:
+    """Analyze code for understanding across all relevant categories."""
+    understanding = {}
+    
+    for category in PatternCategory:
+        patterns = await self.process_for_purpose(
+            source_code,
+            PatternPurpose.UNDERSTANDING,
+            file_type,
+            [category]
+        )
+        if patterns:
+            understanding[category] = patterns
+    
+    return understanding
+
+@handle_async_errors(error_types=(Exception,))
+async def _ensure_patterns_loaded(self, language: str):
+    """Ensure patterns for a language are loaded."""
+    if not self._initialized:
+        await self.initialize()
+
+    normalized_lang = normalize_language_name(language)
+    
+    # Check cache only for custom parser patterns
+    # Tree-sitter patterns are managed by tree-sitter-language-pack
+    if normalized_lang in CUSTOM_PARSER_LANGUAGES:
+        cache_key = f"patterns_{normalized_lang}"
+        if self._cache:
+            cached_patterns = await self._cache.get(cache_key)
+            if cached_patterns:
+                self._regex_patterns[normalized_lang] = cached_patterns
+                self._loaded_languages.add(normalized_lang)
+                return
+    
+    # Skip if already loaded
+    if normalized_lang in self._loaded_languages:
+        return
         
+    # Load the patterns based on parser type
+    async with AsyncErrorBoundary(f"load_patterns_{normalized_lang}", error_types=(Exception,)):
+        if normalized_lang in TREE_SITTER_LANGUAGES:
+            await self._load_tree_sitter_patterns(normalized_lang)
+        elif normalized_lang in CUSTOM_PARSER_LANGUAGES:
+            await self._load_custom_patterns(normalized_lang)
+            
+            # Cache only custom parser patterns
+            if self._cache and normalized_lang in CUSTOM_PARSER_LANGUAGES:
+                await self._cache.set(f"patterns_{normalized_lang}", 
+                                    self._regex_patterns[normalized_lang])
+        
+        # Mark as loaded
+        self._loaded_languages.add(normalized_lang)
+
+@handle_async_errors(error_types=(Exception,))
+async def _load_tree_sitter_patterns(self, language: str):
+    """Load tree-sitter specific patterns for a language."""
+    from parsers.query_patterns import get_patterns_for_language
+    
+    async with AsyncErrorBoundary(f"load_tree_sitter_patterns_{language}"):
+        task = asyncio.create_task(get_patterns_for_language(language))
+        self._pending_tasks.add(task)
+        try:
+            patterns = await task
+            if patterns:
+                # Compile and initialize each pattern
+                for pattern_name, pattern in patterns.items():
+                    compiled = CompiledPattern(
+                        tree_sitter=pattern.get('pattern'),
+                        extract=pattern.get('extract'),
+                        definition=pattern.get('definition')
+                    )
+                    await compiled.initialize()
+                    patterns[pattern_name] = compiled
+                
+                self._tree_sitter_patterns[language] = patterns
+                log(f"Loaded {len(patterns)} tree-sitter patterns for {language}", level="debug")
+        finally:
+            self._pending_tasks.remove(task)
+
+@handle_async_errors(error_types=(Exception,))
+async def _load_custom_patterns(self, language: str):
+    """Load custom parser patterns for a language."""
+    from parsers.query_patterns import get_patterns_for_language
+    
+    async with AsyncErrorBoundary(f"load_custom_patterns_{language}"):
+        task = asyncio.create_task(get_patterns_for_language(language))
+        self._pending_tasks.add(task)
+        try:
+            patterns = await task
+            if patterns:
+                # Compile and initialize each pattern
+                for pattern_name, pattern in patterns.items():
+                    compiled = CompiledPattern(
+                        regex=re.compile(pattern['pattern'], re.DOTALL),
+                        extract=pattern.get('extract'),
+                        definition=pattern.get('definition')
+                    )
+                    await compiled.initialize()
+                    patterns[pattern_name] = compiled
+                
+                self._regex_patterns[language] = patterns
+                log(f"Loaded {len(patterns)} regex patterns for {language}", level="debug")
+        finally:
+            self._pending_tasks.remove(task)
+
+@handle_async_errors(error_types=(Exception,))
+async def get_patterns_for_file(self, classification: FileClassification) -> dict:
+    """
+    Get patterns based on parser type and language.
+    Ensures patterns are loaded before returning them.
+    
+    Args:
+        classification: File classification containing language and parser type
+        
+    Returns:
+        Dictionary of patterns for the specified language
+    """
+    if not self._initialized:
+        await self.initialize()
+        
+        async with AsyncErrorBoundary(f"get_patterns_{classification.language_id}"):
+            # Make sure patterns are loaded for this language
+            await self._ensure_patterns_loaded(classification.language_id)
+            
+            # Return the appropriate pattern set
+            patterns = (self._tree_sitter_patterns if classification.parser_type == ParserType.TREE_SITTER 
+                       else self._regex_patterns)
+            return patterns.get(classification.language_id, {})
+    
     def validate_pattern(self, pattern: CompiledPattern, language: str) -> bool:
         """Validate pattern matches parser type."""
         is_tree_sitter = language in TREE_SITTER_LANGUAGES
         return is_tree_sitter == (pattern.definition.pattern_type == "tree-sitter")
 
-    @handle_async_errors(error_types=(Exception,))
-    async def process_node(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
-        """Process a node using appropriate pattern type."""
-        start_time = time.time()
-        compilation_time = 0
-        
+@handle_async_errors(error_types=(Exception,))
+async def process_node(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
+    """Process a node using appropriate pattern type."""
+    start_time = time.time()
+    compilation_time = 0
+    matches = []
+    
+    try:
         # Track compilation time if available
         if hasattr(pattern, 'compilation_time_ms'):
             compilation_time = pattern.compilation_time_ms
@@ -317,8 +889,6 @@ class PatternProcessor:
             matches = await self._process_tree_sitter_pattern(source_code, pattern)
         elif pattern.regex:
             matches = await self._process_regex_pattern(source_code, pattern)
-        else:
-            matches = []
         
         # Record statistics if enabled
         if PATTERN_STATS_ENABLED and hasattr(pattern, 'definition') and pattern.definition:
@@ -334,7 +904,7 @@ class PatternProcessor:
                 except ValueError:
                     pattern_type = PatternType.CODE_STRUCTURE
             
-            # Call the pattern statistics manager
+            # Track pattern execution statistics
             try:
                 task = asyncio.create_task(pattern_statistics.track_pattern_execution(
                     pattern_id=pattern_id,
@@ -352,8 +922,10 @@ class PatternProcessor:
                     self._pending_tasks.remove(task)
             except Exception as e:
                 log(f"Error tracking pattern statistics: {str(e)}", level="error")
-        
-        return matches
+    except Exception as e:
+        log(f"Error processing pattern: {str(e)}", level="error")
+    
+    return matches
 
     @handle_async_errors(error_types=(Exception,))
     async def _process_regex_pattern(self, source_code: str, pattern: CompiledPattern) -> List[PatternMatch]:
@@ -921,7 +1493,7 @@ class PatternProcessor:
             return '\n'.join(block_content)
 
     async def cleanup(self):
-        """Clean up pattern processor resources."""
+        """Clean up processor resources."""
         try:
             if not self._initialized:
                 return
@@ -996,6 +1568,155 @@ class PatternProcessor:
         except Exception as e:
             log(f"Error compiling pattern {name}: {e}", level="error")
             return None
+
+    async def explain_code(
+        self,
+        source_code: str,
+        file_type: FileType = FileType.CODE
+    ) -> List[ProcessedPattern]:
+        """Find patterns useful for explaining code to users."""
+        return await self.process_for_purpose(
+            source_code,
+            PatternPurpose.EXPLANATION,
+            file_type,
+            [PatternCategory.SYNTAX, PatternCategory.SEMANTICS, PatternCategory.CONTEXT]
+        )
+
+    async def suggest_improvements(
+        self,
+        source_code: str,
+        file_type: FileType = FileType.CODE
+    ) -> List[ProcessedPattern]:
+        """Find patterns suggesting possible improvements."""
+        return await self.process_for_purpose(
+            source_code,
+            PatternPurpose.SUGGESTION,
+            file_type,
+            [PatternCategory.BEST_PRACTICES, PatternCategory.COMMON_ISSUES]
+        )
+
+    async def debug_code(
+        self,
+        source_code: str,
+        file_type: FileType = FileType.CODE
+    ) -> List[ProcessedPattern]:
+        """Find patterns related to potential bugs."""
+        return await self.process_for_purpose(
+            source_code,
+            PatternPurpose.DEBUGGING,
+            file_type,
+            [PatternCategory.COMMON_ISSUES, PatternCategory.SYNTAX]
+        )
+
+    async def complete_code(
+        self,
+        source_code: str,
+        cursor_position: int,
+        file_type: FileType = FileType.CODE
+    ) -> List[ProcessedPattern]:
+        """Find patterns for code completion at cursor position."""
+        return await self.process_for_purpose(
+            source_code,
+            PatternPurpose.COMPLETION,
+            file_type,
+            [PatternCategory.USER_PATTERNS, PatternCategory.CODE_PATTERNS]
+        )
+
+    async def analyze_user_style(
+        self,
+        source_code: str,
+        file_type: FileType = FileType.CODE
+    ) -> Dict[str, Any]:
+        """Analyze user's coding style and preferences."""
+        patterns = await self.process_for_purpose(
+            source_code,
+            PatternPurpose.UNDERSTANDING,
+            file_type,
+            [PatternCategory.USER_PATTERNS]
+        )
+        
+        style_info = {
+            "naming_conventions": {},
+            "formatting_preferences": {},
+            "common_patterns": [],
+            "documentation_style": {},
+            "error_handling_style": {}
+        }
+        
+        for pattern in patterns:
+            if "naming" in pattern.pattern_name:
+                style_info["naming_conventions"].update(pattern.metadata)
+            elif "format" in pattern.pattern_name:
+                style_info["formatting_preferences"].update(pattern.metadata)
+            elif "pattern" in pattern.pattern_name:
+                style_info["common_patterns"].append(pattern.metadata)
+            elif "doc" in pattern.pattern_name:
+                style_info["documentation_style"].update(pattern.metadata)
+            elif "error" in pattern.pattern_name:
+                style_info["error_handling_style"].update(pattern.metadata)
+        
+        return style_info
+
+    async def generate_documentation(
+        self,
+        source_code: str,
+        file_type: FileType = FileType.CODE
+    ) -> Dict[str, Any]:
+        """Generate documentation based on code patterns."""
+        patterns = await self.process_for_purpose(
+            source_code,
+            PatternPurpose.DOCUMENTATION,
+            file_type
+        )
+        
+        docs = {
+            "overview": "",
+            "functions": [],
+            "classes": [],
+            "usage_examples": [],
+            "dependencies": [],
+            "notes": []
+        }
+        
+        for pattern in patterns:
+            if pattern.category == PatternCategory.DOCUMENTATION:
+                if "overview" in pattern.pattern_name:
+                    docs["overview"] = pattern.matches[0]["text"]
+                elif "example" in pattern.pattern_name:
+                    docs["usage_examples"].extend(
+                        match["text"] for match in pattern.matches
+                    )
+            elif pattern.category == PatternCategory.DEPENDENCIES:
+                docs["dependencies"].extend(
+                    match["text"] for match in pattern.matches
+                )
+            elif pattern.category == PatternCategory.SYNTAX:
+                if "function" in pattern.pattern_name:
+                    docs["functions"].extend(pattern.matches)
+                elif "class" in pattern.pattern_name:
+                    docs["classes"].extend(pattern.matches)
+        
+        return docs
+
+    @classmethod
+    async def create(cls) -> 'PatternProcessor':
+        """Create a pattern processor instance."""
+        instance = cls()
+        instance._initialized = True
+        
+        # Create AI-specific processor
+        from parsers.ai_pattern_processor import AIPatternProcessor
+        instance.ai_processor = AIPatternProcessor(instance)
+        
+        return instance
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: 'AIAssistantContext'
+    ) -> Dict[str, Any]:
+        """Process patterns with AI assistance."""
+        return await self.ai_processor.process_interaction(source_code, context)
 
 # Global instance
 _pattern_processor = None

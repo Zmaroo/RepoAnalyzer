@@ -426,13 +426,21 @@ class GraphSyncCoordinator:
             projection_query = """
             CALL gds.graph.project.cypher(
                 $graph_name,
-                'MATCH (n) WHERE (n:Pattern AND n.repo_id = $repo_id) OR (n:Code AND n.repo_id = $repo_id) OR (n:Repository AND n.id = $repo_id) 
+                'MATCH (n) 
+                 WHERE (n:Pattern AND n.repo_id = $repo_id) OR 
+                       (n:Code AND n.repo_id = $repo_id) OR 
+                       (n:Repository AND n.id = $repo_id) OR
+                       (n:AIInsight AND exists((n)<-[:HAS_INSIGHT]-(:Pattern {repo_id: $repo_id}))) OR
+                       (n:AIMetric AND exists((n)<-[:HAS_METRIC]-(:Pattern {repo_id: $repo_id}))) OR
+                       (n:AIRecommendation AND exists((n)<-[:HAS_RECOMMENDATION]-(:Pattern {repo_id: $repo_id})))
                  RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
-                'MATCH (n:Pattern {repo_id: $repo_id})-[r:EXTRACTED_FROM]->(m:Code {repo_id: $repo_id}) 
-                 RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties
-                 UNION
-                 MATCH (n:Repository {id: $repo_id})-[r:REFERENCE_PATTERN|APPLIED_PATTERN]->(m:Pattern) 
-                 RETURN id(n) AS source, id(m) AS target, type(r) AS type, properties(r) AS properties',
+                'MATCH (s)-[r]->(t)
+                 WHERE (s:Pattern OR s:Code OR s:Repository OR s:AIInsight OR s:AIMetric OR s:AIRecommendation) AND
+                       (t:Pattern OR t:Code OR t:Repository OR t:AIInsight OR t:AIMetric OR t:AIRecommendation) AND
+                       (s.repo_id = $repo_id OR t.repo_id = $repo_id OR
+                        exists((s)<-[:HAS_INSIGHT|HAS_METRIC|HAS_RECOMMENDATION]-(:Pattern {repo_id: $repo_id})) OR
+                        exists((t)<-[:HAS_INSIGHT|HAS_METRIC|HAS_RECOMMENDATION]-(:Pattern {repo_id: $repo_id})))
+                 RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties',
                 {validateRelationships: false}
             )
             """
@@ -442,7 +450,7 @@ class GraphSyncCoordinator:
             try:
                 await asyncio.wrap_future(future)
                 await graph_cache.set_async(f"projection:{graph_name}", True)
-                log(f"Created pattern graph projection: {graph_name}", level="info")
+                log(f"Created pattern graph projection with AI enhancements: {graph_name}", level="info")
             finally:
                 self._pending_tasks.remove(future)
         finally:
@@ -509,13 +517,25 @@ class GraphSyncCoordinator:
             projection_query = """
             CALL gds.graph.project.cypher(
                 $graph_name,
-                'MATCH (n) WHERE (n:Code AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR 
-                                (n:Pattern AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id))
+                'MATCH (n) 
+                 WHERE (n:Pattern AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR 
+                       (n:Code AND (n.repo_id = $active_repo_id OR n.repo_id = $reference_repo_id)) OR
+                       (n:AIInsight AND exists((n)<-[:HAS_INSIGHT]-(:Pattern {repo_id: $active_repo_id}))) OR
+                       (n:AIInsight AND exists((n)<-[:HAS_INSIGHT]-(:Pattern {repo_id: $reference_repo_id}))) OR
+                       (n:AIMetric AND exists((n)<-[:HAS_METRIC]-(:Pattern {repo_id: $active_repo_id}))) OR
+                       (n:AIMetric AND exists((n)<-[:HAS_METRIC]-(:Pattern {repo_id: $reference_repo_id}))) OR
+                       (n:AIRecommendation AND exists((n)<-[:HAS_RECOMMENDATION]-(:Pattern {repo_id: $active_repo_id}))) OR
+                       (n:AIRecommendation AND exists((n)<-[:HAS_RECOMMENDATION]-(:Pattern {repo_id: $reference_repo_id})))
                  RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties',
                 'MATCH (s)-[r]->(t) 
-                 WHERE (s:Code OR s:Pattern) AND (t:Code OR t:Pattern) AND 
-                       (s.repo_id = $active_repo_id OR s.repo_id = $reference_repo_id) AND
-                       (t.repo_id = $active_repo_id OR t.repo_id = $reference_repo_id)
+                 WHERE (s:Pattern OR s:Code OR s:AIInsight OR s:AIMetric OR s:AIRecommendation) AND 
+                       (t:Pattern OR t:Code OR s:AIInsight OR s:AIMetric OR s:AIRecommendation) AND 
+                       ((s.repo_id = $active_repo_id OR s.repo_id = $reference_repo_id) OR
+                        (t.repo_id = $active_repo_id OR t.repo_id = $reference_repo_id) OR
+                        exists((s)<-[:HAS_INSIGHT|HAS_METRIC|HAS_RECOMMENDATION]-(:Pattern {repo_id: $active_repo_id})) OR
+                        exists((s)<-[:HAS_INSIGHT|HAS_METRIC|HAS_RECOMMENDATION]-(:Pattern {repo_id: $reference_repo_id})) OR
+                        exists((t)<-[:HAS_INSIGHT|HAS_METRIC|HAS_RECOMMENDATION]-(:Pattern {repo_id: $active_repo_id})) OR
+                        exists((t)<-[:HAS_INSIGHT|HAS_METRIC|HAS_RECOMMENDATION]-(:Pattern {repo_id: $reference_repo_id})))
                  RETURN id(s) AS source, id(t) AS target, type(r) AS type, properties(r) AS properties',
                 {validateRelationships: false}
             )
@@ -529,7 +549,7 @@ class GraphSyncCoordinator:
             self._pending_tasks.add(future)
             try:
                 await asyncio.wrap_future(future)
-                log(f"Created combined active-reference graph projection: {graph_name}", level="info")
+                log(f"Created combined active-reference graph projection with AI enhancements: {graph_name}", level="info")
             finally:
                 self._pending_tasks.remove(future)
         finally:
@@ -666,51 +686,6 @@ async def get_graph_sync() -> GraphSyncCoordinator:
     """
     if not _graph_sync._initialized:
         await _graph_sync.ensure_initialized()
-    async def cleanup(self):
-        """Clean up all resources."""
-        try:
-            # Cancel any pending tasks
-            if self._update_task and not self._update_task.done():
-                self._update_task.cancel()
-                try:
-                    await self._update_task
-                except asyncio.CancelledError:
-                    pass
-            
-            # Clean up any remaining tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*[asyncio.wrap_future(f) for f in self._pending_tasks], return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            # Clear all projections
-            for projection_name in self._active_projections:
-                try:
-                    await self._drop_projection(projection_name)
-                except Exception as e:
-                    log(f"Error dropping projection {projection_name}: {e}", level="error")
-            
-            self._active_projections.clear()
-            self._projections.clear()
-            self._initialized = False
-            
-            log("Graph sync coordinator cleaned up", level="info")
-        except Exception as e:
-            log(f"Error cleaning up graph sync coordinator: {e}", level="error")
-
-# Create singleton instance of GraphSyncCoordinator
-_graph_sync = GraphSyncCoordinator()
-
-# Export with proper async handling
-async def get_graph_sync() -> GraphSyncCoordinator:
-    """Get the graph sync coordinator instance.
-    
-    Returns:
-        GraphSyncCoordinator: The singleton graph sync coordinator instance
-    """
-    if not _graph_sync._initialized:
-        await _graph_sync.initialize()
     return _graph_sync
 
 # For backward compatibility and direct access

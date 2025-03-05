@@ -25,307 +25,170 @@ from utils.error_handling import (
 from utils.async_runner import submit_async_task, get_loop
 from db.retry_utils import DatabaseRetryManager, RetryConfig
 from utils.shutdown import register_shutdown_handler
+import time
 
 class ConnectionManager:
-    """Manages all database connections and their lifecycle."""
+    """Manages database connections with AI operation support."""
     
     def __init__(self):
-        """Private constructor - use create() instead."""
-        # Neo4j
-        self._driver = None
-        self._lock = asyncio.Lock()
-        self._pending_tasks: Set[asyncio.Task] = set()
-        self._health_check_interval = 60  # seconds
-        self._health_check_task = None
-        self._retry_manager = None
-        self._initialized = False
-        
-        # PostgreSQL
         self._pool = None
-        self._pg_initialized = False
+        self._neo4j_driver = None
+        self._initialized = False
+        self._ai_cache = {}  # Cache for AI operation results
+        self._cache_ttl = 3600  # 1 hour TTL for AI results
+        self._pending_tasks = set()
+        self._cleanup_task = None
     
-    async def ensure_initialized(self):
-        """Ensure the instance is properly initialized before use."""
-        if not self._initialized:
-            raise ConnectionError("ConnectionManager not initialized. Use create() to initialize.")
-        if not self._pg_initialized:
-            raise ConnectionError("PostgreSQL not initialized. Use create() to initialize.")
-        if not self._driver:
-            raise ConnectionError("Neo4j driver not initialized")
-        return True
-    
-    @classmethod
-    async def create(cls) -> 'ConnectionManager':
-        """Async factory method to create and initialize a ConnectionManager instance."""
-        instance = cls()
+    async def initialize(self):
+        """Initialize database connections and AI caching."""
+        if self._initialized:
+            return
+        
         try:
-            async with AsyncErrorBoundary(
-                operation_name="connection manager initialization",
-                error_types=(ConnectionError, DatabaseError),
-                severity=ErrorSeverity.CRITICAL
-            ):
-                # Initialize retry manager
-                from db.retry_utils import DatabaseRetryManager, RetryConfig
-                instance._retry_manager = await DatabaseRetryManager.create(
-                    RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
-                )
-                
-                # Initialize Neo4j
-                await instance.initialize()
-                
-                # Initialize PostgreSQL
-                await instance.initialize_postgres()
-                
-                # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
-                
-                # Initialize health monitoring
-                from utils.health_monitor import global_health_monitor
-                global_health_monitor.register_component("connection_manager")
-                
-                instance._initialized = True
-                await log("Connection manager initialized", level="info")
-                return instance
+            # Initialize PostgreSQL pool
+            self._pool = await asyncpg.create_pool(
+                user=PostgresConfig.user,
+                password=PostgresConfig.password,
+                database=PostgresConfig.database,
+                host=PostgresConfig.host,
+                port=PostgresConfig.port,
+                min_size=PostgresConfig.min_pool_size,
+                max_size=PostgresConfig.max_pool_size,
+                timeout=PostgresConfig.connection_timeout
+            )
+            
+            # Initialize Neo4j driver with AI operation configs
+            self._neo4j_driver = AsyncGraphDatabase.driver(
+                Neo4jConfig.uri,
+                auth=(Neo4jConfig.user, Neo4jConfig.password),
+                max_connection_lifetime=Neo4jConfig.max_connection_lifetime,
+                max_connection_pool_size=Neo4jConfig.max_connection_pool_size,
+                connection_acquisition_timeout=Neo4jConfig.connection_timeout
+            )
+            
+            # Start cache cleanup task
+            self._cleanup_task = asyncio.create_task(self._cleanup_ai_cache())
+            
+            self._initialized = True
+            log("Connection manager initialized with AI support", level="info")
         except Exception as e:
-            await log(f"Error initializing connection manager: {e}", level="error")
-            # Cleanup on initialization failure
-            await instance.cleanup()
-            raise ConnectionError(f"Failed to initialize connection manager: {e}")
+            error_msg = f"Failed to initialize connection manager: {str(e)}"
+            log(error_msg, level="error")
+            raise ConnectionError(error_msg)
     
-    @property
-    def driver(self):
-        """Get the Neo4j driver instance."""
-        if not self._initialized:
-            raise ConnectionError("Neo4j driver not initialized. Call initialize() first.")
-        if not self._driver:
-            raise ConnectionError("Neo4j driver not available")
-        return self._driver
-    
-    @property
-    def pool(self):
-        """Get the PostgreSQL connection pool."""
-        if not self._pg_initialized:
-            raise ConnectionError("PostgreSQL pool not initialized. Call initialize_postgres() first.")
-        if not self._pool:
-            raise ConnectionError("PostgreSQL pool not available")
-        return self._pool
-    
-    @handle_async_errors(error_types=(Neo4jError, ConnectionError))
-    async def initialize(self) -> None:
-        """Initialize the Neo4j database connection."""
-        async with self._lock:
-            if self._initialized:
-                return
-            
+    async def _cleanup_ai_cache(self):
+        """Periodically clean up expired AI cache entries."""
+        while True:
             try:
-                # Create driver instance
-                self._driver = AsyncGraphDatabase.driver(
-                    Neo4jConfig.uri,
-                    auth=(Neo4jConfig.user, Neo4jConfig.password),
-                    database=Neo4jConfig.database,
-                    max_connection_lifetime=Neo4jConfig.max_connection_lifetime,
-                    max_connection_pool_size=Neo4jConfig.max_connection_pool_size,
-                    connection_timeout=Neo4jConfig.connection_timeout
-                )
+                current_time = time.time()
+                expired_keys = [
+                    key for key, (value, timestamp) in self._ai_cache.items()
+                    if current_time - timestamp > self._cache_ttl
+                ]
                 
-                # Verify connection
-                await self._verify_connectivity()
+                for key in expired_keys:
+                    del self._ai_cache[key]
                 
-                # Start health check
-                self._start_health_check()
-                
-                self._initialized = True
-                
-                log("Neo4j connection initialized", level="info", context={
-                    "uri": Neo4jConfig.uri,
-                    "database": Neo4jConfig.database
-                })
+                await asyncio.sleep(300)  # Clean up every 5 minutes
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                self._driver = None
-                self._initialized = False
-                log("Failed to initialize Neo4j connection", level="error", context={
-                    "error": str(e)
-                })
-                raise ConnectionError(f"Failed to initialize Neo4j connection: {str(e)}")
+                log(f"Error in AI cache cleanup: {str(e)}", level="error")
+                await asyncio.sleep(60)  # Retry after 1 minute on error
     
-    @handle_async_errors(error_types=(PostgresError, ConnectionError))
-    async def initialize_postgres(self) -> None:
-        """Initialize the PostgreSQL connection pool."""
-        async with self._lock:
-            if self._pg_initialized:
-                return
-            
-            try:
-                self._pool = await asyncpg.create_pool(
-                    user=PostgresConfig.user,
-                    password=PostgresConfig.password,
-                    database=PostgresConfig.database,
-                    host=PostgresConfig.host,
-                    port=PostgresConfig.port,
-                    min_size=PostgresConfig.min_pool_size,
-                    max_size=PostgresConfig.max_pool_size,
-                    timeout=PostgresConfig.connection_timeout
-                )
-                
-                # Test connection
-                async with self._pool.acquire() as conn:
-                    await conn.execute('SELECT 1')
-                
-                self._pg_initialized = True
-                
-                log("PostgreSQL pool initialized", level="info", context={
-                    "host": PostgresConfig.host,
-                    "database": PostgresConfig.database,
-                    "pool_size": self._pool.get_size()
-                })
-            except Exception as e:
-                self._pool = None
-                self._pg_initialized = False
-                log("Failed to initialize PostgreSQL pool", level="error", context={
-                    "error": str(e)
-                })
-                raise ConnectionError(f"Failed to initialize PostgreSQL pool: {str(e)}")
-    
-    async def _verify_connectivity(self) -> None:
-        """Verify database connectivity with a test query."""
-        async with self.driver.session() as session:
-            await session.run("RETURN 1")
-    
-    def _start_health_check(self) -> None:
-        """Start periodic health check."""
-        if not self._health_check_task or self._health_check_task.done():
-            self._health_check_task = asyncio.create_task(self._health_check_loop())
-    
-    async def _health_check_loop(self) -> None:
-        """Periodic health check loop."""
-        try:
-            while True:
-                try:
-                    # Check Neo4j
-                    await self._verify_connectivity()
-                    log("Neo4j health check passed", level="debug")
-                except Exception as e:
-                    log("Neo4j health check failed", level="error", context={
-                        "error": str(e)
-                    })
-                    # Try to reconnect
-                    await self._handle_connection_failure()
-                
-                try:
-                    # Check PostgreSQL if initialized
-                    if self._pg_initialized:
-                        async with self._pool.acquire() as conn:
-                            await conn.execute('SELECT 1')
-                            log("PostgreSQL health check passed", level="debug")
-                except Exception as e:
-                    log("PostgreSQL health check failed", level="error", context={
-                        "error": str(e)
-                    })
-                    # Try to reconnect
-                    await self._handle_postgres_failure()
-                
-                # Wait for next check
-                await asyncio.sleep(self._health_check_interval)
-        finally:
-            if self._health_check_task in self._pending_tasks:
-                self._pending_tasks.remove(self._health_check_task)
-    
-    async def _handle_connection_failure(self) -> None:
-        """Handle Neo4j connection failure with retry logic."""
-        async with self._lock:
-            try:
-                # Close existing connection
-                if self._driver:
-                    await self._driver.close()
-                    self._driver = None
-                    self._initialized = False
-                
-                # Try to reconnect
-                await self._retry_manager.execute_with_retry(self.initialize)
-            except Exception as e:
-                log(f"Failed to recover Neo4j connection: {e}", level="error")
-    
-    async def _handle_postgres_failure(self) -> None:
-        """Handle PostgreSQL connection failure with retry logic."""
-        async with self._lock:
-            try:
-                # Close existing pool
-                if self._pool:
-                    await self._pool.close()
-                    self._pool = None
-                    self._pg_initialized = False
-                
-                # Try to reconnect
-                await self._retry_manager.execute_with_retry(self.initialize_postgres)
-            except Exception as e:
-                log(f"Failed to recover PostgreSQL connection: {e}", level="error")
-    
-    @handle_async_errors(error_types=(Neo4jError, ConnectionError))
-    async def get_session(self):
-        """Get a Neo4j database session."""
+    @handle_async_errors(error_types=DatabaseError)
+    async def get_connection(self) -> Connection:
+        """Get a database connection optimized for AI operations."""
         if not self._initialized:
             await self.initialize()
-        return await self.driver.session()
+        
+        try:
+            conn = await self._pool.acquire()
+            # Set session parameters for AI operations
+            await conn.execute("""
+                SET SESSION statement_timeout = '300s';  -- 5 minutes for complex AI queries
+                SET SESSION idle_in_transaction_session_timeout = '60s';
+                SET SESSION application_name = 'ai_pattern_processor';
+            """)
+            return conn
+        except Exception as e:
+            error_msg = f"Failed to get database connection: {str(e)}"
+            log(error_msg, level="error")
+            raise ConnectionError(error_msg)
     
-    @handle_async_errors(error_types=(PostgresError, ConnectionError))
-    async def get_postgres_connection(self):
-        """Get a PostgreSQL connection from the pool."""
-        if not self._pg_initialized:
-            await self.initialize_postgres()
-        return await self.pool.acquire()
+    @handle_async_errors(error_types=DatabaseError)
+    async def get_session(self) -> Session:
+        """Get a Neo4j session optimized for AI operations."""
+        if not self._initialized:
+            await self.initialize()
+        
+        try:
+            session = self._neo4j_driver.session(
+                default_access_mode="WRITE",
+                fetch_size=1000,  # Optimize for large pattern operations
+                database="neo4j"
+            )
+            return session
+        except Exception as e:
+            error_msg = f"Failed to get Neo4j session: {str(e)}"
+            log(error_msg, level="error")
+            raise ConnectionError(error_msg)
     
-    @handle_async_errors(error_types=(PostgresError, ConnectionError))
-    async def release_postgres_connection(self, conn):
-        """Release a PostgreSQL connection back to the pool."""
-        await self.pool.release(conn)
+    async def cache_ai_result(self, key: str, value: Any) -> None:
+        """Cache AI operation result with TTL."""
+        self._ai_cache[key] = (value, time.time())
     
-    async def cleanup(self) -> None:
-        """Close all database connections and cleanup resources."""
-        async with self._lock:
-            try:
-                if not self._initialized:
-                    return
-                    
-                # Stop health check
-                if self._health_check_task and not self._health_check_task.done():
-                    self._health_check_task.cancel()
-                    try:
-                        await self._health_check_task
-                    except asyncio.CancelledError:
-                        pass
-                
-                # Cancel all pending tasks
-                if self._pending_tasks:
-                    for task in self._pending_tasks:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                    self._pending_tasks.clear()
-                
-                # Close Neo4j driver
-                if self._driver:
-                    await self._driver.close()
-                    self._driver = None
-                    self._initialized = False
-                
-                # Close PostgreSQL pool
-                if self._pool:
-                    await self._pool.close()
-                    self._pool = None
-                    self._pg_initialized = False
-                
-                # Clean up retry manager
-                if self._retry_manager:
-                    await self._retry_manager.cleanup()
-                
-                # Unregister from health monitoring
-                from utils.health_monitor import global_health_monitor
-                global_health_monitor.unregister_component("connection_manager")
-                
-                await log("All database connections closed", level="info")
-            except Exception as e:
-                await log(f"Error cleaning up connection manager: {e}", level="error")
-                raise ConnectionError(f"Failed to cleanup connection manager: {e}")
+    async def get_cached_ai_result(self, key: str) -> Optional[Any]:
+        """Get cached AI operation result if not expired."""
+        if key in self._ai_cache:
+            value, timestamp = self._ai_cache[key]
+            if time.time() - timestamp <= self._cache_ttl:
+                return value
+            del self._ai_cache[key]
+        return None
+    
+    async def cleanup(self):
+        """Clean up all resources."""
+        try:
+            # Cancel cache cleanup task
+            if self._cleanup_task and not self._cleanup_task.done():
+                self._cleanup_task.cancel()
+                try:
+                    await self._cleanup_task
+                except asyncio.CancelledError:
+                    pass
+            
+            # Close all connections
+            if self._pool:
+                await self._pool.close()
+            
+            if self._neo4j_driver:
+                await self._neo4j_driver.close()
+            
+            # Clear AI cache
+            self._ai_cache.clear()
+            
+            self._initialized = False
+            log("Connection manager cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up connection manager: {str(e)}", level="error")
+
+# Create singleton instance
+connection_manager = ConnectionManager()
+
+# Register cleanup handler
+register_shutdown_handler(connection_manager.cleanup)
+
+# Export with proper async handling
+async def get_connection_manager() -> ConnectionManager:
+    """Get the connection manager instance.
+    
+    Returns:
+        ConnectionManager: The singleton connection manager instance
+    """
+    if not connection_manager._initialized:
+        await connection_manager.initialize()
+    return connection_manager
 
 # Create global connection manager instance
 connection_manager = None

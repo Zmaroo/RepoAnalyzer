@@ -5,27 +5,18 @@ This parser processes YAML files using the pyyaml library, extracting
 structured data and patterns.
 """
 
-from typing import Dict, List, Any, Optional, Tuple
 import yaml
-import asyncio
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.yaml import YAML_PATTERNS
-from utils.logger import log
-from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.shutdown import register_shutdown_handler
-from collections import Counter
-import re
 from .base_imports import *
+import re
 
-class YamlParser(BaseParser):
+class YamlParser(BaseParser, CustomParserMixin):
     """Parser for YAML files."""
     
     def __init__(self, language_id: str = "yaml", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
+        BaseParser.__init__(self, language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
-        self.patterns = self._compile_patterns(YAML_PATTERNS)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -35,6 +26,7 @@ class YamlParser(BaseParser):
             try:
                 async with AsyncErrorBoundary("YAML parser initialization"):
                     # No special initialization needed yet
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("YAML parser initialized", level="info")
                     return True
@@ -70,7 +62,7 @@ class YamlParser(BaseParser):
                 child["key"] = key
                 for pattern_name in ['url', 'path', 'version']:
                     if pattern_match := self.patterns[pattern_name].match(str(val)):
-                        child["metadata"]["semantics"] = YAML_PATTERNS[PatternCategory.SEMANTICS][pattern_name].extract(pattern_match)
+                        child["metadata"]["semantics"] = self.patterns[pattern_name].extract(pattern_match)
                 node["children"].append(child)
         elif isinstance(value, list):
             node["type"] = "sequence"

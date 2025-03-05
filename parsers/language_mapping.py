@@ -14,7 +14,7 @@ from typing import Optional, Set, Dict, List, Tuple, Any, Union, Callable
 import os
 import re
 import asyncio
-from parsers.types import FileType, ParserType
+from parsers.types import FileType, ParserType, AICapability, InteractionType, ConfidenceLevel
 from parsers.models import LanguageFeatures
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors
 from utils.shutdown import register_shutdown_handler
@@ -435,244 +435,177 @@ SHEBANG_MAP = {
     'r': 'r',
 }
 
-# Lists of languages by parser type
+# [2.1] Tree-sitter supported languages
 TREE_SITTER_LANGUAGES = {
-    'bash', 'c', 'cpp', 'css', 'dockerfile', 'go', 'java', 'javascript',
-    'kotlin', 'lua', 'make', 'php', 'python', 'ruby', 'rust',
-    'scala', 'swift', 'tsx', 'typescript', 'zig',
-    'cmake', 'cuda', 'dart', 'elisp', 'elixir', 'elm', 'erlang', 'fish',
-    'fortran', 'gdscript', 'gleam', 'groovy', 'hack', 'haxe', 'hcl',
-    'latex', 'matlab', 'nix', 'objc', 'pascal', 'perl', 'powershell',
-    'prisma', 'proto', 'purescript', 'qmljs', 'racket', 'sql', 'svelte',
-    'tcl', 'verilog', 'vhdl', 'vue'
+    "python": {
+        "extensions": {".py", ".pyi", ".pyx", ".pxd"},
+        "parser_type": ParserType.TREE_SITTER,
+        "file_type": FileType.CODE,
+        "ai_capabilities": {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
+    },
+    "javascript": {
+        "extensions": {".js", ".jsx", ".mjs"},
+        "parser_type": ParserType.TREE_SITTER,
+        "file_type": FileType.CODE,
+        "ai_capabilities": {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
+    },
+    "typescript": {
+        "extensions": {".ts", ".tsx"},
+        "parser_type": ParserType.TREE_SITTER,
+        "file_type": FileType.CODE,
+        "ai_capabilities": {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
+    }
 }
 
+# [2.2] Custom parser supported languages
 CUSTOM_PARSER_LANGUAGES = {
-    'env',
-    'plaintext',
-    'yaml',
-    'markdown',
-    'editorconfig',
-    'graphql',
-    'nim',
-    'ocaml',
-    'ocaml_interface',
-    'cobalt',
-    'xml',
-    'html',
-    'ini',
-    'json',
-    'restructuredtext',
-    'toml',
-    'asciidoc'
+    "plaintext": {
+        "extensions": {".txt", ".text", ".log"},
+        "parser_type": ParserType.CUSTOM,
+        "file_type": FileType.DOC,
+        "ai_capabilities": {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.DOCUMENTATION
+        }
+    },
+    "markdown": {
+        "extensions": {".md", ".markdown", ".mdown"},
+        "parser_type": ParserType.CUSTOM,
+        "file_type": FileType.DOC,
+        "ai_capabilities": {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.DOCUMENTATION,
+            AICapability.LEARNING
+        }
+    }
 }
 
-# Log languages that have both custom and tree-sitter parsers
-overlapping_languages = TREE_SITTER_LANGUAGES.intersection(CUSTOM_PARSER_LANGUAGES)
-if overlapping_languages:
-    overlap_list = ", ".join(sorted(overlapping_languages))
-    error_message = f"Languages found in both TREE_SITTER_LANGUAGES and CUSTOM_PARSER_LANGUAGES: {overlap_list}"
-    log(error_message, level="error")
-    # In development, you might want to raise an exception here
-    # raise ValueError(error_message)
-
-# MIME type mappings
-MIME_TYPES = {
-    "python": {"text/x-python", "application/x-python-code"},
-    "javascript": {"text/javascript", "application/javascript"},
-    "typescript": {"text/typescript", "application/typescript"},
-    "json": {"application/json"},
-    "yaml": {"text/yaml", "application/x-yaml"},
-    "markdown": {"text/markdown"},
-    "html": {"text/html"},
-    "css": {"text/css"},
-    "xml": {"text/xml", "application/xml"},
-    "php": {"text/php", "application/php"},
-    "ruby": {"text/ruby", "application/ruby"},
-    "go": {"text/go", "application/go"},
-    "rust": {"text/rust", "application/rust"},
-}
-
-# Binary file extensions
-BINARY_EXTENSIONS = {
-    '.bin', '.exe', '.dll', '.so', '.dylib', '.obj', '.o', '.class',
-    '.jar', '.war', '.ear', '.zip', '.tar', '.gz', '.7z', '.rar',
-    '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.ico', '.svg', '.webp',
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    '.db', '.sqlite', '.pyc', '.pyd', '.pyo'
-}
-
-# Language to file type mapping
-LANGUAGE_TO_FILE_TYPE = {
-    # Documentation languages
-    'markdown': FileType.DOC,
-    'restructuredtext': FileType.DOC,
-    'asciidoc': FileType.DOC,
-    'html': FileType.DOC,
-    'xml': FileType.DOC,
-    'plaintext': FileType.DOC,
-    
-    # Configuration languages
-    'json': FileType.CONFIG,
-    'yaml': FileType.CONFIG,
-    'toml': FileType.CONFIG,
-    'ini': FileType.CONFIG,
-    'env': FileType.CONFIG,
-    'editorconfig': FileType.CONFIG,
-    'gitignore': FileType.CONFIG,
-    'properties': FileType.CONFIG,
-    
-    # Data languages
-    'csv': FileType.DATA,
-    'tsv': FileType.DATA,
-    'sql': FileType.DATA,
-    
-    # All others default to code
+# [2.3] Language normalization mapping
+LANGUAGE_NORMALIZATION = {
+    "py": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "jsx": "javascript",
+    "tsx": "typescript",
+    "md": "markdown",
+    "txt": "plaintext"
 }
 
 def normalize_language_name(language: str) -> str:
-    """
-    Normalize language name to a standard format.
-    
-    Args:
-        language: The language name to normalize
-        
-    Returns:
-        Normalized language name
-    """
-    if not language:
-        return "unknown"
-    
-    normalized = language.lower().strip()
-    return LANGUAGE_ALIASES.get(normalized, normalized)
-    
-    return "unknown"
+    """[2.4] Normalize a language name to its canonical form."""
+    language = language.lower().strip()
+    return LANGUAGE_NORMALIZATION.get(language, language)
 
-def is_supported_language(language_id: str) -> bool:
-    """
-    Check if language is supported by any parser.
+def get_parser_type(language: str) -> ParserType:
+    """[2.5] Get the preferred parser type for a language."""
+    normalized = normalize_language_name(language)
     
-    Args:
-        language_id: The language identifier to check
-        
-    Returns:
-        True if supported, False otherwise
-    """
-    normalized = normalize_language_name(language_id)
-    return normalized in TREE_SITTER_LANGUAGES or normalized in CUSTOM_PARSER_LANGUAGES
-
-def get_parser_type(language_id: str) -> ParserType:
-    """
-    Determine the parser type for a given language.
+    if normalized in TREE_SITTER_LANGUAGES:
+        return TREE_SITTER_LANGUAGES[normalized]["parser_type"]
+    elif normalized in CUSTOM_PARSER_LANGUAGES:
+        return CUSTOM_PARSER_LANGUAGES[normalized]["parser_type"]
     
-    Args:
-        language_id: The language identifier
-        
-    Returns:
-        ParserType enum value
-    """
-    normalized = normalize_language_name(language_id)
-    
-    # Prioritize custom parsers over tree-sitter parsers
-    if normalized in CUSTOM_PARSER_LANGUAGES:
-        return ParserType.CUSTOM
-    elif normalized in TREE_SITTER_LANGUAGES:
-        return ParserType.TREE_SITTER
-    
-    # Default case
     return ParserType.UNKNOWN
 
-def get_fallback_parser_type(language_id: str) -> ParserType:
-    """
-    Get a fallback parser type for languages where the primary parser
-    might not be available.
+def get_file_type(language: str) -> FileType:
+    """[2.6] Get the file type for a language."""
+    normalized = normalize_language_name(language)
     
-    Args:
-        language_id: The language identifier
-        
-    Returns:
-        Fallback ParserType enum value
-    """
-    normalized = normalize_language_name(language_id)
-    # Languages with potential fallbacks (Tree-sitter to Custom)
-    if normalized in {'markdown', 'json', 'yaml', 'toml', 'html', 'xml'} and normalized in TREE_SITTER_LANGUAGES:
+    if normalized in TREE_SITTER_LANGUAGES:
+        return TREE_SITTER_LANGUAGES[normalized]["file_type"]
+    elif normalized in CUSTOM_PARSER_LANGUAGES:
+        return CUSTOM_PARSER_LANGUAGES[normalized]["file_type"]
+    
+    return FileType.CODE
+
+def get_ai_capabilities(language: str) -> Set[AICapability]:
+    """[2.7] Get AI capabilities supported by a language."""
+    normalized = normalize_language_name(language)
+    
+    if normalized in TREE_SITTER_LANGUAGES:
+        return TREE_SITTER_LANGUAGES[normalized]["ai_capabilities"]
+    elif normalized in CUSTOM_PARSER_LANGUAGES:
+        return CUSTOM_PARSER_LANGUAGES[normalized]["ai_capabilities"]
+    
+    # Default capabilities for unknown languages
+    return {AICapability.CODE_UNDERSTANDING}
+
+def get_fallback_parser_type(language: str) -> Optional[ParserType]:
+    """[2.8] Get the fallback parser type for a language."""
+    normalized = normalize_language_name(language)
+    
+    # If tree-sitter is available, use custom as fallback
+    if normalized in TREE_SITTER_LANGUAGES:
         return ParserType.CUSTOM
-    # Languages with potential fallbacks (Custom to Tree-sitter)  
-    elif normalized in {'markdown', 'json', 'yaml', 'toml', 'html', 'xml'} and normalized in CUSTOM_PARSER_LANGUAGES:
-        return ParserType.TREE_SITTER
-    else:
-        return ParserType.UNKNOWN
-
-def get_file_type(language_id: str) -> FileType:
-    """
-    Determine the file type for a given language.
     
-    Args:
-        language_id: The language identifier
-        
-    Returns:
-        FileType enum value
-    """
-    normalized = normalize_language_name(language_id)
-    return LANGUAGE_TO_FILE_TYPE.get(normalized, FileType.CODE)
-
-def is_binary_extension(ext: str) -> bool:
-    """
-    Check if a file extension is typically associated with binary files.
+    # If custom is available, no fallback needed
+    if normalized in CUSTOM_PARSER_LANGUAGES:
+        return None
     
-    Args:
-        ext: The file extension (with or without leading period)
-        
-    Returns:
-        True if binary, False otherwise
-    """
-    if not ext.startswith('.'):
-        ext = f'.{ext}'
-    return ext.lower() in BINARY_EXTENSIONS
+    return ParserType.UNKNOWN
+
+def get_language_features(language: str) -> Dict[str, Any]:
+    """[2.9] Get comprehensive language features."""
+    normalized = normalize_language_name(language)
+    
+    if normalized in TREE_SITTER_LANGUAGES:
+        return TREE_SITTER_LANGUAGES[normalized]
+    elif normalized in CUSTOM_PARSER_LANGUAGES:
+        return CUSTOM_PARSER_LANGUAGES[normalized]
+    
+    return {
+        "extensions": set(),
+        "parser_type": ParserType.UNKNOWN,
+        "file_type": FileType.CODE,
+        "ai_capabilities": {AICapability.CODE_UNDERSTANDING}
+    }
+
+def get_suggested_alternatives(language: str) -> List[str]:
+    """[2.10] Get suggested alternative languages."""
+    normalized = normalize_language_name(language)
+    
+    # Define language families
+    language_families = {
+        "javascript": ["typescript", "jsx"],
+        "typescript": ["javascript", "tsx"],
+        "python": ["nim", "cobra"],
+        "markdown": ["asciidoc", "rst"],
+        "plaintext": ["markdown", "rst"]
+    }
+    
+    return language_families.get(normalized, [])
 
 def detect_language_from_filename(filename: str) -> Optional[str]:
-    """
-    Detect language based on filename patterns.
+    """[2.11] Detect language from filename."""
+    ext = os.path.splitext(filename)[1].lower()
     
-    Args:
-        filename: The filename to analyze
-        
-    Returns:
-        Language identifier or None if not detected
-    """
-    # Check exact filename match first
-    if filename in FILENAME_MAP:
-        return FILENAME_MAP[filename]
+    # Check tree-sitter languages
+    for lang, info in TREE_SITTER_LANGUAGES.items():
+        if ext in info["extensions"]:
+            return lang
     
-    # Extract extension (with leading period)
-    _, ext = os.path.splitext(filename)
-    if ext and ext in FULL_EXTENSION_MAP:
-        return FULL_EXTENSION_MAP[ext]
-    
-    # Check special patterns
-    if filename.endswith('.config.js'):
-        return 'javascript'
-    elif filename.endswith('.config.ts'):
-        return 'typescript'
-    elif filename.startswith('docker-compose') and filename.endswith('.yml'):
-        return 'yaml'
-    
-    # Convert to lowercase for remaining checks
-    filename_lower = filename.lower()
-    
-    # Check for common config files
-    if (filename_lower.endswith('rc') or 
-        filename_lower.startswith('.') or 
-        'config' in filename_lower):
-        
-        if filename_lower.endswith('.json'):
-            return 'json'
-        elif filename_lower.endswith('.yaml') or filename_lower.endswith('.yml'):
-            return 'yaml'
-        elif filename_lower.endswith('.toml'):
-            return 'toml'
-        elif filename_lower.endswith('.ini'):
-            return 'ini'
+    # Check custom parser languages
+    for lang, info in CUSTOM_PARSER_LANGUAGES.items():
+        if ext in info["extensions"]:
+            return lang
     
     return None
 
@@ -752,108 +685,61 @@ def detect_language_from_content(content: str) -> Optional[str]:
     
     return None
 
-def get_language_features(language_id: str) -> LanguageFeatures:
-    """
-    Get the complete set of features for a specific language.
+def get_extensions_for_language(language: str) -> Set[str]:
+    """[2.12] Get file extensions for a language."""
+    normalized = normalize_language_name(language)
     
-    Args:
-        language_id: The language identifier
-        
-    Returns:
-        LanguageFeatures object with language capabilities
-    """
-    normalized = normalize_language_name(language_id)
+    if normalized in TREE_SITTER_LANGUAGES:
+        return TREE_SITTER_LANGUAGES[normalized]["extensions"]
+    elif normalized in CUSTOM_PARSER_LANGUAGES:
+        return CUSTOM_PARSER_LANGUAGES[normalized]["extensions"]
     
-    # Get extensions for this language
-    extensions = {ext for ext, lang in EXTENSION_TO_LANGUAGE.items() 
-                 if lang == normalized}
-    
-    # Get parser type
-    parser_type = get_parser_type(normalized)
-    
-    # Get mime types if available
-    mime_types = MIME_TYPES.get(normalized, set())
-    
-    return LanguageFeatures(
-        canonical_name=normalized,
-        file_extensions=extensions,
-        parser_type=parser_type,
-        mime_types=mime_types
-    )
+    return set()
 
-def get_supported_languages() -> Dict[str, ParserType]:
-    """
-    Get a dictionary of all supported languages and their parser types.
+def get_complete_language_info(language: str) -> Dict[str, Any]:
+    """[2.13] Get complete language information."""
+    normalized = normalize_language_name(language)
     
-    Returns:
-        Dictionary with language IDs as keys and parser types as values
-    """
-    languages = {}
-    
-    # Add tree-sitter languages
-    for lang in TREE_SITTER_LANGUAGES:
-        languages[lang] = ParserType.TREE_SITTER
-    
-    # Add custom parser languages
-    for lang in CUSTOM_PARSER_LANGUAGES:
-        languages[lang] = ParserType.CUSTOM
-    
-    return languages
-
-def get_supported_extensions() -> Dict[str, str]:
-    """
-    Get a dictionary of all supported file extensions and their corresponding languages.
-    
-    Returns:
-        Dictionary with extensions as keys and language IDs as values
-    """
-    return EXTENSION_TO_LANGUAGE
-
-def get_extensions_for_language(language_id: str) -> Set[str]:
-    """
-    Get all file extensions associated with a language.
-    
-    Args:
-        language_id: The language to get extensions for
-        
-    Returns:
-        Set of extensions without leading period
-    """
-    normalized = normalize_language_name(language_id)
-    return {ext for ext, lang in EXTENSION_TO_LANGUAGE.items() 
-           if lang == normalized}
-
-def get_suggested_alternatives(language_id: str) -> List[str]:
-    """
-    Get suggested alternative languages if the requested one isn't available.
-    Useful for fallback mechanisms.
-    
-    Args:
-        language_id: The language to find alternatives for
-        
-    Returns:
-        List of alternative language IDs
-    """
-    normalized = normalize_language_name(language_id)
-    
-    # Some common fallback patterns
-    fallbacks = {
-        'typescript': ['javascript'],
-        'tsx': ['jsx', 'typescript', 'javascript'],
-        'jsx': ['javascript'],
-        'python': ['plaintext'],
-        'c++': ['c'],
-        'c#': ['c'],
-        'html': ['xml', 'plaintext'],
-        'xml': ['html', 'plaintext'],
-        'yaml': ['plaintext'],
-        'json': ['plaintext'],
-        'markdown': ['plaintext'],
+    base_info = {
+        "canonical_name": normalized,
+        "parser_type": get_parser_type(normalized),
+        "file_type": get_file_type(normalized),
+        "extensions": get_extensions_for_language(normalized),
+        "ai_capabilities": get_ai_capabilities(normalized),
+        "fallback_parser_type": get_fallback_parser_type(normalized),
+        "alternatives": get_suggested_alternatives(normalized)
     }
     
-    return fallbacks.get(normalized, ['plaintext'])
+    if normalized in TREE_SITTER_LANGUAGES:
+        base_info.update(TREE_SITTER_LANGUAGES[normalized])
+    elif normalized in CUSTOM_PARSER_LANGUAGES:
+        base_info.update(CUSTOM_PARSER_LANGUAGES[normalized])
+    
+    return base_info
 
-# NEW FUNCTIONS BELOW
+def get_parser_info_for_language(language: str) -> Dict[str, Any]:
+    """[2.14] Get parser-specific information for a language."""
+    normalized = normalize_language_name(language)
+    
+    parser_info = {
+        "parser_type": get_parser_type(normalized),
+        "file_type": get_file_type(normalized),
+        "ai_capabilities": get_ai_capabilities(normalized),
+        "fallback_parser_type": get_fallback_parser_type(normalized)
+    }
+    
+    if normalized in TREE_SITTER_LANGUAGES:
+        parser_info.update({
+            "is_tree_sitter": True,
+            "tree_sitter_info": TREE_SITTER_LANGUAGES[normalized]
+        })
+    elif normalized in CUSTOM_PARSER_LANGUAGES:
+        parser_info.update({
+            "is_custom": True,
+            "custom_info": CUSTOM_PARSER_LANGUAGES[normalized]
+        })
+    
+    return parser_info
 
 def validate_language_mappings() -> List[str]:
     """
@@ -885,6 +771,34 @@ def validate_language_mappings() -> List[str]:
     
     return errors
 
+def get_supported_languages() -> Dict[str, ParserType]:
+    """
+    Get a dictionary of all supported languages and their parser types.
+    
+    Returns:
+        Dictionary with language IDs as keys and parser types as values
+    """
+    languages = {}
+    
+    # Add tree-sitter languages
+    for lang in TREE_SITTER_LANGUAGES:
+        languages[lang] = ParserType.TREE_SITTER
+    
+    # Add custom parser languages
+    for lang in CUSTOM_PARSER_LANGUAGES:
+        languages[lang] = ParserType.CUSTOM
+    
+    return languages
+
+def get_supported_extensions() -> Dict[str, str]:
+    """
+    Get a dictionary of all supported file extensions and their corresponding languages.
+    
+    Returns:
+        Dictionary with extensions as keys and language IDs as values
+    """
+    return EXTENSION_TO_LANGUAGE
+
 def get_parser_info_for_language(language_id: str) -> Dict[str, Any]:
     """
     Get parser-specific information for a language.
@@ -915,3 +829,60 @@ def get_parser_info_for_language(language_id: str) -> Dict[str, Any]:
         info["custom_parser_available"] = True
     
     return info
+
+# MIME type mappings for common languages
+MIME_TYPES: Dict[str, str] = {
+    'python': 'text/x-python',
+    'javascript': 'application/javascript',
+    'typescript': 'application/typescript',
+    'java': 'text/x-java-source',
+    'c': 'text/x-c',
+    'cpp': 'text/x-c++',
+    'go': 'text/x-go',
+    'rust': 'text/x-rust',
+    'ruby': 'text/x-ruby',
+    'php': 'text/x-php',
+    'html': 'text/html',
+    'css': 'text/css',
+    'json': 'application/json',
+    'yaml': 'text/yaml',
+    'xml': 'text/xml',
+    'markdown': 'text/markdown',
+    'shell': 'text/x-shellscript',
+    'sql': 'text/x-sql'
+}
+
+# Language to file type mappings
+LANGUAGE_TO_FILE_TYPE: Dict[str, FileType] = {
+    'python': FileType.CODE,
+    'javascript': FileType.CODE,
+    'typescript': FileType.CODE,
+    'java': FileType.CODE,
+    'c': FileType.CODE,
+    'cpp': FileType.CODE,
+    'go': FileType.CODE,
+    'rust': FileType.CODE,
+    'ruby': FileType.CODE,
+    'php': FileType.CODE,
+    'html': FileType.MARKUP,
+    'css': FileType.STYLE,
+    'json': FileType.DATA,
+    'yaml': FileType.DATA,
+    'xml': FileType.MARKUP,
+    'markdown': FileType.DOCUMENTATION,
+    'shell': FileType.SCRIPT,
+    'sql': FileType.QUERY,
+    'text': FileType.TEXT,
+    'binary': FileType.BINARY,
+    'unknown': FileType.UNKNOWN
+}
+
+def get_pattern_capabilities(language: str) -> Dict[str, Any]:
+    """Get pattern-related capabilities for a language."""
+    normalized = normalize_language_name(language)
+    capabilities = {
+        "pattern_learning": True,
+        "deep_learning": language in TREE_SITTER_LANGUAGES,
+        "cross_repo_analysis": language in TREE_SITTER_LANGUAGES
+    }
+    return capabilities

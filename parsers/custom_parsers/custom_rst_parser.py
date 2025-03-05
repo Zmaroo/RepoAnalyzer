@@ -1,26 +1,15 @@
 """Custom parser for reStructuredText with enhanced documentation and pattern extraction features."""
 
 from .base_imports import *
-from typing import Dict, List, Any, Optional, Set, Tuple
-import asyncio
 import re
 from collections import Counter
-from parsers.base_parser import BaseParser
-from parsers.types import FileType, ParserType, PatternCategory
-from parsers.query_patterns.rst import RST_PATTERNS
-from parsers.models import PatternType
-from utils.logger import log
-from utils.error_handling import handle_errors, ProcessingError, ParsingError, ErrorSeverity, handle_async_errors, AsyncErrorBoundary
-from utils.shutdown import register_shutdown_handler
 
-class RstParser(BaseParser):
+class RstParser(BaseParser, CustomParserMixin):
     """Parser for reStructuredText files with enhanced pattern extraction capabilities."""
     
     def __init__(self, language_id: str = "rst", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Task] = set()
-        self.patterns = self._compile_patterns(RST_PATTERNS)
+        BaseParser.__init__(self, language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -30,6 +19,7 @@ class RstParser(BaseParser):
             try:
                 async with AsyncErrorBoundary("RST parser initialization"):
                     # No special initialization needed yet
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("RST parser initialized", level="info")
                     return True
@@ -215,9 +205,12 @@ class RstParser(BaseParser):
                 
             except (ValueError, KeyError, TypeError) as e:
                 log(f"Error parsing RST content: {e}", level="error")
-                return RstNode(
-                    type="document", start_point=[0, 0], end_point=[0, 0],
-                    error=str(e), children=[]
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
                 ).__dict__
     
     @handle_errors(error_types=(ParsingError, ProcessingError))

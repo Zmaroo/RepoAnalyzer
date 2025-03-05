@@ -20,8 +20,12 @@ from utils.error_handling import (
     ProcessingError
 )
 from tree_sitter_language_pack import get_parser, get_language
-from parsers.types import FileType, ParserType
+from parsers.types import (
+    FileType, ParserType,
+    AICapability, AIContext, AIProcessingResult
+)
 from parsers.models import PatternMatch
+from parsers.parser_interfaces import AIParserInterface
 from utils.shutdown import register_shutdown_handler
 from utils.health_monitor import global_health_monitor
 from utils.cache import cache_coordinator, UnifiedCache
@@ -37,11 +41,19 @@ class ExtractedBlock:
     confidence: float = 1.0
 
 
-class TreeSitterBlockExtractor:
+class TreeSitterBlockExtractor(AIParserInterface):
     """Extracts code blocks from tree-sitter ASTs."""
     
     def __init__(self):
         """Private constructor - use create() instead."""
+        super().__init__(
+            language_id="block_extractor",
+            file_type=FileType.CODE,
+            capabilities={
+                AICapability.CODE_UNDERSTANDING,
+                AICapability.CODE_MODIFICATION
+            }
+        )
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
         self._language_parsers: Dict[str, Any] = {}
@@ -92,6 +104,12 @@ class TreeSitterBlockExtractor:
                     raise ProcessingError("Failed to initialize any language parsers")
                 
                 instance._component_states['tree_sitter'] = True
+                
+                # Initialize AI capabilities
+                if AICapability.CODE_UNDERSTANDING in instance.capabilities:
+                    await instance._initialize_ai_understanding()
+                if AICapability.CODE_MODIFICATION in instance.capabilities:
+                    await instance._initialize_ai_modification()
                 
                 # Register shutdown handler
                 register_shutdown_handler(instance.cleanup)
@@ -474,6 +492,346 @@ class TreeSitterBlockExtractor:
         except Exception as e:
             await log(f"Error cleaning up block extractor: {e}", level="error")
             raise ProcessingError(f"Failed to cleanup block extractor: {e}")
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process source code with AI assistance."""
+        if not self._initialized:
+            await self.ensure_initialized()
+            
+        async with AsyncErrorBoundary("block extractor AI processing"):
+            try:
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(source_code, context)
+                    results.context_info.update(understanding)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(source_code, context)
+                    results.ai_insights.update(modification)
+                
+                return results
+            except Exception as e:
+                log(f"Error in block extractor AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+    
+    async def _process_with_understanding(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code understanding capability."""
+        understanding = {}
+        
+        # Extract blocks with context
+        blocks = await self._extract_blocks_with_context(source_code, context)
+        if blocks:
+            understanding["blocks"] = blocks
+        
+        # Analyze block relationships
+        relationships = await self._analyze_block_relationships(blocks)
+        if relationships:
+            understanding["relationships"] = relationships
+        
+        return understanding
+    
+    async def _process_with_modification(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code modification capability."""
+        insights = {}
+        
+        # Analyze modification impact on blocks
+        blocks = await self._extract_blocks_with_context(source_code, context)
+        if blocks:
+            insights["block_impact"] = await self._analyze_block_modifications(blocks, context)
+        
+        # Generate block-based suggestions
+        suggestions = await self._generate_block_suggestions(blocks, context)
+        if suggestions:
+            insights["suggestions"] = suggestions
+        
+        return insights
+    
+    async def _extract_blocks_with_context(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Extract code blocks with contextual information."""
+        blocks = []
+        
+        # Get the appropriate parser for the language
+        language_id = context.project.language_id
+        parser = self._language_parsers.get(language_id)
+        if not parser:
+            return blocks
+        
+        try:
+            # Parse the source code
+            tree = await parser.parse(source_code.encode("utf8"))
+            if not tree:
+                return blocks
+            
+            # Extract blocks from AST
+            cursor = tree.walk()
+            while cursor.goto_first_child():
+                if await self._is_block_node(language_id, cursor.node):
+                    block = await self.extract_block(language_id, source_code, cursor.node)
+                    if block:
+                        blocks.append({
+                            "content": block.content,
+                            "type": block.node_type,
+                            "location": {
+                                "start": block.start_point,
+                                "end": block.end_point
+                            },
+                            "metadata": block.metadata or {}
+                        })
+                
+                # Process siblings
+                while cursor.goto_next_sibling():
+                    if await self._is_block_node(language_id, cursor.node):
+                        block = await self.extract_block(language_id, source_code, cursor.node)
+                        if block:
+                            blocks.append({
+                                "content": block.content,
+                                "type": block.node_type,
+                                "location": {
+                                    "start": block.start_point,
+                                    "end": block.end_point
+                                },
+                                "metadata": block.metadata or {}
+                            })
+        except Exception as e:
+            log(f"Error extracting blocks with context: {e}", level="error")
+        
+        return blocks
+    
+    async def _analyze_block_relationships(
+        self,
+        blocks: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Analyze relationships between code blocks."""
+        relationships = {
+            "containment": [],  # Blocks that contain other blocks
+            "dependencies": [], # Blocks that depend on each other
+            "sequence": []      # Blocks that form a sequence
+        }
+        
+        for i, block1 in enumerate(blocks):
+            for j, block2 in enumerate(blocks[i+1:], i+1):
+                # Check containment
+                if self._is_block_contained(block1, block2):
+                    relationships["containment"].append({
+                        "container": block1["type"],
+                        "contained": block2["type"]
+                    })
+                
+                # Check dependencies
+                if self._have_dependency(block1, block2):
+                    relationships["dependencies"].append({
+                        "from": block1["type"],
+                        "to": block2["type"]
+                    })
+                
+                # Check sequence
+                if self._are_sequential(block1, block2):
+                    relationships["sequence"].append({
+                        "first": block1["type"],
+                        "second": block2["type"]
+                    })
+        
+        return relationships
+    
+    async def _analyze_block_modifications(
+        self,
+        blocks: List[Dict[str, Any]],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze impact of modifications on blocks."""
+        impact = {
+            "affected_blocks": [],    # Blocks that would be affected
+            "safety_assessment": {},  # Safety of modifying each block
+            "complexity_change": {}   # How modifications affect complexity
+        }
+        
+        for block in blocks:
+            # Check if block would be affected
+            if self._is_block_affected(block, context):
+                impact["affected_blocks"].append(block["type"])
+                
+                # Assess modification safety
+                impact["safety_assessment"][block["type"]] = self._assess_block_safety(block)
+                
+                # Estimate complexity change
+                impact["complexity_change"][block["type"]] = self._estimate_complexity_change(block)
+        
+        return impact
+    
+    async def _generate_block_suggestions(
+        self,
+        blocks: List[Dict[str, Any]],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Generate suggestions for block modifications."""
+        suggestions = []
+        
+        for block in blocks:
+            # Generate block-specific suggestions
+            block_suggestions = self._get_block_suggestions(block, context)
+            if block_suggestions:
+                suggestions.append({
+                    "block_type": block["type"],
+                    "suggestions": block_suggestions
+                })
+        
+        return suggestions
+    
+    def _is_block_contained(self, block1: Dict[str, Any], block2: Dict[str, Any]) -> bool:
+        """Check if one block contains another."""
+        start1 = block1["location"]["start"]
+        end1 = block1["location"]["end"]
+        start2 = block2["location"]["start"]
+        end2 = block2["location"]["end"]
+        
+        return (start1[0] <= start2[0] and end1[0] >= end2[0] and
+                (start1[0] < start2[0] or start1[1] <= start2[1]) and
+                (end1[0] > end2[0] or end1[1] >= end2[1]))
+    
+    def _have_dependency(self, block1: Dict[str, Any], block2: Dict[str, Any]) -> bool:
+        """Check if blocks have a dependency relationship."""
+        # Simple check for variable usage
+        return (block1["content"] in block2["content"] or
+                block2["content"] in block1["content"])
+    
+    def _are_sequential(self, block1: Dict[str, Any], block2: Dict[str, Any]) -> bool:
+        """Check if blocks form a logical sequence."""
+        end1 = block1["location"]["end"]
+        start2 = block2["location"]["start"]
+        
+        return (end1[0] < start2[0] or
+                (end1[0] == start2[0] and end1[1] <= start2[1]))
+    
+    def _is_block_affected(self, block: Dict[str, Any], context: AIContext) -> bool:
+        """Check if a block would be affected by modifications."""
+        if not context.interaction.cursor_position:
+            return False
+            
+        # Check if cursor is within block
+        start = block["location"]["start"]
+        end = block["location"]["end"]
+        cursor = context.interaction.cursor_position
+        
+        return (start[0] <= cursor <= end[0])
+    
+    def _assess_block_safety(self, block: Dict[str, Any]) -> float:
+        """Assess how safe it is to modify a block."""
+        safety = 1.0
+        
+        # Reduce safety for complex blocks
+        if len(block["content"].splitlines()) > 20:
+            safety *= 0.8
+        
+        # Reduce safety for blocks with many dependencies
+        if block.get("metadata", {}).get("dependencies", 0) > 5:
+            safety *= 0.7
+        
+        return safety
+    
+    def _estimate_complexity_change(self, block: Dict[str, Any]) -> float:
+        """Estimate how modifications would affect block complexity."""
+        # Simple complexity metric based on lines and nesting
+        current_complexity = len(block["content"].splitlines())
+        current_complexity += block["content"].count("{") * 2
+        
+        # Estimate change (positive means increased complexity)
+        return current_complexity * 0.2  # Assume 20% increase
+    
+    def _get_block_suggestions(
+        self,
+        block: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Get suggestions for block modifications."""
+        suggestions = []
+        
+        # Suggest simplifying complex blocks
+        if len(block["content"].splitlines()) > 20:
+            suggestions.append("Consider breaking this block into smaller functions")
+        
+        # Suggest reducing dependencies
+        if block.get("metadata", {}).get("dependencies", 0) > 5:
+            suggestions.append("Consider reducing the number of dependencies")
+        
+        # Suggest following user's style
+        if context.user.preferred_style:
+            style_suggestions = self._check_style_compliance(block, context.user.preferred_style)
+            suggestions.extend(style_suggestions)
+        
+        return suggestions
+    
+    def _check_style_compliance(
+        self,
+        block: Dict[str, Any],
+        preferred_style: Dict[str, Any]
+    ) -> List[str]:
+        """Check if block follows preferred coding style."""
+        suggestions = []
+        
+        # Check indentation
+        if "indentation" in preferred_style:
+            if not self._check_indentation(block["content"], preferred_style["indentation"]):
+                suggestions.append(f"Use {preferred_style['indentation']} spaces for indentation")
+        
+        # Check naming conventions
+        if "naming_convention" in preferred_style:
+            if not self._check_naming(block["content"], preferred_style["naming_convention"]):
+                suggestions.append("Follow the project's naming conventions")
+        
+        return suggestions
+    
+    def _check_indentation(self, content: str, preferred: int) -> bool:
+        """Check if block uses preferred indentation."""
+        lines = content.splitlines()
+        for line in lines:
+            if line.strip():
+                spaces = len(line) - len(line.lstrip())
+                if spaces % preferred != 0:
+                    return False
+        return True
+    
+    def _check_naming(self, content: str, convention: str) -> bool:
+        """Check if block follows naming conventions."""
+        # Simple check for common conventions
+        if convention == "snake_case":
+            return not re.search(r'[A-Z]', content)
+        elif convention == "camelCase":
+            return not re.search(r'_', content)
+        return True
+
+    async def analyze_cross_repository_patterns(
+        self,
+        repo_patterns: Dict[int, List[Dict[str, Any]]]
+    ) -> Dict[str, Any]:
+        """Analyze patterns across multiple repositories."""
+        common_patterns = await self._find_common_patterns(repo_patterns)
+        relationships = await self._analyze_pattern_relationships(common_patterns)
+        return {
+            "common_patterns": common_patterns,
+            "relationships": relationships
+        }
 
 # Global instance
 _block_extractor = None

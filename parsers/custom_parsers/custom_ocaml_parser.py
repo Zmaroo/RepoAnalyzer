@@ -21,6 +21,7 @@ Standalone parsing functions have been removed in favor of the classes below.
 """
 
 from .base_imports import *
+import re
 
 def compute_offset(lines, line_no, col):
     """
@@ -33,13 +34,10 @@ class OcamlParser(BaseParser, CustomParserMixin):
     """Parser for OCaml files with enhanced pattern extraction capabilities."""
     
     def __init__(self, language_id: str = "ocaml", file_type: Optional[FileType] = None):
-        super().__init__(language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
+        BaseParser.__init__(self, language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
+        CustomParserMixin.__init__(self)
         self.is_interface = language_id == "ocaml_interface"
-        # Use the shared helper from BaseParser to compile regex patterns.
         patterns_source = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
-        self.patterns = self._compile_patterns(patterns_source)
-        self._initialized = False
-        self._pending_tasks: Set[asyncio.Future] = set()
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -49,6 +47,7 @@ class OcamlParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("OCaml parser initialization"):
                     # No special initialization needed yet
+                    await self._load_patterns()  # Load patterns through BaseParser mechanism
                     self._initialized = True
                     log("OCaml parser initialized", level="info")
                     return True
@@ -140,7 +139,7 @@ class OcamlParser(BaseParser, CustomParserMixin):
                     "doc_comment",
                     line_start,
                     line_end,
-                    **patterns["documentation"]["doc_comment"]["extract"](doc_match)
+                    **self.patterns['doc_comment'].extract(doc_match)
                 )
                 current_doc.append(node)
                 continue
@@ -153,7 +152,7 @@ class OcamlParser(BaseParser, CustomParserMixin):
                             pattern_name,
                             line_start,
                             line_end,
-                            **pattern_info["extract"](match)
+                            **self.patterns[pattern_name].extract(match)
                         )
                         if current_doc:
                             node.metadata["documentation"] = current_doc

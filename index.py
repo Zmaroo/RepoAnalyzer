@@ -16,7 +16,7 @@ import asyncio
 import os
 import signal
 import sys
-from utils.logger import log  # Use our central logger
+from utils.logger import log, log_sync # Use our central logger
 from parsers.types import (
     ParserResult,
     FileType,
