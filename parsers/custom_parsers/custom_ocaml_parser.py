@@ -22,6 +22,9 @@ Standalone parsing functions have been removed in favor of the classes below.
 
 from .base_imports import *
 import re
+from parsers.pattern_processor import pattern_processor
+from parsers.query_patterns.ocaml_interface import OCAML_INTERFACE_PATTERNS
+from parsers.query_patterns.ocaml import OCAML_PATTERNS
 
 def compute_offset(lines, line_no, col):
     """
@@ -37,7 +40,15 @@ class OcamlParser(BaseParser, CustomParserMixin):
         BaseParser.__init__(self, language_id, file_type or FileType.CODE, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
         self.is_interface = language_id == "ocaml_interface"
-        patterns_source = OCAML_INTERFACE_PATTERNS if self.is_interface else OCAML_PATTERNS
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -46,8 +57,16 @@ class OcamlParser(BaseParser, CustomParserMixin):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("OCaml parser initialization"):
-                    # No special initialization needed yet
-                    await self._load_patterns()  # Load patterns through BaseParser mechanism
+                    await self._initialize_cache(self.language_id)
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("OCaml parser initialized", level="info")
                     return True
@@ -58,14 +77,32 @@ class OcamlParser(BaseParser, CustomParserMixin):
 
     async def cleanup(self) -> None:
         """Clean up parser resources."""
-        if self._pending_tasks:
-            log(f"Cleaning up {len(self._pending_tasks)} pending OCaml parser tasks", level="info")
-            for task in self._pending_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
-        self._initialized = False
+        try:
+            # Clean up base resources
+            await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("OCaml parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up OCaml parser: {e}", level="error")
 
     def _create_node(
         self,
@@ -488,4 +525,410 @@ class OcamlParser(BaseParser, CustomParserMixin):
                     process_node(child)
                 
         process_node(ast)
-        return patterns 
+        return patterns
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process OCaml code with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("OCaml AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse OCaml code"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in OCaml AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code understanding capability."""
+        understanding = {}
+        
+        # Analyze code structure
+        understanding["structure"] = {
+            "let_bindings": self._extract_let_binding_patterns(ast),
+            "types": self._extract_type_patterns(ast),
+            "modules": self._extract_module_patterns(ast)
+        }
+        
+        # Analyze code patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze code style
+        understanding["style"] = await self._analyze_code_style(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with code generation capability."""
+        suggestions = []
+        
+        # Generate binding suggestions
+        if binding_suggestions := await self._generate_binding_suggestions(ast):
+            suggestions.extend(binding_suggestions)
+        
+        # Generate type suggestions
+        if type_suggestions := await self._generate_type_suggestions(ast):
+            suggestions.extend(type_suggestions)
+        
+        # Generate module suggestions
+        if module_suggestions := await self._generate_module_suggestions(ast):
+            suggestions.extend(module_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code modification capability."""
+        modifications = {}
+        
+        # Suggest code improvements
+        if improvements := await self._suggest_code_improvements(ast):
+            modifications["code_improvements"] = improvements
+        
+        # Suggest refactoring opportunities
+        if refactoring := await self._suggest_refactoring(ast):
+            modifications["refactoring"] = refactoring
+        
+        # Suggest optimization opportunities
+        if optimization := await self._suggest_optimization(ast):
+            modifications["optimization"] = optimization
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code review capability."""
+        review = {}
+        
+        # Review code structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review code style
+        if style_review := await self._review_style(ast):
+            review["style"] = style_review
+        
+        # Review module organization
+        if module_review := await self._review_modules(ast):
+            review["modules"] = module_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn code structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn coding style patterns
+        if style_patterns := await self._learn_style_patterns(ast):
+            patterns.extend(style_patterns)
+        
+        # Learn module patterns
+        if module_patterns := await self._learn_module_patterns(ast):
+            patterns.extend(module_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the OCaml code."""
+        patterns = {}
+        
+        # Analyze binding patterns
+        patterns["binding_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STRUCTURE,
+            context
+        )
+        
+        # Analyze type patterns
+        patterns["type_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.SYNTAX,
+            context
+        )
+        
+        # Analyze module patterns
+        patterns["module_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.MODULE,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_code_style(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze code style."""
+        style = {}
+        
+        # Analyze naming conventions
+        style["naming_conventions"] = self._analyze_naming_convention_patterns(ast)
+        
+        # Analyze binding style
+        style["binding_style"] = self._analyze_binding_style(ast)
+        
+        # Analyze module style
+        style["module_style"] = self._analyze_module_style(ast)
+        
+        return style
+
+    async def _generate_binding_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate binding suggestions based on the AST."""
+        suggestions = []
+        
+        # Analyze existing bindings
+        bindings = self._extract_let_binding_patterns(ast)
+        
+        # Suggest common missing bindings
+        common_bindings = {
+            "init": "Initialize module resources",
+            "cleanup": "Clean up module resources",
+            "create": "Create a new instance",
+            "process": "Process input data"
+        }
+        
+        for name, description in common_bindings.items():
+            if not any(b["name"] == name for b in bindings):
+                suggestions.append(f"Add binding '{name}' to {description}")
+        
+        return suggestions
+
+    async def _generate_type_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate type suggestions based on the AST."""
+        suggestions = []
+        
+        # Analyze existing types
+        types = self._extract_type_patterns(ast)
+        
+        # Suggest common missing types
+        common_types = {
+            "config": "Configuration type",
+            "error": "Error type",
+            "result": "Result type",
+            "state": "State type"
+        }
+        
+        for name, description in common_types.items():
+            if not any(t["name"] == name for t in types):
+                suggestions.append(f"Add type '{name}' for {description}")
+        
+        return suggestions
+
+    async def _generate_module_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate module suggestions based on the AST."""
+        suggestions = []
+        
+        # Analyze existing modules
+        modules = self._extract_module_patterns(ast)
+        
+        # Suggest common missing modules
+        common_modules = {
+            "Types": "Type definitions",
+            "Utils": "Utility functions",
+            "Error": "Error handling",
+            "State": "State management"
+        }
+        
+        for name, description in common_modules.items():
+            if not any(m["name"] == name for m in modules):
+                suggestions.append(f"Add module '{name}' for {description}")
+        
+        return suggestions
+
+    async def _suggest_code_improvements(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Suggest code improvements based on the AST."""
+        improvements = {}
+        
+        # Analyze bindings for improvements
+        bindings = self._extract_let_binding_patterns(ast)
+        binding_improvements = []
+        for binding in bindings:
+            if binding.get("is_recursive", False) and not binding.get("has_base_case", False):
+                binding_improvements.append(f"Add base case to recursive binding '{binding['name']}'")
+        if binding_improvements:
+            improvements["bindings"] = binding_improvements
+        
+        # Analyze types for improvements
+        types = self._extract_type_patterns(ast)
+        type_improvements = []
+        for type_def in types:
+            if not type_def.get("documentation"):
+                type_improvements.append(f"Add documentation to type '{type_def['name']}'")
+        if type_improvements:
+            improvements["types"] = type_improvements
+        
+        return improvements
+
+    async def _suggest_refactoring(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Suggest refactoring opportunities based on the AST."""
+        refactoring = {}
+        
+        # Analyze module structure for refactoring
+        modules = self._extract_module_patterns(ast)
+        module_refactoring = []
+        for module in modules:
+            if len(module.get("elements", [])) > 10:
+                module_refactoring.append(f"Consider splitting module '{module['name']}' into smaller modules")
+        if module_refactoring:
+            refactoring["modules"] = module_refactoring
+        
+        return refactoring
+
+    async def _suggest_optimization(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Suggest optimization opportunities based on the AST."""
+        optimization = {}
+        
+        # Analyze bindings for optimization
+        bindings = self._extract_let_binding_patterns(ast)
+        binding_optimization = []
+        for binding in bindings:
+            if binding.get("complexity", "O(n)") == "O(n^2)":
+                binding_optimization.append(f"Consider optimizing binding '{binding['name']}' to reduce complexity")
+        if binding_optimization:
+            optimization["bindings"] = binding_optimization
+        
+        return optimization
+
+    async def _review_structure(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Review code structure based on the AST."""
+        review = {}
+        
+        # Review module structure
+        modules = self._extract_module_patterns(ast)
+        module_review = []
+        for module in modules:
+            module_review.append({
+                "name": module["name"],
+                "element_count": len(module.get("elements", [])),
+                "has_interface": module.get("has_interface", False)
+            })
+        if module_review:
+            review["modules"] = module_review
+        
+        return review
+
+    async def _review_style(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Review code style based on the AST."""
+        review = {}
+        
+        # Review naming conventions
+        naming = self._analyze_naming_convention_patterns(ast)
+        if naming:
+            review["naming"] = naming
+        
+        # Review documentation style
+        docs = self._extract_documentation_patterns(ast)
+        if docs:
+            review["documentation"] = docs
+        
+        return review
+
+    async def _review_modules(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Review module organization based on the AST."""
+        review = {}
+        
+        # Review module dependencies
+        modules = self._extract_module_patterns(ast)
+        dependencies = {}
+        for module in modules:
+            dependencies[module["name"]] = module.get("dependencies", [])
+        if dependencies:
+            review["dependencies"] = dependencies
+        
+        return review 

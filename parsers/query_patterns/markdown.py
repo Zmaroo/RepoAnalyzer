@@ -10,7 +10,6 @@ import re
 def extract_header(match: Match) -> Dict[str, Any]:
     """Extract header information."""
     return {
-        "type": "header",
         "level": len(match.group(1)),
         "content": match.group(2),
         "line_number": match.string.count('\n', 0, match.start()) + 1
@@ -19,7 +18,6 @@ def extract_header(match: Match) -> Dict[str, Any]:
 def extract_list_item(match: Match) -> Dict[str, Any]:
     """Extract list item information."""
     return {
-        "type": "list_item",
         "indent": len(match.group(1)),
         "content": match.group(2),
         "line_number": match.string.count('\n', 0, match.start()) + 1
@@ -42,7 +40,6 @@ MARKDOWN_PATTERNS = {
         "code_block": QueryPattern(
             pattern=r'^```(\w*)$',
             extract=lambda m: {
-                "type": "code_block",
                 "language": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
@@ -51,77 +48,226 @@ MARKDOWN_PATTERNS = {
         )
     },
     
+    PatternCategory.SEMANTICS: {
+        "emphasis": QueryPattern(
+            pattern=r'(\*\*|__)(.*?)\1|(\*|_)(.*?)\3',
+            extract=lambda m: {
+                "type": "strong" if m.group(1) else "emphasis",
+                "content": m.group(2) or m.group(4),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches text emphasis",
+            examples=["**bold**", "_italic_"]
+        ),
+        "inline_code": QueryPattern(
+            pattern=r'`([^`]+)`',
+            extract=lambda m: {
+                "code": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches inline code",
+            examples=["`code`"]
+        )
+    },
+    
     PatternCategory.STRUCTURE: {
         "section": QueryPattern(
-            pattern=lambda node: node["type"] == "header",
-            extract=lambda node: {
-                "type": "section",
-                "level": node["level"],
-                "title": node["content"],
-                "children": node.get("children", [])
+            pattern=r'^(#{1,6})\s+(.+?)\s*(?:{#([^}]+)})?\s*$',
+            extract=lambda m: {
+                "level": len(m.group(1)),
+                "title": m.group(2),
+                "id": m.group(3) if m.group(3) else None,
+                "line_number": m.string.count('\n', 0, m.start()) + 1
             },
             description="Matches document sections",
-            examples=["# Section with content"]
+            examples=["# Section {#section-id}"]
         ),
         "list": QueryPattern(
-            pattern=lambda node: node["type"] == "list_item",
-            extract=lambda node: {
-                "type": "list",
-                "items": node.get("children", []),
-                "indent": node["indent"]
+            pattern=r'^(\s*)(?:[*+-]|\d+\.)\s+(.+)$',
+            extract=lambda m: {
+                "indent": len(m.group(1)),
+                "content": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
             },
             description="Matches list structures",
-            examples=["* Nested\n  * Items"]
+            examples=["1. First", "  * Nested"]
         )
     },
     
     PatternCategory.DOCUMENTATION: {
         "metadata": QueryPattern(
-            pattern=lambda node: node["type"] == "header" and node["level"] == 1,
-            extract=lambda node: {
-                "type": "metadata",
-                "title": node["content"]
-            },
-            description="Matches document metadata",
-            examples=["# Document Title"]
-        ),
-        "blockquote": QueryPattern(
-            pattern=r'^\s*>\s*(.+)$',
+            pattern=r'^\s*<!--\s*@(\w+):\s*(.+?)\s*-->$',
             extract=lambda m: {
-                "type": "blockquote",
-                "content": m.group(1),
+                "key": m.group(1),
+                "value": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches blockquotes",
-            examples=["> Quote text"]
+            description="Matches metadata comments",
+            examples=["<!-- @author: John Doe -->"]
+        ),
+        "comment": QueryPattern(
+            pattern=r'<!--(.*?)-->',
+            extract=lambda m: {
+                "content": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches HTML comments",
+            examples=["<!-- Comment -->"]
         )
     },
     
-    PatternCategory.SEMANTICS: {
-        "link": QueryPattern(
-            pattern=r'\[([^\]]+)\]\(([^)]+)\)',
+    PatternCategory.CODE_PATTERNS: {
+        "admonition": QueryPattern(
+            pattern=r'^\s*(?:>|\|)\s*(?:\[!(\w+)\])?\s*(.+)$',
             extract=lambda m: {
-                "type": "link",
-                "text": m.group(1),
-                "url": m.group(2),
+                "type": m.group(1) if m.group(1) else "note",
+                "content": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches Markdown links",
-            examples=["[text](url)"]
+            description="Matches admonition blocks",
+            examples=["> [!NOTE] Important information"]
         ),
-        "image": QueryPattern(
-            pattern=r'!\[([^\]]*)\]\(([^)]+)\)',
+        "task_list": QueryPattern(
+            pattern=r'^\s*[-*+]\s+\[([ xX])\]\s+(.+)$',
             extract=lambda m: {
-                "type": "image",
+                "completed": m.group(1).lower() == 'x',
+                "task": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches task list items",
+            examples=["- [x] Completed task"]
+        )
+    },
+    
+    PatternCategory.DEPENDENCIES: {
+        "link_reference": QueryPattern(
+            pattern=r'^\s*\[([^\]]+)\]:\s*(\S+)(?:\s+"([^"]+)")?$',
+            extract=lambda m: {
+                "label": m.group(1),
+                "url": m.group(2),
+                "title": m.group(3) if m.group(3) else None,
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches link references",
+            examples=["[ref]: https://example.com \"Title\""]
+        ),
+        "image_reference": QueryPattern(
+            pattern=r'!\[([^\]]*)\]\[([^\]]+)\]',
+            extract=lambda m: {
                 "alt": m.group(1),
-                "src": m.group(2),
+                "ref": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
             description="Matches image references",
-            examples=["![alt](image.png)"]
+            examples=["![Alt text][image-ref]"]
+        )
+    },
+    
+    PatternCategory.BEST_PRACTICES: {
+        "heading_hierarchy": QueryPattern(
+            pattern=r'^(#{1,6})\s+(.+)$(?:\n(?!#).*)*(?:\n(#{1,6})\s+(.+)$)?',
+            extract=lambda m: {
+                "parent_level": len(m.group(1)),
+                "parent_title": m.group(2),
+                "child_level": len(m.group(3)) if m.group(3) else None,
+                "child_title": m.group(4) if m.group(4) else None,
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "follows_hierarchy": m.group(3) and len(m.group(3)) <= len(m.group(1)) + 1
+            },
+            description="Checks heading hierarchy",
+            examples=["# H1\n## H2"]
+        ),
+        "link_style": QueryPattern(
+            pattern=r'\[([^\]]+)\]\(([^)]+)\)',
+            extract=lambda m: {
+                "text": m.group(1),
+                "url": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "has_text": bool(m.group(1).strip()),
+                "is_relative": not m.group(2).startswith(('http', 'https', 'ftp', 'mailto'))
+            },
+            description="Checks link formatting",
+            examples=["[Link text](url)"]
+        )
+    },
+    
+    PatternCategory.COMMON_ISSUES: {
+        "broken_reference": QueryPattern(
+            pattern=r'\[([^\]]+)\]\[([^\]]+)\](?!.*\[\2\]:)',
+            extract=lambda m: {
+                "text": m.group(1),
+                "ref": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "is_broken": True
+            },
+            description="Detects broken references",
+            examples=["[Link][missing-ref]"]
+        ),
+        "inconsistent_list": QueryPattern(
+            pattern=r'^(\s*)(?:[*+-]|\d+\.)\s+.*\n\1([*+-]|\d+\.)\s+',
+            extract=lambda m: {
+                "indent": len(m.group(1)),
+                "markers": [m.group(1), m.group(2)],
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "is_consistent": m.group(1) == m.group(2)
+            },
+            description="Detects inconsistent list markers",
+            examples=["* Item\n- Item"]
+        )
+    },
+    
+    PatternCategory.USER_PATTERNS: {
+        "custom_container": QueryPattern(
+            pattern=r'^\s*:::\s*(\w+)\s*$(.*?)^\s*:::$',
+            extract=lambda m: {
+                "type": m.group(1),
+                "content": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom container blocks",
+            examples=[":::note\nContent\n:::"]
         )
     }
 }
+
+# Add the repository learning patterns to the main patterns
+MARKDOWN_PATTERNS[PatternCategory.LEARNING] = {
+    "document_structure": QueryPattern(
+        pattern=r'(?s)^#\s+([^\n]+)\n\n(.*?)(?=\n#\s|$)',
+        extract=lambda m: {
+            "title": m.group(1),
+            "content": m.group(2),
+            "type": "document_structure",
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches document structure patterns",
+        examples=["# Title\n\nContent"]
+    )
+}
+
+# Function to extract patterns for repository learning
+def extract_markdown_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Markdown content for repository learning."""
+    patterns = []
+    
+    # Process each pattern category
+    for category in PatternCategory:
+        if category in MARKDOWN_PATTERNS:
+            category_patterns = MARKDOWN_PATTERNS[category]
+            for pattern_name, pattern in category_patterns.items():
+                if isinstance(pattern, QueryPattern):
+                    if isinstance(pattern.pattern, str):
+                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+                            pattern_data = pattern.extract(match)
+                            patterns.append({
+                                "name": pattern_name,
+                                "category": category.value,
+                                "content": match.group(0),
+                                "metadata": pattern_data,
+                                "confidence": 0.85
+                            })
+    
+    return patterns
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
@@ -130,18 +276,22 @@ PATTERN_RELATIONSHIPS = {
         "can_be_contained_by": []
     },
     "header": {
-        "can_contain": ["link", "image"],
+        "can_contain": ["link", "emphasis", "inline_code"],
         "can_be_contained_by": ["document"]
     },
     "list": {
-        "can_contain": ["list_item"],
+        "can_contain": ["list_item", "task_list"],
         "can_be_contained_by": ["document", "list_item"]
     },
     "list_item": {
-        "can_contain": ["list", "link", "image"],
+        "can_contain": ["emphasis", "link", "inline_code"],
         "can_be_contained_by": ["list"]
     },
     "code_block": {
+        "can_be_contained_by": ["document"]
+    },
+    "custom_container": {
+        "can_contain": ["header", "list", "code_block"],
         "can_be_contained_by": ["document"]
     }
 }
@@ -254,132 +404,3 @@ def extract_markdown_blockquotes(ast: dict) -> list:
     """Extract all blockquotes with enhanced metadata."""
     features = extract_markdown_features(ast)
     return features["documentation"]["blockquotes"]
-
-# Add new pattern category for repository learning patterns
-MARKDOWN_PATTERNS_FOR_LEARNING = {
-    "documentation_structure": {
-        "typical_readme": QueryPattern(
-            pattern=r'(?s)^# (.+?)\n\n(.*?)\n## (.+)',
-            extract=lambda m: {
-                "type": "readme_pattern",
-                "title": m.group(1),
-                "intro": m.group(2),
-                "first_section": m.group(3),
-                "is_standard_format": True
-            },
-            description="Matches typical README structure with title, intro, and sections",
-            examples=["# Project\n\nDescription\n## Installation"]
-        ),
-        "api_documentation": QueryPattern(
-            pattern=r'(?s)## API\s*\n(.+?)(?:\n##|\Z)',
-            extract=lambda m: {
-                "type": "api_doc_pattern",
-                "content": m.group(1),
-                "has_api_section": True
-            },
-            description="Matches API documentation sections",
-            examples=["## API\nFunction details here\n## Other"]
-        ),
-        "code_example": QueryPattern(
-            pattern=r'```(\w+)\n(.*?)```',
-            extract=lambda m: {
-                "type": "code_example_pattern",
-                "language": m.group(1),
-                "code": m.group(2),
-                "has_example": True
-            },
-            description="Matches code examples with language specifications",
-            examples=["```python\nprint('Hello')\n```"]
-        ),
-        "usage_example": QueryPattern(
-            pattern=r'(?s)## (Usage|Examples?)\s*\n(.+?)(?:\n##|\Z)',
-            extract=lambda m: {
-                "type": "usage_example_pattern",
-                "section_title": m.group(1),
-                "content": m.group(2),
-                "has_usage_section": True
-            },
-            description="Matches usage example sections",
-            examples=["## Usage\nHow to use this library\n## API"]
-        )
-    },
-    "best_practices": {
-        "badges": QueryPattern(
-            pattern=r'(!\[.+?\]\(.+?\))\s*',
-            extract=lambda m: {
-                "type": "badges_pattern",
-                "badge": m.group(1),
-                "has_badges": True
-            },
-            description="Matches status badges in documentation",
-            examples=["![Build Status](https://travis-ci.org/user/repo.svg)"]
-        ),
-        "table_of_contents": QueryPattern(
-            pattern=r'(?s)## Table of Contents\s*\n(.+?)(?:\n##|\Z)',
-            extract=lambda m: {
-                "type": "toc_pattern",
-                "content": m.group(1),
-                "has_toc": True
-            },
-            description="Matches table of contents sections",
-            examples=["## Table of Contents\n* [Installation](#installation)"]
-        ),
-        "contribution_guidelines": QueryPattern(
-            pattern=r'(?s)## Contribut(ing|ion)\s*\n(.+?)(?:\n##|\Z)',
-            extract=lambda m: {
-                "type": "contribution_pattern",
-                "content": m.group(2),
-                "has_contribution_guide": True
-            },
-            description="Matches contribution guideline sections",
-            examples=["## Contributing\nHow to contribute\n## License"]
-        )
-    }
-}
-
-# Update the MARKDOWN_PATTERNS dictionary
-MARKDOWN_PATTERNS = {
-    # ... existing patterns ...
-}
-
-# Add the repository learning patterns to the main patterns
-MARKDOWN_PATTERNS['REPOSITORY_LEARNING'] = MARKDOWN_PATTERNS_FOR_LEARNING
-
-# Extend extract_markdown_features to include pattern extraction for learning
-def extract_markdown_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
-    """Extract patterns from markdown content for repository learning."""
-    patterns = []
-    
-    # Process documentation structure patterns
-    for pattern_name, pattern in MARKDOWN_PATTERNS_FOR_LEARNING["documentation_structure"].items():
-        if hasattr(pattern.pattern, "__call__"):
-            # Skip AST-based patterns, we need regex for now
-            continue
-            
-        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-            pattern_data = pattern.extract(match)
-            patterns.append({
-                "name": pattern_name,
-                "type": pattern_data.get("type", "documentation_structure"),
-                "content": match.group(0),
-                "metadata": pattern_data,
-                "confidence": 0.8
-            })
-    
-    # Process best practices patterns
-    for pattern_name, pattern in MARKDOWN_PATTERNS_FOR_LEARNING["best_practices"].items():
-        if hasattr(pattern.pattern, "__call__"):
-            # Skip AST-based patterns, we need regex for now
-            continue
-            
-        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-            pattern_data = pattern.extract(match)
-            patterns.append({
-                "name": pattern_name,
-                "type": pattern_data.get("type", "best_practice"),
-                "content": match.group(0),
-                "metadata": pattern_data,
-                "confidence": 0.75
-            })
-            
-    return patterns

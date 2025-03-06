@@ -12,7 +12,7 @@ import asyncio
 import time
 import random
 from functools import wraps
-from typing import Any, Callable, Dict, List, Optional, Type, Union, Set, Awaitable
+from typing import Any, Callable, Dict, List, Optional, Type, Union, Set, Awaitable, TypeVar
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, ClientError
 from psycopg.errors import OperationalError as PostgresError
 from utils.logger import log
@@ -27,6 +27,8 @@ from utils.error_handling import (
 )
 from utils.async_runner import submit_async_task, get_loop
 from utils.shutdown import register_shutdown_handler
+
+T = TypeVar('T')  # Generic type for return values
 
 # Error classes for retry mechanism
 class RetryableError(Exception):
@@ -204,11 +206,11 @@ async def get_retry_manager() -> RetryManager:
 # Default retry manager instance
 default_retry_manager = None
 
-async def get_retry_manager_old() -> 'DatabaseRetryManager':
+async def get_retry_manager_old() -> RetryManager:
     """Get the default retry manager instance."""
     global default_retry_manager
     if not default_retry_manager:
-        default_retry_manager = await DatabaseRetryManager.create()
+        default_retry_manager = await RetryManager.create()
     return default_retry_manager
 
 # Register cleanup handler

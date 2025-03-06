@@ -14,6 +14,13 @@ class EnvParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "env", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -23,7 +30,15 @@ class EnvParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("ENV parser initialization"):
                     await self._initialize_cache(self.language_id)
-                    await self._load_patterns()  # Load patterns through BaseParser mechanism
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("ENV parser initialized", level="info")
                     return True
@@ -206,7 +221,28 @@ class EnvParser(BaseParser, CustomParserMixin):
     async def cleanup(self):
         """Clean up ENV parser resources."""
         try:
+            # Clean up base resources
             await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
             log("ENV parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up ENV parser: {e}", level="error")
@@ -273,3 +309,216 @@ class EnvParser(BaseParser, CustomParserMixin):
                     
         process_node(ast)
         return comments
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process ENV file with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("ENV AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse ENV file"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in ENV AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with environment variable understanding capability."""
+        understanding = {}
+        
+        # Analyze variable structure
+        understanding["structure"] = {
+            "variables": self._extract_variable_patterns(ast)[0],
+            "comments": self._extract_comment_patterns(ast)
+        }
+        
+        # Analyze variable patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze variable naming
+        understanding["naming"] = await self._analyze_variable_naming(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with environment variable generation capability."""
+        suggestions = []
+        
+        # Generate variable suggestions
+        if var_suggestions := await self._generate_variable_suggestions(ast):
+            suggestions.extend(var_suggestions)
+        
+        # Generate documentation suggestions
+        if doc_suggestions := await self._generate_documentation_suggestions(ast):
+            suggestions.extend(doc_suggestions)
+        
+        # Generate security suggestions
+        if security_suggestions := await self._generate_security_suggestions(ast):
+            suggestions.extend(security_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with environment variable modification capability."""
+        modifications = {}
+        
+        # Suggest variable improvements
+        if improvements := await self._suggest_variable_improvements(ast):
+            modifications["variable_improvements"] = improvements
+        
+        # Suggest security improvements
+        if security := await self._suggest_security_improvements(ast):
+            modifications["security_improvements"] = security
+        
+        # Suggest documentation improvements
+        if doc_improvements := await self._suggest_documentation_improvements(ast):
+            modifications["documentation_improvements"] = doc_improvements
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with environment variable review capability."""
+        review = {}
+        
+        # Review variable usage
+        if variable_review := await self._review_variables(ast):
+            review["variables"] = variable_review
+        
+        # Review security
+        if security_review := await self._review_security(ast):
+            review["security"] = security_review
+        
+        # Review documentation
+        if doc_review := await self._review_documentation(ast):
+            review["documentation"] = doc_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn variable patterns
+        if variable_patterns := await self._learn_variable_patterns(ast):
+            patterns.extend(variable_patterns)
+        
+        # Learn naming patterns
+        if naming_patterns := await self._learn_naming_patterns(ast):
+            patterns.extend(naming_patterns)
+        
+        # Learn documentation patterns
+        if doc_patterns := await self._learn_documentation_patterns(ast):
+            patterns.extend(doc_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the environment variables."""
+        patterns = {}
+        
+        # Analyze variable patterns
+        patterns["variable_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.SYNTAX,
+            context
+        )
+        
+        # Analyze naming patterns
+        patterns["naming_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.NAMING,
+            context
+        )
+        
+        # Analyze documentation patterns
+        patterns["documentation_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.DOCUMENTATION,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_variable_naming(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze variable naming conventions."""
+        naming = {}
+        
+        # Analyze variable case style
+        naming["case_style"] = self._analyze_case_style(ast)
+        
+        # Analyze prefix/suffix patterns
+        naming["affixes"] = self._analyze_affixes(ast)
+        
+        # Analyze grouping patterns
+        naming["grouping"] = self._analyze_grouping(ast)
+        
+        return naming

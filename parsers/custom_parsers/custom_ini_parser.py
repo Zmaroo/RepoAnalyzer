@@ -12,6 +12,13 @@ class IniParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "ini", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -21,7 +28,15 @@ class IniParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("INI parser initialization"):
                     await self._initialize_cache(self.language_id)
-                    await self._load_patterns()  # Load patterns through BaseParser mechanism
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("INI parser initialized", level="info")
                     return True
@@ -242,10 +257,245 @@ class IniParser(BaseParser, CustomParserMixin):
                 log(f"Error extracting patterns from INI file: {str(e)}", level="error")
                 return []
     
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process INI file with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("INI AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse INI file"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in INI AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with configuration understanding capability."""
+        understanding = {}
+        
+        # Analyze configuration structure
+        understanding["structure"] = {
+            "sections": self._extract_section_patterns(ast),
+            "properties": self._extract_property_patterns(ast),
+            "comments": self._extract_comment_patterns(ast)
+        }
+        
+        # Analyze configuration patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze naming conventions
+        understanding["naming"] = await self._analyze_naming_conventions(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with configuration generation capability."""
+        suggestions = []
+        
+        # Generate section suggestions
+        if section_suggestions := await self._generate_section_suggestions(ast):
+            suggestions.extend(section_suggestions)
+        
+        # Generate property suggestions
+        if property_suggestions := await self._generate_property_suggestions(ast):
+            suggestions.extend(property_suggestions)
+        
+        # Generate documentation suggestions
+        if doc_suggestions := await self._generate_documentation_suggestions(ast):
+            suggestions.extend(doc_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with configuration modification capability."""
+        modifications = {}
+        
+        # Suggest configuration improvements
+        if improvements := await self._suggest_config_improvements(ast):
+            modifications["config_improvements"] = improvements
+        
+        # Suggest property optimizations
+        if optimizations := await self._suggest_property_optimizations(ast):
+            modifications["property_optimizations"] = optimizations
+        
+        # Suggest documentation improvements
+        if doc_improvements := await self._suggest_documentation_improvements(ast):
+            modifications["documentation_improvements"] = doc_improvements
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with configuration review capability."""
+        review = {}
+        
+        # Review configuration structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review property usage
+        if property_review := await self._review_properties(ast):
+            review["properties"] = property_review
+        
+        # Review documentation
+        if doc_review := await self._review_documentation(ast):
+            review["documentation"] = doc_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn configuration structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn property patterns
+        if property_patterns := await self._learn_property_patterns(ast):
+            patterns.extend(property_patterns)
+        
+        # Learn documentation patterns
+        if doc_patterns := await self._learn_documentation_patterns(ast):
+            patterns.extend(doc_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the INI configuration."""
+        patterns = {}
+        
+        # Analyze section patterns
+        patterns["section_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STRUCTURE,
+            context
+        )
+        
+        # Analyze property patterns
+        patterns["property_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.SYNTAX,
+            context
+        )
+        
+        # Analyze documentation patterns
+        patterns["documentation_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.DOCUMENTATION,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_naming_conventions(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze naming conventions in the INI configuration."""
+        naming = {}
+        
+        # Analyze section naming conventions
+        naming["section_naming"] = self._analyze_section_naming(ast)
+        
+        # Analyze property naming conventions
+        naming["property_naming"] = self._analyze_property_naming(ast)
+        
+        # Analyze grouping patterns
+        naming["grouping"] = self._analyze_grouping(ast)
+        
+        return naming
+
     async def cleanup(self):
-        """Clean up INI parser resources."""
+        """Clean up parser resources."""
         try:
+            # Clean up base resources
             await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
             log("INI parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up INI parser: {e}", level="error")

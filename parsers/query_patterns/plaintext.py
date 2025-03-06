@@ -1,9 +1,11 @@
-"""Query patterns for plaintext files."""
+"""
+Query patterns for plaintext files with enhanced pattern support.
+"""
 
 from typing import Dict, Any, List, Match, Optional
-import re
 from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
+from parsers.types import FileType, QueryPattern, PatternCategory, PatternPurpose
+import re
 
 # Language identifier
 LANGUAGE = "plaintext"
@@ -20,11 +22,12 @@ def extract_header(match: Match) -> Dict[str, Any]:
     """Extract header information."""
     return {
         "type": "header",
-        "level": len(match.group(1)),
-        "content": match.group(2),
+        "level": len(match.group(1)) if match.group(1) else (1 if match.group(4) and match.group(4)[0] == '=' else 2),
+        "content": match.group(2) if match.group(2) else match.group(3),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
 
+# Plaintext patterns for all categories
 PLAINTEXT_PATTERNS = {
     PatternCategory.SYNTAX: {
         "list_item": QueryPattern(
@@ -57,10 +60,10 @@ PLAINTEXT_PATTERNS = {
     
     PatternCategory.STRUCTURE: {
         "header": QueryPattern(
-            pattern=r'^(={2,}|-{2,}|\*{2,}|#{1,6})\s*(.+?)(?:\s*\1)?$',
+            pattern=r'^(={2,}|-{2,}|\*{2,}|#{1,6})\s*(.+?)(?:\s*\1)?$|^(.+)\n(=+|-+)$',
             extract=extract_header,
             description="Matches headers",
-            examples=["# Title", "=== Title ==="]
+            examples=["# Title", "=== Title ===", "Title\n===="]
         ),
         "paragraph": QueryPattern(
             pattern=r'^(?!\s*[-*+•]|\d+[.)]|\s{4}|\t|\|)(.+)$',
@@ -71,6 +74,16 @@ PLAINTEXT_PATTERNS = {
             },
             description="Matches paragraphs",
             examples=["This is a paragraph"]
+        ),
+        "section": QueryPattern(
+            pattern=r'^(.*?)\n[=\-]{3,}\n',
+            extract=lambda m: {
+                "type": "section",
+                "title": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches sections",
+            examples=["Section Title\n============"]
         )
     },
     
@@ -85,6 +98,16 @@ PLAINTEXT_PATTERNS = {
             },
             description="Matches metadata tags",
             examples=["@author: John Doe"]
+        ),
+        "comment": QueryPattern(
+            pattern=r'^(?://|#)\s*(.+)$',
+            extract=lambda m: {
+                "type": "comment",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches comments",
+            examples=["# Comment", "// Comment"]
         )
     },
     
@@ -108,312 +131,218 @@ PLAINTEXT_PATTERNS = {
             },
             description="Matches email addresses",
             examples=["user@example.com"]
+        ),
+        "path": QueryPattern(
+            pattern=r'(?:^|[\s"])(?:/[\w.-]+)+(?:[\s"]|$)',
+            extract=lambda m: {
+                "type": "path",
+                "path": m.group(0).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches file paths",
+            examples=["/usr/local/bin"]
+        )
+    },
+    
+    PatternCategory.CODE_PATTERNS: {
+        "fenced_code": QueryPattern(
+            pattern=r'```(\w*)\n(.*?)```',
+            extract=lambda m: {
+                "type": "fenced_code",
+                "language": m.group(1),
+                "content": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches fenced code blocks",
+            examples=["```python\nprint('hello')\n```"]
+        ),
+        "inline_code": QueryPattern(
+            pattern=r'`([^`]+)`',
+            extract=lambda m: {
+                "type": "inline_code",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches inline code",
+            examples=["`code`"]
+        )
+    },
+    
+    PatternCategory.DEPENDENCIES: {
+        "reference": QueryPattern(
+            pattern=r'\[([^\]]+)\]\(([^\)]+)\)',
+            extract=lambda m: {
+                "type": "reference",
+                "text": m.group(1),
+                "target": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches references",
+            examples=["[link](target)"]
+        ),
+        "include": QueryPattern(
+            pattern=r'(?:include|require|import)\s+["\'<]([^\'">\n]+)[\'">]',
+            extract=lambda m: {
+                "type": "include",
+                "path": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches include statements",
+            examples=["include 'file.txt'"]
+        )
+    },
+    
+    PatternCategory.BEST_PRACTICES: {
+        "todo": QueryPattern(
+            pattern=r'(?:TODO|FIXME|XXX|HACK):\s*(.+)$',
+            extract=lambda m: {
+                "type": "todo",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches TODO comments",
+            examples=["TODO: Fix this"]
+        ),
+        "citation": QueryPattern(
+            pattern=r'^\s*>\s*(.+)$',
+            extract=lambda m: {
+                "type": "citation",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches citations",
+            examples=["> Quoted text"]
+        )
+    },
+    
+    PatternCategory.COMMON_ISSUES: {
+        "broken_link": QueryPattern(
+            pattern=r'\[([^\]]*)\]\(\s*\)',
+            extract=lambda m: {
+                "type": "broken_link",
+                "text": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Detects broken links",
+            examples=["[link]()"]
+        ),
+        "trailing_space": QueryPattern(
+            pattern=r'[ \t]+$',
+            extract=lambda m: {
+                "type": "trailing_space",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Detects trailing whitespace",
+            examples=["Line with spaces   "]
+        )
+    },
+    
+    PatternCategory.USER_PATTERNS: {
+        "custom_list": QueryPattern(
+            pattern=r'^\s*(?:[→➢➤▶►▸▹▻❯❱]|\(\d+\)|\[\d+\])\s+(.+)$',
+            extract=lambda m: {
+                "type": "custom_list",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom list markers",
+            examples=["→ Item", "(1) Item"]
+        ),
+        "custom_section": QueryPattern(
+            pattern=r'^[^\w\s][-=]{3,}[^\w\s]*$',
+            extract=lambda m: {
+                "type": "custom_section",
+                "marker": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom section markers",
+            examples=["---===---"]
         )
     }
 }
 
-# Plaintext patterns specifically for repository learning
-PLAINTEXT_PATTERNS_FOR_LEARNING = {
-    # Structure patterns
-    'header_pattern': PatternInfo(
-        pattern=r'^(#{1,6})\s+(.+)$|^(.+)\n(=+|-+)$',
-        extract=lambda match: {
-            'level': len(match.group(1)) if match.group(1) else (1 if match.group(4)[0] == '=' else 2),
-            'content': match.group(2) if match.group(2) else match.group(3),
-            'style': 'hash' if match.group(1) else ('equals' if match.group(4)[0] == '=' else 'dash')
-        }
+# Add repository learning patterns
+PLAINTEXT_PATTERNS[PatternCategory.LEARNING] = {
+    "document_structure": QueryPattern(
+        pattern=r'(?:^|\n)([^\n]+)\n[=\-]{3,}\n(.*?)(?=\n[^\n]+\n[=\-]{3,}\n|\Z)',
+        extract=lambda m: {
+            "type": "document_structure",
+            "title": m.group(1),
+            "content": m.group(2),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches document structure patterns",
+        examples=["Title\n=====\nContent"]
     ),
-    
-    'bullet_list_item': PatternInfo(
-        pattern=r'^\s*([-*+•])\s+(.+)$',
-        extract=lambda match: {
-            'marker': match.group(1),
-            'content': match.group(2),
-            'type': 'bullet'
-        }
+    "list_structure": QueryPattern(
+        pattern=r'(?:^|\n)(?:\s*[-*+•]\s+[^\n]+\n)+',
+        extract=lambda m: {
+            "type": "list_structure",
+            "content": m.group(0),
+            "items_count": len(re.findall(r'^\s*[-*+•]', m.group(0), re.MULTILINE)),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches list structure patterns",
+        examples=["* Item 1\n* Item 2"]
     ),
-    
-    'numbered_list_item': PatternInfo(
-        pattern=r'^\s*(\d+)([.):])\s+(.+)$',
-        extract=lambda match: {
-            'number': match.group(1),
-            'delimiter': match.group(2),
-            'content': match.group(3),
-            'type': 'numbered'
-        }
-    ),
-    
-    # Text block patterns
-    'paragraph_pattern': PatternInfo(
-        pattern=r'([^\n]+(?:\n(?!\n)[^\n]+)*)',
-        extract=lambda match: {
-            'content': match.group(1),
-            'length': len(match.group(1)),
-            'word_count': len(re.findall(r'\b\w+\b', match.group(1)))
-        }
-    ),
-    
-    'code_block_pattern': PatternInfo(
-        pattern=r'(?:^```(\w*)\n(.*?)^```)|(?:^(?:\s{4}|\t)(.+)(?:\n(?:\s{4}|\t).*)*)',
-        extract=lambda match: {
-            'language': match.group(1) if match.group(1) else None,
-            'content': match.group(2) if match.group(2) else match.group(3),
-            'style': 'fenced' if match.group(1) is not None else 'indented'
-        }
-    ),
-    
-    # Common formatting patterns
-    'emphasis_pattern': PatternInfo(
-        pattern=r'(\*|_)([^*_]+)(\*|_)',
-        extract=lambda match: {
-            'marker': match.group(1),
-            'content': match.group(2),
-            'type': 'emphasis'
-        }
-    ),
-    
-    'strong_pattern': PatternInfo(
-        pattern=r'(\*\*|__)([^*_]+)(\*\*|__)',
-        extract=lambda match: {
-            'marker': match.group(1),
-            'content': match.group(2),
-            'type': 'strong'
-        }
-    ),
-    
-    # Reference patterns
-    'url_pattern': PatternInfo(
-        pattern=r'(https?://[^\s<>"]+)',
-        extract=lambda match: {
-            'url': match.group(1),
-            'type': 'url'
-        }
-    ),
-    
-    'email_pattern': PatternInfo(
-        pattern=r'\b([\w.%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b',
-        extract=lambda match: {
-            'email': match.group(1),
-            'type': 'email'
-        }
-    ),
-    
-    # Metadata patterns
-    'metadata_pattern': PatternInfo(
-        pattern=r'^@(\w+):\s+(.+)$',
-        extract=lambda match: {
-            'key': match.group(1),
-            'value': match.group(2),
-            'type': 'metadata'
-        }
-    ),
-    
-    # Text analysis patterns
-    'sentence_pattern': PatternInfo(
-        pattern=r'([^.!?]+[.!?])',
-        extract=lambda match: {
-            'content': match.group(1),
-            'length': len(match.group(1)),
-            'word_count': len(re.findall(r'\b\w+\b', match.group(1))),
-            'type': 'sentence'
-        }
+    "formatting_patterns": QueryPattern(
+        pattern=r'(?:\*\*[^*]+\*\*|__[^_]+__|_[^_]+_|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^\)]+\))',
+        extract=lambda m: {
+            "type": "formatting_pattern",
+            "content": m.group(0),
+            "format_type": "bold" if m.group(0).startswith(("**", "__")) else
+                          "italic" if m.group(0).startswith(("*", "_")) else
+                          "code" if m.group(0).startswith("`") else
+                          "link",
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches text formatting patterns",
+        examples=["**bold**", "_italic_", "`code`"]
     )
 }
 
-# Update PLAINTEXT_PATTERNS with learning patterns
-PLAINTEXT_PATTERNS[PatternCategory.LEARNING] = PLAINTEXT_PATTERNS_FOR_LEARNING
-
+# Function to extract patterns for repository learning
 def extract_plaintext_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
-    """
-    Extract plaintext patterns from content for repository learning.
-    
-    Args:
-        content: The plaintext content to analyze
-        
-    Returns:
-        List of extracted patterns with metadata
-    """
+    """Extract patterns from plaintext content for repository learning."""
     patterns = []
     
-    # Process headers
-    headers = []
-    header_matcher = re.compile(PLAINTEXT_PATTERNS_FOR_LEARNING['header_pattern'].pattern, re.MULTILINE)
-    for match in header_matcher.finditer(content):
-        extracted = PLAINTEXT_PATTERNS_FOR_LEARNING['header_pattern'].extract(match)
-        headers.append(extracted)
-    
-    if headers:
-        # Analyze header hierarchy
-        header_levels = {}
-        for header in headers:
-            level = header.get('level', 1)
-            if level not in header_levels:
-                header_levels[level] = []
-            header_levels[level].append(header.get('content', ''))
-        
-        patterns.append({
-            'name': 'plaintext_header_structure',
-            'content': f"Document uses {len(header_levels)} header levels",
-            'metadata': {
-                'header_levels': header_levels,
-                'header_count': len(headers),
-                'levels': sorted(header_levels.keys())
-            },
-            'confidence': 0.9
-        })
-    
-    # Process lists
-    bullet_items = []
-    bullet_matcher = re.compile(PLAINTEXT_PATTERNS_FOR_LEARNING['bullet_list_item'].pattern, re.MULTILINE)
-    for match in bullet_matcher.finditer(content):
-        extracted = PLAINTEXT_PATTERNS_FOR_LEARNING['bullet_list_item'].extract(match)
-        bullet_items.append(extracted)
-    
-    numbered_items = []
-    numbered_matcher = re.compile(PLAINTEXT_PATTERNS_FOR_LEARNING['numbered_list_item'].pattern, re.MULTILINE)
-    for match in numbered_matcher.finditer(content):
-        extracted = PLAINTEXT_PATTERNS_FOR_LEARNING['numbered_list_item'].extract(match)
-        numbered_items.append(extracted)
-    
-    if bullet_items:
-        patterns.append({
-            'name': 'plaintext_bullet_lists',
-            'content': f"Document contains {len(bullet_items)} bullet list items",
-            'metadata': {
-                'items': [item.get('content', '') for item in bullet_items[:10]],
-                'count': len(bullet_items),
-                'markers': list(set(item.get('marker', '') for item in bullet_items))
-            },
-            'confidence': 0.85
-        })
-    
-    if numbered_items:
-        patterns.append({
-            'name': 'plaintext_numbered_lists',
-            'content': f"Document contains {len(numbered_items)} numbered list items",
-            'metadata': {
-                'items': [item.get('content', '') for item in numbered_items[:10]],
-                'count': len(numbered_items),
-                'delimiters': list(set(item.get('delimiter', '') for item in numbered_items))
-            },
-            'confidence': 0.85
-        })
-    
-    # Process code blocks
-    code_blocks = []
-    code_matcher = re.compile(PLAINTEXT_PATTERNS_FOR_LEARNING['code_block_pattern'].pattern, re.MULTILINE | re.DOTALL)
-    for match in code_matcher.finditer(content):
-        extracted = PLAINTEXT_PATTERNS_FOR_LEARNING['code_block_pattern'].extract(match)
-        code_blocks.append(extracted)
-    
-    if code_blocks:
-        patterns.append({
-            'name': 'plaintext_code_blocks',
-            'content': f"Document contains {len(code_blocks)} code blocks",
-            'metadata': {
-                'count': len(code_blocks),
-                'languages': list(set(block.get('language', '') for block in code_blocks if block.get('language'))),
-                'styles': list(set(block.get('style', '') for block in code_blocks))
-            },
-            'confidence': 0.8
-        })
-    
-    # Process metadata tags
-    metadata = {}
-    metadata_matcher = re.compile(PLAINTEXT_PATTERNS_FOR_LEARNING['metadata_pattern'].pattern, re.MULTILINE)
-    for match in metadata_matcher.finditer(content):
-        extracted = PLAINTEXT_PATTERNS_FOR_LEARNING['metadata_pattern'].extract(match)
-        metadata[extracted.get('key', '')] = extracted.get('value', '')
-    
-    if metadata:
-        patterns.append({
-            'name': 'plaintext_metadata_tags',
-            'content': f"Document contains metadata tags: {', '.join(metadata.keys())}",
-            'metadata': {
-                'tags': metadata,
-                'count': len(metadata)
-            },
-            'confidence': 0.9
-        })
-    
-    # Process URLs and emails
-    urls = []
-    url_matcher = re.compile(PLAINTEXT_PATTERNS_FOR_LEARNING['url_pattern'].pattern)
-    for match in url_matcher.finditer(content):
-        extracted = PLAINTEXT_PATTERNS_FOR_LEARNING['url_pattern'].extract(match)
-        urls.append(extracted.get('url', ''))
-    
-    emails = []
-    email_matcher = re.compile(PLAINTEXT_PATTERNS_FOR_LEARNING['email_pattern'].pattern)
-    for match in email_matcher.finditer(content):
-        extracted = PLAINTEXT_PATTERNS_FOR_LEARNING['email_pattern'].extract(match)
-        emails.append(extracted.get('email', ''))
-    
-    if urls:
-        patterns.append({
-            'name': 'plaintext_urls',
-            'content': f"Document contains {len(urls)} URLs",
-            'metadata': {
-                'urls': urls[:10],  # Limit to 10 URLs
-                'count': len(urls)
-            },
-            'confidence': 0.8
-        })
-    
-    if emails:
-        patterns.append({
-            'name': 'plaintext_emails',
-            'content': f"Document contains {len(emails)} email addresses",
-            'metadata': {
-                'emails': emails[:10],  # Limit to 10 emails
-                'count': len(emails)
-            },
-            'confidence': 0.8
-        })
-    
-    # Process text metrics
-    if content:
-        # Calculate basic metrics
-        words = re.findall(r'\b\w+\b', content)
-        sentences = re.findall(r'[^.!?]+[.!?]', content)
-        paragraphs = re.split(r'\n\s*\n', content)
-        
-        word_count = len(words)
-        sentence_count = len(sentences)
-        paragraph_count = len(paragraphs)
-        
-        if word_count > 0:
-            avg_sentence_length = word_count / max(1, sentence_count)
-            avg_paragraph_length = word_count / max(1, paragraph_count)
-            
-            patterns.append({
-                'name': 'plaintext_metrics',
-                'content': f"Document has {word_count} words in {sentence_count} sentences and {paragraph_count} paragraphs",
-                'metadata': {
-                    'word_count': word_count,
-                    'sentence_count': sentence_count,
-                    'paragraph_count': paragraph_count,
-                    'avg_sentence_length': avg_sentence_length,
-                    'avg_paragraph_length': avg_paragraph_length
-                },
-                'confidence': 0.9
-            })
+    # Process each pattern category
+    for category in PatternCategory:
+        if category in PLAINTEXT_PATTERNS:
+            category_patterns = PLAINTEXT_PATTERNS[category]
+            for pattern_name, pattern in category_patterns.items():
+                if isinstance(pattern, QueryPattern):
+                    if isinstance(pattern.pattern, str):
+                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+                            pattern_data = pattern.extract(match)
+                            patterns.append({
+                                "name": pattern_name,
+                                "category": category.value,
+                                "content": match.group(0),
+                                "metadata": pattern_data,
+                                "confidence": 0.85
+                            })
     
     return patterns
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
     "document": {
-        "can_contain": ["header", "paragraph", "list_item", "numbered_item", "code_block"],
+        "can_contain": ["header", "paragraph", "list_item", "numbered_item", "code_block", "section"],
         "can_be_contained_by": []
     },
-    "paragraph": {
-        "can_contain": ["url", "email"],
+    "section": {
+        "can_contain": ["paragraph", "list_item", "code_block"],
         "can_be_contained_by": ["document"]
     },
+    "paragraph": {
+        "can_contain": ["url", "email", "path", "inline_code"],
+        "can_be_contained_by": ["document", "section"]
+    },
     "list_item": {
-        "can_contain": ["url", "email"],
-        "can_be_contained_by": ["document"]
+        "can_contain": ["url", "email", "path", "inline_code"],
+        "can_be_contained_by": ["document", "section"]
     }
 }
 

@@ -1,17 +1,15 @@
-"""Query patterns for reStructuredText files."""
+"""Query patterns for reStructuredText files with enhanced pattern support."""
 
-from typing import Dict, Any, List, Match, Optional
+from typing import Dict, Any, List, Match
+from dataclasses import dataclass
+from parsers.types import FileType, QueryPattern, PatternCategory
 import re
-from parsers.types import QueryPattern, PatternCategory, PatternInfo
-
-# Language identifier
-LANGUAGE = "rst"
 
 def extract_section(match: Match) -> Dict[str, Any]:
     """Extract section information."""
     return {
         "type": "section",
-        "marker": match.group(1),
+        "underline": match.group(1),
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
 
@@ -19,6 +17,15 @@ def extract_directive(match: Match) -> Dict[str, Any]:
     """Extract directive information."""
     return {
         "type": "directive",
+        "name": match.group(1),
+        "content": match.group(2),
+        "line_number": match.string.count('\n', 0, match.start()) + 1
+    }
+
+def extract_field(match: Match) -> Dict[str, Any]:
+    """Extract field information."""
+    return {
+        "type": "field",
         "name": match.group(1),
         "content": match.group(2),
         "line_number": match.string.count('\n', 0, match.start()) + 1
@@ -48,6 +55,16 @@ RST_PATTERNS = {
             },
             description="Matches inline roles",
             examples=[":ref:`link`", ":class:`name`"]
+        ),
+        "literal_block": QueryPattern(
+            pattern=r'::\s*\n\n((?:\s+.+\n)+)',
+            extract=lambda m: {
+                "type": "literal_block",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches literal blocks",
+            examples=["Text::\n\n    Literal block"]
         )
     },
     
@@ -71,31 +88,57 @@ RST_PATTERNS = {
             },
             description="Matches include directives",
             examples=[".. include:: file.rst"]
+        ),
+        "list": QueryPattern(
+            pattern=r'^(\s*)(?:\*|\+|\-|\d+\.|\#\.|\[.*?\])\s+(.+)$',
+            extract=lambda m: {
+                "type": "list",
+                "indent": len(m.group(1)),
+                "content": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches lists",
+            examples=["* Item", "1. Item", "#. Auto-numbered"]
+        ),
+        "definition_list": QueryPattern(
+            pattern=r'^(\s*)([^\s].*)\n\1\s+(.+)$',
+            extract=lambda m: {
+                "type": "definition_list",
+                "term": m.group(2),
+                "definition": m.group(3),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches definition lists",
+            examples=["term\n    Definition"]
         )
     },
     
     PatternCategory.DOCUMENTATION: {
         "field": QueryPattern(
             pattern=r':([^:]+):\s+(.+)$',
-            extract=lambda m: {
-                "type": "field",
-                "name": m.group(1),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
+            extract=extract_field,
             description="Matches field lists",
             examples=[":author: Name"]
         ),
-        "admonition": QueryPattern(
-            pattern=r'\.\.\s+(note|warning|important|tip|caution)::\s*(.*)$',
+        "comment": QueryPattern(
+            pattern=r'\.\.\s+(.*)$',
             extract=lambda m: {
-                "type": "admonition",
-                "admonition_type": m.group(1),
-                "content": m.group(2),
+                "type": "comment",
+                "content": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches admonitions",
-            examples=[".. note::", ".. warning::"]
+            description="Matches comments",
+            examples=[".. This is a comment"]
+        ),
+        "doctest_block": QueryPattern(
+            pattern=r'>>>.*?(?:\n\s+.*)*',
+            extract=lambda m: {
+                "type": "doctest_block",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches doctest blocks",
+            examples=[">>> print('test')\ntest"]
         )
     },
     
@@ -120,303 +163,245 @@ RST_PATTERNS = {
             },
             description="Matches substitutions",
             examples=["|name|"]
+        ),
+        "footnote": QueryPattern(
+            pattern=r'\[(\d+|#|\*|\w+)\]_',
+            extract=lambda m: {
+                "type": "footnote",
+                "label": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches footnotes",
+            examples=["[1]_", "[#]_", "[*]_"]
+        )
+    },
+    
+    PatternCategory.CODE_PATTERNS: {
+        "code_block": QueryPattern(
+            pattern=r'\.\.\s+code-block::\s*(\w+)\s*\n\n((?:\s+.+\n)+)',
+            extract=lambda m: {
+                "type": "code_block",
+                "language": m.group(1),
+                "code": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches code blocks",
+            examples=[".. code-block:: python\n\n    print('Hello')"]
+        ),
+        "code_role": QueryPattern(
+            pattern=r':code:`([^`]+)`',
+            extract=lambda m: {
+                "type": "code_role",
+                "code": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches inline code",
+            examples=[":code:`print('Hello')`"]
+        )
+    },
+    
+    PatternCategory.DEPENDENCIES: {
+        "internal_reference": QueryPattern(
+            pattern=r':ref:`([^`]+)`',
+            extract=lambda m: {
+                "type": "internal_reference",
+                "target": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches internal references",
+            examples=[":ref:`section-label`"]
+        ),
+        "external_reference": QueryPattern(
+            pattern=r'`([^`]+)`__',
+            extract=lambda m: {
+                "type": "external_reference",
+                "target": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches anonymous external references",
+            examples=["`link`__"]
+        )
+    },
+    
+    PatternCategory.BEST_PRACTICES: {
+        "section_hierarchy": QueryPattern(
+            pattern=r'([^\n]+)\n([=`~:\'"^_*+#-])\2{3,}\s*$(?:\n(?![=`~:\'"^_*+#-]).*)?\n([^\n]+)\n([=`~:\'"^_*+#-])\4{3,}\s*$',
+            extract=lambda m: {
+                "type": "section_hierarchy",
+                "parent_title": m.group(1),
+                "parent_char": m.group(2),
+                "child_title": m.group(3),
+                "child_char": m.group(4),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "follows_hierarchy": "=`~:'^_*+#-".index(m.group(2)) < "=`~:'^_*+#-".index(m.group(4))
+            },
+            description="Checks section hierarchy",
+            examples=["Title\n=====\n\nSection\n-------"]
+        ),
+        "directive_style": QueryPattern(
+            pattern=r'\.\.\s+(\w+)::\s*(.*)$',
+            extract=lambda m: {
+                "type": "directive_style",
+                "name": m.group(1),
+                "args": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "follows_convention": bool(re.match(r'^[a-z][a-z0-9-]*$', m.group(1)))
+            },
+            description="Checks directive naming conventions",
+            examples=[".. good-name::", ".. BadName::"]
+        )
+    },
+    
+    PatternCategory.COMMON_ISSUES: {
+        "broken_reference": QueryPattern(
+            pattern=r'(?:`[^`]+`_(?!_)|:ref:`[^`]+`)(?!\s*_)',
+            extract=lambda m: {
+                "type": "broken_reference",
+                "reference": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            description="Detects potentially broken references",
+            examples=["`missing`_", ":ref:`nonexistent`"]
+        ),
+        "inconsistent_indentation": QueryPattern(
+            pattern=r'^( +).*\n(?!\1|\s*$)( +)',
+            extract=lambda m: {
+                "type": "inconsistent_indentation",
+                "first_indent": len(m.group(1)),
+                "second_indent": len(m.group(2)),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "is_inconsistent": len(m.group(1)) != len(m.group(2))
+            },
+            description="Detects inconsistent indentation",
+            examples=["    First line\n  Second line"]
+        )
+    },
+    
+    PatternCategory.USER_PATTERNS: {
+        "custom_role": QueryPattern(
+            pattern=r'\.\.\s+role::\s*(\w+)\n\s+:([^:]+):\s*(.+)$',
+            extract=lambda m: {
+                "type": "custom_role",
+                "name": m.group(1),
+                "property": m.group(2),
+                "value": m.group(3),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom role definitions",
+            examples=[".. role:: custom\n    :class: special"]
+        ),
+        "custom_directive": QueryPattern(
+            pattern=r'\.\.\s+directive::\s*(\w+)\n(?:\s+:[\w-]+:\s*.+\n)*',
+            extract=lambda m: {
+                "type": "custom_directive",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom directive definitions",
+            examples=[".. directive:: custom\n    :option: value"]
         )
     }
 }
 
-# RST patterns specifically for repository learning
-RST_PATTERNS_FOR_LEARNING = {
-    # Section patterns
-    'section_marker': PatternInfo(
-        pattern=r'^([=`~:\'"^_*+#-])\1{3,}\s*$',
-        extract=lambda match: {
-            'marker': match.group(1),
-            'type': 'section_marker'
-        }
+# Add the repository learning patterns
+RST_PATTERNS[PatternCategory.LEARNING] = {
+    "document_structure": QueryPattern(
+        pattern=r'(?s)([^\n]+)\n([=`~:\'"^_*+#-])\2{3,}\s*\n\n(.*?)(?=\n[^\n]+\n[=`~:\'"^_*+#-]{4,}|$)',
+        extract=lambda m: {
+            "type": "document_structure",
+            "title": m.group(1),
+            "level_char": m.group(2),
+            "content": m.group(3),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches document structure patterns",
+        examples=["Title\n=====\n\nContent"]
     ),
-    
-    'section_title': PatternInfo(
-        pattern=r'^([^\n]+)\n([=`~:\'"^_*+#-])\2{3,}\s*$',
-        extract=lambda match: {
-            'title': match.group(1),
-            'marker': match.group(2),
-            'type': 'section_title'
-        }
-    ),
-    
-    # Directive patterns
-    'directive': PatternInfo(
-        pattern=r'\.\.\s+(\w+)::\s*(.*)$',
-        extract=lambda match: {
-            'name': match.group(1),
-            'content': match.group(2),
-            'type': 'directive'
-        }
-    ),
-    
-    'admonition': PatternInfo(
-        pattern=r'\.\.\s+(note|warning|important|tip|caution)::\s*(.*)$',
-        extract=lambda match: {
-            'type': match.group(1),
-            'content': match.group(2),
-            'category': 'admonition'
-        }
-    ),
-    
-    'code_block': PatternInfo(
-        pattern=r'\.\.\s+code(?:-block)?::\s*(\w+)\s*$',
-        extract=lambda match: {
-            'language': match.group(1),
-            'type': 'code_block'
-        }
-    ),
-    
-    # Role patterns
-    'role': PatternInfo(
-        pattern=r':([^:]+):`([^`]+)`',
-        extract=lambda match: {
-            'role_type': match.group(1),
-            'content': match.group(2),
-            'type': 'role'
-        }
-    ),
-    
-    # Reference patterns
-    'reference': PatternInfo(
-        pattern=r'`([^`]+)`_',
-        extract=lambda match: {
-            'target': match.group(1),
-            'type': 'reference'
-        }
-    ),
-    
-    'external_link': PatternInfo(
-        pattern=r'`([^`]+)\s*<([^>]+)>`_',
-        extract=lambda match: {
-            'text': match.group(1),
-            'url': match.group(2),
-            'type': 'external_link'
-        }
-    ),
-    
-    # Include patterns
-    'include': PatternInfo(
-        pattern=r'\.\.\s+include::\s*(.+)$',
-        extract=lambda match: {
-            'path': match.group(1),
-            'type': 'include'
-        }
-    ),
-    
-    # Field list patterns
-    'field': PatternInfo(
-        pattern=r':([^:]+):\s+(.+)$',
-        extract=lambda match: {
-            'name': match.group(1),
-            'content': match.group(2),
-            'type': 'field'
-        }
-    ),
-    
-    # List patterns
-    'bullet_list': PatternInfo(
-        pattern=r'^\s*[-*+•]\s+(.+)$',
-        extract=lambda match: {
-            'content': match.group(1),
-            'type': 'bullet_list'
-        }
-    ),
-    
-    'enumerated_list': PatternInfo(
-        pattern=r'^\s*(\d+|[a-zA-Z]|[ivxlcdmIVXLCDM]+)[.)]\s+(.+)$',
-        extract=lambda match: {
-            'enumeration': match.group(1),
-            'content': match.group(2),
-            'type': 'enumerated_list'
-        }
+    "section_patterns": QueryPattern(
+        pattern=r'(?s)([^\n]+)\n([=`~:\'"^_*+#-])\2{3,}\s*\n\n(.*?)(?=\n[^\n]+\n[=`~:\'"^_*+#-]{4,}|$)',
+        extract=lambda m: {
+            "type": "section_pattern",
+            "title": m.group(1),
+            "level_char": m.group(2),
+            "content": m.group(3),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Learns section organization patterns",
+        examples=["Section\n-------\n\nContent"]
     )
 }
 
-# Update RST_PATTERNS with learning patterns
-RST_PATTERNS[PatternCategory.LEARNING] = RST_PATTERNS_FOR_LEARNING
-
+# Function to extract patterns for repository learning
 def extract_rst_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
-    """
-    Extract RST patterns from content for repository learning.
-    
-    Args:
-        content: The RST content to analyze
-        
-    Returns:
-        List of extracted patterns with metadata
-    """
+    """Extract patterns from RST content for repository learning."""
     patterns = []
     
-    # Compile patterns
-    compiled_patterns = {
-        name: re.compile(pattern_info.pattern, re.MULTILINE)
-        for name, pattern_info in RST_PATTERNS_FOR_LEARNING.items()
-    }
-    
-    # Process section patterns
-    section_markers = {}
-    for match in compiled_patterns['section_marker'].finditer(content):
-        marker = match.group(1)
-        if marker not in section_markers:
-            section_markers[marker] = 0
-        section_markers[marker] += 1
-    
-    section_titles = []
-    for match in compiled_patterns['section_title'].finditer(content):
-        extracted = RST_PATTERNS_FOR_LEARNING['section_title'].extract(match)
-        section_titles.append(extracted)
-    
-    if section_markers:
-        patterns.append({
-            'name': 'rst_section_structure',
-            'content': f"Document uses {len(section_markers)} different section levels",
-            'metadata': {
-                'markers': section_markers,
-                'titles': [title.get('title', '') for title in section_titles[:5]]
-            },
-            'confidence': 0.9
-        })
-    
-    # Process directive patterns
-    directives = {}
-    for directive_type in ['directive', 'admonition', 'code_block']:
-        if directive_type in compiled_patterns:
-            for match in compiled_patterns[directive_type].finditer(content):
-                extracted = RST_PATTERNS_FOR_LEARNING[directive_type].extract(match)
-                directive_name = extracted.get('name', extracted.get('type', 'unknown'))
-                if directive_name not in directives:
-                    directives[directive_name] = []
-                directives[directive_name].append(extracted)
-    
-    for directive_name, instances in directives.items():
-        if len(instances) >= 2:  # Only include if used multiple times
-            patterns.append({
-                'name': f'rst_directive_{directive_name}',
-                'content': f"Document uses {len(instances)} '{directive_name}' directives",
-                'metadata': {
-                    'directive_type': directive_name,
-                    'count': len(instances),
-                    'examples': instances[:3]  # Include up to 3 examples
-                },
-                'confidence': 0.85
-            })
-    
-    # Process role patterns
-    roles = {}
-    for match in compiled_patterns['role'].finditer(content):
-        extracted = RST_PATTERNS_FOR_LEARNING['role'].extract(match)
-        role_type = extracted.get('role_type', 'unknown')
-        if role_type not in roles:
-            roles[role_type] = []
-        roles[role_type].append(extracted)
-    
-    for role_type, instances in roles.items():
-        patterns.append({
-            'name': f'rst_role_{role_type}',
-            'content': f"Document uses {len(instances)} '{role_type}' roles",
-            'metadata': {
-                'role_type': role_type,
-                'count': len(instances),
-                'examples': instances[:3]  # Include up to 3 examples
-            },
-            'confidence': 0.8
-        })
-    
-    # Process reference patterns
-    references = []
-    for pattern_name in ['reference', 'external_link']:
-        for match in compiled_patterns[pattern_name].finditer(content):
-            extracted = RST_PATTERNS_FOR_LEARNING[pattern_name].extract(match)
-            references.append(extracted)
-    
-    if references:
-        patterns.append({
-            'name': 'rst_references',
-            'content': f"Document contains {len(references)} references/links",
-            'metadata': {
-                'references': references[:5],  # Include up to 5 examples
-                'count': len(references)
-            },
-            'confidence': 0.85
-        })
-    
-    # Process include patterns
-    includes = []
-    for match in compiled_patterns['include'].finditer(content):
-        extracted = RST_PATTERNS_FOR_LEARNING['include'].extract(match)
-        includes.append(extracted)
-    
-    if includes:
-        patterns.append({
-            'name': 'rst_modular_documentation',
-            'content': f"Document uses modular structure with {len(includes)} includes",
-            'metadata': {
-                'includes': [include.get('path', '') for include in includes],
-                'count': len(includes)
-            },
-            'confidence': 0.9
-        })
-    
-    # Process field patterns
-    fields = []
-    for match in compiled_patterns['field'].finditer(content):
-        extracted = RST_PATTERNS_FOR_LEARNING['field'].extract(match)
-        fields.append(extracted)
-    
-    if fields:
-        patterns.append({
-            'name': 'rst_metadata_fields',
-            'content': f"Document contains {len(fields)} metadata fields",
-            'metadata': {
-                'fields': fields[:5],  # Include up to 5 examples
-                'count': len(fields)
-            },
-            'confidence': 0.85
-        })
-    
-    # Process list patterns
-    bullet_items = []
-    for match in compiled_patterns['bullet_list'].finditer(content):
-        extracted = RST_PATTERNS_FOR_LEARNING['bullet_list'].extract(match)
-        bullet_items.append(extracted)
-    
-    enumerated_items = []
-    for match in compiled_patterns['enumerated_list'].finditer(content):
-        extracted = RST_PATTERNS_FOR_LEARNING['enumerated_list'].extract(match)
-        enumerated_items.append(extracted)
-    
-    if bullet_items or enumerated_items:
-        patterns.append({
-            'name': 'rst_lists',
-            'content': f"Document contains {len(bullet_items)} bullet list items and {len(enumerated_items)} enumerated list items",
-            'metadata': {
-                'bullet_items': [item.get('content', '') for item in bullet_items[:3]],
-                'enumerated_items': [item.get('content', '') for item in enumerated_items[:3]],
-                'bullet_count': len(bullet_items),
-                'enumerated_count': len(enumerated_items)
-            },
-            'confidence': 0.8
-        })
+    # Process each pattern category
+    for category in PatternCategory:
+        if category in RST_PATTERNS:
+            category_patterns = RST_PATTERNS[category]
+            for pattern_name, pattern in category_patterns.items():
+                if isinstance(pattern, QueryPattern):
+                    if isinstance(pattern.pattern, str):
+                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+                            pattern_data = pattern.extract(match)
+                            patterns.append({
+                                "name": pattern_name,
+                                "category": category.value,
+                                "content": match.group(0),
+                                "metadata": pattern_data,
+                                "confidence": 0.85
+                            })
     
     return patterns
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
     "document": {
-        "can_contain": ["section", "directive", "field", "admonition"],
+        "can_contain": ["section", "directive", "field_list", "comment"],
         "can_be_contained_by": []
     },
     "section": {
-        "can_contain": ["section", "directive", "field", "reference", "link"],
+        "can_contain": ["section", "directive", "paragraph", "list"],
         "can_be_contained_by": ["document", "section"]
     },
     "directive": {
-        "can_contain": ["field"],
+        "can_contain": ["directive_option", "directive_content"],
         "can_be_contained_by": ["document", "section"]
+    },
+    "list": {
+        "can_contain": ["list_item"],
+        "can_be_contained_by": ["document", "section", "list_item"]
+    },
+    "field_list": {
+        "can_contain": ["field"],
+        "can_be_contained_by": ["document", "section", "directive"]
     }
-} 
+}
+
+def extract_rst_features(ast: dict) -> dict:
+    """Extract features that align with pattern categories."""
+    features = {
+        "syntax": {
+            "sections": [],
+            "directives": [],
+            "roles": []
+        },
+        "structure": {
+            "references": [],
+            "includes": [],
+            "lists": []
+        },
+        "semantics": {
+            "links": [],
+            "substitutions": [],
+            "footnotes": []
+        },
+        "documentation": {
+            "fields": [],
+            "comments": [],
+            "doctests": []
+        }
+    }
+    return features 

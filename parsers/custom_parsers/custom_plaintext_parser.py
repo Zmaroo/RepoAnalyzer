@@ -3,6 +3,7 @@
 from .base_imports import *
 from collections import Counter
 import re
+from parsers.query_patterns.plaintext import PLAINTEXT_PATTERNS
 
 class PlaintextParser(BaseParser, CustomParserMixin):
     """Parser for plaintext files with enhanced pattern extraction capabilities."""
@@ -10,6 +11,15 @@ class PlaintextParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "plaintext", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
 
     @handle_async_errors(error_types=(Exception,))
@@ -18,8 +28,16 @@ class PlaintextParser(BaseParser, CustomParserMixin):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("Plaintext parser initialization"):
-                    # No special initialization needed yet
-                    await self._load_patterns()  # Load patterns through BaseParser mechanism
+                    await self._initialize_cache(self.language_id)
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("Plaintext parser initialized", level="info")
                     return True
@@ -30,14 +48,32 @@ class PlaintextParser(BaseParser, CustomParserMixin):
 
     async def cleanup(self) -> None:
         """Clean up parser resources."""
-        if self._pending_tasks:
-            log(f"Cleaning up {len(self._pending_tasks)} pending Plaintext parser tasks", level="info")
-            for task in self._pending_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
-        self._initialized = False
+        try:
+            # Clean up base resources
+            await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            log("Plaintext parser cleaned up", level="info")
+        except Exception as e:
+            log(f"Error cleaning up Plaintext parser: {e}", level="error")
 
     def _create_node(
         self,
@@ -460,3 +496,452 @@ class PlaintextParser(BaseParser, CustomParserMixin):
                 })
         
         return patterns
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process plaintext with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("Plaintext AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse plaintext"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in Plaintext AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document understanding capability."""
+        understanding = {}
+        
+        # Analyze document structure
+        understanding["structure"] = {
+            "paragraphs": self._extract_paragraph_patterns(ast),
+            "lists": self._extract_list_patterns(ast),
+            "metadata": self._extract_metadata_patterns(ast)
+        }
+        
+        # Analyze document patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze document style
+        understanding["style"] = await self._analyze_document_style(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with document generation capability."""
+        suggestions = []
+        
+        # Generate structure suggestions
+        if structure_suggestions := await self._generate_structure_suggestions(ast):
+            suggestions.extend(structure_suggestions)
+        
+        # Generate formatting suggestions
+        if format_suggestions := await self._generate_format_suggestions(ast):
+            suggestions.extend(format_suggestions)
+        
+        # Generate style suggestions
+        if style_suggestions := await self._generate_style_suggestions(ast):
+            suggestions.extend(style_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document modification capability."""
+        modifications = {}
+        
+        # Suggest structure improvements
+        if improvements := await self._suggest_structure_improvements(ast):
+            modifications["structure_improvements"] = improvements
+        
+        # Suggest formatting improvements
+        if formatting := await self._suggest_formatting_improvements(ast):
+            modifications["formatting_improvements"] = formatting
+        
+        # Suggest style improvements
+        if style := await self._suggest_style_improvements(ast):
+            modifications["style_improvements"] = style
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document review capability."""
+        review = {}
+        
+        # Review document structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review document formatting
+        if format_review := await self._review_formatting(ast):
+            review["formatting"] = format_review
+        
+        # Review document style
+        if style_review := await self._review_style(ast):
+            review["style"] = style_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn formatting patterns
+        if format_patterns := await self._learn_formatting_patterns(ast):
+            patterns.extend(format_patterns)
+        
+        # Learn style patterns
+        if style_patterns := await self._learn_style_patterns(ast):
+            patterns.extend(style_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the plaintext document."""
+        patterns = {}
+        
+        # Analyze structure patterns
+        patterns["structure_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STRUCTURE,
+            context
+        )
+        
+        # Analyze formatting patterns
+        patterns["formatting_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.FORMATTING,
+            context
+        )
+        
+        # Analyze style patterns
+        patterns["style_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STYLE,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_document_style(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze document style."""
+        style = {}
+        
+        # Analyze paragraph style
+        style["paragraph_style"] = self._analyze_paragraph_style(ast)
+        
+        # Analyze list style
+        style["list_style"] = self._analyze_list_style(ast)
+        
+        # Analyze metadata style
+        style["metadata_style"] = self._analyze_metadata_style(ast)
+        
+        return style
+
+    def _extract_paragraph_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract paragraph patterns from the AST."""
+        paragraphs = []
+        
+        for child in ast.get('children', []):
+            if isinstance(child, dict) and child.get('type') == 'paragraph':
+                content = child.get('content', '')
+                if content:
+                    paragraphs.append({
+                        'type': 'paragraph',
+                        'content': content,
+                        'length': len(content.split())
+                    })
+        
+        return paragraphs
+
+    def _analyze_paragraph_style(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze paragraph style."""
+        style = {}
+        
+        paragraphs = self._extract_paragraph_patterns(ast)
+        if paragraphs:
+            # Calculate average paragraph length
+            lengths = [p['length'] for p in paragraphs]
+            style['avg_length'] = sum(lengths) / len(lengths)
+            
+            # Analyze paragraph complexity
+            style['complexity'] = self._analyze_text_complexity(
+                '\n'.join(p['content'] for p in paragraphs)
+            )
+        
+        return style
+
+    def _analyze_text_complexity(self, text: str) -> Dict[str, Any]:
+        """Analyze text complexity."""
+        metrics = {}
+        
+        if not text:
+            return metrics
+        
+        # Calculate basic metrics
+        words = text.split()
+        sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
+        
+        if not sentences:
+            return metrics
+        
+        # Calculate average sentence length
+        metrics['avg_sentence_length'] = len(words) / len(sentences)
+        
+        # Calculate word complexity
+        complex_words = sum(1 for w in words if len(w) > 6)
+        metrics['complex_word_ratio'] = complex_words / len(words)
+        
+        return metrics
+
+    def _extract_list_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract list patterns from the AST."""
+        list_patterns = []
+        
+        for child in ast.get('children', []):
+            if isinstance(child, dict) and child.get('type') == 'list_item':
+                list_patterns.append({
+                    'type': 'list_item',
+                    'content': child.get('content', ''),
+                    'length': len(child.get('content', '').split())
+                })
+        
+        return list_patterns
+
+    def _extract_metadata_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract metadata patterns from the AST."""
+        metadata_fields = {}
+        
+        for child in ast.get('children', []):
+            if isinstance(child, dict) and child.get('type') == 'metadata':
+                key = child.get('key', '')
+                value = child.get('value', '')
+                
+                if key:
+                    metadata_fields[key] = value
+        
+        if metadata_fields:
+            return [{
+                'content': f"Document contains metadata: {', '.join(metadata_fields.keys())}",
+                'fields': metadata_fields
+            }]
+            
+        return []
+
+    def _analyze_list_style(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze list style."""
+        style = {}
+        
+        list_items = self._extract_list_patterns(ast)
+        if list_items:
+            # Calculate average list item length
+            lengths = [item['length'] for item in list_items]
+            style['avg_item_length'] = sum(lengths) / len(lengths)
+            
+            # Analyze list item complexity
+            style['complexity'] = self._analyze_text_complexity(
+                '\n'.join(item['content'] for item in list_items)
+            )
+        
+        return style
+
+    def _analyze_metadata_style(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze metadata style."""
+        style = {}
+        
+        metadata_fields = self._extract_metadata_patterns(ast)
+        if metadata_fields:
+            # Calculate average metadata field length
+            lengths = [len(field['content']) for field in metadata_fields]
+            style['avg_field_length'] = sum(lengths) / len(lengths)
+            
+            # Analyze metadata field complexity
+            style['complexity'] = self._analyze_text_complexity(
+                '\n'.join(field['content'] for field in metadata_fields)
+            )
+        
+        return style
+
+    def _generate_structure_suggestions(self, ast: Dict[str, Any]) -> List[str]:
+        """Generate structure suggestions based on the AST."""
+        suggestions = []
+        
+        # Suggest structure improvements
+        if improvements := self._suggest_structure_improvements(ast):
+            suggestions.extend(improvements)
+        
+        return suggestions
+
+    def _generate_format_suggestions(self, ast: Dict[str, Any]) -> List[str]:
+        """Generate formatting suggestions based on the AST."""
+        suggestions = []
+        
+        # Suggest formatting improvements
+        if formatting := self._suggest_formatting_improvements(ast):
+            suggestions.extend(formatting)
+        
+        return suggestions
+
+    def _generate_style_suggestions(self, ast: Dict[str, Any]) -> List[str]:
+        """Generate style suggestions based on the AST."""
+        suggestions = []
+        
+        # Suggest style improvements
+        if style := self._suggest_style_improvements(ast):
+            suggestions.extend(style)
+        
+        return suggestions
+
+    def _suggest_structure_improvements(self, ast: Dict[str, Any]) -> List[str]:
+        """Suggest structure improvements based on the AST."""
+        suggestions = []
+        
+        # Suggest structure improvements
+        # Implementation needed
+        
+        return suggestions
+
+    def _suggest_formatting_improvements(self, ast: Dict[str, Any]) -> List[str]:
+        """Suggest formatting improvements based on the AST."""
+        suggestions = []
+        
+        # Suggest formatting improvements
+        # Implementation needed
+        
+        return suggestions
+
+    def _suggest_style_improvements(self, ast: Dict[str, Any]) -> List[str]:
+        """Suggest style improvements based on the AST."""
+        suggestions = []
+        
+        # Suggest style improvements
+        # Implementation needed
+        
+        return suggestions
+
+    def _learn_structure_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Learn structure patterns from the AST."""
+        patterns = []
+        
+        # Learn structure patterns
+        # Implementation needed
+        
+        return patterns
+
+    def _learn_formatting_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Learn formatting patterns from the AST."""
+        patterns = []
+        
+        # Learn formatting patterns
+        # Implementation needed
+        
+        return patterns
+
+    def _learn_style_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Learn style patterns from the AST."""
+        patterns = []
+        
+        # Learn style patterns
+        # Implementation needed
+        
+        return patterns
+
+    def _review_structure(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Review document structure."""
+        review = {}
+        
+        # Review structure
+        # Implementation needed
+        
+        return review
+
+    def _review_formatting(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Review document formatting."""
+        review = {}
+        
+        # Review formatting
+        # Implementation needed
+        
+        return review
+
+    def _review_style(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Review document style."""
+        review = {}
+        
+        # Review style
+        # Implementation needed
+        
+        return review

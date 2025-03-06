@@ -91,7 +91,7 @@ class AIAssistant:
                 from ai_tools.graph_capabilities import GraphAnalysis
                 from ai_tools.code_understanding import CodeUnderstanding
                 from embedding.embedding_models import doc_embedder
-                from ai_tools.reference_learning import reference_learning
+                from ai_tools.reference_repository_learning import reference_learning
                 
                 # Initialize graph analysis
                 instance.graph_analysis = await GraphAnalysis.create()

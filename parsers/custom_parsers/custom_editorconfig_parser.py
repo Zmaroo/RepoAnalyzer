@@ -394,3 +394,232 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
                     
         process_node(ast)
         return comments
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with configuration understanding capability."""
+        understanding = {}
+        
+        # Analyze configuration structure
+        understanding["structure"] = {
+            "sections": self._extract_section_patterns(ast),
+            "properties": self._extract_property_patterns(ast),
+            "comments": self._extract_comment_patterns(ast)
+        }
+        
+        # Analyze configuration patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze configuration style
+        understanding["style"] = await self._analyze_config_style(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with configuration generation capability."""
+        suggestions = []
+        
+        # Generate section suggestions
+        if section_suggestions := await self._generate_section_suggestions(ast):
+            suggestions.extend(section_suggestions)
+        
+        # Generate property suggestions
+        if property_suggestions := await self._generate_property_suggestions(ast):
+            suggestions.extend(property_suggestions)
+        
+        # Generate documentation suggestions
+        if doc_suggestions := await self._generate_documentation_suggestions(ast):
+            suggestions.extend(doc_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with configuration modification capability."""
+        modifications = {}
+        
+        # Suggest configuration improvements
+        if improvements := await self._suggest_config_improvements(ast):
+            modifications["config_improvements"] = improvements
+        
+        # Suggest property optimizations
+        if optimizations := await self._suggest_property_optimizations(ast):
+            modifications["property_optimizations"] = optimizations
+        
+        # Suggest documentation improvements
+        if doc_improvements := await self._suggest_documentation_improvements(ast):
+            modifications["documentation_improvements"] = doc_improvements
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with configuration review capability."""
+        review = {}
+        
+        # Review configuration structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review property usage
+        if property_review := await self._review_properties(ast):
+            review["properties"] = property_review
+        
+        # Review documentation
+        if doc_review := await self._review_documentation(ast):
+            review["documentation"] = doc_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn configuration structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn property patterns
+        if property_patterns := await self._learn_property_patterns(ast):
+            patterns.extend(property_patterns)
+        
+        # Learn documentation patterns
+        if doc_patterns := await self._learn_documentation_patterns(ast):
+            patterns.extend(doc_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the configuration."""
+        patterns = {}
+        
+        # Analyze section patterns
+        patterns["section_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STRUCTURE,
+            context
+        )
+        
+        # Analyze property patterns
+        patterns["property_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.SYNTAX,
+            context
+        )
+        
+        # Analyze documentation patterns
+        patterns["documentation_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.DOCUMENTATION,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_config_style(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze configuration style."""
+        style = {}
+        
+        # Analyze section naming style
+        style["section_naming"] = self._analyze_section_naming(ast)
+        
+        # Analyze property naming style
+        style["property_naming"] = self._analyze_property_naming(ast)
+        
+        # Analyze documentation style
+        style["documentation"] = self._analyze_documentation_style(ast)
+        
+        return style
+
+    async def _generate_section_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate section suggestions."""
+        suggestions = []
+        
+        # Analyze existing sections
+        sections = self._extract_section_patterns(ast)
+        
+        # Suggest common missing sections
+        common_sections = {
+            "*": "Global settings",
+            "*.{js,jsx,ts,tsx}": "JavaScript/TypeScript settings",
+            "*.{py,pyi}": "Python settings",
+            "*.{md,rst,txt}": "Documentation settings"
+        }
+        
+        for pattern, description in common_sections.items():
+            if not any(s["pattern"] == pattern for s in sections):
+                suggestions.append(f"Add section [{pattern}] for {description}")
+        
+        return suggestions
+
+    async def _generate_property_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate property suggestions."""
+        suggestions = []
+        
+        # Analyze existing properties
+        properties = self._extract_property_patterns(ast)
+        
+        # Suggest common missing properties
+        common_properties = {
+            "indent_style": "Set indentation style (space/tab)",
+            "indent_size": "Set indentation size",
+            "end_of_line": "Set line ending style",
+            "charset": "Set file encoding",
+            "trim_trailing_whitespace": "Configure trailing whitespace handling",
+            "insert_final_newline": "Configure final newline"
+        }
+        
+        for prop, description in common_properties.items():
+            if not any(p["key"] == prop for p in properties):
+                suggestions.append(f"Add property {prop} to {description}")
+        
+        return suggestions
+
+    async def _generate_documentation_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate documentation suggestions."""
+        suggestions = []
+        
+        # Analyze existing documentation
+        comments = self._extract_comment_patterns(ast)
+        
+        # Suggest documentation improvements
+        if not any(c["type"] == "header" for c in comments):
+            suggestions.append("Add a header comment describing the EditorConfig file")
+            
+        if not any(c["type"] == "section" for c in comments):
+            suggestions.append("Add section comments explaining configuration choices")
+            
+        return suggestions

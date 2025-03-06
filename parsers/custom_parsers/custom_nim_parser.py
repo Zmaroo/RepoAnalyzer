@@ -12,6 +12,13 @@ class NimParser(BaseParser, CustomParserMixin):
         CustomParserMixin.__init__(self)
         self._initialized = False
         self._pending_tasks: Set[asyncio.Future] = set()
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -21,7 +28,15 @@ class NimParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("Nim parser initialization"):
                     await self._initialize_cache(self.language_id)
-                    await self._load_patterns()  # Load patterns through BaseParser mechanism
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("Nim parser initialized", level="info")
                     return True
@@ -33,7 +48,28 @@ class NimParser(BaseParser, CustomParserMixin):
     async def cleanup(self):
         """Clean up parser resources."""
         try:
+            # Clean up base resources
             await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
             log("Nim parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up Nim parser: {e}", level="error")
@@ -461,3 +497,219 @@ class NimParser(BaseParser, CustomParserMixin):
             })
             
         return patterns
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process Nim code with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("Nim AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse Nim code"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in Nim AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code understanding capability."""
+        understanding = {}
+        
+        # Analyze code structure
+        understanding["structure"] = {
+            "procedures": self._extract_proc_patterns(ast),
+            "types": self._extract_type_patterns(ast),
+            "variables": self._extract_variable_patterns(ast)[0]
+        }
+        
+        # Analyze code patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze code style
+        understanding["style"] = await self._analyze_code_style(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with code generation capability."""
+        suggestions = []
+        
+        # Generate procedure suggestions
+        if proc_suggestions := await self._generate_proc_suggestions(ast):
+            suggestions.extend(proc_suggestions)
+        
+        # Generate type suggestions
+        if type_suggestions := await self._generate_type_suggestions(ast):
+            suggestions.extend(type_suggestions)
+        
+        # Generate error handling suggestions
+        if error_suggestions := await self._generate_error_handling_suggestions(ast):
+            suggestions.extend(error_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code modification capability."""
+        modifications = {}
+        
+        # Suggest code improvements
+        if improvements := await self._suggest_code_improvements(ast):
+            modifications["code_improvements"] = improvements
+        
+        # Suggest refactoring opportunities
+        if refactoring := await self._suggest_refactoring(ast):
+            modifications["refactoring"] = refactoring
+        
+        # Suggest optimization opportunities
+        if optimization := await self._suggest_optimization(ast):
+            modifications["optimization"] = optimization
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with code review capability."""
+        review = {}
+        
+        # Review code structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review code style
+        if style_review := await self._review_style(ast):
+            review["style"] = style_review
+        
+        # Review error handling
+        if error_review := await self._review_error_handling(ast):
+            review["error_handling"] = error_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn code structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn coding style patterns
+        if style_patterns := await self._learn_style_patterns(ast):
+            patterns.extend(style_patterns)
+        
+        # Learn error handling patterns
+        if error_patterns := await self._learn_error_handling_patterns(ast):
+            patterns.extend(error_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the Nim code."""
+        patterns = {}
+        
+        # Analyze procedure patterns
+        patterns["proc_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STRUCTURE,
+            context
+        )
+        
+        # Analyze type patterns
+        patterns["type_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.SYNTAX,
+            context
+        )
+        
+        # Analyze variable patterns
+        patterns["variable_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.NAMING,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_code_style(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze code style."""
+        style = {}
+        
+        # Analyze naming conventions
+        style["naming_conventions"] = self._analyze_naming_conventions(
+            [node.get('name', '') for node in ast.get('children', []) if isinstance(node, dict)]
+        )
+        
+        # Analyze procedure style
+        style["proc_style"] = self._analyze_proc_style(ast)
+        
+        # Analyze type style
+        style["type_style"] = self._analyze_type_style(ast)
+        
+        return style

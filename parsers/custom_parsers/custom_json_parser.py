@@ -3,7 +3,6 @@ import json
 import re
 from collections import Counter
 
-
 class JsonParser(BaseParser, CustomParserMixin):
     """Parser for JSON files with enhanced documentation and structure analysis."""
 

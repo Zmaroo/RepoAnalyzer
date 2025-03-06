@@ -18,7 +18,7 @@ from .graph_capabilities import GraphCapabilities
 from .reference_repository_learning import reference_learning
 from .rule_config import RuleConfig
 from utils.logger import log
-from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from db.pattern_storage import pattern_storage
 
 @dataclass

@@ -10,6 +10,15 @@ class RstParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "rst", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.DOCUMENTATION, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -18,8 +27,16 @@ class RstParser(BaseParser, CustomParserMixin):
         if not self._initialized:
             try:
                 async with AsyncErrorBoundary("RST parser initialization"):
-                    # No special initialization needed yet
-                    await self._load_patterns()  # Load patterns through BaseParser mechanism
+                    await self._initialize_cache(self.language_id)
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("RST parser initialized", level="info")
                     return True
@@ -490,6 +507,514 @@ class RstParser(BaseParser, CustomParserMixin):
                 'type': f'depth_{depth}',
                 'content': f"Document uses {count} lists at depth {depth}",
                 'count': count
+            })
+        
+        return patterns
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process RST with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("RST AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse RST"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in RST AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document understanding capability."""
+        understanding = {}
+        
+        # Analyze document structure
+        understanding["structure"] = {
+            "sections": self._extract_section_patterns(ast),
+            "directives": self._extract_directive_patterns(ast),
+            "code_blocks": self._extract_code_block_patterns(ast),
+            "lists": self._extract_list_patterns(ast)
+        }
+        
+        # Analyze document patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze document style
+        understanding["style"] = await self._analyze_document_style(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with document generation capability."""
+        suggestions = []
+        
+        # Generate section suggestions
+        if section_suggestions := await self._generate_section_suggestions(ast):
+            suggestions.extend(section_suggestions)
+        
+        # Generate directive suggestions
+        if directive_suggestions := await self._generate_directive_suggestions(ast):
+            suggestions.extend(directive_suggestions)
+        
+        # Generate documentation suggestions
+        if doc_suggestions := await self._generate_documentation_suggestions(ast):
+            suggestions.extend(doc_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document modification capability."""
+        modifications = {}
+        
+        # Suggest structure improvements
+        if improvements := await self._suggest_structure_improvements(ast):
+            modifications["structure_improvements"] = improvements
+        
+        # Suggest formatting improvements
+        if formatting := await self._suggest_formatting_improvements(ast):
+            modifications["formatting_improvements"] = formatting
+        
+        # Suggest documentation improvements
+        if doc_improvements := await self._suggest_documentation_improvements(ast):
+            modifications["documentation_improvements"] = doc_improvements
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document review capability."""
+        review = {}
+        
+        # Review document structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review document formatting
+        if format_review := await self._review_formatting(ast):
+            review["formatting"] = format_review
+        
+        # Review documentation
+        if doc_review := await self._review_documentation(ast):
+            review["documentation"] = doc_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn formatting patterns
+        if format_patterns := await self._learn_formatting_patterns(ast):
+            patterns.extend(format_patterns)
+        
+        # Learn documentation patterns
+        if doc_patterns := await self._learn_documentation_patterns(ast):
+            patterns.extend(doc_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the RST document."""
+        patterns = {}
+        
+        # Analyze section patterns
+        patterns["section_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STRUCTURE,
+            context
+        )
+        
+        # Analyze directive patterns
+        patterns["directive_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.SYNTAX,
+            context
+        )
+        
+        # Analyze documentation patterns
+        patterns["documentation_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.DOCUMENTATION,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_document_style(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze document style."""
+        style = {}
+        
+        # Analyze section style
+        style["section_style"] = self._analyze_section_style(ast)
+        
+        # Analyze directive style
+        style["directive_style"] = self._analyze_directive_style(ast)
+        
+        # Analyze list style
+        style["list_style"] = self._analyze_list_style(ast)
+        
+        return style
+
+    async def _generate_section_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate section suggestions based on the AST."""
+        suggestions = []
+        
+        # Analyze existing sections
+        sections = self._extract_section_patterns(ast)
+        
+        # Suggest common missing sections
+        common_sections = {
+            "Introduction": "Document introduction",
+            "Installation": "Installation instructions",
+            "Usage": "Usage instructions",
+            "API": "API documentation",
+            "Contributing": "Contributing guidelines"
+        }
+        
+        for name, description in common_sections.items():
+            if not any(s["title"] == name for s in sections):
+                suggestions.append(f"Add section '{name}' for {description}")
+        
+        return suggestions
+
+    async def _generate_directive_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate directive suggestions based on the AST."""
+        suggestions = []
+        
+        # Analyze existing directives
+        directives = self._extract_directive_patterns(ast)
+        
+        # Suggest common missing directives
+        common_directives = {
+            "warning": "Important warnings",
+            "note": "Additional notes",
+            "tip": "Helpful tips",
+            "code-block": "Code examples",
+            "image": "Visual documentation"
+        }
+        
+        for name, description in common_directives.items():
+            if not any(d["type"] == name for d in directives):
+                suggestions.append(f"Add directive '{name}' for {description}")
+        
+        return suggestions
+
+    async def _generate_documentation_suggestions(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[str]:
+        """Generate documentation suggestions based on the AST."""
+        suggestions = []
+        
+        # Analyze existing documentation
+        sections = self._extract_section_patterns(ast)
+        directives = self._extract_directive_patterns(ast)
+        
+        # Suggest documentation improvements
+        if not any(s["level"] == 1 for s in sections):
+            suggestions.append("Add a top-level heading for the document")
+        
+        if not any(d["type"] == "code-block" for d in directives):
+            suggestions.append("Add code examples using code-block directives")
+        
+        return suggestions
+
+    async def _suggest_structure_improvements(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Suggest structure improvements based on the AST."""
+        improvements = {}
+        
+        # Analyze section structure
+        sections = self._extract_section_patterns(ast)
+        section_improvements = []
+        
+        # Check section hierarchy
+        if sections:
+            levels = [s["level"] for s in sections]
+            if min(levels) > 1:
+                section_improvements.append("Add a top-level section (level 1)")
+            if max(levels) - min(levels) > 1:
+                section_improvements.append("Fix section hierarchy - some levels are skipped")
+        
+        if section_improvements:
+            improvements["sections"] = section_improvements
+        
+        return improvements
+
+    async def _suggest_formatting_improvements(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Suggest formatting improvements based on the AST."""
+        improvements = {}
+        
+        # Analyze directive formatting
+        directives = self._extract_directive_patterns(ast)
+        directive_improvements = []
+        
+        for directive in directives:
+            if not directive.get("content", "").strip():
+                directive_improvements.append(f"Add content to empty {directive['type']} directive")
+        
+        if directive_improvements:
+            improvements["directives"] = directive_improvements
+        
+        return improvements
+
+    async def _suggest_documentation_improvements(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Suggest documentation improvements based on the AST."""
+        improvements = {}
+        
+        # Analyze documentation completeness
+        sections = self._extract_section_patterns(ast)
+        doc_improvements = []
+        
+        for section in sections:
+            if not section.get("content", "").strip():
+                doc_improvements.append(f"Add content to empty section '{section['title']}'")
+        
+        if doc_improvements:
+            improvements["documentation"] = doc_improvements
+        
+        return improvements
+
+    async def _review_structure(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Review document structure."""
+        review = {}
+        
+        # Review section structure
+        sections = self._extract_section_patterns(ast)
+        if sections:
+            review["sections"] = {
+                "count": len(sections),
+                "levels": sorted(set(s["level"] for s in sections)),
+                "titles": [s["title"] for s in sections]
+            }
+        
+        # Review directive structure
+        directives = self._extract_directive_patterns(ast)
+        if directives:
+            review["directives"] = {
+                "count": len(directives),
+                "types": sorted(set(d["type"] for d in directives))
+            }
+        
+        return review
+
+    async def _review_formatting(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Review document formatting."""
+        review = {}
+        
+        # Review section formatting
+        sections = self._extract_section_patterns(ast)
+        if sections:
+            review["section_formatting"] = {
+                "underline_chars": sorted(set(s.get("underline_char", "") for s in sections)),
+                "title_case": all(s["title"].istitle() for s in sections)
+            }
+        
+        # Review directive formatting
+        directives = self._extract_directive_patterns(ast)
+        if directives:
+            review["directive_formatting"] = {
+                "indentation": all(d.get("indent", 0) >= 3 for d in directives),
+                "empty_lines": all(d.get("has_empty_lines", False) for d in directives)
+            }
+        
+        return review
+
+    async def _review_documentation(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Review documentation quality."""
+        review = {}
+        
+        # Review section documentation
+        sections = self._extract_section_patterns(ast)
+        if sections:
+            review["section_docs"] = {
+                "has_content": all(bool(s.get("content", "").strip()) for s in sections),
+                "avg_length": sum(len(s.get("content", "").split()) for s in sections) / len(sections)
+            }
+        
+        # Review directive documentation
+        directives = self._extract_directive_patterns(ast)
+        if directives:
+            review["directive_docs"] = {
+                "has_content": all(bool(d.get("content", "").strip()) for d in directives),
+                "avg_length": sum(len(d.get("content", "").split()) for d in directives) / len(directives)
+            }
+        
+        return review
+
+    async def _learn_structure_patterns(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Learn structure patterns from the AST."""
+        patterns = []
+        
+        # Learn section patterns
+        sections = self._extract_section_patterns(ast)
+        if sections:
+            patterns.append({
+                "type": "section_structure",
+                "content": f"Document uses {len(sections)} sections across {len(set(s['level'] for s in sections))} levels",
+                "examples": [s["title"] for s in sections[:3]]
+            })
+        
+        # Learn directive patterns
+        directives = self._extract_directive_patterns(ast)
+        if directives:
+            patterns.append({
+                "type": "directive_structure",
+                "content": f"Document uses {len(directives)} directives of {len(set(d['type'] for d in directives))} types",
+                "examples": [d["type"] for d in directives[:3]]
+            })
+        
+        return patterns
+
+    async def _learn_formatting_patterns(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Learn formatting patterns from the AST."""
+        patterns = []
+        
+        # Learn section formatting patterns
+        sections = self._extract_section_patterns(ast)
+        if sections:
+            underline_chars = set(s.get("underline_char", "") for s in sections)
+            patterns.append({
+                "type": "section_formatting",
+                "content": f"Document uses {len(underline_chars)} different section underline characters",
+                "examples": sorted(underline_chars)
+            })
+        
+        # Learn directive formatting patterns
+        directives = self._extract_directive_patterns(ast)
+        if directives:
+            indent_levels = set(d.get("indent", 0) for d in directives)
+            patterns.append({
+                "type": "directive_formatting",
+                "content": f"Document uses {len(indent_levels)} different directive indentation levels",
+                "examples": sorted(indent_levels)
+            })
+        
+        return patterns
+
+    async def _learn_documentation_patterns(
+        self,
+        ast: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Learn documentation patterns from the AST."""
+        patterns = []
+        
+        # Learn section documentation patterns
+        sections = self._extract_section_patterns(ast)
+        if sections:
+            patterns.append({
+                "type": "section_documentation",
+                "content": f"Document has {len(sections)} documented sections",
+                "examples": [s["title"] for s in sections if s.get("content", "").strip()][:3]
+            })
+        
+        # Learn directive documentation patterns
+        directives = self._extract_directive_patterns(ast)
+        if directives:
+            patterns.append({
+                "type": "directive_documentation",
+                "content": f"Document has {len(directives)} documented directives",
+                "examples": [d["type"] for d in directives if d.get("content", "").strip()][:3]
             })
         
         return patterns 

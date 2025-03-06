@@ -11,6 +11,13 @@ class MarkdownParser(BaseParser, CustomParserMixin):
         CustomParserMixin.__init__(self)
         self._initialized = False
         self._pending_tasks: Set[asyncio.Future] = set()
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -20,7 +27,15 @@ class MarkdownParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("Markdown parser initialization"):
                     await self._initialize_cache(self.language_id)
-                    await self._load_patterns()  # Load patterns through BaseParser mechanism
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("Markdown parser initialized", level="info")
                     return True
@@ -292,10 +307,245 @@ class MarkdownParser(BaseParser, CustomParserMixin):
                 log(f"Error extracting patterns from Markdown file: {str(e)}", level="error")
                 return []
     
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process Markdown with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("Markdown AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse Markdown"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in Markdown AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document understanding capability."""
+        understanding = {}
+        
+        # Analyze document structure
+        understanding["structure"] = {
+            "headers": self._extract_header_patterns(ast),
+            "code_blocks": self._extract_code_block_patterns(ast),
+            "lists": self._extract_list_patterns(ast)
+        }
+        
+        # Analyze document patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze document style
+        understanding["style"] = await self._analyze_document_style(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with document generation capability."""
+        suggestions = []
+        
+        # Generate section suggestions
+        if section_suggestions := await self._generate_section_suggestions(ast):
+            suggestions.extend(section_suggestions)
+        
+        # Generate code block suggestions
+        if code_suggestions := await self._generate_code_block_suggestions(ast):
+            suggestions.extend(code_suggestions)
+        
+        # Generate documentation suggestions
+        if doc_suggestions := await self._generate_documentation_suggestions(ast):
+            suggestions.extend(doc_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document modification capability."""
+        modifications = {}
+        
+        # Suggest structure improvements
+        if improvements := await self._suggest_structure_improvements(ast):
+            modifications["structure_improvements"] = improvements
+        
+        # Suggest formatting improvements
+        if formatting := await self._suggest_formatting_improvements(ast):
+            modifications["formatting_improvements"] = formatting
+        
+        # Suggest documentation improvements
+        if doc_improvements := await self._suggest_documentation_improvements(ast):
+            modifications["documentation_improvements"] = doc_improvements
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with document review capability."""
+        review = {}
+        
+        # Review document structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review formatting
+        if formatting_review := await self._review_formatting(ast):
+            review["formatting"] = formatting_review
+        
+        # Review documentation
+        if doc_review := await self._review_documentation(ast):
+            review["documentation"] = doc_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn structure patterns
+        if structure_patterns := await self._learn_structure_patterns(ast):
+            patterns.extend(structure_patterns)
+        
+        # Learn formatting patterns
+        if formatting_patterns := await self._learn_formatting_patterns(ast):
+            patterns.extend(formatting_patterns)
+        
+        # Learn documentation patterns
+        if doc_patterns := await self._learn_documentation_patterns(ast):
+            patterns.extend(doc_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the Markdown document."""
+        patterns = {}
+        
+        # Analyze header patterns
+        patterns["header_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STRUCTURE,
+            context
+        )
+        
+        # Analyze code block patterns
+        patterns["code_block_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.CODE_SNIPPET,
+            context
+        )
+        
+        # Analyze documentation patterns
+        patterns["documentation_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.DOCUMENTATION,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_document_style(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze document style."""
+        style = {}
+        
+        # Analyze header style
+        style["header_style"] = self._analyze_header_style(ast)
+        
+        # Analyze list style
+        style["list_style"] = self._analyze_list_style(ast)
+        
+        # Analyze code block style
+        style["code_block_style"] = self._analyze_code_block_style(ast)
+        
+        return style
+
     async def cleanup(self):
         """Clean up parser resources."""
         try:
+            # Clean up base resources
             await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
             log("Markdown parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up Markdown parser: {e}", level="error")

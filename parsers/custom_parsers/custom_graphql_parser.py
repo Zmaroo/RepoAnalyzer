@@ -14,6 +14,13 @@ class GraphQLParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "graphql", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.SCHEMA, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
+        self.capabilities = {
+            AICapability.CODE_UNDERSTANDING,
+            AICapability.CODE_GENERATION,
+            AICapability.CODE_MODIFICATION,
+            AICapability.CODE_REVIEW,
+            AICapability.LEARNING
+        }
         register_shutdown_handler(self.cleanup)
     
     @handle_async_errors(error_types=(Exception,))
@@ -23,7 +30,15 @@ class GraphQLParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("GraphQL parser initialization"):
                     await self._initialize_cache(self.language_id)
-                    await self._load_patterns()  # Load patterns through BaseParser mechanism
+                    await self._load_patterns()
+                    
+                    # Initialize AI processor
+                    self._ai_processor = AIPatternProcessor(self)
+                    await self._ai_processor.initialize()
+                    
+                    # Initialize pattern processor
+                    self._pattern_processor = await PatternProcessor.create()
+                    
                     self._initialized = True
                     log("GraphQL parser initialized", level="info")
                     return True
@@ -298,7 +313,28 @@ class GraphQLParser(BaseParser, CustomParserMixin):
     async def cleanup(self):
         """Clean up GraphQL parser resources."""
         try:
+            # Clean up base resources
             await self._cleanup_cache()
+            
+            # Clean up AI processor
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+                self._ai_processor = None
+            
+            # Clean up pattern processor
+            if self._pattern_processor:
+                await self._pattern_processor.cleanup()
+                self._pattern_processor = None
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
             log("GraphQL parser cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up GraphQL parser: {e}", level="error")
@@ -393,3 +429,297 @@ class GraphQLParser(BaseParser, CustomParserMixin):
                 
         process_node(ast)
         return comments
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process GraphQL schema with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("GraphQL AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse GraphQL schema"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Process with understanding capability
+                if AICapability.CODE_UNDERSTANDING in self.capabilities:
+                    understanding = await self._process_with_understanding(ast, context)
+                    results.context_info.update(understanding)
+                
+                # Process with generation capability
+                if AICapability.CODE_GENERATION in self.capabilities:
+                    generation = await self._process_with_generation(ast, context)
+                    results.suggestions.extend(generation)
+                
+                # Process with modification capability
+                if AICapability.CODE_MODIFICATION in self.capabilities:
+                    modification = await self._process_with_modification(ast, context)
+                    results.ai_insights.update(modification)
+                
+                # Process with review capability
+                if AICapability.CODE_REVIEW in self.capabilities:
+                    review = await self._process_with_review(ast, context)
+                    results.ai_insights.update(review)
+                
+                # Process with learning capability
+                if AICapability.LEARNING in self.capabilities:
+                    learning = await self._process_with_learning(ast, context)
+                    results.learned_patterns.extend(learning)
+                
+                return results
+            except Exception as e:
+                log(f"Error in GraphQL AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_understanding(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with schema understanding capability."""
+        understanding = {}
+        
+        # Analyze schema structure
+        understanding["structure"] = {
+            "types": self._extract_type_patterns(ast),
+            "fields": self._extract_field_patterns(ast),
+            "directives": self._extract_directive_patterns(ast)
+        }
+        
+        # Analyze schema patterns
+        understanding["patterns"] = await self._analyze_patterns(ast, context)
+        
+        # Analyze schema relationships
+        understanding["relationships"] = await self._analyze_relationships(ast)
+        
+        return understanding
+
+    async def _process_with_generation(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[str]:
+        """Process with schema generation capability."""
+        suggestions = []
+        
+        # Generate type suggestions
+        if type_suggestions := await self._generate_type_suggestions(ast):
+            suggestions.extend(type_suggestions)
+        
+        # Generate field suggestions
+        if field_suggestions := await self._generate_field_suggestions(ast):
+            suggestions.extend(field_suggestions)
+        
+        # Generate directive suggestions
+        if directive_suggestions := await self._generate_directive_suggestions(ast):
+            suggestions.extend(directive_suggestions)
+        
+        return suggestions
+
+    async def _process_with_modification(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with schema modification capability."""
+        modifications = {}
+        
+        # Suggest schema improvements
+        if improvements := await self._suggest_schema_improvements(ast):
+            modifications["schema_improvements"] = improvements
+        
+        # Suggest type optimizations
+        if optimizations := await self._suggest_type_optimizations(ast):
+            modifications["type_optimizations"] = optimizations
+        
+        # Suggest field improvements
+        if field_improvements := await self._suggest_field_improvements(ast):
+            modifications["field_improvements"] = field_improvements
+        
+        return modifications
+
+    async def _process_with_review(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Process with schema review capability."""
+        review = {}
+        
+        # Review schema structure
+        if structure_review := await self._review_structure(ast):
+            review["structure"] = structure_review
+        
+        # Review type usage
+        if type_review := await self._review_types(ast):
+            review["types"] = type_review
+        
+        # Review field design
+        if field_review := await self._review_fields(ast):
+            review["fields"] = field_review
+        
+        return review
+
+    async def _process_with_learning(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Process with learning capability."""
+        patterns = []
+        
+        # Learn schema patterns
+        if schema_patterns := await self._learn_schema_patterns(ast):
+            patterns.extend(schema_patterns)
+        
+        # Learn type patterns
+        if type_patterns := await self._learn_type_patterns(ast):
+            patterns.extend(type_patterns)
+        
+        # Learn field patterns
+        if field_patterns := await self._learn_field_patterns(ast):
+            patterns.extend(field_patterns)
+        
+        return patterns
+
+    async def _analyze_patterns(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Analyze patterns in the GraphQL schema."""
+        patterns = {}
+        
+        # Analyze type patterns
+        patterns["type_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.STRUCTURE,
+            context
+        )
+        
+        # Analyze field patterns
+        patterns["field_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.SYNTAX,
+            context
+        )
+        
+        # Analyze directive patterns
+        patterns["directive_patterns"] = await self._pattern_processor.analyze_patterns(
+            ast,
+            PatternCategory.SEMANTICS,
+            context
+        )
+        
+        return patterns
+
+    async def _analyze_relationships(
+        self,
+        ast: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Analyze relationships in the GraphQL schema."""
+        relationships = {}
+        
+        # Analyze type relationships
+        relationships["type_relationships"] = self._analyze_type_relationships(ast)
+        
+        # Analyze field dependencies
+        relationships["field_dependencies"] = self._analyze_field_dependencies(ast)
+        
+        # Analyze directive usage
+        relationships["directive_usage"] = self._analyze_directive_usage(ast)
+        
+        return relationships
+
+    async def _generate_type_suggestions(self, ast: Dict[str, Any]) -> List[str]:
+        """Generate type suggestions based on the AST."""
+        # Implementation of _generate_type_suggestions method
+        pass
+
+    async def _generate_field_suggestions(self, ast: Dict[str, Any]) -> List[str]:
+        """Generate field suggestions based on the AST."""
+        # Implementation of _generate_field_suggestions method
+        pass
+
+    async def _generate_directive_suggestions(self, ast: Dict[str, Any]) -> List[str]:
+        """Generate directive suggestions based on the AST."""
+        # Implementation of _generate_directive_suggestions method
+        pass
+
+    async def _learn_schema_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Learn schema patterns from the AST."""
+        # Implementation of _learn_schema_patterns method
+        pass
+
+    async def _learn_type_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Learn type patterns from the AST."""
+        # Implementation of _learn_type_patterns method
+        pass
+
+    async def _learn_field_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Learn field patterns from the AST."""
+        # Implementation of _learn_field_patterns method
+        pass
+
+    async def _review_structure(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Review schema structure."""
+        # Implementation of _review_structure method
+        pass
+
+    async def _review_types(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Review type usage."""
+        # Implementation of _review_types method
+        pass
+
+    async def _review_fields(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Review field design."""
+        # Implementation of _review_fields method
+        pass
+
+    async def _analyze_type_relationships(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze type relationships."""
+        # Implementation of _analyze_type_relationships method
+        pass
+
+    async def _analyze_field_dependencies(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze field dependencies."""
+        # Implementation of _analyze_field_dependencies method
+        pass
+
+    async def _analyze_directive_usage(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze directive usage."""
+        # Implementation of _analyze_directive_usage method
+        pass
+
+    async def _extract_directive_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract directive patterns from the AST."""
+        # Implementation of _extract_directive_patterns method
+        pass
+
+    async def _suggest_schema_improvements(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Suggest schema improvements."""
+        # Implementation of _suggest_schema_improvements method
+        pass
+
+    async def _suggest_type_optimizations(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Suggest type optimizations."""
+        # Implementation of _suggest_type_optimizations method
+        pass
+
+    async def _suggest_field_improvements(self, ast: Dict[str, Any]) -> Dict[str, Any]:
+        """Suggest field improvements."""
+        # Implementation of _suggest_field_improvements method
+        pass

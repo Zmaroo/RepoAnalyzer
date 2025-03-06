@@ -39,9 +39,15 @@ from enum import Enum
 import numpy as np
 from parsers.ai_pattern_processor import get_processor as get_ai_processor
 from embedding.embedding_models import code_embedder, doc_embedder, arch_embedder
+from custom_parsers.base_imports import *
+from .models import PatternRelationship
+from db.pattern_storage import PatternStorageMetrics
+from db.retry_utils import RetryManager, RetryConfig
+from db.transaction import transaction_scope
+from ai_tools.pattern_integration import PatternLearningMetrics
 
 # Create coordinator instance
-upsert_coordinator = UpsertCoordinator()
+coordinator = None
 
 @dataclass
 class FileClassification:
@@ -51,30 +57,6 @@ class FileClassification:
     file_type: FileType
     confidence: float = 1.0
     metadata: Dict[str, Any] = field(default_factory=dict)
-
-# Mock pattern statistics module if import fails
-class MockPatternStats:
-    async def track_pattern_execution(self, **kwargs):
-        pass
-
-# Try to import pattern statistics
-try:
-    from analytics.pattern_statistics import pattern_statistics
-    PATTERN_STATS_ENABLED = True
-except ImportError:
-    pattern_statistics = MockPatternStats()
-    PATTERN_STATS_ENABLED = False
-    log("Pattern statistics module not available, using mock implementation", level="warning")
-
-# Add these common patterns at the top level
-COMMON_PATTERNS = {
-    'comment_single': re.compile(r'//\s*(.+)$|#\s*(.+)$'),
-    'comment_multi': re.compile(r'/\*.*?\*/|""".*?"""|\'\'\'.*?\'\'\'', re.DOTALL),
-    'metadata': re.compile(r'^@(\w+):\s*(.*)$'),
-    'url': re.compile(r'https?://\S+|www\.\S+'),
-    'email': re.compile(r'\b[\w\.-]+@[\w\.-]+\.\w+\b'),
-    'path': re.compile(r'(?:^|[\s(])(?:/[\w.-]+)+|\b[\w.-]+/[\w.-/]+')
-}
 
 class AnalyticsType(Enum):
     """Types of pattern analytics."""
@@ -208,10 +190,12 @@ class PatternProcessor(AIParserInterface):
         self._cache = None
         self._lock = asyncio.Lock()
         self._ai_processor = None
+        self._metrics = PatternStorageMetrics()
+        self._learning_metrics = PatternLearningMetrics()
+        self._retry_manager = RetryManager(RetryConfig())
         self._processing_stats = {
             "total_patterns": 0,
-            "ai_enhanced_patterns": 0,
-            "pattern_matches": 0,
+            "matched_patterns": 0,
             "failed_patterns": 0
         }
     
@@ -541,8 +525,7 @@ class PatternProcessor(AIParserInterface):
         """Reset processing statistics."""
         self._processing_stats = {
             "total_patterns": 0,
-            "ai_enhanced_patterns": 0,
-            "pattern_matches": 0,
+            "matched_patterns": 0,
             "failed_patterns": 0
         }
 
@@ -578,6 +561,56 @@ class PatternProcessor(AIParserInterface):
                 if relationship:
                     relationships.append(relationship)
         return relationships
+
+    async def track_pattern_execution(self, pattern_id: int, execution_time: float, success: bool) -> None:
+        """Track pattern execution metrics."""
+        async with transaction_scope() as txn:
+            if success:
+                self._metrics.total_patterns += 1
+                if pattern_id in self._patterns:
+                    pattern = self._patterns[pattern_id]
+                    if pattern.get("type") == "code":
+                        self._metrics.code_patterns += 1
+                    elif pattern.get("type") == "doc":
+                        self._metrics.doc_patterns += 1
+                    elif pattern.get("type") == "arch":
+                        self._metrics.arch_patterns += 1
+            
+            # Track retry statistics if needed
+            retry_stats = await self._retry_manager.get_stats()
+            if retry_stats["total_retries"] > 0:
+                await txn.track_pattern_change(pattern_id, "retry", retry_stats["successful_retries"])
+
+    async def track_learning_progress(self, pattern_type: str, count: int) -> None:
+        """Track pattern learning progress."""
+        self._learning_metrics.total_patterns_learned += count
+        if pattern_type == "code":
+            self._learning_metrics.code_patterns_learned += count
+        elif pattern_type == "doc":
+            self._learning_metrics.doc_patterns_learned += count
+        elif pattern_type == "arch":
+            self._learning_metrics.arch_patterns_learned += count
+        self._learning_metrics.last_update = time.time()
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get combined pattern metrics."""
+        return {
+            "storage": self._metrics.__dict__,
+            "learning": self._learning_metrics.__dict__,
+            "retry": self._retry_manager.get_stats(),
+            "processing": self._processing_stats
+        }
+
+    def reset_metrics(self) -> None:
+        """Reset all metrics."""
+        self._metrics = PatternStorageMetrics()
+        self._learning_metrics = PatternLearningMetrics()
+        self._retry_manager.reset_stats()
+        self._processing_stats = {
+            "total_patterns": 0,
+            "matched_patterns": 0,
+            "failed_patterns": 0
+        }
 
 # Global instance
 pattern_processor = None
@@ -890,38 +923,15 @@ async def process_node(self, source_code: str, pattern: CompiledPattern) -> List
         elif pattern.regex:
             matches = await self._process_regex_pattern(source_code, pattern)
         
-        # Record statistics if enabled
-        if PATTERN_STATS_ENABLED and hasattr(pattern, 'definition') and pattern.definition:
+        # Track pattern execution metrics
+        if hasattr(pattern, 'definition') and pattern.definition:
             execution_time_ms = (time.time() - start_time) * 1000
             pattern_id = getattr(pattern.definition, 'id', pattern.definition.name if hasattr(pattern.definition, 'name') else 'unknown')
-            pattern_type = getattr(pattern.definition, 'pattern_type', PatternType.CODE_STRUCTURE)
-            language = getattr(pattern.definition, 'language', 'unknown')
-            
-            # If pattern_type is a string, convert it to the enum
-            if isinstance(pattern_type, str):
-                try:
-                    pattern_type = PatternType(pattern_type)
-                except ValueError:
-                    pattern_type = PatternType.CODE_STRUCTURE
-            
-            # Track pattern execution statistics
-            try:
-                task = asyncio.create_task(pattern_statistics.track_pattern_execution(
-                    pattern_id=pattern_id,
-                    pattern_type=pattern_type,
-                    language=language,
-                    execution_time_ms=execution_time_ms,
-                    compilation_time_ms=compilation_time,
-                    matches_found=len(matches),
-                    memory_bytes=len(source_code) if matches else 0  # Rough estimate
-                ))
-                self._pending_tasks.add(task)
-                try:
-                    await task
-                finally:
-                    self._pending_tasks.remove(task)
-            except Exception as e:
-                log(f"Error tracking pattern statistics: {str(e)}", level="error")
+            await self.track_pattern_execution(
+                pattern_id=pattern_id,
+                execution_time=execution_time_ms,
+                success=len(matches) > 0
+            )
     except Exception as e:
         log(f"Error processing pattern: {str(e)}", level="error")
     

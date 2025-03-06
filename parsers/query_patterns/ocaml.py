@@ -10,7 +10,7 @@ downstream processing can store all key pieces of information.
 
 from typing import Dict, Any, List, Match, Optional
 import re
-from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
+from parsers.types import FileType, QueryPattern, PatternCategory, PatternPurpose
 from .common import COMMON_PATTERNS
 
 # Language identifier
@@ -218,6 +218,17 @@ OCAML_PATTERNS = {
             extract=extract_type_definition,
             description="Matches type definitions",
             examples=["type person = {name: string}"]
+        ),
+        "function_binding": QueryPattern(
+            pattern=r'^\s*let\s+([a-zA-Z0-9_\'-]+)\s+([a-zA-Z0-9_\'-]+(?:\s+[a-zA-Z0-9_\'-]+)*)\s*=',
+            extract=lambda m: {
+                "type": "function_binding",
+                "name": m.group(1),
+                "parameters": m.group(2).split(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches function bindings",
+            examples=["let add x y ="]
         )
     },
     PatternCategory.STRUCTURE: {
@@ -240,6 +251,16 @@ OCAML_PATTERNS = {
             },
             description="Matches open statements",
             examples=["open List"]
+        ),
+        "include_statement": QueryPattern(
+            pattern=r'^\s*include\s+([A-Z][a-zA-Z0-9_.]*)',
+            extract=lambda m: {
+                "type": "include_statement",
+                "module": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches include statements",
+            examples=["include MyModule"]
         )
     },
     PatternCategory.SEMANTICS: {
@@ -252,322 +273,198 @@ OCAML_PATTERNS = {
             },
             description="Matches exception declarations",
             examples=["exception MyError"]
+        ),
+        "type_constraint": QueryPattern(
+            pattern=r'^\s*constraint\s+([a-zA-Z0-9_\']+)\s*=\s*([^=\s]+)',
+            extract=lambda m: {
+                "type": "type_constraint",
+                "type_var": m.group(1),
+                "constraint": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches type constraints",
+            examples=["constraint 'a = int"]
+        )
+    },
+    PatternCategory.CODE_PATTERNS: {
+        "match_expression": QueryPattern(
+            pattern=r'^\s*match\s+([^\s]+)\s+with\s*\|?([^=]+)',
+            extract=lambda m: {
+                "type": "match_expression",
+                "value": m.group(1),
+                "patterns": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches pattern matching expressions",
+            examples=["match x with | Some y -> y | None -> 0"]
+        ),
+        "try_expression": QueryPattern(
+            pattern=r'^\s*try\s+([^\s]+)\s+with\s*\|?([^=]+)',
+            extract=lambda m: {
+                "type": "try_expression",
+                "expression": m.group(1),
+                "handlers": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches try expressions",
+            examples=["try f x with | Not_found -> 0"]
+        )
+    },
+    PatternCategory.DEPENDENCIES: {
+        "external_declaration": QueryPattern(
+            pattern=r'^\s*external\s+([a-zA-Z0-9_\']+)\s*:\s*([^=]+)\s*=\s*"([^"]+)"',
+            extract=lambda m: {
+                "type": "external_declaration",
+                "name": m.group(1),
+                "type_sig": m.group(2),
+                "primitive": m.group(3),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches external declarations",
+            examples=["external sqrt : float -> float = \"caml_sqrt\""]
+        ),
+        "module_type": QueryPattern(
+            pattern=r'^\s*module\s+type\s+([A-Z][a-zA-Z0-9_\']*)\s*=\s*([A-Z][a-zA-Z0-9_\']*)',
+            extract=lambda m: {
+                "type": "module_type",
+                "name": m.group(1),
+                "definition": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches module type definitions",
+            examples=["module type S = Comparable"]
+        )
+    },
+    PatternCategory.BEST_PRACTICES: {
+        "private_type": QueryPattern(
+            pattern=r'^\s*type\s+([a-zA-Z0-9_\']+)\s*=\s*private\s+([^=\s]+)',
+            extract=lambda m: {
+                "type": "private_type",
+                "name": m.group(1),
+                "implementation": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches private type declarations",
+            examples=["type t = private int"]
+        ),
+        "abstract_type": QueryPattern(
+            pattern=r'^\s*type\s+([a-zA-Z0-9_\']+)(?!\s*=)',
+            extract=lambda m: {
+                "type": "abstract_type",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches abstract type declarations",
+            examples=["type t"]
+        )
+    },
+    PatternCategory.COMMON_ISSUES: {
+        "missing_rec": QueryPattern(
+            pattern=r'^\s*let\s+([a-zA-Z0-9_\']+)(?:\s+[a-zA-Z0-9_\']+)*\s*=\s*.*?\1',
+            extract=lambda m: {
+                "type": "missing_rec",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Detects potentially missing rec keyword",
+            examples=["let factorial n = if n = 0 then 1 else n * factorial (n-1)"]
+        ),
+        "incomplete_match": QueryPattern(
+            pattern=r'^\s*match\s+([^\s]+)\s+with(?!\s*\|)',
+            extract=lambda m: {
+                "type": "incomplete_match",
+                "value": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Detects incomplete pattern matching",
+            examples=["match x with Some y -> y"]
+        )
+    },
+    PatternCategory.USER_PATTERNS: {
+        "custom_operator": QueryPattern(
+            pattern=r'^\s*let\s+\(([\+\-\*/<>=@^|&]+)\)',
+            extract=lambda m: {
+                "type": "custom_operator",
+                "operator": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom operator definitions",
+            examples=["let (+++) a b = a + b + 1"]
+        ),
+        "labeled_argument": QueryPattern(
+            pattern=r'^\s*let\s+[a-zA-Z0-9_\']+\s+~([a-zA-Z0-9_\']+)(?::\s*[^=]+)?\s*=',
+            extract=lambda m: {
+                "type": "labeled_argument",
+                "label": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches labeled argument definitions",
+            examples=["let f ~label x = x + 1"]
         )
     }
 }
 
-# OCaml patterns specifically for repository learning
-OCAML_PATTERNS_FOR_LEARNING = {
-    # Function/binding patterns
-    'function_binding': PatternInfo(
-        pattern=r'let\s+(rec\s+)?([a-zA-Z][a-zA-Z0-9_\']*)\s+([a-zA-Z][a-zA-Z0-9_\']*(?:\s+[a-zA-Z][a-zA-Z0-9_\']*)*)(?:\s*:\s*([a-zA-Z][a-zA-Z0-9_\'\s\.]*))?\s*=',
-        extract=lambda match: {
-            'is_recursive': bool(match.group(1)),
-            'name': match.group(2),
-            'parameters': [p.strip() for p in match.group(3).split()],
-            'return_type': match.group(4),
-            'type': 'function'
-        }
+# Add repository learning patterns
+OCAML_PATTERNS[PatternCategory.LEARNING] = {
+    "module_structure": QueryPattern(
+        pattern=r'^\s*module\s+([A-Z][a-zA-Z0-9_\']*)\s*=\s*struct(.*?)end',
+        extract=lambda m: {
+            "type": "module_structure",
+            "name": m.group(1),
+            "content": m.group(2),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches module structure patterns",
+        examples=["module M = struct let x = 1 end"]
     ),
-    
-    'value_binding': PatternInfo(
-        pattern=r'let\s+([a-zA-Z][a-zA-Z0-9_\']*)\s*(?::\s*([a-zA-Z][a-zA-Z0-9_\'\s\.]*))?\s*=\s*([^=]*)',
-        extract=lambda match: {
-            'name': match.group(1),
-            'value_type': match.group(2),
-            'value': match.group(3).strip(),
-            'type': 'value'
-        }
+    "function_patterns": QueryPattern(
+        pattern=r'^\s*let\s+([a-zA-Z0-9_\']+)\s+([a-zA-Z0-9_\']+(?:\s+[a-zA-Z0-9_\']+)*)\s*=\s*([^=]+)',
+        extract=lambda m: {
+            "type": "function_pattern",
+            "name": m.group(1),
+            "parameters": m.group(2).split(),
+            "body": m.group(3),
+            "is_recursive": "rec" in m.group(0),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches function definition patterns",
+        examples=["let add x y = x + y"]
     ),
-    
-    # Type patterns
-    'record_type': PatternInfo(
-        pattern=r'type\s+([a-zA-Z][a-zA-Z0-9_\']*)\s*=\s*\{\s*([^}]*)',
-        extract=lambda match: {
-            'name': match.group(1),
-            'fields_text': match.group(2),
-            'type_kind': 'record'
-        }
-    ),
-    
-    'variant_type': PatternInfo(
-        pattern=r'type\s+([a-zA-Z][a-zA-Z0-9_\']*)\s*=\s*\|?\s*([A-Z][a-zA-Z0-9_\']*(?:\s+of\s+[^|]*)?(?:\s*\|\s*[A-Z][a-zA-Z0-9_\']*(?:\s+of\s+[^|]*)?)*)',
-        extract=lambda match: {
-            'name': match.group(1),
-            'variants_text': match.group(2),
-            'type_kind': 'variant'
-        }
-    ),
-    
-    # Module patterns
-    'module_definition': PatternInfo(
-        pattern=r'module\s+([A-Z][a-zA-Z0-9_\']*)\s*=\s*(?:struct|sig)',
-        extract=lambda match: {
-            'name': match.group(1),
-            'module_type': 'struct' if 'struct' in match.group(0) else 'sig'
-        }
-    ),
-    
-    'open_statement': PatternInfo(
-        pattern=r'open\s+([A-Z][a-zA-Z0-9_\'\.]*)',
-        extract=lambda match: {
-            'module': match.group(1)
-        }
-    ),
-    
-    # Pattern matching
-    'match_expression': PatternInfo(
-        pattern=r'match\s+([^\s]+)\s+with(?:\s*\|)?',
-        extract=lambda match: {
-            'matched_value': match.group(1),
-            'type': 'match'
-        }
-    ),
-    
-    'function_match': PatternInfo(
-        pattern=r'function(?:\s*\|)?',
-        extract=lambda match: {
-            'type': 'function_match'
-        }
-    ),
-    
-    # Error handling
-    'try_expression': PatternInfo(
-        pattern=r'try\s+([^\s]+)\s+with(?:\s*\|)?',
-        extract=lambda match: {
-            'tried_expression': match.group(1),
-            'type': 'error_handling'
-        }
-    ),
-    
-    'exception_definition': PatternInfo(
-        pattern=r'exception\s+([A-Z][a-zA-Z0-9_\']*)',
-        extract=lambda match: {
-            'name': match.group(1),
-            'type': 'error_handling'
-        }
-    ),
-    
-    # Documentation patterns
-    'doc_comment': PatternInfo(
-        pattern=r'\(\*\*\s*(.*?)\s*\*\)',
-        extract=lambda match: {
-            'content': match.group(1),
-            'type': 'documentation'
-        }
-    ),
-    
-    # Naming conventions
-    'identifier': PatternInfo(
-        pattern=r'\b([a-zA-Z][a-zA-Z0-9_\']*)\b',
-        extract=lambda match: {
-            'name': match.group(1),
-            'convention': 'camelCase' if match.group(1)[0].islower() and any(c.isupper() for c in match.group(1)) else
-                         'snake_case' if '_' in match.group(1) and match.group(1)[0].islower() else
-                         'PascalCase' if match.group(1)[0].isupper() else
-                         'lowercase' if match.group(1).islower() else
-                         'unknown'
-        }
+    "type_patterns": QueryPattern(
+        pattern=r'^\s*type\s+([a-zA-Z0-9_\']+)(?:\s*=\s*([^=]+))?',
+        extract=lambda m: {
+            "type": "type_pattern",
+            "name": m.group(1),
+            "definition": m.group(2) if m.group(2) else None,
+            "is_abstract": not bool(m.group(2)),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches type definition patterns",
+        examples=["type t = int", "type t"]
     )
 }
 
-# Update OCAML_PATTERNS with learning patterns
-OCAML_PATTERNS[PatternCategory.LEARNING] = OCAML_PATTERNS_FOR_LEARNING
-
+# Function to extract patterns for repository learning
 def extract_ocaml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
-    """
-    Extract OCaml patterns from content for repository learning.
-    
-    Args:
-        content: The OCaml content to analyze
-        
-    Returns:
-        List of extracted patterns with metadata
-    """
+    """Extract patterns from OCaml content for repository learning."""
     patterns = []
     
-    # Compile patterns
-    compiled_patterns = {
-        name: re.compile(pattern_info.pattern, re.DOTALL | re.MULTILINE)
-        for name, pattern_info in OCAML_PATTERNS_FOR_LEARNING.items()
-    }
-    
-    # Process function/binding patterns
-    functions = []
-    for match in compiled_patterns['function_binding'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['function_binding'].extract(match)
-        functions.append(extracted)
-    
-    values = []
-    for match in compiled_patterns['value_binding'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['value_binding'].extract(match)
-        values.append(extracted)
-    
-    if functions:
-        patterns.append({
-            'name': 'ocaml_function_style',
-            'content': f"Functions: {', '.join(f['name'] for f in functions[:3])}",
-            'metadata': {
-                'functions': functions[:10],
-                'recursive_count': sum(1 for f in functions if f.get('is_recursive', False)),
-                'total_count': len(functions)
-            },
-            'confidence': 0.9
-        })
-    
-    if values:
-        patterns.append({
-            'name': 'ocaml_value_style',
-            'content': f"Values: {', '.join(v['name'] for v in values[:3])}",
-            'metadata': {
-                'values': values[:10],
-                'typed_count': sum(1 for v in values if v.get('value_type')),
-                'total_count': len(values)
-            },
-            'confidence': 0.85
-        })
-    
-    # Process type patterns
-    record_types = []
-    for match in compiled_patterns['record_type'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['record_type'].extract(match)
-        record_types.append(extracted)
-    
-    variant_types = []
-    for match in compiled_patterns['variant_type'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['variant_type'].extract(match)
-        variant_types.append(extracted)
-    
-    if record_types or variant_types:
-        patterns.append({
-            'name': 'ocaml_type_style',
-            'content': f"Types: {', '.join(t['name'] for t in (record_types + variant_types)[:3])}",
-            'metadata': {
-                'record_types': record_types[:5],
-                'variant_types': variant_types[:5],
-                'record_count': len(record_types),
-                'variant_count': len(variant_types)
-            },
-            'confidence': 0.9
-        })
-    
-    # Process module patterns
-    modules = []
-    for match in compiled_patterns['module_definition'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['module_definition'].extract(match)
-        modules.append(extracted)
-    
-    opens = []
-    for match in compiled_patterns['open_statement'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['open_statement'].extract(match)
-        opens.append(extracted)
-    
-    if modules:
-        patterns.append({
-            'name': 'ocaml_module_style',
-            'content': f"Modules: {', '.join(m['name'] for m in modules[:3])}",
-            'metadata': {
-                'modules': modules[:5],
-                'count': len(modules)
-            },
-            'confidence': 0.9
-        })
-    
-    if opens:
-        patterns.append({
-            'name': 'ocaml_open_style',
-            'content': f"Open statements: {', '.join(o['module'] for o in opens[:3])}",
-            'metadata': {
-                'opened_modules': [o['module'] for o in opens],
-                'count': len(opens)
-            },
-            'confidence': 0.85
-        })
-    
-    # Process pattern matching
-    match_expressions = []
-    for match in compiled_patterns['match_expression'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['match_expression'].extract(match)
-        match_expressions.append(extracted)
-    
-    function_matches = []
-    for match in compiled_patterns['function_match'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['function_match'].extract(match)
-        function_matches.append(extracted)
-    
-    if match_expressions or function_matches:
-        patterns.append({
-            'name': 'ocaml_pattern_matching',
-            'content': f"Pattern matching: {len(match_expressions)} match expressions, {len(function_matches)} function matches",
-            'metadata': {
-                'match_expressions': match_expressions[:5],
-                'function_matches': function_matches[:5],
-                'total_count': len(match_expressions) + len(function_matches)
-            },
-            'confidence': 0.85
-        })
-    
-    # Process error handling
-    try_expressions = []
-    for match in compiled_patterns['try_expression'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['try_expression'].extract(match)
-        try_expressions.append(extracted)
-    
-    exceptions = []
-    for match in compiled_patterns['exception_definition'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['exception_definition'].extract(match)
-        exceptions.append(extracted)
-    
-    if try_expressions or exceptions:
-        patterns.append({
-            'name': 'ocaml_error_handling',
-            'content': f"Error handling: {len(try_expressions)} try expressions, {len(exceptions)} exception definitions",
-            'metadata': {
-                'try_expressions': try_expressions[:5],
-                'exceptions': exceptions[:5],
-                'total_count': len(try_expressions) + len(exceptions)
-            },
-            'confidence': 0.85
-        })
-    
-    # Process documentation patterns
-    doc_comments = []
-    for match in compiled_patterns['doc_comment'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['doc_comment'].extract(match)
-        doc_comments.append(extracted)
-    
-    if doc_comments:
-        patterns.append({
-            'name': 'ocaml_documentation_style',
-            'content': f"Documentation: {len(doc_comments)} doc comments",
-            'metadata': {
-                'doc_comments': doc_comments[:5],
-                'count': len(doc_comments)
-            },
-            'confidence': 0.8
-        })
-    
-    # Process naming conventions
-    conventions = {}
-    for match in compiled_patterns['identifier'].finditer(content):
-        extracted = OCAML_PATTERNS_FOR_LEARNING['identifier'].extract(match)
-        convention = extracted.get('convention')
-        if convention != 'unknown':
-            conventions[convention] = conventions.get(convention, 0) + 1
-    
-    if conventions:
-        dominant = max(conventions.items(), key=lambda x: x[1])
-        if dominant[1] >= 5:  # Only if we have enough examples
-            patterns.append({
-                'name': f'ocaml_naming_convention_{dominant[0]}',
-                'content': f"Naming convention: {dominant[0]}",
-                'metadata': {
-                    'convention': dominant[0],
-                    'count': dominant[1],
-                    'all_conventions': conventions
-                },
-                'confidence': min(0.7 + (dominant[1] / 20), 0.95)  # Higher confidence with more instances
-            })
+    # Process each pattern category
+    for category in PatternCategory:
+        if category in OCAML_PATTERNS:
+            category_patterns = OCAML_PATTERNS[category]
+            for pattern_name, pattern in category_patterns.items():
+                if isinstance(pattern, QueryPattern):
+                    if isinstance(pattern.pattern, str):
+                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+                            pattern_data = pattern.extract(match)
+                            patterns.append({
+                                "name": pattern_name,
+                                "category": category.value,
+                                "content": match.group(0),
+                                "metadata": pattern_data,
+                                "confidence": 0.85
+                            })
     
     return patterns
 

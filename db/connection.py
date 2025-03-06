@@ -9,8 +9,9 @@ This module provides centralized database connection management for all database
 
 import asyncio
 import asyncpg
+from asyncpg import Connection
 from typing import Optional, Set, Dict, Any
-from neo4j import AsyncGraphDatabase
+from neo4j import AsyncGraphDatabase, Session
 from config import Neo4jConfig, PostgresConfig
 from utils.logger import log
 from utils.error_handling import (

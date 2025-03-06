@@ -12,6 +12,7 @@ All database operations use the centralized connection manager and transaction c
 import json
 import asyncio
 from typing import Dict, Optional, Set, List, Any
+from asyncpg import Transaction
 from utils.logger import log
 from utils.error_handling import (
     AsyncErrorBoundary,
@@ -23,7 +24,7 @@ from utils.error_handling import (
     handle_async_errors,
     ErrorSeverity
 )
-from db.retry_utils import DatabaseRetryManager, RetryConfig
+from db.retry_utils import RetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
 from db.transaction import transaction_scope
@@ -34,7 +35,7 @@ from db.graph_sync import get_graph_sync
 from db.neo4j_ops import get_neo4j_ops
 
 # Initialize retry manager for upsert operations
-_retry_manager = DatabaseRetryManager(RetryConfig(max_retries=5))  # More retries for upsert operations
+_retry_manager = RetryManager(RetryConfig(max_retries=5))
 
 class UpsertCoordinator:
     """Coordinates upsert operations across databases."""

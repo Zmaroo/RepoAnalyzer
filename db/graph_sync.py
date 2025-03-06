@@ -78,7 +78,6 @@ from utils.error_handling import (
 )
 from utils.async_runner import submit_async_task
 from utils.shutdown import register_shutdown_handler
-from analytics.pattern_statistics import pattern_profiler
 from utils.health_monitor import global_health_monitor
 
 # Create cache instance for graph state
@@ -120,8 +119,8 @@ class GraphSyncCoordinator:
                 severity=ErrorSeverity.CRITICAL
             ):
                 # Initialize retry manager
-                from db.retry_utils import DatabaseRetryManager, RetryConfig
-                instance._retry_manager = await DatabaseRetryManager.create(
+                from db.retry_utils import RetryManager, RetryConfig
+                instance._retry_manager = await RetryManager.create(
                     RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
                 )
                 

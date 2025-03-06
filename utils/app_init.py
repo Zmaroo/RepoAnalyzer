@@ -12,7 +12,6 @@ from utils.cache import cache_coordinator
 from utils.cache_analytics import start_cache_analytics
 from utils.shutdown import execute_shutdown_handlers
 from db.connection import connection_manager
-from analytics.pattern_statistics import pattern_profiler
 
 async def _initialize_components():
     """Initialize all application components asynchronously."""
@@ -61,18 +60,11 @@ async def _initialize_components():
         global_health_monitor.start_monitoring()
         log("Health monitoring started", level="info")
         
-        # Initialize pattern profiler
-        pattern_profiler.configure(sampling_rate=1.0, enabled=True)
-        log("Pattern profiler initialized", level="info")
-        
         # Register cleanup handlers in reverse initialization order
         from db.psql import close_db_pool
         
-        # Pattern profiler cleanup
-        from utils.shutdown import register_shutdown_handler
-        register_shutdown_handler(pattern_profiler.cleanup)
-        
         # Health monitoring cleanup
+        from utils.shutdown import register_shutdown_handler
         register_shutdown_handler(global_health_monitor.cleanup)
         
         # Cache system cleanup (should be after components that might use cache)

@@ -6,7 +6,7 @@ These patterns target the custom AST produced by our custom editorconfig parser.
 
 from typing import Dict, Any, List, Match
 from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory
+from parsers.types import FileType, QueryPattern, PatternCategory, PatternPurpose
 import re
 
 def extract_section(match: Match) -> Dict[str, Any]:
@@ -52,6 +52,16 @@ EDITORCONFIG_PATTERNS = {
             },
             description="Matches EditorConfig root declaration",
             examples=["root = true"]
+        ),
+        "glob_pattern": QueryPattern(
+            pattern=r'^\[([^\]]+)\]$',
+            extract=lambda m: {
+                "type": "glob_pattern",
+                "pattern": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches glob patterns in section headers",
+            examples=["[*.{js,py}]", "[lib/**.js]"]
         )
     },
     
@@ -65,6 +75,16 @@ EDITORCONFIG_PATTERNS = {
             },
             description="Matches EditorConfig comments",
             examples=["# This is a comment", "; Another comment"]
+        ),
+        "section_comment": QueryPattern(
+            pattern=r'^[#;]\s*Section:\s*(.*)$',
+            extract=lambda m: {
+                "type": "section_comment",
+                "content": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches section documentation",
+            examples=["# Section: JavaScript files"]
         )
     },
     
@@ -90,8 +110,171 @@ EDITORCONFIG_PATTERNS = {
             description="Matches EditorConfig charset settings",
             examples=["charset = utf-8"]
         )
+    },
+    
+    PatternCategory.CODE_PATTERNS: {
+        "file_type_pattern": QueryPattern(
+            pattern=r'^\[.*\.([\w,{}]+)\]$',
+            extract=lambda m: {
+                "type": "file_type_pattern",
+                "extensions": m.group(1).split(','),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches file type patterns",
+            examples=["[*.{js,ts}]", "[*.py]"]
+        ),
+        "code_style": QueryPattern(
+            pattern=r'^(max_line_length|tab_width|quote_type)\s*=\s*(.+)$',
+            extract=lambda m: {
+                "type": "code_style",
+                "property": m.group(1),
+                "value": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches code style settings",
+            examples=["max_line_length = 80", "quote_type = single"]
+        )
+    },
+    
+    PatternCategory.DEPENDENCIES: {
+        "include_pattern": QueryPattern(
+            pattern=r'^\[.*/?([\w-]+/)*\*\*?/.*\]$',
+            extract=lambda m: {
+                "type": "include_pattern",
+                "path": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches dependency inclusion patterns",
+            examples=["[lib/**.js]", "[vendor/**/*.ts]"]
+        )
+    },
+    
+    PatternCategory.BEST_PRACTICES: {
+        "whitespace": QueryPattern(
+            pattern=r'^(trim_trailing_whitespace|insert_final_newline)\s*=\s*(true|false)$',
+            extract=lambda m: {
+                "type": "whitespace",
+                "property": m.group(1),
+                "value": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches whitespace best practices",
+            examples=["trim_trailing_whitespace = true"]
+        ),
+        "end_of_line": QueryPattern(
+            pattern=r'^end_of_line\s*=\s*(lf|crlf|cr)$',
+            extract=lambda m: {
+                "type": "end_of_line",
+                "value": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches line ending settings",
+            examples=["end_of_line = lf"]
+        )
+    },
+    
+    PatternCategory.COMMON_ISSUES: {
+        "invalid_value": QueryPattern(
+            pattern=r'^([^=]+)=\s*(.*?)\s*$',
+            extract=lambda m: {
+                "type": "invalid_value",
+                "key": m.group(1).strip(),
+                "value": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Detects potentially invalid values",
+            examples=["indent_size = invalid"]
+        ),
+        "duplicate_section": QueryPattern(
+            pattern=r'^\[(.*)\]$',
+            extract=lambda m: {
+                "type": "duplicate_section",
+                "glob": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Detects duplicate section headers",
+            examples=["[*.py]", "[*.py]"]
+        )
+    },
+    
+    PatternCategory.USER_PATTERNS: {
+        "custom_property": QueryPattern(
+            pattern=r'^([a-z][a-z0-9_]*)\s*=\s*(.*)$',
+            extract=lambda m: {
+                "type": "custom_property",
+                "key": m.group(1),
+                "value": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom EditorConfig properties",
+            examples=["my_setting = value"]
+        )
     }
 }
+
+# Add repository learning patterns
+EDITORCONFIG_PATTERNS[PatternCategory.LEARNING] = {
+    "configuration_patterns": QueryPattern(
+        pattern=r'(?s)\[\*\].*?indent_style\s*=\s*(tab|space).*?indent_size\s*=\s*(\d+)',
+        extract=lambda m: {
+            "type": "indentation_config",
+            "indent_style": m.group(1),
+            "indent_size": m.group(2),
+            "complete_config": True,
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches complete indentation configuration",
+        examples=["[*]\nindent_style = space\nindent_size = 2"]
+    ),
+    "language_specific_patterns": QueryPattern(
+        pattern=r'(?s)\[\*\.(?:py|js|jsx|ts|tsx|html|css|htm)\](.*?)(?=\[|$)',
+        extract=lambda m: {
+            "type": "language_config_pattern",
+            "language": m.group(0).split('.')[1].split(']')[0],
+            "content": m.group(1),
+            "has_language_config": True,
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches language-specific configuration",
+        examples=["[*.py]\nindent_size = 4"]
+    ),
+    "best_practices_patterns": QueryPattern(
+        pattern=r'(?s)\[(.*?)\].*?(end_of_line|trim_trailing_whitespace|insert_final_newline)\s*=\s*(.*?)(?=\n|$)',
+        extract=lambda m: {
+            "type": "best_practice_pattern",
+            "glob": m.group(1),
+            "property": m.group(2),
+            "value": m.group(3),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches best practice configurations",
+        examples=["[*]\nend_of_line = lf"]
+    )
+}
+
+# Function to extract patterns for repository learning
+def extract_editorconfig_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from EditorConfig content for repository learning."""
+    patterns = []
+    
+    # Process each pattern category
+    for category in PatternCategory:
+        if category in EDITORCONFIG_PATTERNS:
+            category_patterns = EDITORCONFIG_PATTERNS[category]
+            for pattern_name, pattern in category_patterns.items():
+                if isinstance(pattern, QueryPattern):
+                    if isinstance(pattern.pattern, str):
+                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+                            pattern_data = pattern.extract(match)
+                            patterns.append({
+                                "name": pattern_name,
+                                "category": category.value,
+                                "content": match.group(0),
+                                "metadata": pattern_data,
+                                "confidence": 0.85
+                            })
+    
+    return patterns
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
@@ -105,237 +288,4 @@ PATTERN_RELATIONSHIPS = {
     "comment": {
         "can_be_contained_by": ["section", "editorconfig"]
     }
-}
-
-# Enhanced patterns for repository learning
-EDITORCONFIG_PATTERNS_FOR_LEARNING = {
-    "configuration_patterns": {
-        "indentation_config": QueryPattern(
-            pattern=r'(?s)\[\*\].*?indent_style\s*=\s*(tab|space).*?indent_size\s*=\s*(\d+)',
-            extract=lambda m: {
-                "type": "indentation_config",
-                "indent_style": m.group(1),
-                "indent_size": m.group(2),
-                "complete_config": True
-            },
-            description="Matches complete indentation configuration",
-            examples=["[*]\nindent_style = space\nindent_size = 2"]
-        ),
-        "charset_config": QueryPattern(
-            pattern=r'(?s)\[(.*?)\].*?charset\s*=\s*([a-zA-Z0-9-]+)',
-            extract=lambda m: {
-                "type": "charset_config",
-                "glob": m.group(1),
-                "charset": m.group(2),
-                "is_utf8": m.group(2).lower() == "utf-8"
-            },
-            description="Matches charset configuration",
-            examples=["[*.txt]\ncharset = utf-8"]
-        ),
-        "insert_final_newline": QueryPattern(
-            pattern=r'(?s)\[(.*?)\].*?insert_final_newline\s*=\s*(true|false)',
-            extract=lambda m: {
-                "type": "newline_config",
-                "glob": m.group(1),
-                "insert_final_newline": m.group(2).lower() == "true",
-                "follows_best_practice": m.group(2).lower() == "true"
-            },
-            description="Matches final newline configuration",
-            examples=["[*]\ninsert_final_newline = true"]
-        ),
-        "max_line_length": QueryPattern(
-            pattern=r'(?s)\[(.*?)\].*?max_line_length\s*=\s*(\d+|off)',
-            extract=lambda m: {
-                "type": "line_length_config",
-                "glob": m.group(1),
-                "max_length": m.group(2),
-                "has_limit": m.group(2).lower() != "off",
-                "is_standard_value": m.group(2) in ["80", "88", "100", "120"]
-            },
-            description="Matches line length configuration",
-            examples=["[*.py]\nmax_line_length = 88"]
-        )
-    },
-    "language_specific_patterns": {
-        "python_config": QueryPattern(
-            pattern=r'(?s)\[\*\.py\](.*?)(?=\[|$)',
-            extract=lambda m: {
-                "type": "language_config_pattern",
-                "language": "python",
-                "content": m.group(1),
-                "has_language_config": True
-            },
-            description="Matches Python-specific configuration",
-            examples=["[*.py]\nindent_size = 4\nmax_line_length = 88"]
-        ),
-        "javascript_config": QueryPattern(
-            pattern=r'(?s)\[\*\.(?:js|jsx|ts|tsx)\](.*?)(?=\[|$)',
-            extract=lambda m: {
-                "type": "language_config_pattern",
-                "language": "javascript",
-                "content": m.group(1),
-                "has_language_config": True
-            },
-            description="Matches JavaScript/TypeScript configuration",
-            examples=["[*.js]\nindent_size = 2"]
-        ),
-        "web_config": QueryPattern(
-            pattern=r'(?s)\[\*\.(?:html|css|htm)\](.*?)(?=\[|$)',
-            extract=lambda m: {
-                "type": "language_config_pattern",
-                "language": "web",
-                "content": m.group(1),
-                "has_language_config": True
-            },
-            description="Matches web files configuration",
-            examples=["[*.html]\nindent_size = 2"]
-        ),
-        "markup_config": QueryPattern(
-            pattern=r'(?s)\[\*\.(?:md|markdown|rst|xml|json|yaml|yml|toml)\](.*?)(?=\[|$)',
-            extract=lambda m: {
-                "type": "language_config_pattern",
-                "language": "markup",
-                "content": m.group(1),
-                "has_language_config": True
-            },
-            description="Matches markup files configuration",
-            examples=["[*.md]\ntrim_trailing_whitespace = false"]
-        ),
-        "system_config": QueryPattern(
-            pattern=r'(?s)\[(?:Makefile|makefile|*.mk)\](.*?)(?=\[|$)',
-            extract=lambda m: {
-                "type": "language_config_pattern",
-                "language": "makefile",
-                "content": m.group(1),
-                "forces_tabs": "indent_style = tab" in m.group(1)
-            },
-            description="Matches Makefile configuration",
-            examples=["[Makefile]\nindent_style = tab"]
-        )
-    },
-    "best_practices": {
-        "eol_pattern": QueryPattern(
-            pattern=r'end_of_line\s*=\s*(lf|cr|crlf)',
-            extract=lambda m: {
-                "type": "eol_pattern",
-                "eol": m.group(1),
-                "is_unix_style": m.group(1) == "lf",
-                "is_windows_style": m.group(1) == "crlf"
-            },
-            description="Matches end of line configuration pattern",
-            examples=["end_of_line = lf"]
-        ),
-        "trim_trailing_whitespace": QueryPattern(
-            pattern=r'trim_trailing_whitespace\s*=\s*(true|false)',
-            extract=lambda m: {
-                "type": "whitespace_pattern",
-                "trim_trailing": m.group(1) == "true",
-                "is_recommended_practice": m.group(1) == "true"
-            },
-            description="Matches trailing whitespace configuration",
-            examples=["trim_trailing_whitespace = true"]
-        ),
-        "quote_type": QueryPattern(
-            pattern=r'quote_type\s*=\s*(single|double|auto)',
-            extract=lambda m: {
-                "type": "quote_pattern",
-                "quote_type": m.group(1),
-                "is_consistent": m.group(1) in ["single", "double"]
-            },
-            description="Matches quote type configuration",
-            examples=["quote_type = single"]
-        )
-    },
-    "section_patterns": {
-        "wildcard_section": QueryPattern(
-            pattern=r'\[\*\](.*?)(?=\[|$)',
-            extract=lambda m: {
-                "type": "wildcard_section_pattern",
-                "content": m.group(1),
-                "has_universal_settings": len(m.group(1).strip()) > 0
-            },
-            description="Matches wildcard section that applies to all files",
-            examples=["[*]\nindent_style = space"]
-        ),
-        "complex_glob_section": QueryPattern(
-            pattern=r'\[\*\.(?:\{[^}]+\}|\*|[\w.]+(?:,[\w.]+)+)\](.*?)(?=\[|$)',
-            extract=lambda m: {
-                "type": "complex_glob_pattern",
-                "glob": m.group(0).split(']')[0] + ']',
-                "content": m.group(1),
-                "uses_braces": '{' in m.group(0).split(']')[0]
-            },
-            description="Matches sections with complex glob patterns",
-            examples=["[*.{js,py}]\ncharset = utf-8"]
-        ),
-        "nested_glob_section": QueryPattern(
-            pattern=r'\[(?:\*\*/|\*\*/)[\w*./]+\](.*?)(?=\[|$)',
-            extract=lambda m: {
-                "type": "nested_glob_pattern",
-                "glob": m.group(0).split(']')[0] + ']',
-                "content": m.group(1),
-                "uses_double_star": '**' in m.group(0).split(']')[0]
-            },
-            description="Matches sections with nested directory patterns",
-            examples=["[**/node_modules/**]\nindent_size = 2"]
-        )
-    }
-}
-
-# Add the repository learning patterns to the main patterns
-EDITORCONFIG_PATTERNS['REPOSITORY_LEARNING'] = EDITORCONFIG_PATTERNS_FOR_LEARNING
-
-# Function to extract patterns for repository learning
-def extract_editorconfig_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
-    """Extract patterns from EditorConfig content for repository learning."""
-    patterns = []
-    
-    # Process configuration patterns
-    for pattern_name, pattern in EDITORCONFIG_PATTERNS_FOR_LEARNING["configuration_patterns"].items():
-        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-            pattern_data = pattern.extract(match)
-            patterns.append({
-                "name": pattern_name,
-                "type": pattern_data.get("type", "configuration_pattern"),
-                "content": match.group(0),
-                "metadata": pattern_data,
-                "confidence": 0.85
-            })
-    
-    # Process language specific patterns
-    for pattern_name, pattern in EDITORCONFIG_PATTERNS_FOR_LEARNING["language_specific_patterns"].items():
-        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-            pattern_data = pattern.extract(match)
-            patterns.append({
-                "name": pattern_name,
-                "type": pattern_data.get("type", "language_config_pattern"),
-                "content": match.group(0),
-                "metadata": pattern_data,
-                "confidence": 0.8
-            })
-    
-    # Process best practices patterns
-    for pattern_name, pattern in EDITORCONFIG_PATTERNS_FOR_LEARNING["best_practices"].items():
-        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-            pattern_data = pattern.extract(match)
-            patterns.append({
-                "name": pattern_name,
-                "type": pattern_data.get("type", "best_practice"),
-                "content": match.group(0),
-                "metadata": pattern_data,
-                "confidence": 0.75
-            })
-    
-    # Process section patterns
-    for pattern_name, pattern in EDITORCONFIG_PATTERNS_FOR_LEARNING["section_patterns"].items():
-        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-            pattern_data = pattern.extract(match)
-            patterns.append({
-                "name": pattern_name,
-                "type": pattern_data.get("type", "section_pattern"),
-                "content": match.group(0),
-                "metadata": pattern_data,
-                "confidence": 0.8
-            })
-            
-    return patterns 
+} 

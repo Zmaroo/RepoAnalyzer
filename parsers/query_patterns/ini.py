@@ -3,7 +3,7 @@
 from typing import Dict, Any, List, Match, Optional
 import re
 from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory, PatternInfo
+from parsers.types import FileType, QueryPattern, PatternCategory, PatternPurpose
 
 # Language identifier
 LANGUAGE = "ini"
@@ -112,214 +112,190 @@ INI_PATTERNS = {
             description="Matches filesystem paths",
             examples=["log_file = /var/log/app.log"]
         )
+    },
+    
+    PatternCategory.CODE_PATTERNS: {
+        "command": QueryPattern(
+            pattern=r'^\s*command\s*=\s*(.+)$',
+            extract=lambda m: {
+                "type": "command",
+                "command": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches command definitions",
+            examples=["command = python script.py"]
+        ),
+        "script": QueryPattern(
+            pattern=r'^\s*script\s*=\s*(.+)$',
+            extract=lambda m: {
+                "type": "script",
+                "script": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches script definitions",
+            examples=["script = ./run.sh"]
+        )
+    },
+    
+    PatternCategory.DEPENDENCIES: {
+        "requires": QueryPattern(
+            pattern=r'^\s*requires\s*=\s*(.+)$',
+            extract=lambda m: {
+                "type": "requires",
+                "dependencies": [d.strip() for d in m.group(1).split(',')],
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches dependency requirements",
+            examples=["requires = config.ini, data.ini"]
+        ),
+        "import": QueryPattern(
+            pattern=r'^\s*import\s*=\s*(.+)$',
+            extract=lambda m: {
+                "type": "import",
+                "module": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches import statements",
+            examples=["import = common.ini"]
+        )
+    },
+    
+    PatternCategory.BEST_PRACTICES: {
+        "default_value": QueryPattern(
+            pattern=r'^\s*([^=]+?)\s*=\s*\$\{([^}:]+):([^}]+)\}',
+            extract=lambda m: {
+                "type": "default_value",
+                "key": m.group(1).strip(),
+                "variable": m.group(2),
+                "default": m.group(3),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches variables with default values",
+            examples=["timeout = ${TIMEOUT:30}"]
+        ),
+        "validation": QueryPattern(
+            pattern=r'^\s*validate_\w+\s*=\s*(.+)$',
+            extract=lambda m: {
+                "type": "validation",
+                "rule": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches validation rules",
+            examples=["validate_port = 1024-65535"]
+        )
+    },
+    
+    PatternCategory.COMMON_ISSUES: {
+        "duplicate_key": QueryPattern(
+            pattern=r'^\s*([^=]+?)\s*=\s*(.*)$',
+            extract=lambda m: {
+                "type": "duplicate_key",
+                "key": m.group(1).strip(),
+                "value": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Detects potential duplicate keys",
+            examples=["key = value1", "key = value2"]
+        ),
+        "invalid_section": QueryPattern(
+            pattern=r'^\s*\[(.*?)\]\s*$',
+            extract=lambda m: {
+                "type": "invalid_section",
+                "name": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Detects potentially invalid sections",
+            examples=["[invalid section name]"]
+        )
+    },
+    
+    PatternCategory.USER_PATTERNS: {
+        "custom_section": QueryPattern(
+            pattern=r'^\s*\[([a-z][a-z0-9_-]*)\]\s*$',
+            extract=lambda m: {
+                "type": "custom_section",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom section names",
+            examples=["[my_section]"]
+        ),
+        "custom_property": QueryPattern(
+            pattern=r'^\s*([a-z][a-z0-9_-]*)\s*=\s*(.*)$',
+            extract=lambda m: {
+                "type": "custom_property",
+                "key": m.group(1),
+                "value": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            description="Matches custom property names",
+            examples=["my_setting = value"]
+        )
     }
 }
 
-# INI patterns specifically for repository learning
-INI_PATTERNS_FOR_LEARNING = {
-    # Section patterns
-    'common_sections': PatternInfo(
-        pattern=r'^\s*\[(database|server|logging|app|application|web|api|security|auth|network|client|connection)\]\s*$',
-        extract=lambda match: {
-            'section_type': match.group(1).lower(),
-            'name': match.group(1),
-            'content': match.group(0)
-        }
+# Add repository learning patterns
+INI_PATTERNS[PatternCategory.LEARNING] = {
+    "section_patterns": QueryPattern(
+        pattern=r'^\s*\[(.*?)\]\s*\n((?:(?:[^[\n].*?\n)|(?:\s*\n))*)',
+        extract=lambda m: {
+            "type": "section_pattern",
+            "name": m.group(1).strip(),
+            "content": m.group(2),
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches section patterns",
+        examples=["[section]\nkey1 = value1\nkey2 = value2\n"]
     ),
-    
-    # Property categories
-    'connection_properties': PatternInfo(
-        pattern=r'^\s*(host|server|url|endpoint|address|port)\s*=\s*(.*)$',
-        extract=lambda match: {
-            'category': 'connection',
-            'key': match.group(1).strip(),
-            'value': match.group(2).strip()
-        }
+    "property_patterns": QueryPattern(
+        pattern=r'^\s*([a-z][a-z0-9_-]*)\s*=\s*([^;#\n]+)',
+        extract=lambda m: {
+            "type": "property_pattern",
+            "key": m.group(1),
+            "value": m.group(2).strip(),
+            "naming_convention": "snake_case" if "_" in m.group(1) else "kebab-case" if "-" in m.group(1) else "lowercase",
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches property patterns",
+        examples=["database_host = localhost"]
     ),
-    
-    'auth_properties': PatternInfo(
-        pattern=r'^\s*(user|username|password|auth|token|key|secret|credentials)\s*=\s*(.*)$',
-        extract=lambda match: {
-            'category': 'authentication',
-            'key': match.group(1).strip(),
-            'value': match.group(2).strip()
-        }
-    ),
-    
-    'logging_properties': PatternInfo(
-        pattern=r'^\s*(log|debug|verbose|trace|level)\s*=\s*(.*)$',
-        extract=lambda match: {
-            'category': 'logging',
-            'key': match.group(1).strip(),
-            'value': match.group(2).strip()
-        }
-    ),
-    
-    'filesystem_properties': PatternInfo(
-        pattern=r'^\s*(dir|directory|path|file|folder)\s*=\s*(.*)$',
-        extract=lambda match: {
-            'category': 'filesystem',
-            'key': match.group(1).strip(),
-            'value': match.group(2).strip()
-        }
-    ),
-    
-    # Reference patterns
-    'env_var_references': PatternInfo(
-        pattern=r'^\s*([^=]+?)\s*=\s*\$\{(\w+)\}',
-        extract=lambda match: {
-            'reference_type': 'environment',
-            'key': match.group(1).strip(),
-            'variable': match.group(2)
-        }
-    ),
-    
-    'include_references': PatternInfo(
-        pattern=r'^\s*(include|import|require)\s*=\s*(.*)$',
-        extract=lambda match: {
-            'reference_type': 'include',
-            'directive': match.group(1).strip(),
-            'path': match.group(2).strip()
-        }
-    ),
-    
-    # Naming conventions
-    'property_naming': PatternInfo(
-        pattern=r'^\s*([a-zA-Z0-9_.-]+)\s*=',
-        extract=lambda match: {
-            'key': match.group(1).strip(),
-            'convention': 'snake_case' if '_' in match.group(1) else
-                         'kebab-case' if '-' in match.group(1) else
-                         'camelCase' if match.group(1)[0].islower() and any(c.isupper() for c in match.group(1)) else
-                         'lowercase' if match.group(1).islower() else
-                         'UPPERCASE' if match.group(1).isupper() else
-                         'mixed'
-        }
+    "value_patterns": QueryPattern(
+        pattern=r'^\s*[^=]+=\s*(\$\{[^}]+\}|\$\w+|[\/\\][^;#\n]+|https?://[^;#\n]+)',
+        extract=lambda m: {
+            "type": "value_pattern",
+            "value": m.group(1),
+            "value_type": "environment" if m.group(1).startswith("$") else
+                         "path" if m.group(1).startswith(("/", "\\")) else
+                         "url" if m.group(1).startswith(("http://", "https://")) else
+                         "unknown",
+            "line_number": m.string.count('\n', 0, m.start()) + 1
+        },
+        description="Matches common value patterns",
+        examples=["password = ${DB_PASS}", "log_path = /var/log/app.log"]
     )
 }
 
-# Update INI_PATTERNS with learning patterns
-INI_PATTERNS[PatternCategory.LEARNING] = INI_PATTERNS_FOR_LEARNING
-
+# Function to extract patterns for repository learning
 def extract_ini_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
-    """
-    Extract INI patterns from content for repository learning.
-    
-    Args:
-        content: The INI content to analyze
-        
-    Returns:
-        List of extracted patterns with metadata
-    """
+    """Extract patterns from INI content for repository learning."""
     patterns = []
     
-    # Compile patterns
-    compiled_patterns = {
-        name: re.compile(pattern_info.pattern, re.MULTILINE)
-        for name, pattern_info in INI_PATTERNS_FOR_LEARNING.items()
-    }
-    
-    # Process section patterns
-    section_types = {}
-    for match in compiled_patterns['common_sections'].finditer(content):
-        extracted = INI_PATTERNS_FOR_LEARNING['common_sections'].extract(match)
-        section_type = extracted['section_type']
-        section_types[section_type] = section_types.get(section_type, 0) + 1
-    
-    if section_types:
-        patterns.append({
-            'name': 'ini_common_sections',
-            'content': ', '.join(section_types.keys()),
-            'metadata': {
-                'section_types': section_types
-            },
-            'confidence': 0.9 if len(section_types) > 2 else 0.8
-        })
-    
-    # Process property categories
-    property_categories = {}
-    for category in ['connection', 'auth', 'logging', 'filesystem']:
-        pattern_name = f'{category}_properties'
-        if pattern_name in compiled_patterns:
-            properties = []
-            for match in compiled_patterns[pattern_name].finditer(content):
-                extracted = INI_PATTERNS_FOR_LEARNING[pattern_name].extract(match)
-                properties.append({
-                    'key': extracted['key'],
-                    'value': extracted['value']
-                })
-            
-            if properties:
-                property_categories[category] = properties
-    
-    for category, props in property_categories.items():
-        if props:
-            patterns.append({
-                'name': f'ini_{category}_properties',
-                'content': '\n'.join(f"{prop['key']} = {prop['value']}" for prop in props[:3]),
-                'metadata': {
-                    'category': category,
-                    'properties': props
-                },
-                'confidence': 0.85
-            })
-    
-    # Process reference patterns
-    references = {}
-    for ref_type in ['env_var_references', 'include_references']:
-        refs = []
-        for match in compiled_patterns[ref_type].finditer(content):
-            extracted = INI_PATTERNS_FOR_LEARNING[ref_type].extract(match)
-            refs.append(extracted)
-        
-        if refs:
-            ref_category = extracted['reference_type']
-            references[ref_category] = refs
-    
-    for ref_category, refs in references.items():
-        if refs:
-            patterns.append({
-                'name': f'ini_{ref_category}_references',
-                'content': '\n'.join(str(ref) for ref in refs[:3]),
-                'metadata': {
-                    'reference_type': ref_category,
-                    'references': refs
-                },
-                'confidence': 0.9
-            })
-    
-    # Process naming conventions
-    convention_counts = {}
-    for match in compiled_patterns['property_naming'].finditer(content):
-        extracted = INI_PATTERNS_FOR_LEARNING['property_naming'].extract(match)
-        convention = extracted['convention']
-        convention_counts[convention] = convention_counts.get(convention, 0) + 1
-    
-    if convention_counts:
-        # Find the dominant convention
-        dominant_convention = max(convention_counts.items(), key=lambda x: x[1])
-        
-        if dominant_convention[1] >= 3:  # Only include if we have enough examples
-            # Get some examples of keys with this convention
-            examples = []
-            for match in compiled_patterns['property_naming'].finditer(content):
-                extracted = INI_PATTERNS_FOR_LEARNING['property_naming'].extract(match)
-                if extracted['convention'] == dominant_convention[0]:
-                    examples.append(extracted['key'])
-                    if len(examples) >= 5:
-                        break
-            
-            patterns.append({
-                'name': f'ini_naming_convention_{dominant_convention[0]}',
-                'content': f"INI naming convention: {dominant_convention[0]}",
-                'metadata': {
-                    'convention': dominant_convention[0],
-                    'count': dominant_convention[1],
-                    'examples': examples,
-                    'all_conventions': convention_counts
-                },
-                'confidence': min(0.7 + (dominant_convention[1] / 20), 0.95)  # Higher confidence with more instances
-            })
+    # Process each pattern category
+    for category in PatternCategory:
+        if category in INI_PATTERNS:
+            category_patterns = INI_PATTERNS[category]
+            for pattern_name, pattern in category_patterns.items():
+                if isinstance(pattern, QueryPattern):
+                    if isinstance(pattern.pattern, str):
+                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
+                            pattern_data = pattern.extract(match)
+                            patterns.append({
+                                "name": pattern_name,
+                                "category": category.value,
+                                "content": match.group(0),
+                                "metadata": pattern_data,
+                                "confidence": 0.85
+                            })
     
     return patterns
 

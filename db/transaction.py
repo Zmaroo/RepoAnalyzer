@@ -24,7 +24,7 @@ from utils.error_handling import (
     ConnectionError,
     DatabaseError
 )
-from db.retry_utils import DatabaseRetryManager, RetryConfig
+from db.retry_utils import RetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from utils.shutdown import register_shutdown_handler
 from utils.health_monitor import global_health_monitor
@@ -138,7 +138,7 @@ class TransactionCoordinator:
                 severity=ErrorSeverity.CRITICAL
             ):
                 # Initialize retry manager
-                instance._retry_manager = await DatabaseRetryManager.create(
+                instance._retry_manager = await RetryManager.create(
                     RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
                 )
                 
