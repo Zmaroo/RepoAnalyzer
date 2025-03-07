@@ -1,6 +1,9 @@
 """Query patterns for Starlark files."""
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 STARLARK_PATTERNS_FOR_LEARNING = {
@@ -153,100 +156,119 @@ STARLARK_PATTERNS_FOR_LEARNING = {
 }
 
 STARLARK_PATTERNS = {
-    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
-    
-    "syntax": {
-        "function": {
-            "pattern": """
-            [
-                (function_definition
-                    name: (identifier) @syntax.function.name
-                    parameters: (parameters
-                        [(parameter
-                            name: (identifier) @syntax.function.param.name
-                            default: (_)? @syntax.function.param.default)
-                         (typed_parameter
-                            name: (identifier) @syntax.function.param.typed.name
-                            type: (_) @syntax.function.param.typed.type)
-                         (typed_default_parameter
-                            name: (identifier) @syntax.function.param.typed_default.name
-                            type: (_) @syntax.function.param.typed_default.type
-                            default: (_) @syntax.function.param.typed_default.value)]*) @syntax.function.params
-                    body: (block) @syntax.function.body) @syntax.function.def,
-                
-                (lambda
-                    parameters: (lambda_parameters
-                        (parameter
-                            name: (identifier) @syntax.function.lambda.param.name)*)? @syntax.function.lambda.params
-                    body: (expression) @syntax.function.lambda.body) @syntax.function.lambda
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
-                "parameters": [p.get("text", "") for p in node["captures"].get("syntax.function.param.name", [])]
-            }
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "function": QueryPattern(
+                pattern="""
+                [
+                    (function_definition
+                        name: (identifier) @syntax.function.name
+                        parameters: (parameters
+                            [(parameter
+                                name: (identifier) @syntax.function.param.name
+                                default: (_)? @syntax.function.param.default)
+                             (typed_parameter
+                                name: (identifier) @syntax.function.param.typed.name
+                                type: (_) @syntax.function.param.typed.type)
+                             (typed_default_parameter
+                                name: (identifier) @syntax.function.param.typed_default.name
+                                type: (_) @syntax.function.param.typed_default.type
+                                default: (_) @syntax.function.param.typed_default.value)]*) @syntax.function.params
+                        body: (block) @syntax.function.body) @syntax.function.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
+                    "parameters": [p.get("text", "") for p in node["captures"].get("syntax.function.param.name", [])],
+                    "has_typed_params": any(
+                        "syntax.function.param.typed.name" in c or
+                        "syntax.function.param.typed_default.name" in c
+                        for c in node["captures"]
+                    )
+                }
+            )
         }
     },
-    
-    "structure": {
-        "module": {
-            "pattern": """
-            [
-                (import_statement
-                    name: (dotted_name) @structure.import.module) @structure.import,
-                
-                (import_from_statement
-                    module_name: (dotted_name) @structure.import.from.module
-                    name: (dotted_name) @structure.import.from.name) @structure.import.from,
-                
-                (expression_statement
-                    (assignment
-                        left: (identifier) @structure.module.attr.name
-                        right: (_) @structure.module.attr.value)) @structure.module.attr
-            ]
-            """,
-            "extract": lambda node: {
-                "module": node["captures"].get("structure.import.module", {}).get("text", "") or
-                         node["captures"].get("structure.import.from.module", {}).get("text", ""),
-                "name": node["captures"].get("structure.import.from.name", {}).get("text", "")
-            }
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "module": QueryPattern(
+                pattern="""
+                [
+                    (import_statement
+                        name: (dotted_name) @structure.import.module) @structure.import,
+                    
+                    (import_from_statement
+                        module_name: (dotted_name) @structure.import.from.module
+                        name: (dotted_name) @structure.import.from.name) @structure.import.from,
+                    
+                    (expression_statement
+                        (assignment
+                            left: (identifier) @structure.module.attr.name
+                            right: (_) @structure.module.attr.value)) @structure.module.attr
+                ]
+                """,
+                extract=lambda node: {
+                    "module": (
+                        node["captures"].get("structure.import.module", {}).get("text", "") or
+                        node["captures"].get("structure.import.from.module", {}).get("text", "")
+                    ),
+                    "name": node["captures"].get("structure.import.from.name", {}).get("text", "")
+                }
+            )
         }
     },
-    
-    "semantics": {
-        "variable": {
-            "pattern": """
-            [
-                (assignment
-                    left: [(identifier) @semantics.variable.name
-                          (list_pattern) @semantics.variable.list_pattern
-                          (tuple_pattern) @semantics.variable.tuple_pattern
-                          (dict_pattern) @semantics.variable.dict_pattern]
-                    right: (_) @semantics.variable.value) @semantics.variable.assignment,
-                
-                (for_statement
-                    left: [(identifier) @semantics.variable.loop.name
-                          (pattern) @semantics.variable.loop.pattern]
-                    right: (_) @semantics.variable.loop.iterable) @semantics.variable.loop
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("semantics.variable.name", {}).get("text", ""),
-                "value": node["captures"].get("semantics.variable.value", {}).get("text", "")
-            }
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                (comment) @documentation.comment
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("documentation.comment", {}).get("text", ""),
+                    "type": "comment"
+                }
+            )
         }
     },
-    
-    "documentation": {
-        "comment": {
-            "pattern": """
-            (comment) @documentation.comment
-            """,
-            "extract": lambda node: {
-                "text": node["captures"].get("documentation.comment", {}).get("text", "")
-            }
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.BUILD_RULES: {
+            "build_rules": QueryPattern(
+                pattern="""
+                [
+                    (call_expression
+                        function: (identifier) @build.rule.name {
+                            match: "^(binary|library|test|repository|toolchain|filegroup|alias)$"
+                        }
+                        arguments: (argument_list) @build.rule.args) @build.rule.def,
+                        
+                    (function_definition
+                        name: (identifier) @build.macro.name
+                        parameters: (parameters) @build.macro.params
+                        body: (block
+                            (expression_statement
+                                (call_expression
+                                    function: (identifier) @build.macro.internal.rule))* @build.macro.body) @build.macro.implementation
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "build_rules",
+                    "is_rule_call": "build.rule.def" in node["captures"],
+                    "is_macro_def": "build.macro.implementation" in node["captures"],
+                    "rule_name": node["captures"].get("build.rule.name", {}).get("text", ""),
+                    "macro_name": node["captures"].get("build.macro.name", {}).get("text", ""),
+                    "internal_rule_calls": [rule.get("text", "") for rule in node["captures"].get("build.macro.internal.rule", [])],
+                    "rule_type": (
+                        "direct_rule" if "build.rule.def" in node["captures"] else
+                        "macro" if "build.macro.implementation" in node["captures"] else
+                        "unknown"
+                    )
+                }
+            )
         }
     },
-    
+
     "REPOSITORY_LEARNING": STARLARK_PATTERNS_FOR_LEARNING
 } 

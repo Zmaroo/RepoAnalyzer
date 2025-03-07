@@ -1,6 +1,9 @@
 """Query patterns for Zig files."""
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 ZIG_PATTERNS_FOR_LEARNING = {
@@ -205,132 +208,138 @@ ZIG_PATTERNS_FOR_LEARNING = {
 }
 
 ZIG_PATTERNS = {
-    **COMMON_PATTERNS,
-    
-    "syntax": {
-        "function": {
-            "pattern": """
-            (function_definition
-                signature: (function_signature
-                    pub: (pub)? @syntax.function.pub
-                    name: (identifier) @syntax.function.name
-                    parameters: (parameter_list
-                        (parameter_declaration
-                            name: (identifier) @syntax.function.param.name
-                            type: (_) @syntax.function.param.type)* @syntax.function.params) @syntax.function.param_list
-                    return_type: (_) @syntax.function.return_type) @syntax.function.sig
-                body: (block) @syntax.function.body) @syntax.function
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
-                "is_public": "syntax.function.pub" in node["captures"] and node["captures"].get("syntax.function.pub", {}).get("text", "") != "",
-                "parameters": [p.get("text", "") for p in node["captures"].get("syntax.function.param.name", [])]
-            }
-        },
-        
-        "struct": {
-            "pattern": """
-            (container_declaration
-                pub: (pub)? @syntax.struct.pub
-                root_ptr: (asterisk)? @syntax.struct.ptr
-                name: (identifier) @syntax.struct.name
-                fields: (container_field_declaration
-                    name: (identifier) @syntax.struct.field.name
-                    type: (_) @syntax.struct.field.type)* @syntax.struct.fields) @syntax.struct {
-                filter: { @syntax.struct.text =~ "\\bstruct\\b" }
-            }
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.struct.name", {}).get("text", ""),
-                "is_public": "syntax.struct.pub" in node["captures"] and node["captures"].get("syntax.struct.pub", {}).get("text", "") != "",
-                "fields": [f.get("text", "") for f in node["captures"].get("syntax.struct.field.name", [])]
-            }
-        },
-        "enum": {
-            "pattern": """
-            (ErrorSetDecl
-                fields: (IDENTIFIER)* @syntax.enum.fields) @syntax.enum.def
-            """
-        }
-    },
-    
-    "semantics": {
-        "variable": {
-            "pattern": """
-            [
-                (variable_declaration
-                    pub: (pub)? @semantics.variable.pub
-                    const: (const)? @semantics.variable.const
-                    name: (identifier) @semantics.variable.name
-                    type: (_)? @semantics.variable.type
-                    value: (_) @semantics.variable.value) @semantics.variable.declaration,
-                
-                (assignment_statement
-                    left: (_) @semantics.variable.assign.target
-                    right: (_) @semantics.variable.assign.value) @semantics.variable.assignment
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("semantics.variable.name", {}).get("text", ""),
-                "is_constant": "semantics.variable.const" in node["captures"] and node["captures"].get("semantics.variable.const", {}).get("text", "") != "",
-                "type": node["captures"].get("semantics.variable.type", {}).get("text", ""),
-                "kind": "declaration" if "semantics.variable.declaration" in node["captures"] else "assignment"
-            }
-        },
-        "type": {
-            "pattern": """
-            [
-                (ErrorUnionExpr
-                    exception: (_)? @semantics.type.error
-                    type: (_) @semantics.type.value) @semantics.type.def,
-                (PrefixTypeOp
-                    operator: (_) @semantics.type.operator
-                    type: (_) @semantics.type.value) @semantics.type.def
-            ]
-            """
-        },
-        "expression": {
-            "pattern": """
-            [
-                (BinaryExpr) @semantics.expression.binary,
-                (UnaryExpr) @semantics.expression.unary,
-                (GroupedExpr) @semantics.expression.grouped,
-                (InitList) @semantics.expression.init
-            ]
-            """
-        }
-    },
-    
-    "structure": {
-        "import": {
-            "pattern": """
-            (call_expression
-                function: (identifier) @structure.import.func {
-                    match: "^@import$"
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "function": QueryPattern(
+                pattern="""
+                (function_definition
+                    signature: (function_signature
+                        pub: (pub)? @syntax.function.pub
+                        name: (identifier) @syntax.function.name
+                        parameters: (parameter_list
+                            (parameter_declaration
+                                name: (identifier) @syntax.function.param.name
+                                type: (_) @syntax.function.param.type)* @syntax.function.params) @syntax.function.param_list
+                        return_type: (_) @syntax.function.return_type) @syntax.function.sig
+                    body: (block) @syntax.function.body) @syntax.function
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
+                    "is_public": "syntax.function.pub" in node["captures"] and node["captures"].get("syntax.function.pub", {}).get("text", "") != "",
+                    "parameters": [p.get("text", "") for p in node["captures"].get("syntax.function.param.name", [])]
                 }
-                arguments: (argument_list
-                    (string_literal) @structure.import.path) @structure.import.args) @structure.import
-            """,
-            "extract": lambda node: {
-                "path": node["captures"].get("structure.import.path", {}).get("text", "")
-            }
+            ),
+            
+            "struct": QueryPattern(
+                pattern="""
+                (container_declaration
+                    pub: (pub)? @syntax.struct.pub
+                    root_ptr: (asterisk)? @syntax.struct.ptr
+                    name: (identifier) @syntax.struct.name
+                    fields: (container_field_declaration
+                        name: (identifier) @syntax.struct.field.name
+                        type: (_) @syntax.struct.field.type)* @syntax.struct.fields) @syntax.struct {
+                    filter: { @syntax.struct.text =~ "\\bstruct\\b" }
+                }
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.struct.name", {}).get("text", ""),
+                    "is_public": "syntax.struct.pub" in node["captures"] and node["captures"].get("syntax.struct.pub", {}).get("text", "") != "",
+                    "fields": [f.get("text", "") for f in node["captures"].get("syntax.struct.field.name", [])]
+                }
+            ),
+            "enum": QueryPattern(
+                pattern="""
+                (ErrorSetDecl
+                    fields: (IDENTIFIER)* @syntax.enum.fields) @syntax.enum.def
+                """
+            )
         }
     },
-    
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (line_comment) @documentation.line,
-                (container_doc_comment) @documentation.container
-            ]
-            """,
-            "extract": lambda node: {
-                "text": node["captures"].get("documentation.line", {}).get("text", "") or
-                       node["captures"].get("documentation.container", {}).get("text", "")
-            }
+
+    PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "variable": QueryPattern(
+                pattern="""
+                [
+                    (variable_declaration
+                        pub: (pub)? @semantics.variable.pub
+                        const: (const)? @semantics.variable.const
+                        name: (identifier) @semantics.variable.name
+                        type: (_)? @semantics.variable.type
+                        value: (_) @semantics.variable.value) @semantics.variable.declaration,
+                    
+                    (assignment_statement
+                        left: (_) @semantics.variable.assign.target
+                        right: (_) @semantics.variable.assign.value) @semantics.variable.assignment
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("semantics.variable.name", {}).get("text", ""),
+                    "is_constant": "semantics.variable.const" in node["captures"] and node["captures"].get("semantics.variable.const", {}).get("text", "") != "",
+                    "type": node["captures"].get("semantics.variable.type", {}).get("text", ""),
+                    "kind": "declaration" if "semantics.variable.declaration" in node["captures"] else "assignment"
+                }
+            ),
+            "type": QueryPattern(
+                pattern="""
+                [
+                    (ErrorUnionExpr
+                        exception: (_)? @semantics.type.error
+                        type: (_) @semantics.type.value) @semantics.type.def,
+                    (PrefixTypeOp
+                        operator: (_) @semantics.type.operator
+                        type: (_) @semantics.type.value) @semantics.type.def
+                ]
+                """
+            ),
+            "expression": QueryPattern(
+                pattern="""
+                [
+                    (BinaryExpr) @semantics.expression.binary,
+                    (UnaryExpr) @semantics.expression.unary,
+                    (GroupedExpr) @semantics.expression.grouped,
+                    (InitList) @semantics.expression.init
+                ]
+                """
+            )
         }
     },
-    
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "import": QueryPattern(
+                pattern="""
+                (call_expression
+                    function: (identifier) @structure.import.func {
+                        match: "^@import$"
+                    }
+                    arguments: (argument_list
+                        (string_literal) @structure.import.path) @structure.import.args) @structure.import
+                """,
+                extract=lambda node: {
+                    "path": node["captures"].get("structure.import.path", {}).get("text", "")
+                }
+            )
+        }
+    },
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (line_comment) @documentation.line,
+                    (container_doc_comment) @documentation.container
+                ]
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("documentation.line", {}).get("text", "") or
+                           node["captures"].get("documentation.container", {}).get("text", "")
+                }
+            )
+        }
+    },
+
     "REPOSITORY_LEARNING": ZIG_PATTERNS_FOR_LEARNING
 } 

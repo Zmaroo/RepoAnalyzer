@@ -487,6 +487,30 @@ class BaseFeatureExtractor(ABC, AIParserInterface):
             "insights": insights
         }
 
+    def _extract_category_features(
+        self,
+        category: FeatureCategory,
+        ast: Dict[str, Any],
+        source_code: str
+    ) -> Dict[str, Any]:
+        """Extract features for a specific category."""
+        # Update mapping to new categories
+        category_map = {
+            FeatureCategory.SYNTAX: PatternCategory.SYNTAX,
+            FeatureCategory.SEMANTICS: PatternCategory.SEMANTICS,
+            FeatureCategory.DOCUMENTATION: PatternCategory.DOCUMENTATION,
+            FeatureCategory.STRUCTURE: PatternCategory.STRUCTURE,
+            FeatureCategory.DEPENDENCIES: PatternCategory.DEPENDENCIES,  # New
+            FeatureCategory.PATTERNS: PatternCategory.CODE_PATTERNS,
+            FeatureCategory.METRICS: PatternCategory.BEST_PRACTICES,  # New mapping
+            FeatureCategory.CUSTOM: PatternCategory.USER_PATTERNS  # New mapping
+        }
+        
+        pattern_category = category_map.get(category, PatternCategory.CODE_PATTERNS)
+        patterns = self._patterns.get(pattern_category, {})
+        
+        return self._extract_patterns(ast, patterns, source_code)
+
 class TreeSitterFeatureExtractor(BaseFeatureExtractor):
     """[3.2.1] Tree-sitter specific feature extraction."""
     

@@ -46,7 +46,6 @@ _upsert_coordinator = UpsertCoordinator()
 # Export main functionality
 from .unified_indexer import (
     UnifiedIndexer,
-    ProcessingCoordinator,
     process_repository_indexing,
     index_active_project,
     index_active_project_sync
@@ -67,7 +66,6 @@ __all__ = [
     "get_or_create_repo",
     "FileProcessor",
     "UnifiedIndexer",
-    "ProcessingCoordinator",
     
     # File utilities
     "get_files",

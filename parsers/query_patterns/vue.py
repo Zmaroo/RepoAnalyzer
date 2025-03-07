@@ -1,6 +1,9 @@
 """Query patterns for Vue files."""
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 VUE_PATTERNS_FOR_LEARNING = {
@@ -224,81 +227,140 @@ VUE_PATTERNS_FOR_LEARNING = {
 }
 
 VUE_PATTERNS = {
-    **COMMON_PATTERNS,
-    
-    "syntax": {
-        "component": {
-            "pattern": """
-            (component
-                (template_element
-                    (start_tag)
-                    (_)* @syntax.component.template
-                    (end_tag))
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "component": QueryPattern(
+                pattern="""
+                (component
+                    (template_element
+                        (start_tag)
+                        (_)* @syntax.component.template
+                        (end_tag))
+                    (script_element
+                        (start_tag)
+                        (_)? @syntax.component.script
+                        (end_tag))
+                    (style_element
+                        (start_tag)
+                        (_)? @syntax.component.style
+                        (end_tag))) @syntax.component.def
+                """,
+                extract=lambda node: {
+                    "type": "component"
+                }
+            ),
+            "method": QueryPattern(
+                pattern="""
                 (script_element
                     (start_tag)
-                    (_)? @syntax.component.script
-                    (end_tag))
-                (style_element
+                    (raw_text) @syntax.method.body
+                    (end_tag)) @syntax.method.def
+                """
+            )
+        }
+    },
+
+    PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "expression": QueryPattern(
+                pattern="""
+                [
+                    (interpolation
+                        (raw_text) @semantics.expression.value) @semantics.expression.def,
+                    (directive_attribute
+                        name: (directive_name) @semantics.expression.name
+                        value: (attribute_value) @semantics.expression.value) @semantics.expression.def
+                ]
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("semantics.expression.value", {}).get("text", "")
+                }
+            ),
+            "variable": QueryPattern(
+                pattern="""
+                (attribute
+                    name: (attribute_name) @semantics.variable.name
+                    value: (attribute_value) @semantics.variable.value) @semantics.variable.def
+                """
+            )
+        }
+    },
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "module": QueryPattern(
+                pattern="""
+                (template_element
                     (start_tag)
-                    (_)? @syntax.component.style
-                    (end_tag))) @syntax.component.def
-            """,
-            "extract": lambda node: {
-                "type": "component"
-            }
-        },
-        "method": {
-            "pattern": """
-            (script_element
-                (start_tag)
-                (raw_text) @syntax.method.body
-                (end_tag)) @syntax.method.def
-            """
-        }
-    },
-    
-    "semantics": {
-        "expression": {
-            "pattern": """
-            [
-                (interpolation
-                    (raw_text) @semantics.expression.value) @semantics.expression.def,
-                (directive_attribute
-                    name: (directive_name) @semantics.expression.name
-                    value: (attribute_value) @semantics.expression.value) @semantics.expression.def
-            ]
-            """,
-            "extract": lambda node: {
-                "text": node["captures"].get("semantics.expression.value", {}).get("text", "")
-            }
-        },
-        "variable": {
-            "pattern": """
-            (attribute
-                name: (attribute_name) @semantics.variable.name
-                value: (attribute_value) @semantics.variable.value) @semantics.variable.def
-            """
+                    (_)* @structure.module.content
+                    (end_tag)) @structure.module.def
+                """
+            )
         }
     },
 
-    "structure": {
-        "module": {
-            "pattern": """
-            (template_element
-                (start_tag)
-                (_)* @structure.module.content
-                (end_tag)) @structure.module.def
-            """
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                (comment) @documentation.comment
+                """
+            )
         }
     },
 
-    "documentation": {
-        "comment": {
-            "pattern": """
-            (comment) @documentation.comment
-            """
+    PatternCategory.LEARNING: {
+        PatternPurpose.COMPONENT: {
+            "component_structure": QueryPattern(
+                pattern="""
+                [
+                    (script_element
+                        attribute: (attribute)* @component.script.attrs
+                        content: [(javascript_program) (typescript_program)]? @component.script.content) @component.script,
+                        
+                    (style_element
+                        attribute: (attribute)* @component.style.attrs
+                        content: (_)? @component.style.content) @component.style,
+                        
+                    (element
+                        name: (tag_name) @component.custom.name {
+                            match: "^[A-Z].*"
+                        }
+                        attribute: (attribute)* @component.custom.attrs
+                        body: (_)* @component.custom.body) @component.custom,
+                        
+                    (element
+                        name: (tag_name) @component.slot.name {
+                            match: "^slot$"
+                        }
+                        attribute: (attribute
+                            name: (attribute_name) @component.slot.attr.name
+                            value: (attribute_value) @component.slot.attr.value)* @component.slot.attrs
+                        body: (_)* @component.slot.body) @component.slot
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "component_structure",
+                    "is_script": "component.script" in node["captures"],
+                    "is_style": "component.style" in node["captures"],
+                    "is_custom_component": "component.custom" in node["captures"],
+                    "is_slot": "component.slot" in node["captures"],
+                    "has_typescript": "component.script" in node["captures"] and "typescript_program" in node["captures"].get("component.script.content", {}).get("type", ""),
+                    "script_attrs": [attr.get("text", "") for attr in node["captures"].get("component.script.attrs", [])],
+                    "style_attrs": [attr.get("text", "") for attr in node["captures"].get("component.style.attrs", [])],
+                    "component_name": node["captures"].get("component.custom.name", {}).get("text", ""),
+                    "slot_name": node["captures"].get("component.slot.attr.value", {}).get("text", "default"),
+                    "component_type": (
+                        "script" if "component.script" in node["captures"] else
+                        "style" if "component.style" in node["captures"] else
+                        "custom_component" if "component.custom" in node["captures"] else
+                        "slot" if "component.slot" in node["captures"] else
+                        "unknown"
+                    )
+                }
+            )
         }
     },
-    
+
     "REPOSITORY_LEARNING": VUE_PATTERNS_FOR_LEARNING
 } 

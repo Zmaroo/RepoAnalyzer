@@ -1,6 +1,9 @@
 """Query patterns for Solidity files."""
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 SOLIDITY_PATTERNS_FOR_LEARNING = {
@@ -190,90 +193,154 @@ SOLIDITY_PATTERNS_FOR_LEARNING = {
 }
 
 SOLIDITY_PATTERNS = {
-    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
-    
-    "syntax": {
-        "contract": {
-            "pattern": """
-            [
-                (contract_definition
-                    name: (identifier) @syntax.contract.name
-                    body: (contract_body) @syntax.contract.body) @syntax.contract.def
-            ]
-            """
-        },
-        "function": {
-            "pattern": """
-            [
-                (function_definition
-                    name: (identifier) @syntax.function.name
-                    parameters: (parameter_list) @syntax.function.params
-                    return_parameters: (parameter_list)? @syntax.function.returns
-                    body: (block) @syntax.function.body) @syntax.function.def,
-                
-                (fallback_receive_definition
-                    parameters: (parameter_list)? @syntax.function.params
-                    body: (block) @syntax.function.body) @syntax.function.fallback
-            ]
-            """
-        },
-        "modifier": {
-            "pattern": """
-            (modifier_definition
-                name: (identifier) @syntax.modifier.name
-                parameters: (parameter_list)? @syntax.modifier.params
-                body: (block) @syntax.modifier.body) @syntax.modifier.def
-            """
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "contract": QueryPattern(
+                pattern="""
+                [
+                    (contract_definition
+                        name: (identifier) @syntax.contract.name
+                        base: (inheritance_specifier 
+                            name: (identifier) @syntax.contract.base.name)* @syntax.contract.base
+                        body: (contract_body) @syntax.contract.body) @syntax.contract.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.contract.name", {}).get("text", ""),
+                    "has_inheritance": "syntax.contract.base" in node["captures"],
+                    "base_contracts": [base.get("text", "") for base in node["captures"].get("syntax.contract.base.name", [])]
+                }
+            ),
+            "function": QueryPattern(
+                pattern="""
+                [
+                    (function_definition
+                        name: (identifier) @syntax.function.name
+                        parameters: (parameter_list) @syntax.function.params
+                        return_parameters: (parameter_list)? @syntax.function.returns
+                        body: (block) @syntax.function.body) @syntax.function.def,
+                    
+                    (fallback_receive_definition
+                        parameters: (parameter_list)? @syntax.function.params
+                        body: (block) @syntax.function.body) @syntax.function.fallback
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
+                    "has_params": "syntax.function.params" in node["captures"],
+                    "has_returns": "syntax.function.returns" in node["captures"],
+                    "is_fallback": "syntax.function.fallback" in node["captures"]
+                }
+            )
         }
     },
-    "structure": {
-        "enum": {
-            "pattern": """
-            (enum_declaration
-                name: (identifier) @structure.enum.name
-                members: (enum_value_list)? @structure.enum.values) @structure.enum.def
-            """
-        },
-        "event": {
-            "pattern": """
-            (event_definition
-                name: (identifier) @structure.event.name
-                parameters: (event_parameter_list) @structure.event.params) @structure.event.def
-            """
-        },
-        "struct": {
-            "pattern": """
-            (struct_declaration
-                name: (identifier) @structure.struct.name
-                members: (struct_member_list) @structure.struct.members) @structure.struct.def
-            """
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "enum": QueryPattern(
+                pattern="""
+                (enum_declaration
+                    name: (identifier) @structure.enum.name
+                    members: (enum_value_list)? @structure.enum.values) @structure.enum.def
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("structure.enum.name", {}).get("text", ""),
+                    "has_values": "structure.enum.values" in node["captures"]
+                }
+            ),
+            "event": QueryPattern(
+                pattern="""
+                (event_definition
+                    name: (identifier) @structure.event.name
+                    parameters: (event_parameter_list) @structure.event.params) @structure.event.def
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("structure.event.name", {}).get("text", ""),
+                    "has_params": "structure.event.params" in node["captures"]
+                }
+            ),
+            "struct": QueryPattern(
+                pattern="""
+                (struct_declaration
+                    name: (identifier) @structure.struct.name
+                    members: (struct_member_list) @structure.struct.members) @structure.struct.def
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("structure.struct.name", {}).get("text", ""),
+                    "has_members": "structure.struct.members" in node["captures"]
+                }
+            )
         }
     },
-    "semantics": {
-        "variable": {
-            "pattern": """
-            [
-                (state_variable_declaration
-                    type: (type_name) @semantics.variable.type
-                    name: (identifier) @semantics.variable.name
-                    value: (_)? @semantics.variable.value) @semantics.variable.def,
-                
-                (variable_declaration_statement
-                    declaration: (variable_declaration) @semantics.variable.decl) @semantics.variable.stmt
-            ]
-            """
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment,
+                    (natspec) @documentation.natspec
+                ]
+                """,
+                extract=lambda node: {
+                    "text": (
+                        node["captures"].get("documentation.comment", {}).get("text", "") or
+                        node["captures"].get("documentation.natspec", {}).get("text", "")
+                    ),
+                    "type": "natspec" if "documentation.natspec" in node["captures"] else "comment"
+                }
+            )
         }
     },
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment,
-                (natspec) @documentation.natspec
-            ]
-            """
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.SECURITY: {
+            "security_patterns": QueryPattern(
+                pattern="""
+                [
+                    (require_statement
+                        condition: (_) @security.require.cond
+                        message: (_)? @security.require.msg) @security.require.def,
+                    
+                    (assert_statement
+                        condition: (_) @security.assert.cond) @security.assert.def,
+                    
+                    (call_expression
+                        function: (member_expression
+                            object: (_) @security.transfer.obj
+                            property: (identifier) @security.transfer.func {
+                                match: "^(transfer|send)$"
+                            }) @security.transfer.member
+                        arguments: (call_arguments) @security.transfer.args) @security.transfer.call,
+                    
+                    (function_call
+                        function: (identifier) @security.call.name {
+                            match: "^(delegatecall|callcode|call)$"
+                        }
+                        arguments: (call_arguments) @security.call.args) @security.call
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "security",
+                    "is_require": "security.require.def" in node["captures"],
+                    "is_assert": "security.assert.def" in node["captures"],
+                    "is_transfer": "security.transfer.call" in node["captures"],
+                    "is_low_level_call": "security.call" in node["captures"],
+                    "transfer_function": node["captures"].get("security.transfer.func", {}).get("text", ""),
+                    "call_function": node["captures"].get("security.call.name", {}).get("text", ""),
+                    "has_error_message": "security.require.msg" in node["captures"],
+                    "security_pattern": (
+                        "require_check" if "security.require.def" in node["captures"] else
+                        "assert_check" if "security.assert.def" in node["captures"] else
+                        "value_transfer" if "security.transfer.call" in node["captures"] else
+                        "delegate_call" if "security.call" in node["captures"] and "delegatecall" in node["captures"].get("security.call.name", {}).get("text", "") else
+                        "low_level_call" if "security.call" in node["captures"] else
+                        "unknown"
+                    )
+                }
+            )
         }
     },
-    
+
     "REPOSITORY_LEARNING": SOLIDITY_PATTERNS_FOR_LEARNING
 } 

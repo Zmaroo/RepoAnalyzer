@@ -2,7 +2,10 @@
 Query patterns for Nix files.
 """
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 NIX_PATTERNS_FOR_LEARNING = {
@@ -100,98 +103,166 @@ NIX_PATTERNS_FOR_LEARNING = {
 NIX_PATTERNS = {
     **COMMON_PATTERNS,
     
-    "syntax": {
-        "function": {
-            "pattern": """
-            [
-                (function_expression
-                    params: (formals) @syntax.function.params
-                    body: (_) @syntax.function.body) @syntax.function.def,
-                (lambda
-                    params: (formals) @syntax.function.lambda.params
-                    body: (_) @syntax.function.lambda.body) @syntax.function.lambda
-            ]
-            """
-        },
-        "conditional": {
-            "pattern": """
-            (if_expression
-                condition: (_) @syntax.conditional.if.condition
-                consequence: (_) @syntax.conditional.if.body
-                alternative: (_)? @syntax.conditional.if.else) @syntax.conditional.if
-            """
-        },
-        "let": {
-            "pattern": """
-            [
-                (let_expression
-                    body: (_) @syntax.let.body) @syntax.let.def,
-                (let_attrset_expression
-                    bindings: (binding_set) @syntax.let.attrs.bindings) @syntax.let.attrs
-            ]
-            """
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "function": QueryPattern(
+                pattern="""
+                [
+                    (function
+                        formals: (formals
+                            (_)* @syntax.function.params)
+                        body: (_) @syntax.function.body) @syntax.function.def,
+                    (let_in
+                        bindings: (binding_set
+                            (_)* @syntax.function.let.bindings)
+                        body: (_) @syntax.function.let.body) @syntax.function.let
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "function",
+                    "is_let_binding": "syntax.function.let" in node["captures"],
+                    "has_params": "syntax.function.params" in node["captures"],
+                    "has_bindings": "syntax.function.let.bindings" in node["captures"]
+                }
+            ),
+            "attribute": QueryPattern(
+                pattern="""
+                [
+                    (attrset
+                        bindings: (_)* @syntax.attr.bindings) @syntax.attr.set,
+                    (rec_attrset
+                        bindings: (_)* @syntax.attr.rec.bindings) @syntax.attr.rec.set,
+                    (inherit
+                        attrs: (_)* @syntax.attr.inherit.attrs) @syntax.attr.inherit
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "attribute",
+                    "is_recursive": "syntax.attr.rec.set" in node["captures"],
+                    "is_inherit": "syntax.attr.inherit" in node["captures"],
+                    "has_bindings": any(
+                        key in node["captures"] for key in 
+                        ["syntax.attr.bindings", "syntax.attr.rec.bindings"]
+                    )
+                }
+            )
         }
     },
 
-    "semantics": {
-        "variable": {
-            "pattern": """
-            [
-                (binding
-                    attrpath: (attrpath) @semantics.variable.name
-                    expression: (_) @semantics.variable.value) @semantics.variable.def,
-                (inherit
-                    attrs: (inherited_attrs) @semantics.variable.inherit.attrs) @semantics.variable.inherit,
-                (inherit_from
-                    expression: (_) @semantics.variable.inherit.from.expr
-                    attrs: (inherited_attrs) @semantics.variable.inherit.from.attrs) @semantics.variable.inherit.from
-            ]
-            """
-        },
-        "expression": {
-            "pattern": """
-            [
-                (binary_expression
-                    left: (_) @semantics.expression.binary.left
-                    operator: _ @semantics.expression.binary.op
-                    right: (_) @semantics.expression.binary.right) @semantics.expression.binary,
-                (unary_expression
-                    operator: _ @semantics.expression.unary.op
-                    argument: (_) @semantics.expression.unary.arg) @semantics.expression.unary
-            ]
-            """
+    PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "binding": QueryPattern(
+                pattern="""
+                [
+                    (binding
+                        name: (_) @semantics.binding.name
+                        value: (_) @semantics.binding.value) @semantics.binding.def,
+                    (inherit_from
+                        attrs: (_)* @semantics.binding.inherit.attrs
+                        expr: (_) @semantics.binding.inherit.from) @semantics.binding.inherit
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "binding",
+                    "name": node["captures"].get("semantics.binding.name", {}).get("text", ""),
+                    "is_inherit": "semantics.binding.inherit" in node["captures"],
+                    "has_value": "semantics.binding.value" in node["captures"]
+                }
+            )
         }
     },
 
-    "structure": {
-        "namespace": {
-            "pattern": """
-            [
-                (attrset_expression
-                    bindings: (binding_set) @structure.namespace.attrs) @structure.namespace.def,
-                (rec_attrset_expression
-                    bindings: (binding_set) @structure.namespace.rec.attrs) @structure.namespace.rec
-            ]
-            """
-        },
-        "import": {
-            "pattern": """
-            [
-                (import_expression
-                    path: (_) @structure.import.path) @structure.import.def,
-                (with_expression
-                    environment: (_) @structure.with.env
-                    body: (_) @structure.with.body) @structure.with
-            ]
-            """
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment.line,
+                    (comment_block) @documentation.comment.block
+                ]
+                """,
+                extract=lambda node: {
+                    "text": (
+                        node["captures"].get("documentation.comment.line", {}).get("text", "") or
+                        node["captures"].get("documentation.comment.block", {}).get("text", "")
+                    ),
+                    "type": "comment",
+                    "is_block": "documentation.comment.block" in node["captures"]
+                }
+            )
         }
     },
 
-    "documentation": {
-        "comment": {
-            "pattern": """
-            (comment) @documentation.comment
-            """
+    PatternCategory.LEARNING: {
+        PatternPurpose.BEST_PRACTICES: {
+            "derivation_patterns": QueryPattern(
+                pattern="""
+                [
+                    (apply_expression
+                        function: (_) @learning.deriv.func
+                        argument: (_) @learning.deriv.args
+                        (#match? @learning.deriv.func "mkDerivation|stdenv\\.mkDerivation")) @learning.deriv,
+                    (binding
+                        name: (_) @learning.deriv.attr.name
+                        (#match-any? @learning.deriv.attr.name "^(src|version|buildInputs|nativeBuildInputs|propagatedBuildInputs)$")
+                        value: (_) @learning.deriv.attr.value) @learning.deriv.attr
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "derivation",
+                    "uses_mkDerivation": "learning.deriv" in node["captures"],
+                    "has_common_attr": "learning.deriv.attr" in node["captures"],
+                    "derivation_type": node["captures"].get("learning.deriv.func", {}).get("text", ""),
+                    "attribute_name": node["captures"].get("learning.deriv.attr.name", {}).get("text", "")
+                }
+            )
+        },
+        PatternPurpose.DEPENDENCIES: {
+            "dependency_management": QueryPattern(
+                pattern="""
+                [
+                    (binding
+                        name: (_) @learning.dep.name
+                        (#match-any? @learning.dep.name "^(dependencies|buildInputs|nativeBuildInputs|propagatedBuildInputs)$")
+                        value: (_) @learning.dep.value) @learning.dep.def,
+                    (with_expression
+                        package: (_) @learning.dep.with.pkg
+                        body: (_) @learning.dep.with.body) @learning.dep.with
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "dependency_management",
+                    "is_dependency_list": "learning.dep.def" in node["captures"],
+                    "uses_with": "learning.dep.with" in node["captures"],
+                    "dependency_type": node["captures"].get("learning.dep.name", {}).get("text", ""),
+                    "with_package": node["captures"].get("learning.dep.with.pkg", {}).get("text", "")
+                }
+            )
+        },
+        PatternPurpose.PACKAGING: {
+            "package_configuration": QueryPattern(
+                pattern="""
+                [
+                    (binding
+                        name: (_) @learning.pkg.meta.name
+                        (#match-any? @learning.pkg.meta.name "^(meta|homepage|description|license|maintainers)$")
+                        value: (_) @learning.pkg.meta.value) @learning.pkg.meta.def,
+                    (binding
+                        name: (_) @learning.pkg.build.name
+                        (#match-any? @learning.pkg.build.name "^(configurePhase|buildPhase|installPhase|fixupPhase)$")
+                        value: (_) @learning.pkg.build.value) @learning.pkg.build.def
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "package_configuration",
+                    "is_metadata": "learning.pkg.meta.def" in node["captures"],
+                    "is_build_phase": "learning.pkg.build.def" in node["captures"],
+                    "attribute_name": (
+                        node["captures"].get("learning.pkg.meta.name", {}).get("text", "") or
+                        node["captures"].get("learning.pkg.build.name", {}).get("text", "")
+                    )
+                }
+            )
         }
     },
     

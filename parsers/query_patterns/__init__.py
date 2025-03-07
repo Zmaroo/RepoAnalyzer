@@ -14,25 +14,28 @@ from utils.shutdown import register_shutdown_handler
 from utils.async_runner import get_loop
 
 # Import types needed for type annotations
-from parsers.types import PatternCategory, QueryPattern, PatternInfo
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose, 
+    QueryPattern, PatternDefinition, PatternInfo
+)
 
 # Track loaded modules to prevent redundant loading
 _loaded_modules: Set[str] = set()
 
 # Registry to store loaded patterns to avoid reloading
-_pattern_registry: Dict[str, Dict[str, Any]] = {}
-_pattern_registries: Dict[str, Dict[str, Any]] = {}
+_pattern_registry: Dict[str, Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]] = {}
+_pattern_registries: Dict[str, Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]] = {}
 
 # Flag to track initialization
 _initialized = False
 _pending_tasks: Set[asyncio.Task] = set()
-_pattern_cache: Dict[str, Dict[str, Any]] = {}
+_pattern_cache: Dict[str, Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]] = {}
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
 # Import core pattern validation functionality
-from parsers.pattern_validator import validate_all_patterns, report_validation_results
+from parsers.pattern_processor import validate_all_patterns, report_validation_results
 
 # Import all language pattern modules
 from . import (
@@ -70,7 +73,7 @@ def get_pattern_module(language_id: str) -> Optional[Any]:
         # Not found, return None
         return None
 
-def _ensure_pattern_category_keys(patterns_dict: Dict[str, Any]) -> Dict[PatternCategory, Any]:
+def _ensure_pattern_category_keys(patterns_dict: Dict[str, Any]) -> Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]:
     """
     Ensures that all keys in the patterns dictionary are PatternCategory enum values.
     
@@ -84,29 +87,39 @@ def _ensure_pattern_category_keys(patterns_dict: Dict[str, Any]) -> Dict[Pattern
     Returns:
         Dictionary with PatternCategory enum keys
     """
-    result: Dict[PatternCategory, Any] = {}
+    result: Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]] = {}
     
     for key, value in patterns_dict.items():
-        # Try to convert string to enum
-        try:
-            if key == 'REPOSITORY_LEARNING':
-                # Special case handling for this category
-                enum_key = cast(PatternCategory, key)
-                result[enum_key] = value
-            else:
-                try:
-                    enum_key = PatternCategory[key]
-                    result[enum_key] = value
-                except KeyError:
-                    # If conversion fails, log a warning
-                    logger.warning(f"Could not convert key '{key}' to PatternCategory enum")
-        except (KeyError, TypeError):
-            # If conversion fails, log a warning but preserve the key for backward compatibility
-            logger.warning(f"Could not convert key '{key}' to PatternCategory enum")
+        if isinstance(key, str):
+            try:
+                if key == 'REPOSITORY_LEARNING':
+                    # Special case handling for learning patterns
+                    result[PatternCategory.LEARNING] = value
+                else:
+                    # Try to convert string to enum
+                    enum_key = PatternCategory[key.upper()]
+                    if isinstance(value, dict):
+                        # Convert inner dictionary to use PatternPurpose
+                        purpose_dict: Dict[PatternPurpose, Dict[str, QueryPattern]] = {}
+                        for purpose_key, patterns in value.items():
+                            if isinstance(purpose_key, str):
+                                try:
+                                    purpose_enum = PatternPurpose[purpose_key.upper()]
+                                    purpose_dict[purpose_enum] = patterns
+                                except KeyError:
+                                    logger.warning(f"Could not convert key '{purpose_key}' to PatternPurpose enum")
+                            else:
+                                purpose_dict[purpose_key] = patterns
+                        result[enum_key] = purpose_dict
+            except KeyError:
+                logger.warning(f"Could not convert key '{key}' to PatternCategory enum")
+        else:
+            # Key is already an enum
+            result[key] = value
     
     return result
 
-def get_patterns_for_language(language: str) -> Dict[str, Any]:
+def get_patterns_for_language(language: str) -> Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]:
     """
     Get tree-sitter query patterns for the specified language.
     
@@ -126,14 +139,15 @@ def get_patterns_for_language(language: str) -> Dict[str, Any]:
     pattern_module = get_pattern_module(language_id)
     
     if pattern_module and hasattr(pattern_module, "PATTERNS"):
-        _pattern_registry[language_id] = pattern_module.PATTERNS
-        return pattern_module.PATTERNS
+        patterns = _ensure_pattern_category_keys(pattern_module.PATTERNS)
+        _pattern_registry[language_id] = patterns
+        return patterns
     
     # No patterns found for this language
     _pattern_registry[language_id] = {}
     return {}
 
-def get_typed_patterns_for_language(language: str) -> Dict[PatternCategory, Dict[str, QueryPattern]]:
+def get_typed_patterns_for_language(language: str) -> Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]:
     """
     Get tree-sitter query patterns for the specified language with type annotations.
     This is a wrapper around get_patterns_for_language that ensures keys are PatternCategory enums.
@@ -145,10 +159,9 @@ def get_typed_patterns_for_language(language: str) -> Dict[PatternCategory, Dict
         Dictionary of patterns by category with PatternCategory enum keys
     """
     patterns = get_patterns_for_language(language)
-    # Type conversion handling is done inside _ensure_pattern_category_keys
-    return _ensure_pattern_category_keys(patterns)
+    return patterns  # Already properly typed by get_patterns_for_language
 
-def register_common_patterns() -> Dict[str, Any]:
+def register_common_patterns() -> Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]:
     """
     Register common patterns that apply to multiple languages.
     
@@ -158,7 +171,7 @@ def register_common_patterns() -> Dict[str, Any]:
     try:
         # Import common patterns
         from parsers.query_patterns.common import COMMON_PATTERNS
-        return COMMON_PATTERNS
+        return _ensure_pattern_category_keys(COMMON_PATTERNS)
     except ImportError:
         logger.warning("Common patterns module not found")
         return {}
@@ -188,7 +201,7 @@ async def initialize_pattern_system() -> None:
     register_common_patterns()
     await initialize_patterns()
 
-def get_all_available_patterns() -> Dict[str, Dict[str, Any]]:
+def get_all_available_patterns() -> Dict[str, Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]]:
     """
     Get all available patterns for all languages.
     
@@ -246,7 +259,7 @@ async def initialize_patterns():
         log(f"Error initializing query patterns: {e}", level="error")
         raise
 
-async def get_patterns_for_language(language_id: str) -> Optional[Dict[str, Any]]:
+async def get_patterns_for_language(language_id: str) -> Optional[Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]]:
     """
     Get all patterns for a specific language.
     
@@ -276,8 +289,8 @@ async def get_patterns_for_language(language_id: str) -> Optional[Dict[str, Any]
             finally:
                 _pending_tasks.remove(task)
         elif hasattr(module, 'PATTERNS'):
-            _pattern_cache[language_id] = module.PATTERNS
-            return module.PATTERNS
+            _pattern_cache[language_id] = _ensure_pattern_category_keys(module.PATTERNS)
+            return _pattern_cache[language_id]
     
     return None
 

@@ -1,6 +1,9 @@
 """Shell-specific Tree-sitter patterns."""
 
-from parsers.file_classification import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 SHELL_PATTERNS_FOR_LEARNING = {
@@ -184,155 +187,133 @@ SHELL_PATTERNS_FOR_LEARNING = {
 }
 
 SHELL_PATTERNS = {
-    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
-    
-    "syntax": {
-        "function": {
-            "pattern": """
-            [
-                (function_definition
-                    name: (word) @syntax.function.name
-                    body: (compound_statement) @syntax.function.body) @syntax.function.def,
-                
-                (command
-                    name: (command_name) @syntax.command.name
-                    argument: (word) @syntax.command.arg)* @syntax.command
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.function.name", {}).get("text", "") or
-                       node["captures"].get("syntax.command.name", {}).get("text", ""),
-                "is_command": "syntax.command" in node["captures"]
-            }
-        },
-        "variable": {
-            "pattern": """
-            [
-                (variable_assignment
-                    name: (variable_name) @syntax.variable.name
-                    value: (_) @syntax.variable.value) @syntax.variable.assignment,
-                
-                (expansion
-                    [
-                        (variable_name) @syntax.variable.reference
-                        (subscript
-                            name: (variable_name) @syntax.variable.array_name
-                            index: (_) @syntax.variable.index) @syntax.variable.array_ref
-                    ]) @syntax.variable.expansion
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.variable.name", {}).get("text", "") or
-                       node["captures"].get("syntax.variable.reference", {}).get("text", "") or
-                       node["captures"].get("syntax.variable.array_name", {}).get("text", ""),
-                "is_assignment": "syntax.variable.assignment" in node["captures"],
-                "is_array": "syntax.variable.array_ref" in node["captures"]
-            }
-        },
-        "condition": {
-            "pattern": """
-            [
-                (if_statement
-                    condition: (_) @syntax.if.condition
-                    consequence: (_) @syntax.if.then
-                    alternative: (_)? @syntax.if.else) @syntax.if,
-                
-                (case_statement
-                    value: (_) @syntax.case.value
-                    cases: (case_item)* @syntax.case.items) @syntax.case,
-                
-                (binary_expression
-                    left: (_) @syntax.binary.left
-                    operator: (_) @syntax.binary.operator
-                    right: (_) @syntax.binary.right) @syntax.binary,
-                
-                (test_command
-                    argument: (_)* @syntax.test.args) @syntax.test
-            ]
-            """,
-            "extract": lambda node: {
-                "type": ("if" if "syntax.if" in node["captures"] else
-                        "case" if "syntax.case" in node["captures"] else
-                        "binary" if "syntax.binary" in node["captures"] else
-                        "test")
-            }
-        }
-    },
-    
-    "semantics": {
-        "command": {
-            "pattern": """
-            [
-                (pipeline
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "function": QueryPattern(
+                pattern="""
+                [
+                    (function_definition
+                        name: (word) @syntax.function.name
+                        body: (compound_statement) @syntax.function.body) @syntax.function.def,
+                    
                     (command
-                        name: (command_name) @semantics.pipeline.cmd1) @semantics.pipeline.command1
-                    (command
-                        name: (command_name) @semantics.pipeline.cmd2) @semantics.pipeline.command2) @semantics.pipeline,
-                
-                (command
-                    name: (command_name) @semantics.redirection.cmd
-                    (_)*
-                    (redirections
+                        name: (command_name) @syntax.command.name
+                        argument: (word) @syntax.command.arg)* @syntax.command
+                ]
+                """,
+                extract=lambda node: {
+                    "name": (
+                        node["captures"].get("syntax.function.name", {}).get("text", "") or
+                        node["captures"].get("syntax.command.name", {}).get("text", "")
+                    ),
+                    "is_command": "syntax.command" in node["captures"]
+                }
+            ),
+            "variable": QueryPattern(
+                pattern="""
+                [
+                    (variable_assignment
+                        name: (variable_name) @syntax.variable.name
+                        value: (_) @syntax.variable.value) @syntax.variable.assignment,
+                    
+                    (expansion
                         [
-                            (file_redirect
-                                descriptor: (_)? @semantics.redirection.desc
-                                operator: (_) @semantics.redirection.op
-                                file: (_) @semantics.redirection.file) @semantics.redirection.file_redirect
-                            (heredoc_redirect) @semantics.redirection.heredoc
-                        ]) @semantics.redirection.all) @semantics.redirection
-            ]
-            """,
-            "extract": lambda node: {
-                "is_pipeline": "semantics.pipeline" in node["captures"],
-                "is_redirection": "semantics.redirection" in node["captures"],
-                "pipeline_commands": [
-                    node["captures"].get("semantics.pipeline.cmd1", {}).get("text", ""),
-                    node["captures"].get("semantics.pipeline.cmd2", {}).get("text", "")
-                ] if "semantics.pipeline" in node["captures"] else [],
-                "redirection_command": node["captures"].get("semantics.redirection.cmd", {}).get("text", "")
-            }
-        },
-        "loop": {
-            "pattern": """
-            [
-                (for_statement
-                    variable: (variable_name) @semantics.for.var
-                    value: (_) @semantics.for.values
-                    body: (do_group) @semantics.for.body) @semantics.for,
-                
-                (while_statement
-                    condition: (_) @semantics.while.cond
-                    body: (do_group) @semantics.while.body) @semantics.while,
-                
-                (until_statement
-                    condition: (_) @semantics.until.cond
-                    body: (do_group) @semantics.until.body) @semantics.until
-            ]
-            """,
-            "extract": lambda node: {
-                "type": ("for" if "semantics.for" in node["captures"] else
-                        "while" if "semantics.while" in node["captures"] else
-                        "until"),
-                "variable": node["captures"].get("semantics.for.var", {}).get("text", "")
-            }
+                            (variable_name) @syntax.variable.reference
+                            (subscript
+                                name: (variable_name) @syntax.variable.array_name
+                                index: (_) @syntax.variable.index) @syntax.variable.array_ref
+                        ]) @syntax.variable.expansion
+                ]
+                """,
+                extract=lambda node: {
+                    "name": (
+                        node["captures"].get("syntax.variable.name", {}).get("text", "") or
+                        node["captures"].get("syntax.variable.reference", {}).get("text", "") or
+                        node["captures"].get("syntax.variable.array_name", {}).get("text", "")
+                    ),
+                    "is_assignment": "syntax.variable.assignment" in node["captures"],
+                    "is_array": "syntax.variable.array_ref" in node["captures"]
+                }
+            )
         }
     },
-    
-    "structure": {
-        "script": {
-            "pattern": """
-            [
-                (shebang) @structure.shebang,
-                
-                (comment) @structure.comment
-            ]
-            """,
-            "extract": lambda node: {
-                "shebang": node["captures"].get("structure.shebang", {}).get("text", ""),
-                "comment": node["captures"].get("structure.comment", {}).get("text", "")
-            }
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "script": QueryPattern(
+                pattern="""
+                [
+                    (shebang) @structure.shebang,
+                    
+                    (comment) @structure.comment
+                ]
+                """,
+                extract=lambda node: {
+                    "shebang": node["captures"].get("structure.shebang", {}).get("text", ""),
+                    "comment": node["captures"].get("structure.comment", {}).get("text", "")
+                }
+            )
         }
     },
-    
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                (comment) @documentation.comment
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("documentation.comment", {}).get("text", ""),
+                    "type": "comment"
+                }
+            )
+        }
+    },
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.SCRIPTING: {
+            "scripting_patterns": QueryPattern(
+                pattern="""
+                [
+                    (function_definition
+                        name: (word) @script.func.name
+                        body: (compound_statement) @script.func.body) @script.func,
+                        
+                    (for_statement
+                        variable: (variable_name) @script.for.var
+                        value: (_) @script.for.values
+                        body: (do_group) @script.for.body) @script.for,
+                        
+                    (while_statement
+                        condition: (_) @script.while.cond
+                        body: (do_group) @script.while.body) @script.while,
+                        
+                    (case_statement
+                        value: (_) @script.case.value
+                        cases: (case_item
+                            pattern: (_) @script.case.pattern
+                            body: (_) @script.case.body)*) @script.case
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "scripting",
+                    "is_function_def": "script.func" in node["captures"],
+                    "is_for_loop": "script.for" in node["captures"],
+                    "is_while_loop": "script.while" in node["captures"],
+                    "is_case_statement": "script.case" in node["captures"],
+                    "function_name": node["captures"].get("script.func.name", {}).get("text", ""),
+                    "loop_variable": node["captures"].get("script.for.var", {}).get("text", ""),
+                    "script_structure": (
+                        "function_definition" if "script.func" in node["captures"] else
+                        "for_loop" if "script.for" in node["captures"] else
+                        "while_loop" if "script.while" in node["captures"] else
+                        "case_statement" if "script.case" in node["captures"] else
+                        "unknown"
+                    )
+                }
+            )
+        }
+    },
+
     "REPOSITORY_LEARNING": SHELL_PATTERNS_FOR_LEARNING
 } 

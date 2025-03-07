@@ -2,7 +2,10 @@
 Query patterns for VHDL files.
 """
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 VHDL_PATTERNS_FOR_LEARNING = {
@@ -222,93 +225,147 @@ VHDL_PATTERNS_FOR_LEARNING = {
 VHDL_PATTERNS = {
     **COMMON_PATTERNS,
     
-    "syntax": {
-        "entity": {
-            "pattern": """
-            (design_unit
-                (entity_declaration
-                    name: (identifier) @syntax.entity.name
-                    generic_clause: (generic_clause)? @syntax.entity.generics
-                    port_clause: (port_clause
-                        (interface_list
-                            (interface_element
-                                name: (identifier) @syntax.entity.port.name
-                                mode: [(in) (out) (inout) (buffer) (linkage)] @syntax.entity.port.mode
-                                type: (_) @syntax.entity.port.type)+) @syntax.entity.ports)) @syntax.entity
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.entity.name", {}).get("text", ""),
-                "ports": [p.get("text", "") for p in node["captures"].get("syntax.entity.port.name", [])]
-            }
-        },
-        
-        "architecture": {
-            "pattern": """
-            (design_unit
-                (architecture_body
-                    name: (identifier) @syntax.architecture.name
-                    entity: (identifier) @syntax.architecture.entity
-                    declarative_part: (architecture_declarative_part)? @syntax.architecture.declarations
-                    statement_part: (concurrent_statement_part)? @syntax.architecture.statements)) @syntax.architecture
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.architecture.name", {}).get("text", ""),
-                "entity": node["captures"].get("syntax.architecture.entity", {}).get("text", "")
-            }
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "entity": QueryPattern(
+                pattern="""
+                (design_unit
+                    (entity_declaration
+                        name: (identifier) @syntax.entity.name
+                        generic_clause: (generic_clause)? @syntax.entity.generics
+                        port_clause: (port_clause
+                            (interface_list
+                                (interface_element
+                                    name: (identifier) @syntax.entity.port.name
+                                    mode: [(in) (out) (inout) (buffer) (linkage)] @syntax.entity.port.mode
+                                    type: (_) @syntax.entity.port.type)+) @syntax.entity.ports)) @syntax.entity
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.entity.name", {}).get("text", ""),
+                    "ports": [p.get("text", "") for p in node["captures"].get("syntax.entity.port.name", [])]
+                }
+            ),
+            
+            "architecture": QueryPattern(
+                pattern="""
+                (design_unit
+                    (architecture_body
+                        name: (identifier) @syntax.architecture.name
+                        entity: (identifier) @syntax.architecture.entity
+                        declarative_part: (architecture_declarative_part)? @syntax.architecture.declarations
+                        statement_part: (concurrent_statement_part)? @syntax.architecture.statements)) @syntax.architecture
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.architecture.name", {}).get("text", ""),
+                    "entity": node["captures"].get("syntax.architecture.entity", {}).get("text", "")
+                }
+            )
         }
     },
     
-    "semantics": {
-        "signal": {
-            "pattern": """
-            [
-                (signal_declaration
-                    identifier_list: (identifier_list
-                        (identifier)+ @semantics.signal.name) @semantics.signal.names
-                    type: (_) @semantics.signal.type) @semantics.signal.declaration,
-                
-                (signal_assignment_statement
-                    target: (name) @semantics.signal.assignment.target
-                    waveform: (_) @semantics.signal.assignment.value) @semantics.signal.assignment
-            ]
-            """,
-            "extract": lambda node: {
-                "name": [n.get("text", "") for n in node["captures"].get("semantics.signal.name", [])],
-                "type": node["captures"].get("semantics.signal.type", {}).get("text", ""),
-                "kind": "declaration" if "semantics.signal.declaration" in node["captures"] else
-                       "assignment" if "semantics.signal.assignment" in node["captures"] else
-                       "unknown"
-            }
+    PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "signal": QueryPattern(
+                pattern="""
+                [
+                    (signal_declaration
+                        identifier_list: (identifier_list
+                            (identifier)+ @semantics.signal.name) @semantics.signal.names
+                        type: (_) @semantics.signal.type) @semantics.signal.declaration,
+                    
+                    (signal_assignment_statement
+                        target: (name) @semantics.signal.assignment.target
+                        waveform: (_) @semantics.signal.assignment.value) @semantics.signal.assignment
+                ]
+                """,
+                extract=lambda node: {
+                    "name": [n.get("text", "") for n in node["captures"].get("semantics.signal.name", [])],
+                    "type": node["captures"].get("semantics.signal.type", {}).get("text", ""),
+                    "kind": "declaration" if "semantics.signal.declaration" in node["captures"] else
+                           "assignment" if "semantics.signal.assignment" in node["captures"] else
+                           "unknown"
+                }
+            )
         }
     },
     
-    "structure": {
-        "process": {
-            "pattern": """
-            (process_statement
-                label: (identifier)? @structure.process.label
-                sensitivity_list: (sensitivity_list
-                    (identifier)* @structure.process.sensitivity) @structure.process.sensitivity_list
-                declarative_part: (process_declarative_part)? @structure.process.declarations
-                statement_part: (sequence_of_statements)? @structure.process.statements) @structure.process
-            """,
-            "extract": lambda node: {
-                "label": node["captures"].get("structure.process.label", {}).get("text", ""),
-                "sensitivity": [s.get("text", "") for s in node["captures"].get("structure.process.sensitivity", [])]
-            }
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "process": QueryPattern(
+                pattern="""
+                (process_statement
+                    label: (identifier)? @structure.process.label
+                    sensitivity_list: (sensitivity_list
+                        (identifier)* @structure.process.sensitivity) @structure.process.sensitivity_list
+                    declarative_part: (process_declarative_part)? @structure.process.declarations
+                    statement_part: (sequence_of_statements)? @structure.process.statements) @structure.process
+                """,
+                extract=lambda node: {
+                    "label": node["captures"].get("structure.process.label", {}).get("text", ""),
+                    "sensitivity": [s.get("text", "") for s in node["captures"].get("structure.process.sensitivity", [])]
+                }
+            )
         }
     },
     
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment
-            ]
-            """,
-            "extract": lambda node: {
-                "text": node["captures"].get("documentation.comment", {}).get("text", "")
-            }
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment
+                ]
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("documentation.comment", {}).get("text", "")
+                }
+            )
+        }
+    },
+    
+    PatternCategory.LEARNING: {
+        PatternPurpose.HARDWARE: {
+            "entity_architecture": QueryPattern(
+                pattern="""
+                [
+                    (design_unit
+                        (entity_declaration
+                            name: (identifier) @entity.name
+                            port_clause: (port_clause
+                                (interface_list
+                                    (interface_element
+                                        name: (identifier) @entity.port.name
+                                        mode: [(in) (out) (inout) (buffer) (linkage)] @entity.port.mode
+                                        type: (_) @entity.port.type)+ @entity.port.list) @entity.port.elements) @entity.port) @entity.decl),
+                            
+                    (design_unit
+                        (architecture_body
+                            name: (identifier) @arch.name
+                            entity: (identifier) @arch.entity
+                            declarative_part: (architecture_declarative_part
+                                [(signal_declaration) (constant_declaration) (component_declaration) (subtype_declaration) (function_body) (procedure_body)]* @arch.decl_items) @arch.decl
+                            statement_part: (concurrent_statement_part
+                                [(process_statement) (concurrent_procedure_call) (concurrent_signal_assignment) (component_instantiation) (generate_statement)]* @arch.stmt_items) @arch.stmts) @arch.body)
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "entity_architecture",
+                    "is_entity": "entity.decl" in node["captures"],
+                    "is_architecture": "arch.body" in node["captures"],
+                    "entity_name": node["captures"].get("entity.name", {}).get("text", ""),
+                    "arch_name": node["captures"].get("arch.name", {}).get("text", ""),
+                    "arch_entity": node["captures"].get("arch.entity", {}).get("text", ""),
+                    "port_names": [p.get("text", "") for p in node["captures"].get("entity.port.name", [])],
+                    "port_modes": [m.get("text", "") for m in node["captures"].get("entity.port.mode", [])],
+                    "port_types": [t.get("text", "") for t in node["captures"].get("entity.port.type", [])],
+                    "has_ports": "entity.port" in node["captures"] and len([p for p in node["captures"].get("entity.port.name", [])]) > 0,
+                    "structure_type": (
+                        "entity" if "entity.decl" in node["captures"] else
+                        "architecture" if "arch.body" in node["captures"] else
+                        "unknown"
+                    )
+                }
+            )
         }
     },
     

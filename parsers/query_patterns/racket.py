@@ -2,7 +2,10 @@
 Query patterns for Racket files.
 """
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 RACKET_PATTERNS_FOR_LEARNING = {
@@ -179,113 +182,134 @@ RACKET_PATTERNS_FOR_LEARNING = {
 }
 
 RACKET_PATTERNS = {
-    **COMMON_PATTERNS,
-    "syntax": {
-        "function": {
-            "pattern": """
-            [
-                (list_lit
-                    .
-                    (sym_lit) @def_type
-                    (#match? @def_type "^(define|lambda)$")
-                    .
-                    [(sym_lit) (list_lit)] @syntax.function.name
-                    .
-                    (list_lit)? @syntax.function.params
-                    .
-                    (_)* @syntax.function.body) @syntax.function.def
-            ]
-            """
-        },
-        "macro": {
-            "pattern": """
-            [
-                (list_lit
-                    .
-                    (sym_lit) @def_type
-                    (#match? @def_type "^(define-syntax|define-syntax-rule)$")
-                    .
-                    (sym_lit) @syntax.macro.name
-                    .
-                    (_)* @syntax.macro.body) @syntax.macro.def
-            ]
-            """
-        },
-        "class": [
-            """
-            (list_lit
-                .
-                (sym_lit) @def_type
-                (#match? @def_type "^(struct|class)$")
-                .
-                (sym_lit) @name
-                .
-                (_)* @fields) @class
-            """
-        ]
-    },
-    "structure": {
-        "module": {
-            "pattern": """
-            [
-                (list_lit
-                    .
-                    (sym_lit) @def_type
-                    (#match? @def_type "^(module|module\\*)$")
-                    .
-                    (sym_lit) @structure.module.name
-                    .
-                    (sym_lit) @structure.module.lang
-                    .
-                    (_)* @structure.module.body) @structure.module.def
-            ]
-            """
-        },
-        "require": {
-            "pattern": """
-            (list_lit
-                .
-                (sym_lit) @def_type
-                (#match? @def_type "^(require)$")
-                .
-                (_)* @structure.require.specs) @structure.require.def
-            """
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "function": QueryPattern(
+                pattern="""
+                [
+                    (list_lit
+                        .
+                        (sym_lit) @def_type
+                        (#match? @def_type "^(define|lambda)$")
+                        .
+                        [(sym_lit) (list_lit)] @syntax.function.name
+                        .
+                        (list_lit)? @syntax.function.params
+                        .
+                        (_)* @syntax.function.body) @syntax.function.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
+                    "type": "function",
+                    "has_params": "syntax.function.params" in node["captures"]
+                }
+            ),
+            "macro": QueryPattern(
+                pattern="""
+                [
+                    (list_lit
+                        .
+                        (sym_lit) @def_type
+                        (#match? @def_type "^(define-syntax|define-syntax-rule)$")
+                        .
+                        (sym_lit) @syntax.macro.name
+                        .
+                        (_)* @syntax.macro.body) @syntax.macro.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.macro.name", {}).get("text", ""),
+                    "type": "macro"
+                }
+            )
         }
     },
-    "semantics": {
-        "variable": [
-            """
-            (list_lit
-                .
-                (sym_lit) @def_type
-                (#match? @def_type "^(define-values|define-syntax)$")
-                .
-                (list_lit) @names
-                .
-                (_)* @value) @variable
-            """
-        ]
-    },
-    "documentation": {
-        "docstring": [
-            """
-            (list_lit
-                .
-                (sym_lit) @doc_type
-                (#match? @doc_type "^(doc|document)$")
-                .
-                (_)* @content) @docstring
-            """
-        ],
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment,
-                (block_comment) @documentation.block_comment,
-                (sexp_comment) @documentation.sexp_comment
-            ]
-            """
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "module": QueryPattern(
+                pattern="""
+                [
+                    (list_lit
+                        .
+                        (sym_lit) @def_type
+                        (#match? @def_type "^(module|module\\*)$")
+                        .
+                        (sym_lit) @structure.module.name
+                        .
+                        (sym_lit) @structure.module.lang
+                        .
+                        (_)* @structure.module.body) @structure.module.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("structure.module.name", {}).get("text", ""),
+                    "language": node["captures"].get("structure.module.lang", {}).get("text", "")
+                }
+            ),
+            "require": QueryPattern(
+                pattern="""
+                (list_lit
+                    .
+                    (sym_lit) @def_type
+                    (#match? @def_type "^(require)$")
+                    .
+                    (_)* @structure.require.specs) @structure.require.def
+                """,
+                extract=lambda node: {
+                    "type": "require",
+                    "specs": node["captures"].get("structure.require.specs", {}).get("text", "")
+                }
+            )
         }
     },
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment,
+                    (block_comment) @documentation.block_comment,
+                    (sexp_comment) @documentation.sexp_comment
+                ]
+                """,
+                extract=lambda node: {
+                    "text": (
+                        node["captures"].get("documentation.comment", {}).get("text", "") or
+                        node["captures"].get("documentation.block_comment", {}).get("text", "") or
+                        node["captures"].get("documentation.sexp_comment", {}).get("text", "")
+                    ),
+                    "type": "comment",
+                    "is_block": "documentation.block_comment" in node["captures"],
+                    "is_sexp": "documentation.sexp_comment" in node["captures"]
+                }
+            )
+        }
+    },
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.FUNCTIONAL: {
+            "functional_patterns": QueryPattern(
+                pattern="""
+                [
+                    (list_lit
+                        .
+                        (sym_lit) @func.name
+                        (#match? @func.name "^(map|filter|fold|reduce|andmap|ormap|apply)$")
+                        .
+                        (_)* @func.args) @func.app
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "functional",
+                    "function_name": node["captures"].get("func.name", {}).get("text", ""),
+                    "has_args": "func.args" in node["captures"]
+                }
+            )
+        }
+    },
+
     "REPOSITORY_LEARNING": RACKET_PATTERNS_FOR_LEARNING
 } 

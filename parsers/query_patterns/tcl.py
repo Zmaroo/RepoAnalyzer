@@ -1,6 +1,9 @@
 """Query patterns for TCL files."""
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 TCL_PATTERNS_FOR_LEARNING = {
@@ -247,92 +250,153 @@ TCL_PATTERNS_FOR_LEARNING = {
 }
 
 TCL_PATTERNS = {
-    **COMMON_PATTERNS,
-    
-    "syntax": {
-        "command": {
-            "pattern": """
-            (command
-                name: (_) @syntax.command.name
-                argument: (_)* @syntax.command.arg) @syntax.command
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.command.name", {}).get("text", ""),
-                "arg_count": len([arg for arg in node["captures"].get("syntax.command.arg", [])])
-            }
-        },
-        
-        "procedure": {
-            "pattern": """
-            (command
-                name: (_) @syntax.proc.cmd {
-                    match: "^proc$"
-                }
-                argument: (_) @syntax.proc.name
-                argument: (braced_word) @syntax.proc.params
-                argument: (braced_word) @syntax.proc.body) @syntax.proc
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.proc.name", {}).get("text", ""),
-                "params": node["captures"].get("syntax.proc.params", {}).get("text", "")
-            }
-        }
-    },
-    
-    "semantics": {
-        "variable": {
-            "pattern": """
-            [
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "command": QueryPattern(
+                pattern="""
                 (command
-                    name: (_) @semantics.variable.set {
-                        match: "^set$"
+                    name: (_) @syntax.command.name
+                    argument: (_)* @syntax.command.arg) @syntax.command
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.command.name", {}).get("text", ""),
+                    "arg_count": len([arg for arg in node["captures"].get("syntax.command.arg", [])])
+                }
+            ),
+            
+            "procedure": QueryPattern(
+                pattern="""
+                (command
+                    name: (_) @syntax.proc.cmd {
+                        match: "^proc$"
                     }
-                    argument: (_) @semantics.variable.name
-                    argument: (_)? @semantics.variable.value) @semantics.variable.assignment,
-                
-                (variable_substitution
-                    name: (_) @semantics.variable.reference) @semantics.variable.usage
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("semantics.variable.name", {}).get("text", "") or
-                       node["captures"].get("semantics.variable.reference", {}).get("text", ""),
-                "type": "assignment" if "semantics.variable.assignment" in node["captures"] else "usage"
-            }
-        }
-    },
-    
-    "structure": {
-        "namespace": {
-            "pattern": """
-            (command
-                name: (_) @structure.namespace.cmd {
-                    match: "^namespace$"
+                    argument: (_) @syntax.proc.name
+                    argument: (braced_word) @syntax.proc.params
+                    argument: (braced_word) @syntax.proc.body) @syntax.proc
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.proc.name", {}).get("text", ""),
+                    "params": node["captures"].get("syntax.proc.params", {}).get("text", "")
                 }
-                argument: (word) @structure.namespace.op {
-                    match: "^eval$"
+            )
+        }
+    },
+
+    PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "variable": QueryPattern(
+                pattern="""
+                [
+                    (command
+                        name: (_) @semantics.variable.set {
+                            match: "^set$"
+                        }
+                        argument: (_) @semantics.variable.name
+                        argument: (_)? @semantics.variable.value) @semantics.variable.assignment,
+                    
+                    (variable_substitution
+                        name: (_) @semantics.variable.reference) @semantics.variable.usage
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("semantics.variable.name", {}).get("text", "") or
+                           node["captures"].get("semantics.variable.reference", {}).get("text", ""),
+                    "type": "assignment" if "semantics.variable.assignment" in node["captures"] else "usage"
                 }
-                argument: (_) @structure.namespace.name
-                argument: (braced_word) @structure.namespace.body) @structure.namespace
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("structure.namespace.name", {}).get("text", "")
-            }
+            )
         }
     },
-    
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment
-            ]
-            """,
-            "extract": lambda node: {
-                "text": node["captures"].get("documentation.comment", {}).get("text", "")
-            }
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "namespace": QueryPattern(
+                pattern="""
+                (command
+                    name: (_) @structure.namespace.cmd {
+                        match: "^namespace$"
+                    }
+                    argument: (word) @structure.namespace.op {
+                        match: "^eval$"
+                    }
+                    argument: (_) @structure.namespace.name
+                    argument: (braced_word) @structure.namespace.body) @structure.namespace
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("structure.namespace.name", {}).get("text", "")
+                }
+            )
         }
     },
-    
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment
+                ]
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("documentation.comment", {}).get("text", "")
+                }
+            )
+        }
+    },
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.SCRIPTING: {
+            "procedural_patterns": QueryPattern(
+                pattern="""
+                [
+                    (command
+                        name: (_) @proc.def.name {
+                            match: "^proc$"
+                        }
+                        argument: [(braced_word) (quoted_word)] @proc.def.name_arg
+                        argument: (braced_word
+                            (word)* @proc.def.param) @proc.def.params
+                        argument: (braced_word) @proc.def.body) @proc.def,
+                        
+                    (command
+                        name: (_) @proc.call.name
+                        argument: (_)* @proc.call.arg) @proc.call {
+                        filter: { @proc.call.name is not null && @proc.call.name !~ "^(proc|if|while|for|foreach|switch|set)$" }
+                    },
+                        
+                    (command
+                        name: (_) @proc.return.name {
+                            match: "^return$"
+                        }
+                        argument: (_)? @proc.return.value) @proc.return,
+                        
+                    (command
+                        name: (_) @proc.uplevel.name {
+                            match: "^uplevel$"
+                        }
+                        argument: (_)+ @proc.uplevel.arg) @proc.uplevel
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "procedural_patterns",
+                    "is_proc_def": "proc.def" in node["captures"],
+                    "is_proc_call": "proc.call" in node["captures"],
+                    "is_return": "proc.return" in node["captures"],
+                    "is_uplevel": "proc.uplevel" in node["captures"],
+                    "proc_name": node["captures"].get("proc.def.name_arg", {}).get("text", "") if "proc.def" in node["captures"] else node["captures"].get("proc.call.name", {}).get("text", ""),
+                    "num_params": len([param for param in node["captures"].get("proc.def.param", [])]) if "proc.def.params" in node["captures"] else 0,
+                    "num_args": len([arg for arg in node["captures"].get("proc.call.arg", [])]) if "proc.call" in node["captures"] else 0,
+                    "has_return_value": "proc.return.value" in node["captures"] and node["captures"].get("proc.return.value", {}).get("text", "") != "",
+                    "proc_type": (
+                        "definition" if "proc.def" in node["captures"] else
+                        "call" if "proc.call" in node["captures"] else
+                        "return" if "proc.return" in node["captures"] else
+                        "uplevel" if "proc.uplevel" in node["captures"] else
+                        "unknown"
+                    )
+                }
+            )
+        }
+    },
+
     "REPOSITORY_LEARNING": TCL_PATTERNS_FOR_LEARNING
 } 

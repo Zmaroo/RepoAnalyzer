@@ -1,265 +1,197 @@
-"""Lua-specific Tree-sitter patterns."""
+"""Query patterns for Lua files."""
 
-from parsers.models import FileType, FileClassification
-from .common import COMMON_PATTERNS
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 
-LUA_PATTERNS_FOR_LEARNING = {
-    "oop_patterns": {
-        "pattern": """
-        [
-            (assignment_statement
-                variables: (variable_list
-                    (identifier) @oop.class.name)
-                values: (expression_list
-                    (table_constructor) @oop.class.body)) @oop.class,
-                
-            (field
-                name: (identifier) @oop.method.name
-                value: (function_definition) @oop.method.def) @oop.method,
-                
-            (function_call
-                prefix: (identifier) @oop.new.func
-                (#match? @oop.new.func "^[nN]ew$")
-                arguments: (_) @oop.new.args) @oop.new,
-                
-            (method_index_expression
-                table: (identifier) @oop.self.class
-                method: (identifier) @oop.self.method) @oop.self
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "oop_implementation",
-            "is_class_definition": "oop.class" in node["captures"],
-            "is_method_definition": "oop.method" in node["captures"],
-            "is_constructor_call": "oop.new" in node["captures"],
-            "is_method_call": "oop.self" in node["captures"],
-            "class_name": node["captures"].get("oop.class.name", {}).get("text", ""),
-            "method_name": node["captures"].get("oop.method.name", {}).get("text", ""),
-            "uses_self_parameter": "self" in (node["captures"].get("oop.method.def", {}).get("text", "") or ""),
-            "oop_style": (
-                "metatable_based" if "setmetatable" in (node["captures"].get("oop.class.body", {}).get("text", "") or "") else 
-                "table_based" if "oop.class" in node["captures"] else
-                "other"
+LUA_PATTERNS = {
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "function": QueryPattern(
+                pattern="""
+                [
+                    (function_definition
+                        name: (_) @syntax.function.name
+                        parameters: (parameters
+                            (_)* @syntax.function.params)
+                        body: (block)? @syntax.function.body) @syntax.function.def,
+                    (local_function
+                        name: (_) @syntax.function.local.name
+                        parameters: (parameters
+                            (_)* @syntax.function.local.params)
+                        body: (block)? @syntax.function.local.body) @syntax.function.local.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": (
+                        node["captures"].get("syntax.function.name", {}).get("text", "") or
+                        node["captures"].get("syntax.function.local.name", {}).get("text", "")
+                    ),
+                    "type": "function",
+                    "is_local": "syntax.function.local.def" in node["captures"],
+                    "has_params": any(
+                        key in node["captures"] for key in 
+                        ["syntax.function.params", "syntax.function.local.params"]
+                    )
+                }
+            ),
+            "table": QueryPattern(
+                pattern="""
+                [
+                    (table_constructor
+                        fields: (field_list
+                            (_)* @syntax.table.fields)) @syntax.table.def,
+                    (field
+                        name: (_)? @syntax.table.field.name
+                        value: (_) @syntax.table.field.value) @syntax.table.field
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "table",
+                    "has_fields": "syntax.table.fields" in node["captures"],
+                    "field_name": node["captures"].get("syntax.table.field.name", {}).get("text", ""),
+                    "field_value": node["captures"].get("syntax.table.field.value", {}).get("text", "")
+                }
             )
         }
     },
-    
-    "metaprogramming": {
-        "pattern": """
-        [
-            (function_call
-                prefix: (identifier) @meta.func.name
-                (#match? @meta.func.name "^setmetatable|getmetatable|rawget|rawset|debug\\.|load|loadfile$")
-                arguments: (_) @meta.func.args) @meta.func,
-                
-            (index_expression
-                table: (identifier) @meta.index.table
-                (#eq? @meta.index.table "_G")
-                index: (_) @meta.index.key) @meta.index,
-                
-            (field
-                name: (identifier) @meta.field.name
-                (#match? @meta.field.name "^__[a-z]+$")
-                value: (_) @meta.field.value) @meta.field
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "metaprogramming",
-            "uses_metatable_function": "meta.func" in node["captures"] and node["captures"].get("meta.func.name", {}).get("text", "") in ["setmetatable", "getmetatable"],
-            "uses_raw_access": "meta.func" in node["captures"] and node["captures"].get("meta.func.name", {}).get("text", "") in ["rawget", "rawset"],
-            "uses_global_table": "meta.index" in node["captures"],
-            "uses_metamethod": "meta.field" in node["captures"],
-            "metamethod_name": node["captures"].get("meta.field.name", {}).get("text", ""),
-            "metaprogramming_technique": (
-                "metatable_manipulation" if "meta.func" in node["captures"] and node["captures"].get("meta.func.name", {}).get("text", "") in ["setmetatable", "getmetatable"] else
-                "raw_table_access" if "meta.func" in node["captures"] and node["captures"].get("meta.func.name", {}).get("text", "") in ["rawget", "rawset"] else
-                "global_manipulation" if "meta.index" in node["captures"] else
-                "metamethod_definition" if "meta.field" in node["captures"] else
-                "other"
+
+    PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "variable": QueryPattern(
+                pattern="""
+                [
+                    (variable_declaration
+                        name: (_) @semantics.var.name
+                        value: (_)? @semantics.var.value) @semantics.var.def,
+                    (local_variable_declaration
+                        name: (_) @semantics.var.local.name
+                        value: (_)? @semantics.var.local.value) @semantics.var.local.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": (
+                        node["captures"].get("semantics.var.name", {}).get("text", "") or
+                        node["captures"].get("semantics.var.local.name", {}).get("text", "")
+                    ),
+                    "type": "variable",
+                    "is_local": "semantics.var.local.def" in node["captures"],
+                    "has_value": any(
+                        key in node["captures"] for key in 
+                        ["semantics.var.value", "semantics.var.local.value"]
+                    )
+                }
             )
         }
     },
-    
-    "module_patterns": {
-        "pattern": """
-        [
-            (assignment_statement
-                variables: (variable_list
-                    (identifier) @module.name)
-                values: (expression_list
-                    (table_constructor) @module.exports)) @module.def,
-                
-            (assignment_statement
-                variables: (variable_list
-                    (index_expression
-                        table: (identifier) @module.table
-                        index: (identifier) @module.field))
-                values: (expression_list
-                    (_) @module.value)) @module.field.def,
-                
-            (function_call
-                prefix: (identifier) @module.require.func
-                (#match? @module.require.func "^require$")
-                arguments: (arguments
-                    (string) @module.require.path)) @module.require
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "module_pattern",
-            "is_module_definition": "module.def" in node["captures"],
-            "is_module_field": "module.field.def" in node["captures"],
-            "is_module_import": "module.require" in node["captures"],
-            "module_name": node["captures"].get("module.name", {}).get("text", ""),
-            "module_table": node["captures"].get("module.table", {}).get("text", ""),
-            "module_field": node["captures"].get("module.field", {}).get("text", ""),
-            "required_module": node["captures"].get("module.require.path", {}).get("text", "").strip('"\''),
-            "module_style": (
-                "return_table" if "module.def" in node["captures"] else
-                "modify_table" if "module.field.def" in node["captures"] else
-                "require_import" if "module.require" in node["captures"] else
-                "other"
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment.line,
+                    (comment_block) @documentation.comment.block
+                ]
+                """,
+                extract=lambda node: {
+                    "text": (
+                        node["captures"].get("documentation.comment.line", {}).get("text", "") or
+                        node["captures"].get("documentation.comment.block", {}).get("text", "")
+                    ),
+                    "type": "comment",
+                    "is_block": "documentation.comment.block" in node["captures"]
+                }
             )
         }
     },
-    
-    "error_handling": {
-        "pattern": """
-        [
-            (function_call
-                prefix: (identifier) @error.func.name
-                (#match? @error.func.name "^pcall|xpcall|assert|error$")
-                arguments: (_) @error.func.args) @error.func,
-                
-            (if_statement
-                condition: (_) @error.check.cond
-                consequence: (_) @error.check.body
-                alternative: (_)? @error.check.else) @error.check,
-                
-            (binary_expression
-                operator: (binary_operator) @error.bin.op
-                (#match? @error.bin.op "^and|or$")
-                left: (_) @error.bin.left
-                right: (_) @error.bin.right) @error.bin
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "error_handling",
-            "uses_protected_call": "error.func" in node["captures"] and node["captures"].get("error.func.name", {}).get("text", "") in ["pcall", "xpcall"],
-            "uses_assertion": "error.func" in node["captures"] and node["captures"].get("error.func.name", {}).get("text", "") == "assert",
-            "raises_error": "error.func" in node["captures"] and node["captures"].get("error.func.name", {}).get("text", "") == "error",
-            "uses_condition_check": "error.check" in node["captures"],
-            "uses_short_circuit": "error.bin" in node["captures"],
-            "error_handling_style": (
-                "protected_call" if "error.func" in node["captures"] and node["captures"].get("error.func.name", {}).get("text", "") in ["pcall", "xpcall"] else
-                "assertion" if "error.func" in node["captures"] and node["captures"].get("error.func.name", {}).get("text", "") == "assert" else
-                "error_raising" if "error.func" in node["captures"] and node["captures"].get("error.func.name", {}).get("text", "") == "error" else
-                "condition_check" if "error.check" in node["captures"] else
-                "short_circuit" if "error.bin" in node["captures"] else
-                "other"
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "module": QueryPattern(
+                pattern="""
+                [
+                    (require
+                        path: (_) @structure.module.path) @structure.module.require,
+                    (return_statement
+                        value: (_) @structure.module.return) @structure.module.export
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "module",
+                    "is_require": "structure.module.require" in node["captures"],
+                    "is_export": "structure.module.export" in node["captures"],
+                    "path": node["captures"].get("structure.module.path", {}).get("text", ""),
+                    "return_value": node["captures"].get("structure.module.return", {}).get("text", "")
+                }
+            )
+        }
+    },
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.BEST_PRACTICES: {
+            "error_handling": QueryPattern(
+                pattern="""
+                [
+                    (function_call
+                        name: (_) @learning.error.pcall.name
+                        (#match? @learning.error.pcall.name "pcall|xpcall")) @learning.error.pcall,
+                    (if_statement
+                        condition: (_) @learning.error.check.cond
+                        consequence: (block) @learning.error.check.block) @learning.error.check
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "error_handling",
+                    "uses_pcall": "learning.error.pcall" in node["captures"],
+                    "has_error_check": "learning.error.check" in node["captures"],
+                    "pcall_type": node["captures"].get("learning.error.pcall.name", {}).get("text", ""),
+                    "check_condition": node["captures"].get("learning.error.check.cond", {}).get("text", "")
+                }
+            )
+        },
+        PatternPurpose.PERFORMANCE: {
+            "table_optimization": QueryPattern(
+                pattern="""
+                [
+                    (function_call
+                        name: (_) @learning.table.opt.name
+                        (#match? @learning.table.opt.name "table\\.concat|table\\.pack|table\\.unpack")) @learning.table.opt,
+                    (for_statement
+                        iterator: (_) @learning.table.iter.var
+                        sequence: (_) @learning.table.iter.seq) @learning.table.iter
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "table_optimization",
+                    "uses_table_function": "learning.table.opt" in node["captures"],
+                    "uses_iterator": "learning.table.iter" in node["captures"],
+                    "table_function": node["captures"].get("learning.table.opt.name", {}).get("text", ""),
+                    "iterator_var": node["captures"].get("learning.table.iter.var", {}).get("text", "")
+                }
+            )
+        },
+        PatternPurpose.METAPROGRAMMING: {
+            "meta_features": QueryPattern(
+                pattern="""
+                [
+                    (function_call
+                        name: (_) @learning.meta.name
+                        (#match? @learning.meta.name "setmetatable|getmetatable|rawget|rawset|debug\\.")) @learning.meta.call,
+                    (table_constructor
+                        fields: (field_list
+                            (_) @learning.meta.table.fields)) @learning.meta.table
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "metaprogramming",
+                    "uses_meta_function": "learning.meta.call" in node["captures"],
+                    "has_meta_table": "learning.meta.table" in node["captures"],
+                    "meta_function": node["captures"].get("learning.meta.name", {}).get("text", ""),
+                    "has_fields": "learning.meta.table.fields" in node["captures"]
+                }
             )
         }
     }
-}
-
-LUA_PATTERNS = {
-    **COMMON_PATTERNS,
-    
-    "syntax": {
-        "function": {
-            "pattern": """
-            [
-                (function_declaration
-                    name: [(identifier) @syntax.function.name
-                          (dot_index_expression
-                            table: (identifier) @syntax.function.table
-                            field: (identifier) @syntax.function.field)
-                          (method_index_expression
-                            table: (identifier) @syntax.function.class
-                            method: (identifier) @syntax.function.method)]
-                    parameters: (parameters) @syntax.function.params
-                    body: (block) @syntax.function.body) @syntax.function.def,
-                (local_function
-                    name: (identifier) @syntax.function.local.name
-                    parameters: (parameters) @syntax.function.local.params
-                    body: (block) @syntax.function.local.body) @syntax.function.local
-            ]
-            """
-        },
-        "class": {
-            "pattern": """
-            (assignment_statement
-                variables: (variable_list
-                    (identifier) @syntax.class.name)
-                values: (expression_list
-                    (table_constructor
-                        [(field
-                            name: (identifier) @syntax.class.method.name
-                            value: (function_definition) @syntax.class.method.def)
-                         (field
-                            name: (identifier) @syntax.class.field.name
-                            value: (_) @syntax.class.field.value)]*) @syntax.class.body)) @syntax.class.def
-            """
-        }
-    },
-
-    "semantics": {
-        "variable": {
-            "pattern": """
-            [
-                (assignment_statement
-                    variables: (variable_list
-                        (identifier) @semantics.variable.name)
-                    values: (expression_list
-                        (_) @semantics.variable.value)) @semantics.variable.def,
-                (local_variable_declaration
-                    name: (identifier) @semantics.variable.local.name
-                    value: (_)? @semantics.variable.local.value) @semantics.variable.local
-            ]
-            """
-        },
-        "type": {
-            "pattern": """
-            (type_declaration
-                name: (identifier) @semantics.type.name
-                value: (_) @semantics.type.value) @semantics.type.def
-            """
-        }
-    },
-
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment,
-                (comment) @documentation.luadoc {
-                    match: "^---"
-                },
-                (comment) @documentation.luadoc.tag {
-                    match: "@[a-zA-Z]+"
-                }
-            ]
-            """
-        }
-    },
-
-    "structure": {
-        "module": {
-            "pattern": """
-            [
-                (assignment_statement
-                    variables: (variable_list
-                        (identifier) @structure.module.name)
-                    values: (expression_list
-                        (table_constructor) @structure.module.exports)) @structure.module,
-                (function_call
-                    prefix: (identifier) @structure.require.func
-                    (#match? @structure.require.func "^require$")
-                    arguments: (arguments
-                        (string) @structure.require.path)) @structure.require
-            ]
-            """
-        }
-    },
-    
-    "REPOSITORY_LEARNING": LUA_PATTERNS_FOR_LEARNING
 } 

@@ -2,7 +2,10 @@
 Query patterns for Verilog files.
 """
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 VERILOG_PATTERNS_FOR_LEARNING = {
@@ -249,93 +252,99 @@ VERILOG_PATTERNS_FOR_LEARNING = {
 }
 
 VERILOG_PATTERNS = {
-    **COMMON_PATTERNS,
-    
-    "syntax": {
-        "module": {
-            "pattern": """
-            (module_declaration
-                name: (simple_identifier) @syntax.module.name
-                ports: (port_declaration_list)? @syntax.module.ports
-                items: (module_item)* @syntax.module.items) @syntax.module
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.module.name", {}).get("text", ""),
-                "has_ports": "syntax.module.ports" in node["captures"] and node["captures"].get("syntax.module.ports", {}).get("text", "") != ""
-            }
-        },
-        
-        "always": {
-            "pattern": """
-            (always_construct
-                (event_control)? @syntax.always.event
-                (statement) @syntax.always.statement) @syntax.always
-            """,
-            "extract": lambda node: {
-                "has_event": "syntax.always.event" in node["captures"] and node["captures"].get("syntax.always.event", {}).get("text", "") != "",
-                "event_type": (
-                    "edge_triggered" if "syntax.always.event" in node["captures"] and "posedge" in node["captures"].get("syntax.always.event", {}).get("text", "") else
-                    "level_sensitive" if "syntax.always.event" in node["captures"] else
-                    "combinational"
-                )
-            }
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "module": QueryPattern(
+                pattern="""
+                (module_declaration
+                    name: (simple_identifier) @syntax.module.name
+                    ports: (port_declaration_list)? @syntax.module.ports
+                    items: (module_item)* @syntax.module.items) @syntax.module
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.module.name", {}).get("text", ""),
+                    "has_ports": "syntax.module.ports" in node["captures"] and node["captures"].get("syntax.module.ports", {}).get("text", "") != ""
+                }
+            ),
+            
+            "always": QueryPattern(
+                pattern="""
+                (always_construct
+                    (event_control)? @syntax.always.event
+                    (statement) @syntax.always.statement) @syntax.always
+                """,
+                extract=lambda node: {
+                    "has_event": "syntax.always.event" in node["captures"] and node["captures"].get("syntax.always.event", {}).get("text", "") != "",
+                    "event_type": (
+                        "edge_triggered" if "syntax.always.event" in node["captures"] and "posedge" in node["captures"].get("syntax.always.event", {}).get("text", "") else
+                        "level_sensitive" if "syntax.always.event" in node["captures"] else
+                        "combinational"
+                    )
+                }
+            )
         }
     },
-    
-    "semantics": {
-        "signal": {
-            "pattern": """
-            [
-                (net_declaration
-                    (list_of_net_identifiers
-                        (net_identifier) @semantics.signal.net.name)+ @semantics.signal.net.names) @semantics.signal.net,
-                
-                (reg_declaration
-                    (list_of_variable_identifiers
-                        (variable_identifier) @semantics.signal.reg.name)+ @semantics.signal.reg.names) @semantics.signal.reg
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("semantics.signal.net.name", {}).get("text", "") or
-                       node["captures"].get("semantics.signal.reg.name", {}).get("text", ""),
-                "type": "net" if "semantics.signal.net" in node["captures"] else "reg"
-            }
+
+    PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "signal": QueryPattern(
+                pattern="""
+                [
+                    (net_declaration
+                        (list_of_net_identifiers
+                            (net_identifier) @semantics.signal.net.name)+ @semantics.signal.net.names) @semantics.signal.net,
+                    
+                    (reg_declaration
+                        (list_of_variable_identifiers
+                            (variable_identifier) @semantics.signal.reg.name)+ @semantics.signal.reg.names) @semantics.signal.reg
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("semantics.signal.net.name", {}).get("text", "") or
+                           node["captures"].get("semantics.signal.reg.name", {}).get("text", ""),
+                    "type": "net" if "semantics.signal.net" in node["captures"] else "reg"
+                }
+            )
         }
     },
-    
-    "structure": {
-        "instance": {
-            "pattern": """
-            (module_instantiation
-                module: (simple_identifier) @structure.instance.module
-                name: (instance_identifier) @structure.instance.name
-                connections: (list_of_port_connections
-                    [(named_port_connection
-                       name: (port_identifier) @structure.instance.port.name
-                       expression: (_) @structure.instance.port.expr)
-                     (ordered_port_connection
-                       expression: (_) @structure.instance.port.ordered)]*) @structure.instance.ports) @structure.instance
-            """,
-            "extract": lambda node: {
-                "module": node["captures"].get("structure.instance.module", {}).get("text", ""),
-                "name": node["captures"].get("structure.instance.name", {}).get("text", ""),
-                "ports": [p.get("text", "") for p in node["captures"].get("structure.instance.port.name", [])]
-            }
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "instance": QueryPattern(
+                pattern="""
+                (module_instantiation
+                    module: (simple_identifier) @structure.instance.module
+                    name: (instance_identifier) @structure.instance.name
+                    connections: (list_of_port_connections
+                        [(named_port_connection
+                           name: (port_identifier) @structure.instance.port.name
+                           expression: (_) @structure.instance.port.expr)
+                         (ordered_port_connection
+                           expression: (_) @structure.instance.port.ordered)]*) @structure.instance.ports) @structure.instance
+                """,
+                extract=lambda node: {
+                    "module": node["captures"].get("structure.instance.module", {}).get("text", ""),
+                    "name": node["captures"].get("structure.instance.name", {}).get("text", ""),
+                    "ports": [p.get("text", "") for p in node["captures"].get("structure.instance.port.name", [])]
+                }
+            )
         }
     },
-    
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment
-            ]
-            """,
-            "extract": lambda node: {
-                "text": node["captures"].get("documentation.comment", {}).get("text", "")
-            }
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment
+                ]
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("documentation.comment", {}).get("text", "")
+                }
+            )
         }
     },
-    
+
     "REPOSITORY_LEARNING": VERILOG_PATTERNS_FOR_LEARNING
 } 

@@ -1,6 +1,9 @@
 """Query patterns for Svelte files."""
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 SVELTE_PATTERNS_FOR_LEARNING = {
@@ -48,55 +51,6 @@ SVELTE_PATTERNS_FOR_LEARNING = {
                 "style" if "component.style" in node["captures"] else
                 "custom_component" if "component.custom" in node["captures"] else
                 "slot" if "component.slot" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
-    
-    "reactivity": {
-        "pattern": """
-        [
-            (raw_text_expr) @reactivity.expr,
-            
-            (if_block
-                expression: (_) @reactivity.if.cond
-                consequence: (_) @reactivity.if.then
-                alternative: (_)? @reactivity.if.else) @reactivity.if,
-                
-            (each_block
-                expression: (_) @reactivity.each.expr
-                context: (each_block_context
-                    name: (_) @reactivity.each.item
-                    index: (_)? @reactivity.each.index)? @reactivity.each.ctx
-                body: (_) @reactivity.each.body
-                else_clause: (_)? @reactivity.each.empty) @reactivity.each,
-                
-            (await_block
-                expression: (_) @reactivity.await.expr
-                pending: (_)? @reactivity.await.pending
-                fulfilled: (_)? @reactivity.await.then
-                rejected: (_)? @reactivity.await.catch) @reactivity.await
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "reactivity",
-            "is_expression": "reactivity.expr" in node["captures"],
-            "is_if_block": "reactivity.if" in node["captures"],
-            "is_each_block": "reactivity.each" in node["captures"],
-            "is_await_block": "reactivity.await" in node["captures"],
-            "expression": node["captures"].get("reactivity.expr", {}).get("text", ""),
-            "condition": node["captures"].get("reactivity.if.cond", {}).get("text", ""),
-            "iteration_expr": node["captures"].get("reactivity.each.expr", {}).get("text", ""),
-            "item_name": node["captures"].get("reactivity.each.item", {}).get("text", ""),
-            "has_else": (
-                ("reactivity.if" in node["captures"] and "reactivity.if.else" in node["captures"] and node["captures"].get("reactivity.if.else", {}).get("text", "") != "") or
-                ("reactivity.each" in node["captures"] and "reactivity.each.empty" in node["captures"] and node["captures"].get("reactivity.each.empty", {}).get("text", "") != "")
-            ),
-            "reactivity_type": (
-                "expression" if "reactivity.expr" in node["captures"] else
-                "if_block" if "reactivity.if" in node["captures"] else
-                "each_block" if "reactivity.each" in node["captures"] else
-                "await_block" if "reactivity.await" in node["captures"] else
                 "unknown"
             )
         }
@@ -204,116 +158,174 @@ SVELTE_PATTERNS_FOR_LEARNING = {
 }
 
 SVELTE_PATTERNS = {
-    **COMMON_PATTERNS,
-    
-    "syntax": {
-        "script": {
-            "pattern": """
-            (script_element
-                attribute: (attribute
-                    name: (attribute_name) @syntax.script.attribute.name
-                    value: (attribute_value) @syntax.script.attribute.value)* @syntax.script.attributes
-                content: (_)? @syntax.script.content) @syntax.script
-            """,
-            "extract": lambda node: {
-                "attributes": {
-                    attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
-                    for attr in node["captures"].get("syntax.script.attributes", [])
-                },
-                "has_content": "syntax.script.content" in node["captures"] and node["captures"].get("syntax.script.content", {}).get("text", "") != ""
-            }
-        },
-        
-        "style": {
-            "pattern": """
-            (style_element
-                attribute: (attribute
-                    name: (attribute_name) @syntax.style.attribute.name
-                    value: (attribute_value) @syntax.style.attribute.value)* @syntax.style.attributes
-                content: (_)? @syntax.style.content) @syntax.style
-            """,
-            "extract": lambda node: {
-                "attributes": {
-                    attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
-                    for attr in node["captures"].get("syntax.style.attributes", [])
-                },
-                "has_content": "syntax.style.content" in node["captures"] and node["captures"].get("syntax.style.content", {}).get("text", "") != ""
-            }
-        }
-    },
-    
-    "semantics": {
-        "component": {
-            "pattern": """
-            (element
-                name: (tag_name) @semantics.component.name
-                attribute: (attribute
-                    name: (attribute_name) @semantics.component.attribute.name
-                    value: (attribute_value) @semantics.component.attribute.value)* @semantics.component.attributes
-                body: (_)* @semantics.component.body) @semantics.component
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("semantics.component.name", {}).get("text", ""),
-                "attributes": {
-                    attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
-                    for attr in node["captures"].get("semantics.component.attributes", [])
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "script": QueryPattern(
+                pattern="""
+                (script_element
+                    attribute: (attribute
+                        name: (attribute_name) @syntax.script.attribute.name
+                        value: (attribute_value) @syntax.script.attribute.value)* @syntax.script.attributes
+                    content: (_)? @syntax.script.content) @syntax.script
+                """,
+                extract=lambda node: {
+                    "attributes": {
+                        attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
+                        for attr in node["captures"].get("syntax.script.attributes", [])
+                    },
+                    "has_content": "syntax.script.content" in node["captures"] and node["captures"].get("syntax.script.content", {}).get("text", "") != ""
                 }
-            }
+            ),
+            "style": QueryPattern(
+                pattern="""
+                (style_element
+                    attribute: (attribute
+                        name: (attribute_name) @syntax.style.attribute.name
+                        value: (attribute_value) @syntax.style.attribute.value)* @syntax.style.attributes
+                    content: (_)? @syntax.style.content) @syntax.style
+                """,
+                extract=lambda node: {
+                    "attributes": {
+                        attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
+                        for attr in node["captures"].get("syntax.style.attributes", [])
+                    },
+                    "has_content": "syntax.style.content" in node["captures"] and node["captures"].get("syntax.style.content", {}).get("text", "") != ""
+                }
+            )
         }
     },
-    
-    "structure": {
-        "directive": {
-            "pattern": """
-            [
-                (if_block
-                    expression: (_) @structure.if.expression
-                    consequence: (_) @structure.if.consequence
-                    alternative: (_)? @structure.if.alternative) @structure.if,
-                
-                (each_block
-                    expression: (_) @structure.each.expression
-                    context: (each_block_context
-                        name: (_) @structure.each.context.name
-                        index: (_)? @structure.each.context.index) @structure.each.context
-                    body: (_) @structure.each.body
-                    else_clause: (_)? @structure.each.else) @structure.each,
-                
-                (await_block
-                    expression: (_) @structure.await.expression
-                    pending: (_)? @structure.await.pending
-                    fulfilled: (_)? @structure.await.fulfilled
-                    rejected: (_)? @structure.await.rejected) @structure.await
-            ]
-            """,
-            "extract": lambda node: {
-                "type": (
-                    "if" if "structure.if" in node["captures"] else
-                    "each" if "structure.each" in node["captures"] else
-                    "await" if "structure.await" in node["captures"] else
-                    "unknown"
-                ),
-                "expression": (
-                    node["captures"].get("structure.if.expression", {}).get("text", "") or
-                    node["captures"].get("structure.each.expression", {}).get("text", "") or
-                    node["captures"].get("structure.await.expression", {}).get("text", "")
-                )
-            }
+
+    PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "component": QueryPattern(
+                pattern="""
+                (element
+                    name: (tag_name) @semantics.component.name
+                    attribute: (attribute
+                        name: (attribute_name) @semantics.component.attribute.name
+                        value: (attribute_value) @semantics.component.attribute.value)* @semantics.component.attributes
+                    body: (_)* @semantics.component.body) @semantics.component
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("semantics.component.name", {}).get("text", ""),
+                    "attributes": {
+                        attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
+                        for attr in node["captures"].get("semantics.component.attributes", [])
+                    }
+                }
+            )
         }
     },
-    
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment
-            ]
-            """,
-            "extract": lambda node: {
-                "text": node["captures"].get("documentation.comment", {}).get("text", "")
-            }
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "directive": QueryPattern(
+                pattern="""
+                [
+                    (if_block
+                        expression: (_) @structure.if.expression
+                        consequence: (_) @structure.if.consequence
+                        alternative: (_)? @structure.if.alternative) @structure.if,
+                    
+                    (each_block
+                        expression: (_) @structure.each.expression
+                        context: (each_block_context
+                            name: (_) @structure.each.context.name
+                            index: (_)? @structure.each.context.index) @structure.each.context
+                        body: (_) @structure.each.body
+                        else_clause: (_)? @structure.each.else) @structure.each,
+                    
+                    (await_block
+                        expression: (_) @structure.await.expression
+                        pending: (_)? @structure.await.pending
+                        fulfilled: (_)? @structure.await.fulfilled
+                        rejected: (_)? @structure.await.rejected) @structure.await
+                ]
+                """,
+                extract=lambda node: {
+                    "type": (
+                        "if" if "structure.if" in node["captures"] else
+                        "each" if "structure.each" in node["captures"] else
+                        "await" if "structure.await" in node["captures"] else
+                        "unknown"
+                    ),
+                    "expression": (
+                        node["captures"].get("structure.if.expression", {}).get("text", "") or
+                        node["captures"].get("structure.each.expression", {}).get("text", "") or
+                        node["captures"].get("structure.await.expression", {}).get("text", "")
+                    )
+                }
+            )
         }
     },
-    
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment
+                ]
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("documentation.comment", {}).get("text", "")
+                }
+            )
+        }
+    },
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.REACTIVITY: {
+            "reactivity": QueryPattern(
+                pattern="""
+                [
+                    (raw_text_expr) @reactivity.expr,
+                    
+                    (if_block
+                        expression: (_) @reactivity.if.cond
+                        consequence: (_) @reactivity.if.then
+                        alternative: (_)? @reactivity.if.else) @reactivity.if,
+                    
+                    (each_block
+                        expression: (_) @reactivity.each.expr
+                        context: (each_block_context
+                            name: (_) @reactivity.each.item
+                            index: (_)? @reactivity.each.index)? @reactivity.each.ctx
+                        body: (_) @reactivity.each.body
+                        else_clause: (_)? @reactivity.each.empty) @reactivity.each,
+                    
+                    (await_block
+                        expression: (_) @reactivity.await.expr
+                        pending: (_)? @reactivity.await.pending
+                        fulfilled: (_)? @reactivity.await.then
+                        rejected: (_)? @reactivity.await.catch) @reactivity.await
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "reactivity",
+                    "is_expression": "reactivity.expr" in node["captures"],
+                    "is_if_block": "reactivity.if" in node["captures"],
+                    "is_each_block": "reactivity.each" in node["captures"],
+                    "is_await_block": "reactivity.await" in node["captures"],
+                    "expression": node["captures"].get("reactivity.expr", {}).get("text", ""),
+                    "condition": node["captures"].get("reactivity.if.cond", {}).get("text", ""),
+                    "iteration_expr": node["captures"].get("reactivity.each.expr", {}).get("text", ""),
+                    "item_name": node["captures"].get("reactivity.each.item", {}).get("text", ""),
+                    "has_else": (
+                        ("reactivity.if" in node["captures"] and "reactivity.if.else" in node["captures"] and node["captures"].get("reactivity.if.else", {}).get("text", "") != "") or
+                        ("reactivity.each" in node["captures"] and "reactivity.each.empty" in node["captures"] and node["captures"].get("reactivity.each.empty", {}).get("text", "") != "")
+                    ),
+                    "reactivity_type": (
+                        "expression" if "reactivity.expr" in node["captures"] else
+                        "if_block" if "reactivity.if" in node["captures"] else
+                        "each_block" if "reactivity.each" in node["captures"] else
+                        "await_block" if "reactivity.await" in node["captures"] else
+                        "unknown"
+                    )
+                }
+            )
+        }
+    },
+
     "REPOSITORY_LEARNING": SVELTE_PATTERNS_FOR_LEARNING
 } 

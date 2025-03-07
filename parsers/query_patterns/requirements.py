@@ -3,8 +3,10 @@ Query patterns for requirements.txt files.
 
 These patterns target the 'package' nodes extracted from a requirements file.
 """
-from parsers.types import FileType
-from  parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 REQUIREMENTS_PATTERNS_FOR_LEARNING = {
@@ -141,75 +143,109 @@ REQUIREMENTS_PATTERNS_FOR_LEARNING = {
 }
 
 REQUIREMENTS_PATTERNS = {
-    **COMMON_PATTERNS,
-    "syntax": {
-        "requirement": {
-            "pattern": """
-            [
-                (requirement
-                    package: (package) @syntax.requirement.name
-                    version_spec: (version_spec
-                        version_cmp: (version_cmp) @syntax.requirement.version.operator
-                        version: (version) @syntax.requirement.version.number)? @syntax.requirement.version
-                    extras: (extras
-                        package: (package)* @syntax.requirement.extras.package)? @syntax.requirement.extras
-                    marker_spec: (marker_spec
-                        marker_var: (marker_var) @syntax.requirement.marker.var
-                        marker_op: (marker_op) @syntax.requirement.marker.op
-                        (quoted_string)? @syntax.requirement.marker.value)? @syntax.requirement.marker) @syntax.requirement.def,
-                
-                (requirement_opt
-                    option: (option) @syntax.requirement.option.name
-                    value: [(argument) (quoted_string)] @syntax.requirement.option.value) @syntax.requirement.option.def
-            ]
-            """
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "requirement": QueryPattern(
+                pattern="""
+                [
+                    (requirement
+                        package: (package) @syntax.requirement.name
+                        version_spec: (version_spec
+                            version_cmp: (version_cmp) @syntax.requirement.version.operator
+                            version: (version) @syntax.requirement.version.number)? @syntax.requirement.version
+                        extras: (extras
+                            package: (package)* @syntax.requirement.extras.package)? @syntax.requirement.extras
+                        marker_spec: (marker_spec
+                            marker_var: (marker_var) @syntax.requirement.marker.var
+                            marker_op: (marker_op) @syntax.requirement.marker.op
+                            (quoted_string)? @syntax.requirement.marker.value)? @syntax.requirement.marker) @syntax.requirement.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.requirement.name", {}).get("text", ""),
+                    "version": {
+                        "operator": node["captures"].get("syntax.requirement.version.operator", {}).get("text", ""),
+                        "number": node["captures"].get("syntax.requirement.version.number", {}).get("text", "")
+                    } if "syntax.requirement.version" in node["captures"] else None,
+                    "has_extras": "syntax.requirement.extras" in node["captures"],
+                    "has_marker": "syntax.requirement.marker" in node["captures"]
+                }
+            )
         }
     },
-    "structure": {
-        "file": {
-            "pattern": """
-            [
-                (file
-                    [(requirement) (global_opt) (comment) (path) (url)]* @structure.file.content) @structure.file.def,
-                
-                (global_opt
-                    option: (option) @structure.option.name
-                    [(argument) (quoted_string) (path) (url)]* @structure.option.value) @structure.option.def
-            ]
-            """
-        },
-        "url": {
-            "pattern": """
-            [
-                (url_spec
-                    url: (url
-                        env_var: (env_var)* @structure.url.env_var) @structure.url.value) @structure.url.def,
-                
-                (path) @structure.path
-            ]
-            """
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "file": QueryPattern(
+                pattern="""
+                [
+                    (file
+                        [(requirement) (global_opt) (comment) (path) (url)]* @structure.file.content) @structure.file.def,
+                    
+                    (global_opt
+                        option: (option) @structure.option.name
+                        [(argument) (quoted_string) (path) (url)]* @structure.option.value) @structure.option.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "file",
+                    "has_content": "structure.file.content" in node["captures"],
+                    "has_options": "structure.option.def" in node["captures"]
+                }
+            )
         }
     },
-    "semantics": {
-        "variable": {
-            "pattern": """
-            [
-                (env_var) @semantics.variable.env,
-                (marker_var) @semantics.variable.marker
-            ]
-            """
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment,
+                    (linebreak
+                        comment: (comment) @documentation.comment.inline) @documentation.comment.line
+                ]
+                """,
+                extract=lambda node: {
+                    "text": (
+                        node["captures"].get("documentation.comment", {}).get("text", "") or
+                        node["captures"].get("documentation.comment.inline", {}).get("text", "")
+                    ),
+                    "type": "comment",
+                    "is_inline": "documentation.comment.inline" in node["captures"]
+                }
+            )
         }
     },
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment,
-                (linebreak
-                    comment: (comment) @documentation.comment.inline) @documentation.comment.line
-            ]
-            """
+
+    PatternCategory.DEPENDENCIES: {
+        PatternPurpose.UNDERSTANDING: {
+            "dependency": QueryPattern(
+                pattern="""
+                [
+                    (requirement
+                        package: (package) @dep.name
+                        version_spec: (version_spec)? @dep.version
+                        extras: (extras)? @dep.extras) @dep.def,
+                    (requirement
+                        url_spec: (url_spec) @dep.url) @dep.url_req,
+                    (requirement
+                        path_spec: (path_spec) @dep.path) @dep.path_req
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("dep.name", {}).get("text", ""),
+                    "type": (
+                        "versioned" if "dep.version" in node["captures"] else
+                        "url" if "dep.url_req" in node["captures"] else
+                        "path" if "dep.path_req" in node["captures"] else
+                        "unknown"
+                    ),
+                    "has_extras": "dep.extras" in node["captures"]
+                }
+            )
         }
     },
+
     "REPOSITORY_LEARNING": REQUIREMENTS_PATTERNS_FOR_LEARNING
 }

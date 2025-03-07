@@ -172,22 +172,25 @@ class BaseParser(BaseParserInterface, AIParserInterface):
 
     def _get_node_category(self, node_type: str) -> PatternCategory:
         """Determine the category of a node based on its type."""
-        # Check each category's patterns
         for category in PatternCategory:
             for file_type in PATTERN_CATEGORIES.get(category, {}):
                 for purpose in PATTERN_CATEGORIES[category][file_type]:
                     if node_type in PATTERN_CATEGORIES[category][file_type][purpose]:
                         return category
         
-        # Default categorization
+        # Enhanced default categorization
         if node_type in ['comment', 'docstring', 'javadoc']:
             return PatternCategory.DOCUMENTATION
         elif node_type in ['import', 'include', 'namespace', 'module']:
-            return PatternCategory.STRUCTURE
+            return PatternCategory.DEPENDENCIES
         elif node_type in ['function', 'class', 'method', 'constructor']:
             return PatternCategory.SYNTAX
         elif node_type in ['type', 'variable', 'parameter']:
             return PatternCategory.SEMANTICS
+        elif node_type in ['error', 'warning', 'issue']:
+            return PatternCategory.COMMON_ISSUES
+        elif node_type in ['pattern', 'style', 'convention']:
+            return PatternCategory.USER_PATTERNS
         
         return PatternCategory.CODE_PATTERNS
 

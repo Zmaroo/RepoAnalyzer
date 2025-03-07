@@ -1,6 +1,9 @@
 """Query patterns for Squirrel files."""
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
 SQUIRREL_PATTERNS_FOR_LEARNING = {
@@ -164,94 +167,117 @@ SQUIRREL_PATTERNS_FOR_LEARNING = {
 }
 
 SQUIRREL_PATTERNS = {
-    **COMMON_PATTERNS,
-    
-    "syntax": {
-        "function": {
-            "pattern": """
-            [
-                (function_definition
-                    name: (identifier) @syntax.function.name
-                    parameters: (parameter_list
-                        [(parameter
-                            name: (identifier) @syntax.function.param.name
-                            default_value: (_)? @syntax.function.param.default)]*) @syntax.function.params
-                    body: (block) @syntax.function.body) @syntax.function.def
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
-                "params": [p.get("text", "") for p in node["captures"].get("syntax.function.param.name", [])],
-                "body": node["captures"].get("syntax.function.body", {}).get("text", ""),
-            }
-        },
-        
-        "variable": {
-            "pattern": """
-            [
-                (local_declaration
-                    name: (identifier) @syntax.variable.name
-                    value: (_)? @syntax.variable.value) @syntax.variable.decl,
-                
-                (assignment_expression
-                    left: [(identifier) @syntax.variable.assign.name (member_expression)]
-                    right: (_) @syntax.variable.assign.value) @syntax.variable.assign
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("syntax.variable.name", {}).get("text", "") or
-                       node["captures"].get("syntax.variable.assign.name", {}).get("text", ""),
-                "type": "declaration" if "syntax.variable.decl" in node["captures"] else "assignment"
-            }
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "function": QueryPattern(
+                pattern="""
+                [
+                    (function_definition
+                        name: (identifier) @syntax.function.name
+                        parameters: (parameter_list
+                            [(parameter
+                                name: (identifier) @syntax.function.param.name
+                                default_value: (_)? @syntax.function.param.default)]*) @syntax.function.params
+                        body: (block) @syntax.function.body) @syntax.function.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
+                    "params": [p.get("text", "") for p in node["captures"].get("syntax.function.param.name", [])],
+                    "has_defaults": any("syntax.function.param.default" in c for c in node["captures"])
+                }
+            ),
+            "variable": QueryPattern(
+                pattern="""
+                [
+                    (local_declaration
+                        name: (identifier) @syntax.variable.name
+                        value: (_)? @syntax.variable.value) @syntax.variable.decl,
+                    
+                    (assignment_expression
+                        left: [(identifier) @syntax.variable.assign.name (member_expression)]
+                        right: (_) @syntax.variable.assign.value) @syntax.variable.assign
+                ]
+                """,
+                extract=lambda node: {
+                    "name": (
+                        node["captures"].get("syntax.variable.name", {}).get("text", "") or
+                        node["captures"].get("syntax.variable.assign.name", {}).get("text", "")
+                    ),
+                    "type": "declaration" if "syntax.variable.decl" in node["captures"] else "assignment"
+                }
+            )
         }
     },
-    
-    "semantics": {
-        "class": {
-            "pattern": """
-            [
-                (class_definition
-                    name: (identifier) @semantics.class.name
-                    extends_clause: (extends_clause
-                        class: (_) @semantics.class.parent)? @semantics.class.extends
-                    body: (class_body) @semantics.class.body) @semantics.class.def
-            ]
-            """,
-            "extract": lambda node: {
-                "name": node["captures"].get("semantics.class.name", {}).get("text", ""),
-                "parent": node["captures"].get("semantics.class.parent", {}).get("text", "")
-            }
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "import": QueryPattern(
+                pattern="""
+                [
+                    (import_statement
+                        path: (string) @structure.import.path) @structure.import
+                ]
+                """,
+                extract=lambda node: {
+                    "path": node["captures"].get("structure.import.path", {}).get("text", "")
+                }
+            )
         }
     },
-    
-    "structure": {
-        "import": {
-            "pattern": """
-            [
-                (import_statement
-                    path: (string) @structure.import.path) @structure.import
-            ]
-            """,
-            "extract": lambda node: {
-                "path": node["captures"].get("structure.import.path", {}).get("text", "")
-            }
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment,
+                    (multiline_comment) @documentation.multiline
+                ]
+                """,
+                extract=lambda node: {
+                    "text": (
+                        node["captures"].get("documentation.comment", {}).get("text", "") or
+                        node["captures"].get("documentation.multiline", {}).get("text", "")
+                    ),
+                    "type": "multiline" if "documentation.multiline" in node["captures"] else "line"
+                }
+            )
         }
     },
-    
-    "documentation": {
-        "comment": {
-            "pattern": """
-            [
-                (comment) @documentation.comment,
-                (multiline_comment) @documentation.multiline
-            ]
-            """,
-            "extract": lambda node: {
-                "text": node["captures"].get("documentation.comment", {}).get("text", "") or
-                       node["captures"].get("documentation.multiline", {}).get("text", "")
-            }
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.OOP: {
+            "class_patterns": QueryPattern(
+                pattern="""
+                [
+                    (class_definition
+                        name: (identifier) @learning.class.name
+                        extends_clause: (extends_clause
+                            class: (_) @learning.class.parent)? @learning.class.extends
+                        body: (class_body) @learning.class.body) @learning.class.def,
+                    
+                    (class_body
+                        [(method
+                            name: (identifier) @learning.class.method.name
+                            parameters: (parameter_list) @learning.class.method.params
+                            body: (block) @learning.class.method.body) @learning.class.method
+                         (property
+                            name: (identifier) @learning.class.property.name
+                            value: (_) @learning.class.property.value) @learning.class.property]+) @learning.class.members
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "oop",
+                    "class_name": node["captures"].get("learning.class.name", {}).get("text", ""),
+                    "has_inheritance": "learning.class.extends" in node["captures"],
+                    "parent_class": node["captures"].get("learning.class.parent", {}).get("text", ""),
+                    "method_count": len([m for m in node["captures"] if "learning.class.method.name" in m]),
+                    "property_count": len([p for p in node["captures"] if "learning.class.property.name" in p])
+                }
+            )
         }
     },
-    
+
     "REPOSITORY_LEARNING": SQUIRREL_PATTERNS_FOR_LEARNING
 } 

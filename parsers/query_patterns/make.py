@@ -1,178 +1,183 @@
 """Query patterns for Makefile files."""
 
-from parsers.types import FileType
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose,
+    QueryPattern, PatternDefinition
+)
 from .common import COMMON_PATTERNS
 
-MAKEFILE_PATTERNS_FOR_LEARNING = {
-    "rule_patterns": {
-        "pattern": """
-        [
-            (rule
-                targets: (targets) @rule.targets
-                prerequisites: (prerequisites)? @rule.prereqs
-                recipe: (recipe)? @rule.recipe) @rule.def,
-                
-            (special_target
-                name: (_) @rule.special.name
-                recipe: (recipe)? @rule.special.recipe) @rule.special,
-                
-            (pattern_rule
-                targets: (targets) @rule.pattern.targets
-                prerequisites: (prerequisites)? @rule.pattern.prereqs
-                recipe: (recipe)? @rule.pattern.recipe) @rule.pattern
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "rule_organization",
-            "is_standard_rule": "rule.def" in node["captures"] and "rule.special" not in node["captures"] and "rule.pattern" not in node["captures"],
-            "is_special_target": "rule.special" in node["captures"],
-            "is_pattern_rule": "rule.pattern" in node["captures"],
-            "target_name": (
-                node["captures"].get("rule.targets", {}).get("text", "") or
-                node["captures"].get("rule.special.name", {}).get("text", "") or
-                node["captures"].get("rule.pattern.targets", {}).get("text", "")
+MAKE_PATTERNS = {
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "rule": QueryPattern(
+                pattern="""
+                [
+                    (rule
+                        targets: (targets) @syntax.rule.targets
+                        prerequisites: (prerequisites)? @syntax.rule.prereqs
+                        recipe: (recipe)? @syntax.rule.recipe) @syntax.rule.def,
+                    (pattern_rule
+                        targets: (targets) @syntax.pattern.targets
+                        prerequisites: (prerequisites)? @syntax.pattern.prereqs
+                        recipe: (recipe)? @syntax.pattern.recipe) @syntax.pattern.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "pattern_rule" if "syntax.pattern.def" in node["captures"] else "rule",
+                    "targets": (
+                        node["captures"].get("syntax.pattern.targets", {}).get("text", "") or
+                        node["captures"].get("syntax.rule.targets", {}).get("text", "")
+                    ),
+                    "has_prerequisites": any(
+                        key in node["captures"] for key in 
+                        ["syntax.pattern.prereqs", "syntax.rule.prereqs"]
+                    ),
+                    "has_recipe": any(
+                        key in node["captures"] for key in 
+                        ["syntax.pattern.recipe", "syntax.rule.recipe"]
+                    )
+                }
             ),
-            "has_prerequisites": (
-                "rule.prereqs" in node["captures"] and node["captures"].get("rule.prereqs", {}).get("text", "") or
-                "rule.pattern.prereqs" in node["captures"] and node["captures"].get("rule.pattern.prereqs", {}).get("text", "")
-            ),
-            "is_phony_target": ".PHONY" in (node["captures"].get("rule.special.name", {}).get("text", "") or ""),
-            "uses_pattern_matching": "%" in (node["captures"].get("rule.pattern.targets", {}).get("text", "") or "")
-        }
-    },
-    
-    "variable_usage": {
-        "pattern": """
-        [
-            (variable_definition
-                name: (_) @var.def.name
-                value: (_) @var.def.value) @var.def,
-                
-            (shell_variable
-                name: (_) @var.shell.name
-                value: (_) @var.shell.value) @var.shell,
-                
-            (conditional_variable
-                name: (_) @var.cond.name
-                value: (_) @var.cond.value) @var.cond,
-                
-            (variable_reference) @var.ref
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "variable_usage",
-            "is_variable_definition": "var.def" in node["captures"],
-            "is_shell_variable": "var.shell" in node["captures"],
-            "is_conditional_variable": "var.cond" in node["captures"],
-            "is_variable_reference": "var.ref" in node["captures"],
-            "variable_name": (
-                node["captures"].get("var.def.name", {}).get("text", "") or
-                node["captures"].get("var.shell.name", {}).get("text", "") or
-                node["captures"].get("var.cond.name", {}).get("text", "")
-            ),
-            "assignment_type": (
-                "simple" if "var.def" in node["captures"] and "=" in node["captures"].get("var.def", {}).get("text", "") else
-                "recursive" if "var.def" in node["captures"] and ":=" in node["captures"].get("var.def", {}).get("text", "") else
-                "conditional" if "var.def" in node["captures"] and "?=" in node["captures"].get("var.def", {}).get("text", "") else
-                "append" if "var.def" in node["captures"] and "+=" in node["captures"].get("var.def", {}).get("text", "") else
-                "shell" if "var.shell" in node["captures"] else
-                "other"
-            ),
-            "uses_automatic_variable": any(
-                autovar in (node["captures"].get("var.ref", {}).get("text", "") or "")
-                for autovar in ["$@", "$<", "$^", "$*", "$+", "$|", "$?"]
+            "variable": QueryPattern(
+                pattern="""
+                [
+                    (variable_assignment
+                        name: (_) @syntax.var.name
+                        value: (_) @syntax.var.value) @syntax.var.def,
+                    (conditional_variable_assignment
+                        name: (_) @syntax.var.cond.name
+                        value: (_) @syntax.var.cond.value) @syntax.var.cond.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "variable",
+                    "name": (
+                        node["captures"].get("syntax.var.name", {}).get("text", "") or
+                        node["captures"].get("syntax.var.cond.name", {}).get("text", "")
+                    ),
+                    "is_conditional": "syntax.var.cond.def" in node["captures"],
+                    "has_value": any(
+                        key in node["captures"] for key in 
+                        ["syntax.var.value", "syntax.var.cond.value"]
+                    )
+                }
             )
         }
     },
-    
-    "conditional_logic": {
-        "pattern": """
-        [
-            (ifeq
-                condition: (_) @cond.ifeq.condition
-                consequence: (_) @cond.ifeq.body) @cond.ifeq,
-                
-            (ifneq
-                condition: (_) @cond.ifneq.condition
-                consequence: (_) @cond.ifneq.body) @cond.ifneq,
-                
-            (ifdef
-                condition: (_) @cond.ifdef.condition
-                consequence: (_) @cond.ifdef.body) @cond.ifdef,
-                
-            (ifndef
-                condition: (_) @cond.ifndef.condition
-                consequence: (_) @cond.ifndef.body) @cond.ifndef,
-                
-            (else) @cond.else,
-            
-            (endif) @cond.endif
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "conditional_logic",
-            "condition_type": (
-                "equal" if "cond.ifeq" in node["captures"] else
-                "not_equal" if "cond.ifneq" in node["captures"] else
-                "defined" if "cond.ifdef" in node["captures"] else
-                "not_defined" if "cond.ifndef" in node["captures"] else
-                "else" if "cond.else" in node["captures"] else
-                "endif" if "cond.endif" in node["captures"] else
-                "other"
-            ),
-            "condition_expression": (
-                node["captures"].get("cond.ifeq.condition", {}).get("text", "") or
-                node["captures"].get("cond.ifneq.condition", {}).get("text", "") or
-                node["captures"].get("cond.ifdef.condition", {}).get("text", "") or
-                node["captures"].get("cond.ifndef.condition", {}).get("text", "")
-            ),
-            "checks_variable": any(
-                key in node["captures"] for key in ["cond.ifdef", "cond.ifndef"]
-            ),
-            "compares_values": any(
-                key in node["captures"] for key in ["cond.ifeq", "cond.ifneq"]
-            ),
-            "conditional_complexity": (
-                "simple" if len([k for k in node["captures"].keys() if k.startswith("cond.")]) <= 2 else
-                "moderate" if len([k for k in node["captures"].keys() if k.startswith("cond.")]) <= 4 else
-                "complex"
+
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comment": QueryPattern(
+                pattern="""
+                [
+                    (comment) @documentation.comment.line
+                ]
+                """,
+                extract=lambda node: {
+                    "text": node["captures"].get("documentation.comment.line", {}).get("text", ""),
+                    "type": "comment"
+                }
             )
         }
     },
-    
-    "build_optimization": {
-        "pattern": """
-        [
-            (special_target
-                name: (_) @opt.special.name
-                (#match? @opt.special.name "^\\.PHONY|\\.PRECIOUS|\\.INTERMEDIATE|\\.SECONDARY|\\.DELETE_ON_ERROR|\\.SILENT|\\.IGNORE|\\.ONESHELL|\\.NOTPARALLEL|\\.EXPORT_ALL_VARIABLES$")
-                prerequisites: (_)? @opt.special.prereqs) @opt.special,
-                
-            (variable_definition
-                name: (_) @opt.var.name
-                (#match? @opt.var.name "^MAKEFLAGS|SHELL|PATH|VPATH|\\.SHELLFLAGS$")
-                value: (_) @opt.var.value) @opt.var,
-                
-            (recipe_line
-                text: (_) @opt.recipe.text) @opt.recipe
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "build_optimization",
-            "uses_special_target": "opt.special" in node["captures"],
-            "uses_optimization_variable": "opt.var" in node["captures"],
-            "special_target_name": node["captures"].get("opt.special.name", {}).get("text", ""),
-            "optimization_variable": node["captures"].get("opt.var.name", {}).get("text", ""),
-            "uses_parallel_flag": "-j" in (node["captures"].get("opt.var.value", {}).get("text", "") or ""),
-            "uses_silent_flag": "@" in (node["captures"].get("opt.recipe.text", {}).get("text", "") or ""),
-            "optimization_type": (
-                "explicit_dependencies" if "opt.special" in node["captures"] and ".PHONY" in node["captures"].get("opt.special.name", {}).get("text", "") else
-                "parallelism" if "opt.var" in node["captures"] and "MAKEFLAGS" in node["captures"].get("opt.var.name", {}).get("text", "") and "-j" in (node["captures"].get("opt.var.value", {}).get("text", "") or "") else
-                "intermediate_files" if "opt.special" in node["captures"] and any(
-                    target in node["captures"].get("opt.special.name", {}).get("text", "")
-                    for target in [".INTERMEDIATE", ".SECONDARY", ".PRECIOUS"]
-                ) else
-                "other"
+
+    PatternCategory.STRUCTURE: {
+        PatternPurpose.UNDERSTANDING: {
+            "include": QueryPattern(
+                pattern="""
+                [
+                    (include_statement
+                        path: (_) @structure.include.path) @structure.include,
+                    (conditional_include
+                        path: (_) @structure.include.cond.path) @structure.include.cond
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "include",
+                    "path": (
+                        node["captures"].get("structure.include.path", {}).get("text", "") or
+                        node["captures"].get("structure.include.cond.path", {}).get("text", "")
+                    ),
+                    "is_conditional": "structure.include.cond" in node["captures"]
+                }
+            )
+        }
+    },
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.BEST_PRACTICES: {
+            "phony_targets": QueryPattern(
+                pattern="""
+                [
+                    (rule
+                        targets: (targets) @learning.phony.targets
+                        prerequisites: (prerequisites)? @learning.phony.prereqs) @learning.phony.def
+                        (#match? @learning.phony.targets "^\\.PHONY:"),
+                    (rule
+                        targets: (targets) @learning.phony.target.name
+                        (#match-any? @learning.phony.target.name "^(all|clean|install|test|build|dist)$")) @learning.phony.target
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "phony_target",
+                    "is_phony_declaration": "learning.phony.def" in node["captures"],
+                    "is_common_target": "learning.phony.target" in node["captures"],
+                    "target_name": node["captures"].get("learning.phony.target.name", {}).get("text", ""),
+                    "has_prerequisites": "learning.phony.prereqs" in node["captures"]
+                }
+            )
+        },
+        PatternPurpose.VARIABLES: {
+            "variable_usage": QueryPattern(
+                pattern="""
+                [
+                    (variable_reference
+                        name: (_) @learning.var.ref.name) @learning.var.ref,
+                    (shell_function
+                        arguments: (_) @learning.var.shell.args) @learning.var.shell,
+                    (wildcard_function
+                        arguments: (_) @learning.var.wildcard.args) @learning.var.wildcard
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "variable_usage",
+                    "is_reference": "learning.var.ref" in node["captures"],
+                    "uses_shell": "learning.var.shell" in node["captures"],
+                    "uses_wildcard": "learning.var.wildcard" in node["captures"],
+                    "variable_name": node["captures"].get("learning.var.ref.name", {}).get("text", ""),
+                    "function_args": (
+                        node["captures"].get("learning.var.shell.args", {}).get("text", "") or
+                        node["captures"].get("learning.var.wildcard.args", {}).get("text", "")
+                    )
+                }
+            )
+        },
+        PatternPurpose.DEPENDENCIES: {
+            "dependency_patterns": QueryPattern(
+                pattern="""
+                [
+                    (pattern_rule
+                        targets: (targets) @learning.dep.pattern.targets
+                        prerequisites: (prerequisites) @learning.dep.pattern.prereqs) @learning.dep.pattern,
+                    (rule
+                        targets: (targets) @learning.dep.auto.targets
+                        prerequisites: (prerequisites) @learning.dep.auto.prereqs) @learning.dep.auto
+                        (#match? @learning.dep.auto.targets "%.o: %.c")
+                ]
+                """,
+                extract=lambda node: {
+                    "pattern_type": "dependency_pattern",
+                    "is_pattern_rule": "learning.dep.pattern" in node["captures"],
+                    "is_auto_dependency": "learning.dep.auto" in node["captures"],
+                    "target_pattern": (
+                        node["captures"].get("learning.dep.pattern.targets", {}).get("text", "") or
+                        node["captures"].get("learning.dep.auto.targets", {}).get("text", "")
+                    ),
+                    "prerequisite_pattern": (
+                        node["captures"].get("learning.dep.pattern.prereqs", {}).get("text", "") or
+                        node["captures"].get("learning.dep.auto.prereqs", {}).get("text", "")
+                    )
+                }
             )
         }
     }
@@ -239,5 +244,5 @@ MAKEFILE_PATTERNS = {
         }
     },
     
-    "REPOSITORY_LEARNING": MAKEFILE_PATTERNS_FOR_LEARNING
+    "REPOSITORY_LEARNING": MAKE_PATTERNS
 }

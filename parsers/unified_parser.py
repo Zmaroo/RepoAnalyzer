@@ -24,7 +24,7 @@ import asyncio
 from dataclasses import dataclass, field
 from parsers.types import (
     FileType, ParserType, AICapability, AIContext, AIProcessingResult,
-    InteractionType, ConfidenceLevel
+    InteractionType, ConfidenceLevel, PatternCategory
 )
 from parsers.models import (
     FileClassification, ParserResult, BaseNodeDict,
@@ -212,24 +212,26 @@ class UnifiedParser(BaseParserInterface, AIParserInterface):
         parse_result: ParserResult,
         context: AIContext
     ) -> Dict[str, Any]:
-        """[5.1.4] Process with code understanding capability."""
+        """Process with code understanding capability."""
         understanding = {}
         
-        # Try tree-sitter parser first
-        if self._tree_sitter_parser:
-            tree_sitter_understanding = await self._tree_sitter_parser._process_with_understanding(
-                parse_result,
-                context
-            )
-            understanding.update(tree_sitter_understanding)
+        # Update categories to process
+        categories_to_process = [
+            PatternCategory.SYNTAX,
+            PatternCategory.SEMANTICS,
+            PatternCategory.CODE_PATTERNS,
+            PatternCategory.BEST_PRACTICES,    # Added
+            PatternCategory.COMMON_ISSUES,     # Added
+            PatternCategory.USER_PATTERNS,     # Added
+            PatternCategory.DEPENDENCIES       # Added
+        ]
         
-        # Add custom parser insights
-        if self._custom_parser:
-            custom_understanding = await self._custom_parser._process_with_understanding(
-                parse_result,
-                context
-            )
-            understanding.update(custom_understanding)
+        for category in categories_to_process:
+            if category in parse_result.features:
+                understanding[category.value] = await self._analyze_category(
+                    category,
+                    parse_result.features[category]
+                )
         
         return understanding
     

@@ -93,7 +93,6 @@ class UnifiedIndexer:
             ):
                 # Initialize required components
                 from indexer.file_processor import FileProcessor
-                from indexer.processing_coordinator import ProcessingCoordinator
                 
                 # Initialize file processor
                 instance._file_processor = await FileProcessor.create()
