@@ -23,10 +23,12 @@ from utils.error_handling import (
     handle_async_errors, 
     AsyncErrorBoundary,
     PostgresError,
-    ErrorSeverity
+    ErrorSeverity,
+    ErrorAudit
 )
 from utils.async_runner import submit_async_task, get_loop
 from utils.shutdown import register_shutdown_handler
+from utils.health_monitor import global_health_monitor, ComponentStatus
 
 T = TypeVar('T')  # Generic type for return values
 
@@ -117,11 +119,67 @@ class RetryManager:
     
     def __init__(self, config: RetryConfig):
         self.config = config
-        self._ai_operation_stats = {
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._metrics = {
             "total_retries": 0,
             "successful_retries": 0,
-            "failed_operations": 0
+            "failed_operations": 0,
+            "retry_times": []
         }
+        register_shutdown_handler(self.cleanup)
+    
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for retry manager."""
+        # Calculate average retry time
+        avg_retry_time = sum(self._metrics["retry_times"]) / len(self._metrics["retry_times"]) if self._metrics["retry_times"] else 0
+        
+        # Calculate health status
+        status = ComponentStatus.HEALTHY
+        details = {
+            "metrics": {
+                "total_retries": self._metrics["total_retries"],
+                "success_rate": self._metrics["successful_retries"] / self._metrics["total_retries"] if self._metrics["total_retries"] > 0 else 0,
+                "failed_operations": self._metrics["failed_operations"],
+                "avg_retry_time": avg_retry_time
+            }
+        }
+        
+        # Check for degraded conditions
+        if details["metrics"]["success_rate"] < 0.8:
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Low retry success rate"
+        elif avg_retry_time > 1.0:
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High retry times"
+        
+        return {
+            "status": status,
+            "details": details
+        }
+    
+    async def initialize(self):
+        """Initialize retry manager."""
+        if self._initialized:
+            return
+        
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="retry_manager_initialization",
+                error_types=DatabaseError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Register with health monitor
+                global_health_monitor.register_component(
+                    "retry_manager",
+                    health_check=self._check_health
+                )
+                
+                self._initialized = True
+                await log("Retry manager initialized", level="info")
+        except Exception as e:
+            await log(f"Error initializing retry manager: {e}", level="error")
+            raise DatabaseError(f"Failed to initialize retry manager: {e}")
     
     async def execute_with_retry(
         self,
@@ -130,7 +188,13 @@ class RetryManager:
         is_ai_operation: bool = False,
         **kwargs
     ) -> T:
-        """Execute an operation with retry logic, with special handling for AI operations."""
+        """Execute an operation with retry logic."""
+        if not self._initialized:
+            await self.initialize()
+        
+        start_time = time.time()
+        self._metrics["total_retries"] += 1
+        
         last_exception = None
         base_delay = self.config.base_delay
         
@@ -148,32 +212,63 @@ class RetryManager:
                     result = await operation(*args, **kwargs)
                 
                 if attempt > 0:
-                    self._ai_operation_stats["successful_retries"] += 1
+                    self._metrics["successful_retries"] += 1
+                    
+                # Update metrics
+                retry_time = time.time() - start_time
+                self._metrics["retry_times"].append(retry_time)
+                
+                # Update health status
+                await global_health_monitor.update_component_status(
+                    "retry_manager",
+                    ComponentStatus.HEALTHY,
+                    response_time=retry_time * 1000,  # Convert to ms
+                    error=False
+                )
+                
                 return result
             
             except asyncio.TimeoutError as e:
                 last_exception = e
                 if is_ai_operation:
-                    log(f"AI operation timeout on attempt {attempt + 1}", level="warn")
+                    await log(f"AI operation timeout on attempt {attempt + 1}", level="warn")
                 else:
-                    log(f"Operation timeout on attempt {attempt + 1}", level="warn")
+                    await log(f"Operation timeout on attempt {attempt + 1}", level="warn")
             
             except Exception as e:
                 last_exception = e
                 if is_ai_operation:
-                    log(f"AI operation failed on attempt {attempt + 1}: {str(e)}", level="warn")
+                    await log(f"AI operation failed on attempt {attempt + 1}: {str(e)}", level="warn")
                 else:
-                    log(f"Operation failed on attempt {attempt + 1}: {str(e)}", level="warn")
+                    await log(f"Operation failed on attempt {attempt + 1}: {str(e)}", level="warn")
+                
+                # Record error for audit
+                await ErrorAudit.record_error(
+                    e,
+                    f"retry_attempt_{attempt + 1}",
+                    Exception,
+                    severity=ErrorSeverity.WARNING
+                )
             
-            # Update stats
-            self._ai_operation_stats["total_retries"] += 1
+            # Update metrics
+            self._metrics["total_retries"] += 1
             
             if attempt < self.config.max_retries - 1:
                 delay = min(base_delay * (2 ** attempt), self.config.max_delay)
                 await asyncio.sleep(delay)
         
         # Update failed operations count
-        self._ai_operation_stats["failed_operations"] += 1
+        self._metrics["failed_operations"] += 1
+        
+        # Update health status
+        retry_time = time.time() - start_time
+        await global_health_monitor.update_component_status(
+            "retry_manager",
+            ComponentStatus.DEGRADED,
+            response_time=retry_time * 1000,
+            error=True,
+            details={"error": str(last_exception)}
+        )
         
         if isinstance(last_exception, asyncio.TimeoutError):
             raise TimeoutError(f"Operation timed out after {self.config.max_retries} attempts")
@@ -181,48 +276,64 @@ class RetryManager:
     
     def get_stats(self) -> Dict[str, int]:
         """Get statistics about AI operation retries."""
-        return self._ai_operation_stats.copy()
+        return self._metrics.copy()
     
     def reset_stats(self) -> None:
         """Reset AI operation statistics."""
-        self._ai_operation_stats = {
+        self._metrics = {
             "total_retries": 0,
             "successful_retries": 0,
-            "failed_operations": 0
+            "failed_operations": 0,
+            "retry_times": []
         }
+    
+    async def cleanup(self):
+        """Clean up retry manager resources."""
+        try:
+            if not self._initialized:
+                return
+            
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Unregister from health monitoring
+            global_health_monitor.unregister_component("retry_manager")
+            
+            self._initialized = False
+            await log("Retry manager cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up retry manager: {e}", level="error")
+            raise DatabaseError(f"Failed to cleanup retry manager: {e}")
 
-# Create global retry manager instance with AI support
-retry_manager = RetryManager(RetryConfig())
+# Create global retry manager instance
+_retry_manager = None
 
 # Export with proper async handling
 async def get_retry_manager() -> RetryManager:
-    """Get the retry manager instance.
-    
-    Returns:
-        RetryManager: The singleton retry manager instance
-    """
-    return retry_manager
-
-# Default retry manager instance
-default_retry_manager = None
-
-async def get_retry_manager_old() -> RetryManager:
-    """Get the default retry manager instance."""
-    global default_retry_manager
-    if not default_retry_manager:
-        default_retry_manager = await RetryManager.create()
-    return default_retry_manager
+    """Get the global retry manager instance."""
+    global _retry_manager
+    if _retry_manager is None:
+        _retry_manager = RetryManager(RetryConfig())
+        await _retry_manager.initialize()
+    return _retry_manager
 
 # Register cleanup handler
 async def cleanup_retry():
     """Cleanup retry utilities resources."""
     try:
-        if default_retry_manager:
-            await default_retry_manager.cleanup()
-        await log("Retry utilities cleaned up", level="info")
+        if _retry_manager is not None:
+            await _retry_manager.cleanup()
+            await log("Retry utilities cleaned up", level="info")
     except Exception as e:
         await log(f"Error cleaning up retry utilities: {e}", level="error")
         raise DatabaseError(f"Failed to cleanup retry utilities: {e}")
+
+register_shutdown_handler(cleanup_retry)
 
 def with_retry(
     max_retries: Optional[int] = None,
@@ -230,8 +341,29 @@ def with_retry(
     max_delay: Optional[float] = None
 ):
     """Decorator for retrying operations with custom retry parameters."""
-    return default_retry_manager.retry(
-        max_retries=max_retries,
-        base_delay=base_delay,
-        max_delay=max_delay
-    ) 
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Get or initialize retry manager
+            retry_manager = await get_retry_manager()
+            return await retry_manager.execute_with_retry(
+                lambda: func(*args, **kwargs),
+                max_retries=max_retries,
+                base_delay=base_delay,
+                max_delay=max_delay
+            )
+        return wrapper
+    return decorator
+
+# Export all necessary components
+__all__ = [
+    'RetryableError',
+    'NonRetryableError',
+    'RetryableNeo4jError',
+    'NonRetryableNeo4jError',
+    'RetryConfig',
+    'RetryManager',
+    'get_retry_manager',
+    'with_retry',
+    'is_retryable_error'
+] 

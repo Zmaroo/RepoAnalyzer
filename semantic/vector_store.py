@@ -1,283 +1,214 @@
-"""[5.2] Vector store for similarity search.
+"""Vector store for semantic search and similarity matching.
 
-Flow:
-1. Search Operations:
-   - Code similarity search
-   - Documentation similarity search
-   - Combined search results
-
-2. Integration Points:
-   - PostgreSQL vector operations
-   - Embedding models
-   - Cache management
-
-3. Error Handling:
-   - ProcessingError: Search operations
-   - DatabaseError: Storage operations
+This module provides a vector store for storing and searching embeddings,
+with support for:
+1. Similarity search
+2. Pattern matching
+3. Nearest neighbor search
+4. Vector indexing
 """
 
-import asyncio
-from typing import List, Dict, Optional, Set, Any
 import numpy as np
+from typing import Dict, List, Optional, Any, Set
+import asyncio
 from utils.logger import log
-from utils.cache import UnifiedCache, cache_coordinator
 from utils.error_handling import (
     handle_async_errors,
-    ProcessingError,
-    DatabaseError,
     AsyncErrorBoundary,
+    ProcessingError,
     ErrorSeverity
 )
+from utils.async_runner import submit_async_task
+from utils.cache import UnifiedCache, cache_coordinator
 from utils.shutdown import register_shutdown_handler
-from db.psql import query
-from embedding.embedding_models import code_embedder, doc_embedder
+from utils.health_monitor import global_health_monitor, ComponentStatus
+import time
 
 class VectorStore:
-    """[5.2.1] Vector store implementation using PostgreSQL."""
+    """Vector store for semantic search and similarity matching."""
     
-    def __init__(self):
-        """Private constructor - use create() instead."""
+    def __init__(self, index_name: str, dimension: int = 768):
         self._initialized = False
+        self._index_name = index_name
+        self._dimension = dimension
+        self._vectors = []
+        self._metadata = []
         self._pending_tasks: Set[asyncio.Task] = set()
-        self._lock = asyncio.Lock()
         self._cache = None
-        self.code_embedder = None
-        self.doc_embedder = None
-    
-    async def ensure_initialized(self):
-        """Ensure the instance is properly initialized before use."""
-        if not self._initialized:
-            raise ProcessingError("VectorStore not initialized. Use create() to initialize.")
-        if not self.code_embedder:
-            raise ProcessingError("Code embedder not initialized")
-        if not self.doc_embedder:
-            raise ProcessingError("Document embedder not initialized")
-        if not self._cache:
-            raise ProcessingError("Cache not initialized")
-        return True
+        self._lock = asyncio.Lock()
+        self._metrics = {
+            "total_searches": 0,
+            "successful_searches": 0,
+            "failed_searches": 0,
+            "search_times": []
+        }
     
     @classmethod
-    async def create(cls) -> 'VectorStore':
-        """Async factory method to create and initialize a VectorStore instance."""
-        instance = cls()
+    async def create(cls, index_name: str, dimension: int = 768) -> 'VectorStore':
+        """Create and initialize a vector store."""
+        instance = cls(index_name, dimension)
+        await instance.initialize()
+        return instance
+    
+    async def initialize(self):
+        """Initialize the vector store."""
+        if self._initialized:
+            return
+            
         try:
             async with AsyncErrorBoundary(
-                operation_name="vector store initialization",
+                operation_name="vector_store_initialization",
                 error_types=ProcessingError,
                 severity=ErrorSeverity.CRITICAL
             ):
-                # Initialize embedders
-                instance.code_embedder = code_embedder
-                instance.doc_embedder = doc_embedder
-                
                 # Initialize cache
-                instance._cache = UnifiedCache("vector_store", ttl=3600)
-                await cache_coordinator.register_cache("vector_store", instance._cache)
+                self._cache = UnifiedCache(f"vector_store_{self._index_name}")
+                await cache_coordinator.register_cache(self._cache)
                 
                 # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
+                register_shutdown_handler(self.cleanup)
                 
-                # Initialize health monitoring
-                from utils.health_monitor import global_health_monitor
-                global_health_monitor.register_component("vector_store")
+                # Register with health monitoring
+                global_health_monitor.register_component(
+                    f"vector_store_{self._index_name}",
+                    health_check=self._check_health
+                )
                 
-                instance._initialized = True
-                await log("Vector store initialized", level="info")
-                return instance
+                self._initialized = True
+                await log(f"Vector store {self._index_name} initialized", level="info")
         except Exception as e:
             await log(f"Error initializing vector store: {e}", level="error")
-            # Cleanup on initialization failure
-            await instance.cleanup()
             raise ProcessingError(f"Failed to initialize vector store: {e}")
     
-    def _to_pgvector(self, embedding: List[float]) -> str:
-        """Convert embedding to PostgreSQL vector literal."""
-        return f"[{','.join(str(x) for x in embedding)}]"
-    
-    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def search_code(
+    async def add_embedding(
         self,
-        query: str,
-        repo_id: Optional[int] = None,
-        limit: int = 5
-    ) -> List[Dict[str, Any]]:
-        """Search code using vector similarity."""
+        vector: List[float],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Add an embedding to the store."""
         if not self._initialized:
-            await self.ensure_initialized()
+            await self.initialize()
             
-        async with AsyncErrorBoundary("code search", severity=ErrorSeverity.ERROR):
-            # Generate query embedding
-            query_embedding = await self.code_embedder.embed_async(query)
-            if query_embedding is None:
-                return []
-            
-            # Create cache key
-            cache_key = f"code_search:{hash(query)}:{repo_id}:{limit}"
-            
-            # Check cache
-            task = asyncio.create_task(self._cache.get_async(cache_key))
-            self._pending_tasks.add(task)
-            try:
-                cached = await task
-                if cached is not None:
-                    return cached
-            finally:
-                self._pending_tasks.remove(task)
-            
-            # Construct search query
-            vector_literal = self._to_pgvector(query_embedding.tolist())
-            base_sql = """
-            SELECT cs.file_path,
-                   cs.ast->>'content' as content,
-                   cs.embedding <=> $1::vector AS similarity
-            FROM code_snippets cs
-            """
-            params = [vector_literal]
-            
-            if repo_id is not None:
-                base_sql += " WHERE cs.repo_id = $2"
-                params.append(repo_id)
-            
-            base_sql += " ORDER BY similarity ASC LIMIT $3"
-            params.append(limit)
-            
-            # Execute search
-            task = asyncio.create_task(query(base_sql, tuple(params)))
-            self._pending_tasks.add(task)
-            try:
-                results = await task
-            finally:
-                self._pending_tasks.remove(task)
-            
-            # Cache results
-            task = asyncio.create_task(self._cache.set_async(cache_key, results))
-            self._pending_tasks.add(task)
-            try:
-                await task
-            finally:
-                self._pending_tasks.remove(task)
-            
-            return results
+        if len(vector) != self._dimension:
+            raise ValueError(f"Vector dimension {len(vector)} does not match store dimension {self._dimension}")
+        
+        async with self._lock:
+            self._vectors.append(np.array(vector))
+            self._metadata.append(metadata or {})
     
-    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def search_docs(
-        self,
-        query: str,
-        repo_id: Optional[int] = None,
-        limit: int = 5
-    ) -> List[Dict[str, Any]]:
-        """Search documentation using vector similarity."""
-        if not self._initialized:
-            await self.ensure_initialized()
-            
-        async with AsyncErrorBoundary("doc search", severity=ErrorSeverity.ERROR):
-            # Generate query embedding
-            query_embedding = await self.doc_embedder.embed_async(query)
-            if query_embedding is None:
-                return []
-            
-            # Create cache key
-            cache_key = f"doc_search:{hash(query)}:{repo_id}:{limit}"
-            
-            # Check cache
-            task = asyncio.create_task(self._cache.get_async(cache_key))
-            self._pending_tasks.add(task)
-            try:
-                cached = await task
-                if cached is not None:
-                    return cached
-            finally:
-                self._pending_tasks.remove(task)
-            
-            # Construct search query
-            vector_literal = self._to_pgvector(query_embedding.tolist())
-            base_sql = """
-            SELECT rd.file_path,
-                   rd.content,
-                   rd.doc_type,
-                   rd.embedding <=> $1::vector AS similarity
-            FROM repo_docs rd
-            """
-            params = [vector_literal]
-            
-            if repo_id is not None:
-                base_sql += """
-                JOIN repo_doc_relations rdr ON rd.id = rdr.doc_id
-                WHERE rdr.repo_id = $2
-                """
-                params.append(repo_id)
-            
-            base_sql += " ORDER BY similarity ASC LIMIT $3"
-            params.append(limit)
-            
-            # Execute search
-            task = asyncio.create_task(query(base_sql, tuple(params)))
-            self._pending_tasks.add(task)
-            try:
-                results = await task
-            finally:
-                self._pending_tasks.remove(task)
-            
-            # Cache results
-            task = asyncio.create_task(self._cache.set_async(cache_key, results))
-            self._pending_tasks.add(task)
-            try:
-                await task
-            finally:
-                self._pending_tasks.remove(task)
-            
-            return results
-    
-    @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def search(
         self,
-        query: str,
-        search_type: str = "all",
-        repo_id: Optional[int] = None,
-        limit: int = 5
+        query_vector: List[float],
+        limit: int = 5,
+        min_score: float = 0.7,
+        filter_dict: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Combined search across code and documentation."""
+        """Search for similar vectors."""
         if not self._initialized:
-            await self.ensure_initialized()
+            await self.initialize()
             
-        async with AsyncErrorBoundary("combined search", severity=ErrorSeverity.ERROR):
-            tasks = []
+        start_time = time.time()
+        self._metrics["total_searches"] += 1
+        
+        try:
+            if len(query_vector) != self._dimension:
+                raise ValueError(f"Query vector dimension {len(query_vector)} does not match store dimension {self._dimension}")
             
-            if search_type in ["all", "code"]:
-                task = asyncio.create_task(self.search_code(query, repo_id, limit))
-                self._pending_tasks.add(task)
-                tasks.append(("code", task))
+            query_np = np.array(query_vector)
             
-            if search_type in ["all", "docs"]:
-                task = asyncio.create_task(self.search_docs(query, repo_id, limit))
-                self._pending_tasks.add(task)
-                tasks.append(("docs", task))
+            # Calculate cosine similarities
+            similarities = []
+            for i, vec in enumerate(self._vectors):
+                # Apply filters if provided
+                if filter_dict and not self._matches_filter(self._metadata[i], filter_dict):
+                    continue
+                    
+                similarity = np.dot(vec, query_np) / (np.linalg.norm(vec) * np.linalg.norm(query_np))
+                if similarity >= min_score:
+                    similarities.append((similarity, i))
             
+            # Sort by similarity
+            similarities.sort(reverse=True)
+            
+            # Return top results
             results = []
-            try:
-                for search_type, task in tasks:
-                    try:
-                        search_results = await task
-                        for result in search_results:
-                            result["type"] = search_type
-                        results.extend(search_results)
-                    except Exception as e:
-                        await log(f"Error in {search_type} search: {e}", level="error")
-            finally:
-                for _, task in tasks:
-                    self._pending_tasks.remove(task)
+            for similarity, idx in similarities[:limit]:
+                results.append({
+                    "score": float(similarity),
+                    "metadata": self._metadata[idx]
+                })
             
-            # Sort combined results by similarity
-            results.sort(key=lambda x: x["similarity"])
-            return results[:limit]
+            # Update metrics
+            self._metrics["successful_searches"] += 1
+            search_time = time.time() - start_time
+            self._metrics["search_times"].append(search_time)
+            
+            # Update health status
+            await global_health_monitor.update_component_status(
+                f"vector_store_{self._index_name}",
+                ComponentStatus.HEALTHY,
+                response_time=search_time * 1000,  # Convert to ms
+                error=False
+            )
+            
+            return results
+        except Exception as e:
+            self._metrics["failed_searches"] += 1
+            await log(f"Error searching vectors: {e}", level="error")
+            
+            # Update health status
+            await global_health_monitor.update_component_status(
+                f"vector_store_{self._index_name}",
+                ComponentStatus.DEGRADED,
+                error=True,
+                details={"error": str(e)}
+            )
+            
+            raise ProcessingError(f"Failed to search vectors: {e}")
+    
+    def _matches_filter(self, metadata: Dict[str, Any], filter_dict: Dict[str, Any]) -> bool:
+        """Check if metadata matches filter criteria."""
+        return all(
+            key in metadata and metadata[key] == value
+            for key, value in filter_dict.items()
+        )
+    
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for vector store."""
+        # Calculate average search time
+        avg_search_time = sum(self._metrics["search_times"]) / len(self._metrics["search_times"]) if self._metrics["search_times"] else 0
+        
+        # Calculate health status
+        status = ComponentStatus.HEALTHY
+        details = {
+            "metrics": {
+                "total_searches": self._metrics["total_searches"],
+                "success_rate": self._metrics["successful_searches"] / self._metrics["total_searches"] if self._metrics["total_searches"] > 0 else 0,
+                "vector_count": len(self._vectors),
+                "avg_search_time": avg_search_time
+            }
+        }
+        
+        # Check for degraded conditions
+        if details["metrics"]["success_rate"] < 0.8:
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Low search success rate"
+        elif avg_search_time > 1.0:
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High search times"
+        
+        return {
+            "status": status,
+            "details": details
+        }
     
     async def cleanup(self):
-        """Clean up vector store resources."""
+        """Clean up resources."""
         try:
             if not self._initialized:
                 return
                 
-            # Cancel all pending tasks
+            # Cancel pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
                     if not task.done():
@@ -287,25 +218,20 @@ class VectorStore:
             
             # Clean up cache
             if self._cache:
-                await cache_coordinator.unregister_cache("vector_store")
-                self._cache = None
+                await cache_coordinator.unregister_cache(self._cache)
+            
+            # Clear vectors and metadata
+            self._vectors.clear()
+            self._metadata.clear()
             
             # Unregister from health monitoring
-            from utils.health_monitor import global_health_monitor
-            global_health_monitor.unregister_component("vector_store")
+            global_health_monitor.unregister_component(f"vector_store_{self._index_name}")
             
             self._initialized = False
-            await log("Vector store cleaned up", level="info")
+            await log(f"Vector store {self._index_name} cleaned up", level="info")
         except Exception as e:
             await log(f"Error cleaning up vector store: {e}", level="error")
             raise ProcessingError(f"Failed to cleanup vector store: {e}")
 
-# Global instance
-_vector_store = None
-
-async def get_vector_store() -> VectorStore:
-    """Get the vector store instance."""
-    global _vector_store
-    if not _vector_store:
-        _vector_store = await VectorStore.create()
-    return _vector_store 
+# Export the class
+__all__ = ['VectorStore'] 

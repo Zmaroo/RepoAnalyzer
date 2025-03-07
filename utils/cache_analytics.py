@@ -18,7 +18,7 @@ try:
 except ImportError:
     AIOFILES_AVAILABLE = False
 
-from utils.logger import log
+from utils.logger import log, ErrorSeverity
 from utils.cache import cache_coordinator, UnifiedCache
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, CacheError
 from utils.shutdown import register_shutdown_handler

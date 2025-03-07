@@ -18,11 +18,14 @@ from utils.error_handling import (
     Neo4jError,
     ErrorSeverity
 )
-from db.retry_utils import DatabaseRetryManager, RetryConfig
+from db.retry_utils import RetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
 from utils.shutdown import register_shutdown_handler
 from db.transaction import transaction_scope
+from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_database
+from utils.cache import UnifiedCache, cache_coordinator
+import time
 
 class SchemaError(DatabaseError):
     """Schema management specific errors."""
@@ -37,6 +40,15 @@ class SchemaManager:
         self._pending_tasks: Set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
         self._retry_manager = None
+        self._cache = None
+        self._metrics = {
+            "total_operations": 0,
+            "successful_operations": 0,
+            "failed_operations": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "operation_times": []
+        }
     
     async def ensure_initialized(self):
         """Ensure the instance is properly initialized before use."""
@@ -55,16 +67,22 @@ class SchemaManager:
                 severity=ErrorSeverity.CRITICAL
             ):
                 # Initialize retry manager
-                instance._retry_manager = await DatabaseRetryManager.create(
+                instance._retry_manager = await RetryManager.create(
                     RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
                 )
+                
+                # Initialize cache
+                instance._cache = UnifiedCache("schema_manager")
+                await cache_coordinator.register_cache("schema_manager", instance._cache)
                 
                 # Register shutdown handler
                 register_shutdown_handler(instance.cleanup)
                 
                 # Initialize health monitoring
-                from utils.health_monitor import global_health_monitor
-                global_health_monitor.register_component("schema_manager")
+                global_health_monitor.register_component(
+                    "schema_manager",
+                    health_check=instance._check_health
+                )
                 
                 instance._initialized = True
                 await log("Schema manager initialized", level="info")
@@ -74,6 +92,35 @@ class SchemaManager:
             # Cleanup on initialization failure
             await instance.cleanup()
             raise DatabaseError(f"Failed to initialize schema manager: {e}")
+    
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for schema manager."""
+        # Calculate average operation time
+        avg_op_time = sum(self._metrics["operation_times"]) / len(self._metrics["operation_times"]) if self._metrics["operation_times"] else 0
+        
+        # Calculate health status
+        status = ComponentStatus.HEALTHY
+        details = {
+            "metrics": {
+                "total_operations": self._metrics["total_operations"],
+                "success_rate": self._metrics["successful_operations"] / self._metrics["total_operations"] if self._metrics["total_operations"] > 0 else 0,
+                "cache_hit_rate": self._metrics["cache_hits"] / (self._metrics["cache_hits"] + self._metrics["cache_misses"]) if (self._metrics["cache_hits"] + self._metrics["cache_misses"]) > 0 else 0,
+                "avg_operation_time": avg_op_time
+            }
+        }
+        
+        # Check for degraded conditions
+        if details["metrics"]["success_rate"] < 0.8:
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Low operation success rate"
+        elif avg_op_time > 1.0:
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High operation times"
+        
+        return {
+            "status": status,
+            "details": details
+        }
     
     async def _execute_query(self, sql: str) -> None:
         """Execute a SQL query with task tracking."""
@@ -110,6 +157,9 @@ class SchemaManager:
             
         async with self._lock:
             try:
+                start_time = time.time()
+                self._metrics["total_operations"] += 1
+                
                 # Drop in correct order for foreign key constraints
                 tables = [
                     "code_patterns", "doc_patterns", "arch_patterns",
@@ -120,8 +170,22 @@ class SchemaManager:
                 for table in tables:
                     await self._execute_query(f"DROP TABLE IF EXISTS {table} CASCADE;")
                 
+                # Record success and timing
+                self._metrics["successful_operations"] += 1
+                operation_time = time.time() - start_time
+                self._metrics["operation_times"].append(operation_time)
+                
+                # Update health status
+                await global_health_monitor.update_component_status(
+                    "schema_manager",
+                    ComponentStatus.HEALTHY,
+                    response_time=operation_time * 1000,  # Convert to ms
+                    error=False
+                )
+                
                 log("✅ All existing database tables dropped!")
             except Exception as e:
+                self._metrics["failed_operations"] += 1
                 log(f"Error dropping tables: {e}", level="error")
                 raise SchemaError(f"Failed to drop tables: {str(e)}")
     
@@ -340,6 +404,9 @@ class SchemaManager:
     async def cleanup(self):
         """Clean up all resources."""
         try:
+            if not self._initialized:
+                return
+                
             # Cancel all pending tasks
             if self._pending_tasks:
                 for task in self._pending_tasks:
@@ -352,8 +419,12 @@ class SchemaManager:
             if self._retry_manager:
                 await self._retry_manager.cleanup()
             
+            # Clean up cache
+            if self._cache:
+                await self._cache.clear_async()
+                await cache_coordinator.unregister_cache("schema_manager")
+            
             # Unregister from health monitoring
-            from utils.health_monitor import global_health_monitor
             global_health_monitor.unregister_component("schema_manager")
             
             self._initialized = False
@@ -668,3 +739,284 @@ async def _create_indexes(self, txn):
         CREATE INDEX IF NOT EXISTS idx_cross_repo_adaptation ON pattern_cross_repo_analysis(adaptation_score);
         CREATE INDEX IF NOT EXISTS idx_cross_repo_conflict ON pattern_cross_repo_analysis(conflict_score);
     """)
+
+class SchemaVersion:
+    """Track and manage schema versions."""
+    
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._current_version = None
+        self._migrations = {}
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Task] = set()
+    
+    async def initialize(self):
+        """Initialize schema version tracking."""
+        if self._initialized:
+            return
+            
+        async with self._lock:
+            try:
+                # Create schema version table if it doesn't exist
+                await schema_manager._execute_query("""
+                    CREATE TABLE IF NOT EXISTS schema_versions (
+                        id SERIAL PRIMARY KEY,
+                        version TEXT NOT NULL,
+                        applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        description TEXT,
+                        checksum TEXT,
+                        status TEXT DEFAULT 'pending',
+                        error TEXT,
+                        UNIQUE(version)
+                    )
+                """)
+                
+                # Get current version
+                result = await schema_manager._execute_query("""
+                    SELECT version FROM schema_versions 
+                    WHERE status = 'success'
+                    ORDER BY applied_at DESC 
+                    LIMIT 1
+                """)
+                
+                if result:
+                    self._current_version = result[0]['version']
+                
+                self._initialized = True
+                log("Schema version tracking initialized", level="info")
+            except Exception as e:
+                log(f"Error initializing schema version tracking: {e}", level="error")
+                raise SchemaError(f"Failed to initialize schema version tracking: {e}")
+    
+    def register_migration(self, version: str, up_sql: str, down_sql: str, description: str = None):
+        """Register a schema migration.
+        
+        Args:
+            version: Schema version
+            up_sql: SQL to upgrade to this version
+            down_sql: SQL to downgrade from this version
+            description: Optional description of the migration
+        """
+        self._migrations[version] = {
+            'up': up_sql,
+            'down': down_sql,
+            'description': description,
+            'checksum': self._calculate_checksum(up_sql + down_sql)
+        }
+    
+    def _calculate_checksum(self, content: str) -> str:
+        """Calculate checksum for migration content."""
+        import hashlib
+        return hashlib.sha256(content.encode()).hexdigest()
+    
+    async def get_current_version(self) -> Optional[str]:
+        """Get current schema version."""
+        if not self._initialized:
+            await self.initialize()
+        return self._current_version
+    
+    async def get_pending_migrations(self) -> List[str]:
+        """Get list of pending migrations."""
+        if not self._initialized:
+            await self.initialize()
+            
+        current = self._current_version
+        pending = []
+        
+        for version in sorted(self._migrations.keys()):
+            if not current or version > current:
+                pending.append(version)
+        
+        return pending
+    
+    @handle_async_errors(error_types=(SchemaError, PostgresError))
+    async def migrate_to_version(self, target_version: str) -> bool:
+        """Migrate schema to target version."""
+        migration_start_time = time.time()
+        total_migrations = 0
+        successful_migrations = 0
+        failed_migrations = []
+        
+        if not self._initialized:
+            await self.initialize()
+            
+        async with self._lock:
+            try:
+                current = await self.get_current_version()
+                
+                # Add health monitoring for migration status
+                await global_health_monitor.update_component_status(
+                    "schema_manager",
+                    ComponentStatus.HEALTHY,
+                    details={
+                        "current_version": current,
+                        "target_version": target_version,
+                        "operation": "migration_started",
+                        "start_time": migration_start_time
+                    }
+                )
+                
+                if current == target_version:
+                    log(f"Already at version {target_version}", level="info")
+                    return True
+                
+                if target_version not in self._migrations:
+                    raise SchemaError(f"Unknown version: {target_version}")
+                
+                # Determine if we need to upgrade or downgrade
+                upgrade = not current or target_version > current
+                
+                if upgrade:
+                    versions = [v for v in sorted(self._migrations.keys()) 
+                              if not current or v > current]
+                    versions = [v for v in versions if v <= target_version]
+                else:
+                    versions = [v for v in sorted(self._migrations.keys(), reverse=True)
+                              if v > target_version and v <= current]
+                
+                # Execute migrations in sequence
+                async with transaction_scope() as txn:
+                    for version in versions:
+                        total_migrations += 1
+                        migration = self._migrations[version]
+                        sql = migration['up'] if upgrade else migration['down']
+                        description = migration['description']
+                        checksum = migration['checksum']
+                        
+                        step_start_time = time.time()
+                        try:
+                            # Update health status with progress metrics
+                            await global_health_monitor.update_component_status(
+                                "schema_manager",
+                                ComponentStatus.HEALTHY,
+                                details={
+                                    "current_version": version,
+                                    "operation": "migration_step",
+                                    "progress": {
+                                        "total_migrations": len(versions),
+                                        "completed_migrations": successful_migrations,
+                                        "elapsed_time": time.time() - migration_start_time,
+                                        "success_rate": (successful_migrations / total_migrations) * 100 if total_migrations > 0 else 0,
+                                        "remaining_migrations": len(versions) - total_migrations,
+                                        "estimated_completion_time": (
+                                            migration_start_time + 
+                                            (time.time() - migration_start_time) * len(versions) / total_migrations
+                                            if total_migrations > 0 else None
+                                        )
+                                    },
+                                    "current_step": {
+                                        "version": version,
+                                        "description": description,
+                                        "direction": "upgrade" if upgrade else "downgrade",
+                                        "start_time": step_start_time
+                                    }
+                                }
+                            )
+                            
+                            # Record migration start
+                            await schema_manager._execute_query("""
+                                INSERT INTO schema_versions 
+                                (version, description, checksum, status)
+                                VALUES ($1, $2, $3, 'pending')
+                            """, (version, description, checksum))
+                            
+                            # Execute migration
+                            await schema_manager._execute_query(sql)
+                            
+                            # Update migration status
+                            await schema_manager._execute_query("""
+                                UPDATE schema_versions 
+                                SET status = 'success', 
+                                    applied_at = CURRENT_TIMESTAMP
+                                WHERE version = $1
+                            """, (version,))
+                            
+                            self._current_version = version
+                            successful_migrations += 1
+                            
+                            # Log success metrics
+                            step_duration = time.time() - step_start_time
+                            await log(
+                                f"Migrated to version {version}",
+                                level="info",
+                                context={
+                                    "duration": step_duration,
+                                    "success_rate": (successful_migrations / total_migrations) * 100
+                                }
+                            )
+                            
+                        except Exception as e:
+                            failed_migrations.append({
+                                "version": version,
+                                "error": str(e),
+                                "step_duration": time.time() - step_start_time
+                            })
+                            
+                            # Update health status for migration failure
+                            await global_health_monitor.update_component_status(
+                                "schema_manager",
+                                ComponentStatus.UNHEALTHY,
+                                error=True,
+                                details={
+                                    "failed_version": version,
+                                    "error": str(e),
+                                    "operation": "migration_failed",
+                                    "progress": {
+                                        "total_migrations": len(versions),
+                                        "completed_migrations": successful_migrations,
+                                        "failed_migrations": total_migrations - successful_migrations,
+                                        "elapsed_time": time.time() - migration_start_time,
+                                        "success_rate": (successful_migrations / total_migrations) * 100 if total_migrations > 0 else 0,
+                                        "failed_steps": failed_migrations
+                                    }
+                                }
+                            )
+                            
+                            # Record error for audit
+                            await ErrorAudit.record_error(
+                                e,
+                                f"schema_migration_{version}",
+                                (SchemaError, PostgresError),
+                                severity=ErrorSeverity.ERROR
+                            )
+                            raise
+                
+                # Final success status update
+                if successful_migrations == len(versions):
+                    await global_health_monitor.update_component_status(
+                        "schema_manager",
+                        ComponentStatus.HEALTHY,
+                        details={
+                            "operation": "migration_completed",
+                            "final_version": target_version,
+                            "total_duration": time.time() - migration_start_time,
+                            "migrations_applied": successful_migrations,
+                            "success_rate": 100.0
+                        }
+                    )
+                
+                return successful_migrations == len(versions)
+                
+            except Exception as e:
+                await log(f"Schema migration failed: {e}", level="error")
+                raise SchemaError(f"Schema migration failed: {e}")
+    
+    async def cleanup(self):
+        """Clean up resources."""
+        # Cancel any pending tasks
+        if self._pending_tasks:
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._pending_tasks.clear()
+        
+        self._initialized = False
+        self._current_version = None
+        self._migrations.clear()
+
+# Create global instance
+schema_version = SchemaVersion()
+
+# Register cleanup handler
+register_shutdown_handler(schema_version.cleanup)

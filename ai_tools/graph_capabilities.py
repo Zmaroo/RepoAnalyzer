@@ -18,7 +18,7 @@ Flow:
 
 from typing import Dict, List, Optional, Any, Set
 import asyncio
-from db.neo4j_ops import run_query, Neo4jTools
+from db.neo4j_ops import run_query, Neo4jTools, get_neo4j_tools
 from utils.logger import log, log_sync
 from utils.error_handling import (
     handle_async_errors,
@@ -69,8 +69,7 @@ class GraphAnalysis:
                 severity=ErrorSeverity.CRITICAL
             ):
                 # Initialize Neo4j tools
-                from db.neo4j_ops import Neo4jTools
-                instance.neo4j_tools = await Neo4jTools.create()
+                instance.neo4j_tools = await get_neo4j_tools()
                 
                 # Register shutdown handler
                 register_shutdown_handler(instance.cleanup)

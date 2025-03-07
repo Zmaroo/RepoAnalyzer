@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from tree_sitter import Language, Parser, Tree, Node
 from parsers.types import (
     FileType, ParserType, AICapability, AIContext, AIProcessingResult,
-    InteractionType, ConfidenceLevel
+    InteractionType, ConfidenceLevel, ParserResult
 )
 from parsers.models import (
-    FileClassification, ParserResult, BaseNodeDict,
+    FileClassification, BaseNodeDict,
     TreeSitterNodeDict
 )
 from parsers.parser_interfaces import BaseParserInterface, AIParserInterface

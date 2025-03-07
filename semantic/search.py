@@ -20,7 +20,7 @@ Flow:
 from db.psql import query
 from typing import List, Dict, Optional, Set, Any
 import torch
-from utils.logger import log
+from utils.logger import log, ErrorSeverity
 from utils.cache import cache_coordinator
 from embedding.embedding_models import code_embedder, doc_embedder
 from ai_tools.graph_capabilities import graph_analysis
@@ -75,7 +75,7 @@ class SearchEngine:
                 severity=ErrorSeverity.CRITICAL
             ):
                 # Initialize components
-                from semantic.graph_sync import GraphSync
+                from db.graph_sync import GraphSync
                 instance._graph_sync = await GraphSync.create()
                 
                 from semantic.vector_store import VectorStore
@@ -241,11 +241,11 @@ async def search_graph(*args, **kwargs) -> List[Dict]:
 @handle_async_errors(error_types=(ProcessingError, DatabaseError))
 async def search_docs_common(query_embedding: torch.Tensor, repo_id: Optional[int] = None, limit: int = 5) -> List[Dict]:
     """Common document search functionality using embeddings."""
-    if not search_engine._initialized:
-        await search_engine.initialize()
+    if not _search_engine._initialized:
+        await _search_engine.initialize()
         
     async with AsyncErrorBoundary("search_docs_common"):
-        vector_literal = search_engine._to_pgvector(query_embedding.tolist())
+        vector_literal = _search_engine._to_pgvector(query_embedding.tolist())
         
         base_sql = """
         SELECT rd.id, rd.file_path, rd.content, rd.doc_type,
@@ -263,8 +263,8 @@ async def search_docs_common(query_embedding: torch.Tensor, repo_id: Optional[in
         params.append(limit)
         
         task = asyncio.create_task(query(base_sql, tuple(params)))
-        search_engine._pending_tasks.add(task)
+        _search_engine._pending_tasks.add(task)
         try:
             return await task
         finally:
-            search_engine._pending_tasks.remove(task)
+            _search_engine._pending_tasks.remove(task)

@@ -15,6 +15,13 @@ class FileType(Enum):
     CONFIG = "config"
     DATA = "data"
     MARKUP = "markup"
+    STYLE = "style"
+    DOCUMENTATION = "documentation"
+    SCRIPT = "script"
+    QUERY = "query"
+    TEXT = "text"
+    BINARY = "binary"
+    UNKNOWN = "unknown"
 
 class PatternCategory(Enum):
     """Unified categories for code understanding and manipulation."""
@@ -106,6 +113,17 @@ class PatternRelationType(Enum):
     SIMILARITY = "similarity"
     CONFLICT = "conflict"
     EVOLUTION = "evolution"
+
+class FeatureCategory(Enum):
+    """Categories of code features that can be extracted."""
+    SYNTAX = "syntax"
+    SEMANTICS = "semantics"
+    STRUCTURE = "structure"
+    DEPENDENCIES = "dependencies"
+    DOCUMENTATION = "documentation"
+    PATTERNS = "patterns"
+    METRICS = "metrics"
+    CUSTOM = "custom"
 
 @dataclass
 class ParserResult:
@@ -520,3 +538,33 @@ class AIProcessingResult:
             self._initialized = False
         except Exception as e:
             log(f"Error cleaning up AI processing result: {e}", level="error")
+
+# Pattern purpose mappings
+INTERACTION_TO_PURPOSE_MAP = {
+    InteractionType.QUESTION: PatternPurpose.EXPLANATION,
+    InteractionType.MODIFICATION: PatternPurpose.MODIFICATION,
+    InteractionType.ERROR: PatternPurpose.DEBUGGING,
+    InteractionType.COMPLETION: PatternPurpose.COMPLETION,
+    InteractionType.EXPLANATION: PatternPurpose.EXPLANATION,
+    InteractionType.SUGGESTION: PatternPurpose.SUGGESTION,
+    InteractionType.DOCUMENTATION: PatternPurpose.DOCUMENTATION
+}
+
+# Pattern category mappings
+INTERACTION_TO_CATEGORY_MAP = {
+    InteractionType.QUESTION: [PatternCategory.CONTEXT, PatternCategory.SEMANTICS],
+    InteractionType.MODIFICATION: [PatternCategory.SYNTAX, PatternCategory.CODE_PATTERNS],
+    InteractionType.ERROR: [PatternCategory.COMMON_ISSUES, PatternCategory.SYNTAX],
+    InteractionType.COMPLETION: [PatternCategory.USER_PATTERNS, PatternCategory.CODE_PATTERNS],
+    InteractionType.EXPLANATION: [PatternCategory.CONTEXT, PatternCategory.DOCUMENTATION],
+    InteractionType.SUGGESTION: [PatternCategory.BEST_PRACTICES, PatternCategory.USER_PATTERNS],
+    InteractionType.DOCUMENTATION: [PatternCategory.DOCUMENTATION, PatternCategory.CONTEXT]
+}
+
+def get_purpose_from_interaction(interaction_type: InteractionType) -> PatternPurpose:
+    """Get pattern purpose from interaction type."""
+    return INTERACTION_TO_PURPOSE_MAP.get(interaction_type, PatternPurpose.UNDERSTANDING)
+
+def get_categories_from_interaction(interaction_type: InteractionType) -> List[PatternCategory]:
+    """Get pattern categories from interaction type."""
+    return INTERACTION_TO_CATEGORY_MAP.get(interaction_type, [])

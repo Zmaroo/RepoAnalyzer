@@ -26,7 +26,7 @@ from db.connection import connection_manager
 from db.transaction import transaction_scope
 from db.upsert_ops import coordinator as upsert_coordinator
 from db.graph_sync import graph_sync
-from db.neo4j_ops import Neo4jTools, run_query
+from db.neo4j_ops import Neo4jTools, run_query, get_neo4j_tools
 from db.psql import query, execute
 from db.retry_utils import (
     with_retry,
@@ -68,11 +68,17 @@ class ReferenceRepositoryLearning:
         self.code_understanding = CodeUnderstanding()
         self.embedder = code_embedder
         self.doc_embedder = doc_embedder
-        self.neo4j_tools = Neo4jTools()
+        self.neo4j_tools = None
         self._retry_manager = DatabaseRetryManager(
             RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
         )
         self._pending_tasks: Set[asyncio.Future] = set()
+    
+    @classmethod
+    async def create(cls) -> 'ReferenceRepositoryLearning':
+        instance = cls()
+        instance.neo4j_tools = await get_neo4j_tools()
+        return instance
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def learn_from_repository(self, reference_repo_id: int) -> Dict[str, Any]:
@@ -777,12 +783,12 @@ class ReferenceRepositoryLearning:
         
         return comparison_results
     
-    @handle_errors(error_types=ProcessingError)
-    def cleanup(self) -> None:
+    async def cleanup(self):
         """Cleanup resources."""
         try:
             self.code_understanding.cleanup()
-            self.neo4j_tools.close()
+            if self.neo4j_tools:
+                await self.neo4j_tools.cleanup()
         except Exception as e:
             log(f"Error during reference learning cleanup: {e}", level="error")
 

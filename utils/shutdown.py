@@ -1,8 +1,8 @@
 """Shutdown handler registration and management."""
 
 import asyncio
+import logging
 from typing import Callable, List, Set
-from utils.logger import log
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
 
 # List to keep track of registered shutdown handlers
@@ -16,7 +16,7 @@ def register_shutdown_handler(handler: Callable) -> None:
 @handle_async_errors
 async def execute_shutdown_handlers() -> None:
     """Execute all registered shutdown handlers."""
-    log("Application shutting down, performing cleanup...", level="info")
+    logging.info("Application shutting down, performing cleanup...")
     
     # Execute all registered shutdown handlers
     for handler in _shutdown_handlers:
@@ -32,7 +32,7 @@ async def execute_shutdown_handlers() -> None:
             else:
                 handler()
         except Exception as e:
-            log(f"Error in shutdown handler: {e}", level="error")
+            logging.error(f"Error in shutdown handler: {e}")
     
     # Clean up any remaining tasks
     if _pending_tasks:
@@ -41,4 +41,4 @@ async def execute_shutdown_handlers() -> None:
         await asyncio.gather(*_pending_tasks, return_exceptions=True)
         _pending_tasks.clear()
     
-    log("Cleanup completed", level="info") 
+    logging.info("Cleanup completed") 

@@ -9,7 +9,7 @@ This module provides centralized transaction management across multiple database
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional, Set, Dict, Any
+from typing import Optional, Set, Dict, Any, List
 from utils.logger import log
 from db.connection import connection_manager
 from utils.cache import cache_coordinator
@@ -27,7 +27,8 @@ from utils.error_handling import (
 from db.retry_utils import RetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from utils.shutdown import register_shutdown_handler
-from utils.health_monitor import global_health_monitor
+from utils.health_monitor import global_health_monitor, ComponentStatus
+import time
 
 class TransactionCoordinator:
     """Coordinates transactions across different databases and caches."""
@@ -212,13 +213,20 @@ async def transaction_scope(invalidate_cache: bool = True):
     """Context manager for coordinated transactions."""
     if not transaction_coordinator._initialized:
         await transaction_coordinator.ensure_initialized()
-        
+    
+    # Generate unique transaction ID
+    txn_id = f"txn_{int(time.time() * 1000)}_{id(asyncio.current_task())}"
+    
     try:
         async with transaction_coordinator._lock:
             try:
                 # Ensure connections are initialized
                 await connection_manager.initialize_postgres()
                 await connection_manager.initialize()
+                
+                # Register transaction with deadlock detector
+                await deadlock_detector.register_transaction(txn_id, "postgres")
+                await deadlock_detector.register_transaction(txn_id, "neo4j")
                 
                 # Start transactions
                 await transaction_coordinator._start_postgres()
@@ -257,6 +265,8 @@ async def transaction_scope(invalidate_cache: bool = True):
                     transaction_coordinator._pending_tasks.remove(future)
                 raise
     finally:
+        # Unregister transaction from deadlock detector
+        await deadlock_detector.unregister_transaction(txn_id)
         # Ensure resources are cleaned up
         await transaction_coordinator.cleanup()
 
@@ -269,4 +279,195 @@ async def cleanup_transaction():
     except Exception as e:
         log(f"Error cleaning up transaction coordinator resources: {e}", level="error")
 
-register_shutdown_handler(cleanup_transaction) 
+register_shutdown_handler(cleanup_transaction)
+
+class DeadlockDetector:
+    """Detects and manages database deadlocks."""
+    
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._transaction_graph = {}  # Graph of transaction dependencies
+        self._transaction_timestamps = {}  # Transaction start times
+        self._deadlock_timeout = 30.0  # Seconds before considering a potential deadlock
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._monitoring = False
+        self._monitor_task = None
+    
+    async def start_monitoring(self):
+        """Start deadlock monitoring."""
+        async with self._lock:
+            if self._monitoring:
+                return
+            self._monitoring = True
+            self._monitor_task = asyncio.create_task(self._monitor_deadlocks())
+            self._pending_tasks.add(self._monitor_task)
+    
+    async def stop_monitoring(self):
+        """Stop deadlock monitoring."""
+        async with self._lock:
+            if not self._monitoring:
+                return
+            self._monitoring = False
+            if self._monitor_task and not self._monitor_task.done():
+                self._monitor_task.cancel()
+                try:
+                    await self._monitor_task
+                except asyncio.CancelledError:
+                    pass
+            if self._monitor_task in self._pending_tasks:
+                self._pending_tasks.remove(self._monitor_task)
+    
+    async def register_transaction(self, txn_id: str, resource_id: str):
+        """Register a transaction's intent to access a resource."""
+        async with self._lock:
+            if txn_id not in self._transaction_graph:
+                self._transaction_graph[txn_id] = set()
+                self._transaction_timestamps[txn_id] = time.time()
+            self._transaction_graph[txn_id].add(resource_id)
+    
+    async def unregister_transaction(self, txn_id: str):
+        """Unregister a completed transaction."""
+        async with self._lock:
+            if txn_id in self._transaction_graph:
+                del self._transaction_graph[txn_id]
+            if txn_id in self._transaction_timestamps:
+                del self._transaction_timestamps[txn_id]
+    
+    def _has_cycle(self, graph: Dict[str, Set[str]], start: str, visited: Set[str], path: Set[str]) -> bool:
+        """Check for cycles in the transaction dependency graph using DFS."""
+        visited.add(start)
+        path.add(start)
+        
+        for neighbor in graph.get(start, set()):
+            if neighbor not in visited:
+                if self._has_cycle(graph, neighbor, visited, path):
+                    return True
+            elif neighbor in path:
+                return True
+        
+        path.remove(start)
+        return False
+    
+    async def check_for_deadlocks(self) -> List[Set[str]]:
+        """Check for potential deadlocks in current transactions.
+        
+        Returns:
+            List[Set[str]]: Sets of transaction IDs involved in deadlocks
+        """
+        async with self._lock:
+            deadlocks = []
+            visited = set()
+            
+            # Check for cycles in transaction graph
+            for txn_id in self._transaction_graph:
+                if txn_id not in visited:
+                    path = set()
+                    if self._has_cycle(self._transaction_graph, txn_id, visited, path):
+                        deadlocks.append(path)
+            
+            # Check for long-running transactions
+            current_time = time.time()
+            for txn_id, start_time in self._transaction_timestamps.items():
+                if current_time - start_time > self._deadlock_timeout:
+                    deadlocks.append({txn_id})
+            
+            return deadlocks
+    
+    async def _monitor_deadlocks(self):
+        """Background task to monitor for deadlocks."""
+        while self._monitoring:
+            try:
+                deadlocks = await self.check_for_deadlocks()
+                if deadlocks:
+                    for deadlock in deadlocks:
+                        # Log the deadlock
+                        txn_ids = ", ".join(deadlock)
+                        await log(f"Potential deadlock detected involving transactions: {txn_ids}", level="warning")
+                        
+                        # Add retry tracking for health status updates
+                        retry_count = 0
+                        while retry_count < 3:
+                            try:
+                                await global_health_monitor.update_component_status(
+                                    "transaction_coordinator",
+                                    ComponentStatus.DEGRADED,
+                                    error=True,
+                                    details={
+                                        "deadlock_transactions": list(deadlock),
+                                        "deadlock_duration": time.time() - min(
+                                            self._transaction_timestamps[txn_id] 
+                                            for txn_id in deadlock
+                                        ),
+                                        "affected_resources": [
+                                            res for txn_id in deadlock 
+                                            for res in self._transaction_graph.get(txn_id, set())
+                                        ],
+                                        "retry_attempt": retry_count + 1,
+                                        "deadlock_type": "cycle" if len(deadlock) > 1 else "timeout",
+                                        "resource_contention": {
+                                            res: [txn for txn in deadlock 
+                                                 if res in self._transaction_graph.get(txn, set())]
+                                            for res in set(res for txn in deadlock 
+                                                         for res in self._transaction_graph.get(txn, set()))
+                                        }
+                                    }
+                                )
+                                break
+                            except Exception as e:
+                                retry_count += 1
+                                await asyncio.sleep(1)
+                                if retry_count == 3:
+                                    await log(f"Failed to update health status after retries: {e}", level="error")
+                                    
+                                # Record error for audit
+                                from utils.error_handling import ErrorAudit
+                                await ErrorAudit.record_error(
+                                    e,
+                                    "deadlock_detector_health_update",
+                                    Exception,
+                                    severity=ErrorSeverity.WARNING
+                                )
+                    
+                    await asyncio.sleep(1.0)  # Check every second
+                else:
+                    # Update healthy status periodically
+                    try:
+                        await global_health_monitor.update_component_status(
+                            "transaction_coordinator",
+                            ComponentStatus.HEALTHY,
+                            details={
+                                "active_transactions": len(self._transaction_graph),
+                                "monitoring_status": "active",
+                                "last_check": time.time()
+                            }
+                        )
+                    except Exception as e:
+                        await log(f"Error updating healthy status: {e}", level="warning")
+                    
+                    await asyncio.sleep(5.0)  # Longer sleep when no deadlocks
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                await log(f"Error in deadlock monitor: {e}", level="error")
+                await asyncio.sleep(5.0)  # Back off on error
+    
+    async def cleanup(self):
+        """Clean up resources."""
+        await self.stop_monitoring()
+        self._transaction_graph.clear()
+        self._transaction_timestamps.clear()
+        
+        # Cancel any remaining tasks
+        if self._pending_tasks:
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._pending_tasks.clear()
+
+# Create global instance
+deadlock_detector = DeadlockDetector()
+
+# Register cleanup handler
+register_shutdown_handler(deadlock_detector.cleanup) 

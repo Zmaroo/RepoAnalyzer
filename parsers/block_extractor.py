@@ -17,7 +17,8 @@ from utils.error_handling import (
     handle_async_errors,
     AsyncErrorBoundary,
     ErrorSeverity,
-    ProcessingError
+    ProcessingError,
+    ErrorAudit
 )
 from tree_sitter_language_pack import get_parser, get_language
 from parsers.types import (
@@ -27,8 +28,16 @@ from parsers.types import (
 from parsers.models import PatternMatch
 from parsers.parser_interfaces import AIParserInterface
 from utils.shutdown import register_shutdown_handler
-from utils.health_monitor import global_health_monitor
-from utils.cache import cache_coordinator, UnifiedCache
+from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_operation
+from utils.cache import cache_coordinator, UnifiedCache, cache_metrics
+from utils.cache_analytics import get_cache_analytics, CacheAnalytics
+from utils.request_cache import cached_in_request, request_cache_context, get_current_request_cache
+from parsers.pattern_processor import pattern_processor
+from parsers.ai_pattern_processor import ai_pattern_processor
+from parsers.types import InteractionType
+from db.transaction import transaction_scope
+import os
+import psutil
 
 @dataclass
 class ExtractedBlock:
@@ -39,7 +48,6 @@ class ExtractedBlock:
     node_type: str
     metadata: Dict[str, Any] = None
     confidence: float = 1.0
-
 
 class TreeSitterBlockExtractor(AIParserInterface):
     """Extracts code blocks from tree-sitter ASTs."""
@@ -62,6 +70,15 @@ class TreeSitterBlockExtractor(AIParserInterface):
         self._component_states = {
             'tree_sitter': False
         }
+        self._warmup_complete = False
+        self._metrics = {
+            "total_blocks": 0,
+            "successful_extractions": 0,
+            "failed_extractions": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "extraction_times": []
+        }
     
     async def ensure_initialized(self):
         """Ensure the instance is properly initialized before use."""
@@ -82,6 +99,17 @@ class TreeSitterBlockExtractor(AIParserInterface):
                 # Initialize cache
                 instance._cache = UnifiedCache("block_extractor")
                 await cache_coordinator.register_cache(instance._cache)
+                
+                # Initialize cache analytics
+                analytics = await get_cache_analytics()
+                analytics.register_warmup_function(
+                    "block_extractor",
+                    instance._warmup_cache
+                )
+                await analytics.optimize_ttl_values()
+                
+                # Initialize error analysis
+                await ErrorAudit.analyze_codebase(os.path.dirname(__file__))
                 
                 # Initialize required components
                 from tree_sitter import Language, Parser
@@ -105,17 +133,15 @@ class TreeSitterBlockExtractor(AIParserInterface):
                 
                 instance._component_states['tree_sitter'] = True
                 
-                # Initialize AI capabilities
-                if AICapability.CODE_UNDERSTANDING in instance.capabilities:
-                    await instance._initialize_ai_understanding()
-                if AICapability.CODE_MODIFICATION in instance.capabilities:
-                    await instance._initialize_ai_modification()
+                # Register with health monitor
+                global_health_monitor.register_component(
+                    "block_extractor",
+                    health_check=instance._check_health
+                )
                 
-                # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
-                
-                # Initialize health monitoring
-                global_health_monitor.register_component("block_extractor")
+                # Start warmup task
+                warmup_task = asyncio.create_task(instance._warmup_caches())
+                instance._pending_tasks.add(warmup_task)
                 
                 instance._initialized = True
                 await log("Block extractor initialized", level="info")
@@ -125,39 +151,183 @@ class TreeSitterBlockExtractor(AIParserInterface):
             # Cleanup on initialization failure
             await instance.cleanup()
             raise ProcessingError(f"Failed to initialize block extractor: {e}")
-    
-    @staticmethod
-    async def _init_language_parser(lang: str) -> Any:
-        """Initialize a language parser."""
+
+    async def _warmup_caches(self):
+        """Warm up caches with frequently used blocks."""
         try:
-            from tree_sitter import Language, Parser
-            return Language.build_library(
-                f"build/{lang}.so",
-                [f"vendor/tree-sitter-{lang}"]
-            )
+            # Get frequently used blocks
+            async with transaction_scope() as txn:
+                blocks = await txn.fetch("""
+                    SELECT block_type, usage_count
+                    FROM block_usage_stats
+                    WHERE usage_count > 10
+                    ORDER BY usage_count DESC
+                    LIMIT 100
+                """)
+                
+                # Warm up block cache
+                for block in blocks:
+                    await self._warmup_cache([block["block_type"]])
+                    
+            self._warmup_complete = True
+            await log("Block extractor cache warmup complete", level="info")
         except Exception as e:
-            raise ProcessingError(f"Failed to initialize parser for {lang}: {e}")
-    
+            await log(f"Error warming up caches: {e}", level="error")
+
+    async def _warmup_cache(self, keys: List[str]) -> Dict[str, Any]:
+        """Warmup function for block cache."""
+        results = {}
+        for key in keys:
+            try:
+                block = await self._get_block(key)
+                if block:
+                    results[key] = block
+            except Exception as e:
+                await log(f"Error warming up block {key}: {e}", level="warning")
+        return results
+
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for block extractor."""
+        # Get error audit data
+        error_report = await ErrorAudit.get_error_report()
+        
+        # Get cache analytics
+        analytics = await get_cache_analytics()
+        cache_stats = await analytics.get_metrics()
+        
+        # Get resource usage
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        
+        # Calculate average extraction time
+        avg_extraction_time = sum(self._metrics["extraction_times"]) / len(self._metrics["extraction_times"]) if self._metrics["extraction_times"] else 0
+        
+        # Calculate health status
+        status = ComponentStatus.HEALTHY
+        details = {
+            "metrics": {
+                "total_blocks": self._metrics["total_blocks"],
+                "success_rate": self._metrics["successful_extractions"] / self._metrics["total_blocks"] if self._metrics["total_blocks"] > 0 else 0,
+                "cache_hit_rate": self._metrics["cache_hits"] / (self._metrics["cache_hits"] + self._metrics["cache_misses"]) if (self._metrics["cache_hits"] + self._metrics["cache_misses"]) > 0 else 0,
+                "avg_extraction_time": avg_extraction_time
+            },
+            "component_states": self._component_states,
+            "cache_stats": {
+                "hit_rates": cache_stats.get("hit_rates", {}),
+                "memory_usage": cache_stats.get("memory_usage", {}),
+                "eviction_rates": cache_stats.get("eviction_rates", {})
+            },
+            "error_stats": {
+                "total_errors": error_report.get("total_errors", 0),
+                "error_rate": error_report.get("error_rate", 0),
+                "top_errors": error_report.get("top_error_locations", [])[:3]
+            },
+            "resource_usage": {
+                "memory_rss": memory_info.rss,
+                "memory_vms": memory_info.vms,
+                "cpu_percent": process.cpu_percent(),
+                "thread_count": len(process.threads())
+            },
+            "warmup_status": {
+                "complete": self._warmup_complete,
+                "cache_ready": self._warmup_complete and self._cache is not None
+            }
+        }
+        
+        # Check for degraded conditions
+        if details["metrics"]["success_rate"] < 0.8:  # Less than 80% success rate
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Low extraction success rate"
+        elif error_report.get("error_rate", 0) > 0.1:  # More than 10% error rate
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High error rate"
+        elif details["resource_usage"]["cpu_percent"] > 80:  # High CPU usage
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High CPU usage"
+        elif avg_extraction_time > 1.0:  # Average extraction time > 1 second
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High extraction times"
+        elif not self._warmup_complete:  # Cache not ready
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Cache warmup incomplete"
+            
+        return {
+            "status": status,
+            "details": details
+        }
+
+    async def cleanup(self):
+        """Clean up block extractor resources."""
+        try:
+            if not self._initialized:
+                return
+            
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clear parser cache
+            if self._component_states['tree_sitter']:
+                self._language_parsers.clear()
+                self._component_states['tree_sitter'] = False
+            
+            # Clean up cache
+            if self._cache:
+                await self._cache.clear_async()
+                await cache_coordinator.unregister_cache("block_extractor")
+            
+            # Save error analysis
+            await ErrorAudit.save_report()
+            
+            # Save cache analytics
+            analytics = await get_cache_analytics()
+            await analytics.save_metrics_history(self._cache.get_metrics())
+            
+            # Save metrics to database
+            async with transaction_scope() as txn:
+                await txn.execute("""
+                    INSERT INTO block_extractor_metrics (
+                        timestamp, total_blocks, successful_extractions,
+                        failed_extractions, cache_hits, cache_misses,
+                        avg_extraction_time
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """, (
+                    time.time(),
+                    self._metrics["total_blocks"],
+                    self._metrics["successful_extractions"],
+                    self._metrics["failed_extractions"],
+                    self._metrics["cache_hits"],
+                    self._metrics["cache_misses"],
+                    sum(self._metrics["extraction_times"]) / len(self._metrics["extraction_times"]) if self._metrics["extraction_times"] else 0
+                ))
+            
+            # Unregister from health monitoring
+            global_health_monitor.unregister_component("block_extractor")
+            
+            self._initialized = False
+            await log("Block extractor cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up block extractor: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup block extractor: {e}")
+
     @handle_async_errors(error_types=(ProcessingError,))
     async def extract_block(self, 
                          language_id: str, 
                          source_code: str, 
                          node_or_match: Any) -> Optional[ExtractedBlock]:
-        """
-        Extract a code block from the given node or pattern match.
-        
-        Args:
-            language_id: The language identifier
-            source_code: The complete source code
-            node_or_match: Either a tree-sitter Node or a PatternMatch
-            
-        Returns:
-            An ExtractedBlock object or None if extraction fails
-        """
+        """Extract a code block from the given node or pattern match."""
         if not self._initialized:
             await self.ensure_initialized()
         
         async with self._lock:
+            # Get pattern processor instances
+            from parsers.pattern_processor import pattern_processor
+            from parsers.ai_pattern_processor import ai_pattern_processor
+            
             # Cache only the final extracted block result
             cache_key = f"block_{language_id}_{hash(source_code)}_{hash(str(node_or_match))}"
             if self._cache:
@@ -170,8 +340,38 @@ class TreeSitterBlockExtractor(AIParserInterface):
                 if isinstance(node_or_match, PatternMatch):
                     node = node_or_match.node
                     if node is None:
-                        # Try heuristic fallback for regex-based matches
-                        result = await self._extract_block_heuristic(source_code, node_or_match)
+                        # Try pattern processor first
+                        processed = await pattern_processor.process_pattern(
+                            node_or_match.pattern_name,
+                            source_code,
+                            language_id
+                        )
+                        
+                        if processed.matches:
+                            # Enhance with AI insights
+                            enhanced = await ai_pattern_processor.process_pattern(
+                                processed,
+                                AIContext(
+                                    language_id=language_id,
+                                    file_type=FileType.CODE,
+                                    interaction_type=InteractionType.UNDERSTANDING
+                                )
+                            )
+                            
+                            if enhanced.success:
+                                processed.metadata.update(enhanced.ai_insights)
+                            
+                            result = ExtractedBlock(
+                                content=processed.matches[0].text,
+                                start_point=processed.matches[0].start_point,
+                                end_point=processed.matches[0].end_point,
+                                node_type=processed.pattern_name,
+                                metadata=processed.metadata,
+                                confidence=0.9
+                            )
+                        else:
+                            # Fallback to heuristic
+                            result = await self._extract_block_heuristic(source_code, node_or_match)
                     else:
                         result = await self._extract_from_node(language_id, source_code, node)
                 else:
@@ -180,8 +380,38 @@ class TreeSitterBlockExtractor(AIParserInterface):
                         result = await self._extract_from_node(language_id, source_code, node_or_match)
                     except Exception as e:
                         await log(f"Error extracting from node: {e}", level="warning")
-                        # Try heuristic fallback
-                        result = await self._extract_block_heuristic(source_code, node_or_match)
+                        # Try pattern processor first
+                        processed = await pattern_processor.process_pattern(
+                            "block",
+                            source_code,
+                            language_id
+                        )
+                        
+                        if processed.matches:
+                            # Enhance with AI insights
+                            enhanced = await ai_pattern_processor.process_pattern(
+                                processed,
+                                AIContext(
+                                    language_id=language_id,
+                                    file_type=FileType.CODE,
+                                    interaction_type=InteractionType.UNDERSTANDING
+                                )
+                            )
+                            
+                            if enhanced.success:
+                                processed.metadata.update(enhanced.ai_insights)
+                            
+                            result = ExtractedBlock(
+                                content=processed.matches[0].text,
+                                start_point=processed.matches[0].start_point,
+                                end_point=processed.matches[0].end_point,
+                                node_type="block",
+                                metadata=processed.metadata,
+                                confidence=0.9
+                            )
+                        else:
+                            # Fallback to heuristic
+                            result = await self._extract_block_heuristic(source_code, node_or_match)
                 
                 # Cache only the final extracted block result
                 if self._cache and result:
@@ -459,39 +689,6 @@ class TreeSitterBlockExtractor(AIParserInterface):
             return True
             
         return False
-
-    async def cleanup(self):
-        """Clean up block extractor resources."""
-        try:
-            if not self._initialized:
-                return
-            
-            # Cancel all pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            # Clear parser cache
-            if self._component_states['tree_sitter']:
-                self._language_parsers.clear()
-                self._component_states['tree_sitter'] = False
-            
-            # Cleanup cache
-            if self._cache:
-                await cache_coordinator.unregister_cache(self._cache)
-                self._cache = None
-            
-            # Unregister from health monitoring
-            global_health_monitor.unregister_component("block_extractor")
-            
-            self._initialized = False
-            await log("Block extractor cleaned up", level="info")
-        except Exception as e:
-            await log(f"Error cleaning up block extractor: {e}", level="error")
-            raise ProcessingError(f"Failed to cleanup block extractor: {e}")
 
     async def process_with_ai(
         self,

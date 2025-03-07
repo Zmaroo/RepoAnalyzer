@@ -12,6 +12,8 @@ from utils.cache import cache_coordinator
 from utils.cache_analytics import start_cache_analytics
 from utils.shutdown import execute_shutdown_handlers
 from db.connection import connection_manager
+from db.neo4j_ops import create_schema_indexes_and_constraints, get_neo4j_tools
+from db.transaction import get_transaction_coordinator
 
 async def _initialize_components():
     """Initialize all application components asynchronously."""
@@ -24,18 +26,28 @@ async def _initialize_components():
         # Initialize error handling
         from utils.error_handling import ErrorAudit
         log("Initializing error handling...")
-        # Directly await the analyze_codebase call
         await ErrorAudit.analyze_codebase(os.getcwd())
         log("Error handling initialized")
         
-        # Initialize databases
-        from db.psql import init_db_pool
-        await init_db_pool()
-        log("PostgreSQL pool initialized", level="info")
+        # Initialize connection manager first
+        await connection_manager.initialize()
+        log("Connection manager initialized", level="info")
         
-        # Initialize Neo4j schema
-        from db.neo4j_ops import initialize_schema
-        await initialize_schema()
+        # Initialize transaction coordinator
+        await get_transaction_coordinator()
+        log("Transaction coordinator initialized", level="info")
+        
+        # Initialize PostgreSQL operations
+        from db.psql import initialize as init_psql
+        await init_psql()
+        log("PostgreSQL operations initialized", level="info")
+        
+        # Initialize Neo4j tools
+        neo4j_tools = await get_neo4j_tools()
+        log("Neo4j tools initialized", level="info")
+        
+        # Then create Neo4j schema
+        await create_schema_indexes_and_constraints()
         log("Neo4j schema initialized", level="info")
         
         # Initialize caching system in proper order
@@ -61,10 +73,11 @@ async def _initialize_components():
         log("Health monitoring started", level="info")
         
         # Register cleanup handlers in reverse initialization order
-        from db.psql import close_db_pool
+        from utils.shutdown import register_shutdown_handler
+        from db.psql import cleanup_psql
+        from db.transaction import transaction_coordinator
         
         # Health monitoring cleanup
-        from utils.shutdown import register_shutdown_handler
         register_shutdown_handler(global_health_monitor.cleanup)
         
         # Cache system cleanup (should be after components that might use cache)
@@ -72,21 +85,27 @@ async def _initialize_components():
         register_shutdown_handler(cleanup_caches)
         
         # Database cleanup (should be last as other cleanups might need DB)
-        register_shutdown_handler(close_db_pool)
+        register_shutdown_handler(cleanup_psql)
+        register_shutdown_handler(transaction_coordinator.cleanup)
         
         # Create an async cleanup function for Neo4j
         async def async_neo4j_close():
             try:
+                await neo4j_tools.cleanup()  # Use the instance we created
                 await connection_manager.cleanup()
-                log("Neo4j connection closed successfully", level="info")
+                log("Neo4j resources closed successfully", level="info")
             except Exception as e:
-                log(f"Error closing Neo4j connection: {e}", level="error")
+                log(f"Error closing Neo4j resources: {e}", level="error")
         
         # Register the async cleanup function by wrapping it in a sync function
         def sync_neo4j_close():
             loop = get_loop()
-            future = submit_async_task(async_neo4j_close())
-            loop.run_until_complete(asyncio.wrap_future(future))
+            try:
+                loop.run_until_complete(async_neo4j_close())
+            except RuntimeError:
+                # If the loop is already running, use submit_async_task
+                future = submit_async_task(async_neo4j_close())
+                loop.run_until_complete(asyncio.wrap_future(future))
         
         # Register the sync wrapper function
         register_shutdown_handler(sync_neo4j_close)
@@ -119,6 +138,14 @@ async def initialize_application():
 if __name__ == "__main__":
     # Use get_loop from async_runner instead of creating a new one
     loop = get_loop()
-    success = loop.run_until_complete(initialize_application())
-    if not success:
-        sys.exit(1) 
+    try:
+        success = loop.run_until_complete(initialize_application())
+        if not success:
+            sys.exit(1)
+    except RuntimeError as e:
+        if "This event loop is already running" in str(e):
+            # If the loop is already running, use submit_async_task
+            future = submit_async_task(initialize_application())
+            success = loop.run_until_complete(asyncio.wrap_future(future))
+            if not success:
+                sys.exit(1) 

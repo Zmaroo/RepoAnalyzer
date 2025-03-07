@@ -12,7 +12,8 @@ All database operations use the centralized connection manager and transaction c
 import json
 import asyncio
 from typing import Dict, Optional, Set, List, Any
-from asyncpg import Transaction
+from asyncpg import Connection
+from asyncpg.transaction import Transaction
 from utils.logger import log
 from utils.error_handling import (
     AsyncErrorBoundary,
@@ -32,7 +33,10 @@ from parsers.types import ParserResult, ExtractedFeatures
 from embedding.embedding_models import doc_embedder
 from utils.shutdown import register_shutdown_handler
 from db.graph_sync import get_graph_sync
-from db.neo4j_ops import get_neo4j_ops
+from db.neo4j_ops import get_neo4j_tools
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_database
+from utils.request_cache import cached_in_request
 
 # Initialize retry manager for upsert operations
 _retry_manager = RetryManager(RetryConfig(max_retries=5))
@@ -546,7 +550,7 @@ class UpsertCoordinator:
         transaction: Transaction
     ) -> None:
         """Store pattern in Neo4j with AI enhancements."""
-        neo4j_ops = await get_neo4j_ops()
+        neo4j_ops = await get_neo4j_tools()
         
         # Store pattern node
         await neo4j_ops.store_pattern_node(pattern_data)

@@ -19,6 +19,8 @@ from parsers.types import (
     QueryPattern, PatternDefinition, PatternInfo
 )
 
+from parsers.language_mapping import normalize_language_name
+
 # Track loaded modules to prevent redundant loading
 _loaded_modules: Set[str] = set()
 
@@ -50,10 +52,6 @@ from . import (
     sql, squirrel, starlark, svelte, swift, tcl, toml, tsx, typescript,
     verilog, vhdl, vue, xml, yaml, zig
 )
-
-def _normalize_language_name(language: str) -> str:
-    """Normalize language name for pattern lookup."""
-    return language.lower().replace(" ", "_").replace("-", "_")
 
 def get_pattern_module(language_id: str) -> Optional[Any]:
     """
@@ -129,7 +127,7 @@ def get_patterns_for_language(language: str) -> Dict[PatternCategory, Dict[Patte
     Returns:
         Dictionary of patterns by category or empty dict if none found
     """
-    language_id = _normalize_language_name(language)
+    language_id = normalize_language_name(language)
     
     # Check if patterns are already loaded
     if language_id in _pattern_registry:

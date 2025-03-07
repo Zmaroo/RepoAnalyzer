@@ -47,6 +47,7 @@ from utils.shutdown import register_shutdown_handler
 from db.transaction import transaction_scope
 from db.upsert_ops import coordinator as upsert_coordinator
 from utils.health_monitor import global_health_monitor
+from utils.health_monitor import ComponentStatus
 
 @dataclass
 class UnifiedParser(BaseParserInterface, AIParserInterface):
@@ -345,23 +346,139 @@ class UnifiedParser(BaseParserInterface, AIParserInterface):
         context: AIContext
     ) -> List[Dict[str, Any]]:
         """[5.1.9] Process with learning capability."""
+        if not self._initialized:
+            await self.ensure_initialized()
+            
         patterns = []
         
-        # Try tree-sitter parser first
-        if self._tree_sitter_parser:
-            tree_sitter_patterns = await self._tree_sitter_parser._process_with_learning(
-                parse_result,
-                context
-            )
-            patterns.extend(tree_sitter_patterns)
-        
-        # Add custom parser patterns
-        if self._custom_parser:
-            custom_patterns = await self._custom_parser._process_with_learning(
-                parse_result,
-                context
-            )
-            patterns.extend(custom_patterns)
+        async with AsyncErrorBoundary(
+            operation_name="pattern_learning",
+            error_types=(ProcessingError,),
+            severity=ErrorSeverity.ERROR
+        ):
+            try:
+                # Get pattern processor instance
+                from parsers.pattern_processor import pattern_processor
+                from parsers.ai_pattern_processor import ai_pattern_processor
+                
+                # Start transaction for pattern processing
+                async with transaction_scope() as txn:
+                    # Update health status
+                    await global_health_monitor.update_component_status(
+                        f"parser_{self.language_id}",
+                        ComponentStatus.HEALTHY,
+                        details={
+                            "operation": "pattern_learning",
+                            "context": context.__dict__
+                        }
+                    )
+                    
+                    # Process with tree-sitter parser
+                    if self._tree_sitter_parser:
+                        try:
+                            tree_sitter_patterns = await self._tree_sitter_parser._process_with_learning(
+                                parse_result,
+                                context
+                            )
+                            # Validate and enhance patterns
+                            for pattern in tree_sitter_patterns:
+                                if await pattern_processor.validate_pattern(pattern, self.language_id):
+                                    # Enhance with AI insights
+                                    enhanced = await ai_pattern_processor.process_pattern(
+                                        pattern,
+                                        context
+                                    )
+                                    if enhanced.success:
+                                        pattern.update(enhanced.ai_insights)
+                                    patterns.append(pattern)
+                        except Exception as e:
+                            await log(f"Error in tree-sitter pattern learning: {e}", level="error")
+                            await global_health_monitor.update_component_status(
+                                f"parser_{self.language_id}",
+                                ComponentStatus.DEGRADED,
+                                error=True,
+                                details={
+                                    "operation": "tree_sitter_pattern_learning",
+                                    "error": str(e)
+                                }
+                            )
+                    
+                    # Process with custom parser
+                    if self._custom_parser:
+                        try:
+                            custom_patterns = await self._custom_parser._process_with_learning(
+                                parse_result,
+                                context
+                            )
+                            # Validate and enhance patterns
+                            for pattern in custom_patterns:
+                                if await pattern_processor.validate_pattern(pattern, self.language_id):
+                                    # Enhance with AI insights
+                                    enhanced = await ai_pattern_processor.process_pattern(
+                                        pattern,
+                                        context
+                                    )
+                                    if enhanced.success:
+                                        pattern.update(enhanced.ai_insights)
+                                    patterns.append(pattern)
+                        except Exception as e:
+                            await log(f"Error in custom pattern learning: {e}", level="error")
+                            await global_health_monitor.update_component_status(
+                                f"parser_{self.language_id}",
+                                ComponentStatus.DEGRADED,
+                                error=True,
+                                details={
+                                    "operation": "custom_pattern_learning",
+                                    "error": str(e)
+                                }
+                            )
+                    
+                    # Analyze pattern relationships
+                    if patterns:
+                        relationships = await pattern_processor.analyze_pattern_relationships(patterns)
+                        
+                        # Store patterns and relationships
+                        for pattern in patterns:
+                            # Store pattern
+                            await upsert_coordinator.upsert_pattern(
+                                pattern,
+                                self.language_id,
+                                context.repository_id if context else None
+                            )
+                            
+                            # Store relationships
+                            if pattern["id"] in relationships:
+                                for rel in relationships[pattern["id"]]:
+                                    await upsert_coordinator.upsert_pattern_relationship(
+                                        pattern["id"],
+                                        rel["target_id"],
+                                        rel["type"],
+                                        rel["metadata"]
+                                    )
+                    
+                    # Update final status
+                    await global_health_monitor.update_component_status(
+                        f"parser_{self.language_id}",
+                        ComponentStatus.HEALTHY,
+                        details={
+                            "operation": "pattern_learning_complete",
+                            "patterns_found": len(patterns),
+                            "relationships_found": len(relationships) if patterns else 0
+                        }
+                    )
+                    
+            except Exception as e:
+                await log(f"Error in pattern learning process: {e}", level="error")
+                await global_health_monitor.update_component_status(
+                    f"parser_{self.language_id}",
+                    ComponentStatus.UNHEALTHY,
+                    error=True,
+                    details={
+                        "operation": "pattern_learning",
+                        "error": str(e)
+                    }
+                )
+                raise ProcessingError(f"Pattern learning failed: {e}")
         
         return patterns
     

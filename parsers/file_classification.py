@@ -26,18 +26,22 @@ from parsers.language_mapping import (
     is_supported_language,
     get_parser_type,
     get_file_type,
-    detect_language_from_filename,
-    detect_language_from_content,
     detect_language,
     get_complete_language_info,
     get_parser_info_for_language,
-    is_binary_extension,
     get_ai_capabilities
 )
 from parsers.parser_interfaces import AIParserInterface
 from utils.logger import log
-from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity, ProcessingError
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity, ProcessingError, ErrorAudit
 from utils.shutdown import register_shutdown_handler
+from utils.cache import UnifiedCache, cache_coordinator, cache_metrics
+from utils.cache_analytics import get_cache_analytics, CacheAnalytics
+from utils.request_cache import cached_in_request, request_cache_context, get_current_request_cache
+from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_operation
+from db.transaction import transaction_scope
+import time
+import psutil
 
 # Track initialization state and tasks
 _initialized = False
@@ -59,8 +63,7 @@ class FileClassifier(AIParserInterface):
         )
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
-        self._cache = {}
-        self._lock = asyncio.Lock()
+        self._warmup_complete = False
     
     async def ensure_initialized(self):
         """Ensure the classifier is initialized."""
@@ -73,9 +76,16 @@ class FileClassifier(AIParserInterface):
         """[3.1.1] Create and initialize a file classifier instance."""
         instance = cls()
         try:
-            async with AsyncErrorBoundary("file classifier initialization"):
-                # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
+            async with AsyncErrorBoundary("file_classifier_initialization"):
+                # Initialize language mapping module
+                from parsers.language_mapping import initialize as init_language_mapping
+                await init_language_mapping()
+                
+                # Register with health monitor
+                global_health_monitor.register_component(
+                    "file_classifier",
+                    health_check=instance._check_health
+                )
                 
                 instance._initialized = True
                 log("File classifier initialized", level="info")
@@ -97,203 +107,52 @@ class FileClassifier(AIParserInterface):
             
         async with AsyncErrorBoundary(f"classify_file_{file_path}"):
             try:
-                # Check cache first
-                cache_key = f"{file_path}:{hash(content) if content else ''}"
-                if cache_key in self._cache:
-                    return self._cache[cache_key]
+                # Use unified language detection from language_mapping
+                language_id, confidence, is_binary = await detect_language(file_path, content)
                 
-                # Detect language from filename
-                language_id = detect_language_from_filename(file_path)
-                if not language_id:
-                    language_id = await self._detect_language_from_content(content) if content else "unknown"
+                # Log detection confidence if it's low
+                if confidence < 0.5:
+                    log(f"Low confidence ({confidence:.2f}) language detection for {file_path}: {language_id}", level="debug")
                 
                 # Get complete language information
                 language_info = get_complete_language_info(language_id)
                 
                 # Create classification
-                classification = FileClassification(
+                return FileClassification(
                     file_path=file_path,
                     language_id=language_info["canonical_name"],
                     parser_type=language_info["parser_type"],
                     file_type=language_info["file_type"],
-                    is_binary=await self._is_binary_content(content) if content else False
+                    is_binary=is_binary
                 )
-                
-                # Cache result
-                self._cache[cache_key] = classification
-                
-                return classification
             except Exception as e:
                 log(f"Error classifying file {file_path}: {e}", level="error")
                 raise ProcessingError(f"Failed to classify file {file_path}: {e}")
     
-    async def process_with_ai(
-        self,
-        source_code: str,
-        context: AIContext
-    ) -> AIProcessingResult:
-        """[3.1.3] Process file with AI assistance."""
-        if not self._initialized:
-            await self.ensure_initialized()
-            
-        async with AsyncErrorBoundary("file classifier AI processing"):
-            try:
-                results = AIProcessingResult(success=True)
-                
-                # Process with understanding capability
-                if AICapability.CODE_UNDERSTANDING in self.capabilities:
-                    understanding = await self._analyze_file_characteristics(source_code, context)
-                    results.context_info.update(understanding)
-                
-                # Process with documentation capability
-                if AICapability.DOCUMENTATION in self.capabilities:
-                    documentation = await self._analyze_file_documentation(source_code, context)
-                    results.ai_insights.update(documentation)
-                
-                return results
-            except Exception as e:
-                log(f"Error in file classifier AI processing: {e}", level="error")
-                return AIProcessingResult(
-                    success=False,
-                    response=f"Error processing with AI: {str(e)}"
-                )
-    
-    async def _analyze_file_characteristics(
-        self,
-        source_code: str,
-        context: AIContext
-    ) -> Dict[str, Any]:
-        """[3.1.4] Analyze file characteristics with AI."""
-        characteristics = {
-            "structure": await self._analyze_file_structure(source_code),
-            "patterns": await self._identify_file_patterns(source_code),
-            "complexity": await self._assess_file_complexity(source_code)
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for file classifier."""
+        # Get language mapping metrics
+        from parsers.language_mapping import _metrics, _check_health
+        language_mapping_health = await _check_health()
+        
+        # Add file classifier specific metrics
+        status = language_mapping_health["status"]
+        details = language_mapping_health["details"]
+        details["classifier_status"] = {
+            "initialized": self._initialized,
+            "warmup_complete": self._warmup_complete
         }
         
-        # Add language-specific analysis
-        if context.project.language_id != "unknown":
-            characteristics.update(await self._analyze_language_specific(
-                source_code,
-                context.project.language_id
-            ))
-        
-        return characteristics
-    
-    async def _analyze_file_documentation(
-        self,
-        source_code: str,
-        context: AIContext
-    ) -> Dict[str, Any]:
-        """[3.1.5] Analyze file documentation with AI."""
         return {
-            "doc_coverage": await self._analyze_documentation_coverage(source_code),
-            "doc_quality": await self._assess_documentation_quality(source_code),
-            "doc_patterns": await self._identify_documentation_patterns(source_code)
+            "status": status,
+            "details": details
         }
-    
-    async def _analyze_file_structure(self, source_code: str) -> Dict[str, Any]:
-        """[3.1.6] Analyze file structure."""
-        return {
-            "line_count": len(source_code.splitlines()),
-            "block_structure": await self._analyze_block_structure(source_code),
-            "indentation": await self._analyze_indentation(source_code)
-        }
-    
-    async def _identify_file_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """[3.1.7] Identify common file patterns."""
-        patterns = []
-        
-        # Check for common file patterns
-        if await self._is_config_file(source_code):
-            patterns.append({
-                "type": "config",
-                "confidence": 0.9,
-                "indicators": ["key-value pairs", "structured data"]
-            })
-        
-        if await self._is_test_file(source_code):
-            patterns.append({
-                "type": "test",
-                "confidence": 0.8,
-                "indicators": ["test functions", "assertions"]
-            })
-        
-        if await self._is_documentation_file(source_code):
-            patterns.append({
-                "type": "documentation",
-                "confidence": 0.85,
-                "indicators": ["extensive comments", "docstrings"]
-            })
-        
-        return patterns
-    
-    async def _assess_file_complexity(self, source_code: str) -> Dict[str, float]:
-        """[3.1.8] Assess file complexity."""
-        return {
-            "cognitive_complexity": await self._calculate_cognitive_complexity(source_code),
-            "structural_complexity": await self._calculate_structural_complexity(source_code),
-            "documentation_ratio": await self._calculate_documentation_ratio(source_code)
-        }
-    
-    async def _analyze_language_specific(
-        self,
-        source_code: str,
-        language_id: str
-    ) -> Dict[str, Any]:
-        """[3.1.9] Analyze language-specific characteristics."""
-        return {
-            "language_features": await self._identify_language_features(source_code, language_id),
-            "style_compliance": await self._check_style_compliance(source_code, language_id),
-            "best_practices": await self._check_best_practices(source_code, language_id)
-        }
-    
-    async def _detect_language_from_content(self, content: Optional[str]) -> str:
-        """[3.1.10] Detect language from file content."""
-        if not content:
-            return "unknown"
-            
-        # Check for common language indicators
-        indicators = {
-            "python": [r"^import\s+\w+", r"^from\s+\w+\s+import", r"def\s+\w+\s*\("],
-            "javascript": [r"^const\s+\w+", r"^let\s+\w+", r"function\s+\w+\s*\("],
-            "typescript": [r"^interface\s+\w+", r"^type\s+\w+", r":\s*\w+[]?"],
-            "markdown": [r"^#\s+", r"^\*\s+", r"^-\s+"],
-            "html": [r"<!DOCTYPE\s+html>", r"<html>", r"<head>"],
-            "json": [r"^\s*{", r"^\s*\[", r"\"\w+\":\s*"],
-            "yaml": [r"^---", r"^\w+:", r"^\s*-\s+\w+:"]
-        }
-        
-        matches = {}
-        for lang, patterns in indicators.items():
-            matches[lang] = sum(1 for pattern in patterns if re.search(pattern, content, re.MULTILINE))
-        
-        if matches:
-            best_match = max(matches.items(), key=lambda x: x[1])
-            if best_match[1] > 0:
-                return best_match[0]
-        
-        return "unknown"
-    
-    async def _is_binary_content(self, content: Optional[str]) -> bool:
-        """[3.1.11] Check if content appears to be binary."""
-        if not content:
-            return False
-            
-        # Check for null bytes and high concentration of non-printable characters
-        try:
-            return b"\x00" in content.encode("utf-8") or \
-                   sum(1 for c in content if not (32 <= ord(c) <= 126)) > len(content) * 0.3
-        except UnicodeEncodeError:
-            return True
     
     async def cleanup(self):
-        """[3.1.12] Clean up classifier resources."""
+        """Clean up classifier resources."""
         try:
             if not self._initialized:
                 return
-                
-            # Clear cache
-            self._cache.clear()
             
             # Cancel all pending tasks
             if self._pending_tasks:
@@ -303,25 +162,14 @@ class FileClassifier(AIParserInterface):
                 await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
+            # Unregister from health monitor
+            global_health_monitor.unregister_component("file_classifier")
+            
             self._initialized = False
             log("File classifier cleaned up", level="info")
         except Exception as e:
             log(f"Error cleaning up file classifier: {e}", level="error")
             raise ProcessingError(f"Failed to cleanup file classifier: {e}")
-
-    async def analyze_with_patterns(
-        self,
-        file_path: str,
-        content: str,
-        patterns: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Analyze file using learned patterns."""
-        classification = await self.classify_file(file_path, content)
-        pattern_matches = await self._match_patterns(content, patterns)
-        return {
-            "classification": classification,
-            "pattern_matches": pattern_matches
-        }
 
 # Global instance
 _file_classifier = None
@@ -346,87 +194,6 @@ async def initialize():
         except Exception as e:
             log(f"Error initializing file classification: {e}", level="error")
             raise
-
-@handle_async_errors(error_types=(Exception,))
-async def classify_file(file_path: str, content: Optional[str] = None) -> FileClassification:
-    """
-    Classify a file based on its path and optionally its content.
-    
-    Args:
-        file_path: Path to the file
-        content: Optional file content for more accurate classification
-        
-    Returns:
-        FileClassification object with parser type and language information
-    """
-    if not _initialized:
-        await initialize()
-        
-    async with AsyncErrorBoundary("classify_file"):
-        # Use the enhanced language detection with confidence score
-        task = asyncio.create_task(detect_language(file_path, content))
-        _pending_tasks.add(task)
-        try:
-            language_id, confidence = await task
-        finally:
-            _pending_tasks.remove(task)
-        
-        # Log detection confidence if it's low
-        if confidence < 0.5:
-            log(f"Low confidence ({confidence:.2f}) language detection for {file_path}: {language_id}", level="debug")
-        
-        # Get parser info for the detected language
-        task = asyncio.create_task(get_parser_info_for_language(language_id))
-        _pending_tasks.add(task)
-        try:
-            parser_info = await task
-        finally:
-            _pending_tasks.remove(task)
-        
-        # Check if file is binary
-        task = asyncio.create_task(_is_likely_binary(file_path, content))
-        _pending_tasks.add(task)
-        try:
-            is_binary = await task
-        finally:
-            _pending_tasks.remove(task)
-        
-        # Create classification
-        classification = FileClassification(
-            file_path=file_path,
-            language_id=parser_info["language_id"],
-            parser_type=parser_info["parser_type"],
-            file_type=parser_info["file_type"],
-            is_binary=is_binary,
-        )
-        
-        return classification
-
-@handle_async_errors(error_types=(Exception,))
-async def _is_likely_binary(file_path: str, content: Optional[str] = None) -> bool:
-    """
-    Determine if a file is likely binary.
-    
-    Args:
-        file_path: Path to the file
-        content: Optional file content
-        
-    Returns:
-        True if likely binary, False otherwise
-    """
-    # Check extension first using language_mapping function
-    _, ext = os.path.splitext(file_path)
-    if is_binary_extension(ext):
-        return True
-    
-    # If content provided, check for null bytes
-    if content:
-        # Check sample of content for null bytes
-        sample = content[:4096] if len(content) > 4096 else content
-        if '\0' in sample:
-            return True
-    
-    return False
 
 @handle_async_errors(error_types=(Exception,))
 async def get_supported_languages() -> Dict[str, ParserType]:

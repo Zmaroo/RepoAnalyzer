@@ -5,6 +5,22 @@ This module provides the core functionality for indexing repositories:
 2. Language detection and parsing
 3. Feature extraction and storage
 4. Graph projection and analysis
+
+Flow:
+1. Initialization:
+   - Pattern system initialization
+   - Database coordinator setup
+   - Component registration
+
+2. Core Components:
+   - UnifiedIndexer: Main indexing coordinator
+   - FileProcessor: File processing and analysis
+   - ProcessingCoordinator: Task management
+
+3. Integration Points:
+   - Parser system integration
+   - Database layer coordination
+   - Graph projection management
 """
 
 import os
@@ -30,11 +46,26 @@ from utils.request_cache import request_cache_context, cached_in_request
 from utils.async_runner import submit_async_task, get_loop, cleanup_tasks
 from utils.shutdown import register_shutdown_handler
 
+# Version and dependency information
+__version__ = "1.0.0"
+__python_requires__ = ">=3.8"
+__dependencies__ = {
+    "aiofiles": ">=0.6.0",
+    "tree-sitter": ">=0.20.0",
+    "numpy": ">=1.19.0"
+}
+
 # Initialize pattern system
 _pattern_system_initialized = False
 
 async def ensure_pattern_system():
-    """Ensure pattern system is initialized."""
+    """[1.1] Ensure pattern system is initialized.
+    
+    Flow:
+    1. Check initialization state
+    2. Initialize if needed
+    3. Log completion
+    """
     global _pattern_system_initialized
     if not _pattern_system_initialized:
         await initialize_pattern_system()
@@ -51,9 +82,14 @@ from .unified_indexer import (
     index_active_project_sync
 )
 
-# Initialize pattern system
 async def initialize():
-    """Initialize the indexing system."""
+    """[1.2] Initialize the indexing system.
+    
+    Flow:
+    1. Initialize pattern system
+    2. Set up logging
+    3. Register cleanup handlers
+    """
     await ensure_pattern_system()
     log("Indexing system initialized", level="info")
 

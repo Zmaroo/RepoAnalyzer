@@ -387,26 +387,8 @@ class ProcessingCoordinator:
         if not self._initialized:
             await self.ensure_initialized()
             
-        async with self._lock:
-            batch_tasks = []
-            for file in files:
-                try:
-                    task = asyncio.create_task(self._process_single_file(file, repo_id, repo_path))
-                    batch_tasks.append(task)
-                    self._pending_tasks.add(task)
-                    task.add_done_callback(lambda t: self._pending_tasks.remove(t) if t in self._pending_tasks else None)
-                except Exception as e:
-                    await log(f"Error submitting batch processing task for {file}: {e}", level="error")
-            
-            if batch_tasks:
-                try:
-                    results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-                    for result in results:
-                        if isinstance(result, Exception):
-                            await log(f"Error in batch processing: {result}", level="error")
-                except Exception as e:
-                    await log(f"Error waiting for batch tasks: {e}", level="error")
-                    raise ProcessingError(f"Failed to process batch: {e}")
+        processable_files = [f for f in files if await is_processable_file(f)]
+        await self._process_batch(processable_files, repo_id, repo_path)
     
     async def _process_single_file(self, file_path: str, repo_id: int, repo_path: str) -> None:
         """Process a single file with error handling."""
@@ -415,6 +397,14 @@ class ProcessingCoordinator:
         except Exception as e:
             await log(f"Error processing file {file_path}: {e}", level="error")
             raise ProcessingError(f"Failed to process file {file_path}: {e}")
+    
+    async def _process_batch(self, files: List[str], repo_id: int, repo_path: str) -> None:
+        """Process a batch of files with error handling."""
+        try:
+            await self._processing_coordinator.process_batch(files, repo_id, repo_path)
+        except Exception as e:
+            await log(f"Error processing batch: {e}", level="error")
+            raise ProcessingError(f"Failed to process batch: {e}")
     
     async def cleanup(self):
         """Clean up all resources."""

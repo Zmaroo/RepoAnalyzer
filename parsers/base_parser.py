@@ -5,7 +5,8 @@ from typing import Optional, Dict, Any, List, Union, Type, Callable, Set
 from .types import (
     FileType, PatternCategory, PatternPurpose, ParserType,
     ParserResult, ParserConfig, ParsingStatistics,
-    AICapability, AIContext, AIProcessingResult
+    AICapability, AIContext, AIProcessingResult,
+    FeatureCategory
 )
 from dataclasses import field
 import re
@@ -13,26 +14,19 @@ import asyncio
 from parsers.models import PatternMatch, BaseNodeDict, PATTERN_CATEGORIES
 from utils.logger import log
 from .parser_interfaces import BaseParserInterface, AIParserInterface
-from utils.error_handling import AsyncErrorBoundary, ErrorSeverity
-from utils.cache import cache_coordinator
+from utils.error_handling import AsyncErrorBoundary, ErrorSeverity, ProcessingError, ErrorAudit, handle_errors
+from utils.cache import cache_coordinator, UnifiedCache, cache_metrics
+from utils.cache_analytics import get_cache_analytics, CacheAnalytics
+from utils.request_cache import cached_in_request, request_cache_context, get_current_request_cache
 from utils.shutdown import register_shutdown_handler
 from db.transaction import transaction_scope
 from db.upsert_ops import coordinator as upsert_coordinator
-from utils.error_handling import ProcessingError
-from utils.cache import UnifiedCache
+from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_operation
 import importlib
 from enum import Enum
-
-class FeatureCategory(Enum):
-    """Categories of code features that can be extracted."""
-    SYNTAX = "syntax"
-    SEMANTICS = "semantics"
-    STRUCTURE = "structure"
-    DEPENDENCIES = "dependencies"
-    DOCUMENTATION = "documentation"
-    PATTERNS = "patterns"
-    METRICS = "metrics"
-    CUSTOM = "custom"
+import os
+import psutil
+import time
 
 class BaseParser(BaseParserInterface, AIParserInterface):
     """Base implementation for parsers.
@@ -55,6 +49,15 @@ class BaseParser(BaseParserInterface, AIParserInterface):
             AICapability.CODE_GENERATION,
             AICapability.CODE_MODIFICATION
         }
+        self._warmup_complete = False
+        self._metrics = {
+            "total_parsed": 0,
+            "successful_parses": 0,
+            "failed_parses": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "parse_times": []
+        }
     
     async def ensure_initialized(self):
         """Ensure the instance is properly initialized before use."""
@@ -72,67 +75,168 @@ class BaseParser(BaseParserInterface, AIParserInterface):
         
         try:
             async with AsyncErrorBoundary(f"{language_id} parser initialization"):
-                # Initialize feature extractor according to parser type
-                from parsers.feature_extractor import TreeSitterFeatureExtractor, CustomFeatureExtractor
-                if parser_type == ParserType.TREE_SITTER:
-                    instance.feature_extractor = TreeSitterFeatureExtractor(language_id, file_type)
-                elif parser_type == ParserType.CUSTOM:
-                    instance.feature_extractor = CustomFeatureExtractor(language_id, file_type)
+                # Track initialization resources
+                initialized_resources = set()
                 
-                # Initialize cache coordinator
-                task = asyncio.create_task(cache_coordinator.initialize())
-                instance._pending_tasks.add(task)
                 try:
-                    await task
-                finally:
-                    instance._pending_tasks.remove(task)
-                
-                # Initialize upsert coordinator
-                task = asyncio.create_task(upsert_coordinator.initialize())
-                instance._pending_tasks.add(task)
-                try:
-                    await task
-                finally:
-                    instance._pending_tasks.remove(task)
-                
-                # Load patterns if needed
-                if parser_type == ParserType.CUSTOM:
-                    task = asyncio.create_task(instance._load_patterns())
-                    instance._pending_tasks.add(task)
-                    try:
-                        await task
-                    finally:
-                        instance._pending_tasks.remove(task)
-                
-                # Initialize feature extractor if present
-                if instance.feature_extractor:
-                    task = asyncio.create_task(instance.feature_extractor.initialize())
-                    instance._pending_tasks.add(task)
-                    try:
-                        await task
-                    finally:
-                        instance._pending_tasks.remove(task)
-                
-                # Initialize AI capabilities
-                if AICapability.CODE_UNDERSTANDING in instance.ai_capabilities:
-                    await instance._initialize_ai_understanding()
-                if AICapability.CODE_GENERATION in instance.ai_capabilities:
-                    await instance._initialize_ai_generation()
-                if AICapability.CODE_MODIFICATION in instance.ai_capabilities:
-                    await instance._initialize_ai_modification()
-                
-                # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
-                
-                instance._initialized = True
-                await log(f"Base parser initialized for {language_id}", level="info")
-                return instance
+                    # Initialize feature extractor according to parser type
+                    from parsers.feature_extractor import TreeSitterFeatureExtractor, CustomFeatureExtractor
+                    if parser_type == ParserType.TREE_SITTER:
+                        instance.feature_extractor = TreeSitterFeatureExtractor(language_id, file_type)
+                    elif parser_type == ParserType.CUSTOM:
+                        instance.feature_extractor = CustomFeatureExtractor(language_id, file_type)
+                    initialized_resources.add("feature_extractor")
+                    
+                    # Initialize cache
+                    instance._cache = UnifiedCache(f"parser_{language_id}")
+                    await cache_coordinator.register_cache(instance._cache)
+                    initialized_resources.add("cache")
+                    
+                    # Initialize cache analytics
+                    analytics = await get_cache_analytics()
+                    analytics.register_warmup_function(
+                        f"parser_{language_id}",
+                        instance._warmup_cache
+                    )
+                    await analytics.optimize_ttl_values()
+                    initialized_resources.add("cache_analytics")
+                    
+                    # Initialize error analysis
+                    await ErrorAudit.analyze_codebase(os.path.dirname(__file__))
+                    initialized_resources.add("error_analysis")
+                    
+                    # Register with health monitor
+                    global_health_monitor.register_component(
+                        f"parser_{language_id}",
+                        health_check=instance._check_health
+                    )
+                    initialized_resources.add("health_monitor")
+                    
+                    # Start warmup task
+                    warmup_task = asyncio.create_task(instance._warmup_caches())
+                    instance._pending_tasks.add(warmup_task)
+                    
+                    instance._initialized = True
+                    await log(f"{language_id} parser initialized successfully", level="info")
+                    return instance
+                    
+                except Exception as e:
+                    # Cleanup any initialized resources
+                    if "cache" in initialized_resources:
+                        await cache_coordinator.unregister_cache(f"parser_{language_id}")
+                    if "health_monitor" in initialized_resources:
+                        global_health_monitor.unregister_component(f"parser_{language_id}")
+                    raise
+                    
         except Exception as e:
-            await log(f"Error initializing base parser for {language_id}: {e}", level="error")
+            await log(f"Error initializing {language_id} parser: {e}", level="error")
             # Cleanup on initialization failure
             await instance.cleanup()
-            raise ProcessingError(f"Failed to initialize base parser for {language_id}: {e}")
+            raise ProcessingError(f"Failed to initialize {language_id} parser: {e}")
     
+    async def _warmup_caches(self):
+        """Warm up caches with frequently used patterns."""
+        try:
+            # Get frequently used patterns
+            async with transaction_scope() as txn:
+                patterns = await txn.fetch("""
+                    SELECT pattern_name, usage_count
+                    FROM parser_usage_stats
+                    WHERE usage_count > 10
+                    ORDER BY usage_count DESC
+                    LIMIT 100
+                """)
+                
+                # Warm up pattern cache
+                for pattern in patterns:
+                    await self._warmup_cache([pattern["pattern_name"]])
+                    
+            self._warmup_complete = True
+            await log(f"{self.language_id} parser cache warmup complete", level="info")
+        except Exception as e:
+            await log(f"Error warming up caches: {e}", level="error")
+
+    async def _warmup_cache(self, keys: List[str]) -> Dict[str, Any]:
+        """Warmup function for parser cache."""
+        results = {}
+        for key in keys:
+            try:
+                pattern = await self._get_pattern(key)
+                if pattern:
+                    results[key] = pattern
+            except Exception as e:
+                await log(f"Error warming up pattern {key}: {e}", level="warning")
+        return results
+
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for parser."""
+        # Get error audit data
+        error_report = await ErrorAudit.get_error_report()
+        
+        # Get cache analytics
+        analytics = await get_cache_analytics()
+        cache_stats = await analytics.get_metrics()
+        
+        # Get resource usage
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        
+        # Calculate average parse time
+        avg_parse_time = sum(self._metrics["parse_times"]) / len(self._metrics["parse_times"]) if self._metrics["parse_times"] else 0
+        
+        # Calculate health status
+        status = ComponentStatus.HEALTHY
+        details = {
+            "metrics": {
+                "total_parsed": self._metrics["total_parsed"],
+                "success_rate": self._metrics["successful_parses"] / self._metrics["total_parsed"] if self._metrics["total_parsed"] > 0 else 0,
+                "cache_hit_rate": self._metrics["cache_hits"] / (self._metrics["cache_hits"] + self._metrics["cache_misses"]) if (self._metrics["cache_hits"] + self._metrics["cache_misses"]) > 0 else 0,
+                "avg_parse_time": avg_parse_time
+            },
+            "cache_stats": {
+                "hit_rates": cache_stats.get("hit_rates", {}),
+                "memory_usage": cache_stats.get("memory_usage", {}),
+                "eviction_rates": cache_stats.get("eviction_rates", {})
+            },
+            "error_stats": {
+                "total_errors": error_report.get("total_errors", 0),
+                "error_rate": error_report.get("error_rate", 0),
+                "top_errors": error_report.get("top_error_locations", [])[:3]
+            },
+            "resource_usage": {
+                "memory_rss": memory_info.rss,
+                "memory_vms": memory_info.vms,
+                "cpu_percent": process.cpu_percent(),
+                "thread_count": len(process.threads())
+            },
+            "warmup_status": {
+                "complete": self._warmup_complete,
+                "cache_ready": self._warmup_complete and self._cache is not None
+            }
+        }
+        
+        # Check for degraded conditions
+        if details["metrics"]["success_rate"] < 0.8:  # Less than 80% success rate
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Low parse success rate"
+        elif error_report.get("error_rate", 0) > 0.1:  # More than 10% error rate
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High error rate"
+        elif details["resource_usage"]["cpu_percent"] > 80:  # High CPU usage
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High CPU usage"
+        elif avg_parse_time > 1.0:  # Average parse time > 1 second
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High parse times"
+        elif not self._warmup_complete:  # Cache not ready
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Cache warmup incomplete"
+            
+        return {
+            "status": status,
+            "details": details
+        }
+
     async def cleanup(self):
         """Clean up parser resources."""
         try:
@@ -148,8 +252,41 @@ class BaseParser(BaseParserInterface, AIParserInterface):
             if self.feature_extractor:
                 await self.feature_extractor.cleanup()
             
+            # Clean up cache
+            if self._cache:
+                await self._cache.clear_async()
+                await cache_coordinator.unregister_cache(f"parser_{self.language_id}")
+            
+            # Save error analysis
+            await ErrorAudit.save_report()
+            
+            # Save cache analytics
+            analytics = await get_cache_analytics()
+            await analytics.save_metrics_history(self._cache.get_metrics())
+            
+            # Save metrics to database
+            async with transaction_scope() as txn:
+                await txn.execute("""
+                    INSERT INTO parser_metrics (
+                        timestamp, language_id, total_parsed,
+                        successful_parses, failed_parses,
+                        cache_hits, cache_misses, avg_parse_time
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """, (
+                    time.time(),
+                    self.language_id,
+                    self._metrics["total_parsed"],
+                    self._metrics["successful_parses"],
+                    self._metrics["failed_parses"],
+                    self._metrics["cache_hits"],
+                    self._metrics["cache_misses"],
+                    sum(self._metrics["parse_times"]) / len(self._metrics["parse_times"]) if self._metrics["parse_times"] else 0
+                ))
+            
+            # Unregister from health monitor
+            global_health_monitor.unregister_component(f"parser_{self.language_id}")
+            
             self._initialized = False
-            self.stats = ParsingStatistics()
             await log(f"Base parser cleaned up for {self.language_id}", level="info")
         except Exception as e:
             await log(f"Error cleaning up base parser for {self.language_id}: {e}", level="error")
@@ -351,45 +488,109 @@ class BaseParser(BaseParserInterface, AIParserInterface):
         
         return {}
 
-    def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+    @handle_errors(error_types=(ProcessingError,))
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
         """
-        Extract patterns from source code for repository learning.
-        
-        This base implementation provides a general pattern extraction capability
-        that custom parsers can override with more specific implementations.
+        Extract code patterns from source code for repository learning.
         
         Args:
-            source_code: The source code content to extract patterns from
+            source_code: The content of the source code to extract patterns from
             
         Returns:
-            A list of extracted patterns with metadata
+            List of extracted patterns with metadata
         """
+        if not self._initialized:
+            await self.ensure_initialized()
+
         patterns = []
+        cache_key = f"patterns:{self.language_id}:{hash(source_code)}"
         
-        with AsyncErrorBoundary(f"extract_patterns_{self.language_id}", error_types=(Exception,)):
-            # Parse the source first
-            ast = self.parse(source_code)
+        try:
+            # Check cache first
+            cached_patterns = await cache_coordinator.get(cache_key)
+            if cached_patterns:
+                return cached_patterns
             
-            # Use the language-specific pattern processor if available
-            from parsers.pattern_processor import pattern_processor
-            if hasattr(pattern_processor, 'extract_repository_patterns'):
-                language_patterns = pattern_processor.extract_repository_patterns(
-                    file_path="",  # Not needed for pattern extraction
-                    source_code=source_code,
-                    language=self.language_id
-                )
-                patterns.extend(language_patterns)
-                
-            # Add file type specific patterns
-            if self.file_type == FileType.CODE:
-                # Add code-specific pattern extraction
-                code_patterns = self._extract_code_patterns(ast, source_code)
-                patterns.extend(code_patterns)
-            elif self.file_type == FileType.DOCUMENTATION:
-                # Add documentation-specific pattern extraction
-                doc_patterns = self._extract_doc_patterns(ast, source_code)
-                patterns.extend(doc_patterns)
-        
+            async with AsyncErrorBoundary(
+                operation_name=f"pattern_extraction_{self.language_id}",
+                error_types=(ProcessingError,),
+                severity=ErrorSeverity.ERROR
+            ):
+                # Start transaction for pattern extraction and storage
+                async with transaction_scope() as txn:
+                    # Update health status
+                    await global_health_monitor.update_component_status(
+                        f"parser_{self.language_id}",
+                        ComponentStatus.HEALTHY,
+                        details={
+                            "operation": "pattern_extraction",
+                            "source_size": len(source_code)
+                        }
+                    )
+                    
+                    try:
+                        # Parse the source first
+                        ast = await self._parse_source(source_code)
+                        
+                        # Use the language-specific pattern processor if available
+                        from parsers.pattern_processor import pattern_processor
+                        if hasattr(pattern_processor, 'extract_repository_patterns'):
+                            language_patterns = await pattern_processor.extract_repository_patterns(
+                                file_path="",  # Not needed for pattern extraction
+                                source_code=source_code,
+                                language=self.language_id
+                            )
+                            patterns.extend(language_patterns)
+                            
+                        # Add file type specific patterns
+                        if self.file_type == FileType.CODE:
+                            # Add code-specific pattern extraction
+                            code_patterns = await self._extract_code_patterns(ast, source_code)
+                            patterns.extend(code_patterns)
+                        elif self.file_type == FileType.DOCUMENTATION:
+                            # Add documentation-specific pattern extraction
+                            doc_patterns = await self._extract_doc_patterns(ast, source_code)
+                            patterns.extend(doc_patterns)
+                        
+                        # Store patterns in cache
+                        if patterns:
+                            await cache_coordinator.set(cache_key, patterns)
+                            
+                            # Store in database
+                            for pattern in patterns:
+                                await upsert_coordinator.upsert_pattern(
+                                    pattern,
+                                    self.language_id,
+                                    None  # No repository context in direct extraction
+                                )
+                        
+                        # Update final status
+                        await global_health_monitor.update_component_status(
+                            f"parser_{self.language_id}",
+                            ComponentStatus.HEALTHY,
+                            details={
+                                "operation": "pattern_extraction_complete",
+                                "patterns_found": len(patterns)
+                            }
+                        )
+                        
+                    except Exception as e:
+                        await log(f"Error extracting patterns: {e}", level="error")
+                        await global_health_monitor.update_component_status(
+                            f"parser_{self.language_id}",
+                            ComponentStatus.UNHEALTHY,
+                            error=True,
+                            details={
+                                "operation": "pattern_extraction",
+                                "error": str(e)
+                            }
+                        )
+                        raise
+                        
+        except Exception as e:
+            await log(f"Error in pattern extraction process: {e}", level="error")
+            raise ProcessingError(f"Pattern extraction failed: {e}")
+            
         return patterns
         
     def _extract_code_patterns(self, ast: Dict[str, Any], source_code: str) -> List[Dict[str, Any]]:

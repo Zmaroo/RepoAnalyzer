@@ -5,20 +5,26 @@ from tree_sitter import Node, Query, QueryError, Parser, Language, TreeCursor
 from .types import (
     FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics,
     ExtractedFeatures, PatternCategory, PatternPurpose,
-    AICapability, AIContext, AIProcessingResult
+    AICapability, AIContext, AIProcessingResult, InteractionType, ConfidenceLevel
 )
 from parsers.models import QueryResult, FileClassification, PATTERN_CATEGORIES
 from parsers.language_support import language_registry
 from utils.logger import log
-from utils.error_handling import AsyncErrorBoundary, handle_async_errors
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorAudit, ErrorSeverity
 from utils.shutdown import register_shutdown_handler
 from parsers.pattern_processor import PatternProcessor, PatternMatch, pattern_processor
 from parsers.language_mapping import TREE_SITTER_LANGUAGES
 from parsers.parser_interfaces import AIParserInterface
+from utils.cache import UnifiedCache, cache_coordinator, cache_metrics
+from utils.cache_analytics import get_cache_analytics, CacheAnalytics
+from utils.request_cache import cached_in_request, request_cache_context, get_current_request_cache
+from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_operation
+from db.transaction import transaction_scope
 from abc import ABC, abstractmethod
 import asyncio
-from utils.error_handling import ProcessingError, ErrorSeverity
-from utils.cache import UnifiedCache, cache_coordinator
+import os
+import psutil
+import time
 
 # Define a type for extractor functions
 # Support both sync and async extractors
@@ -42,12 +48,132 @@ class BaseFeatureExtractor(ABC, AIParserInterface):
         self._pending_tasks: Set[asyncio.Task] = set()
         self._cache = None
         self._lock = asyncio.Lock()
+        self._warmup_complete = False
+        self._metrics = {
+            "total_extractions": 0,
+            "successful_extractions": 0,
+            "failed_extractions": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "extraction_times": []
+        }
     
     async def _initialize_cache(self):
         """Initialize cache based on extractor type."""
         if not self._cache:
             self._cache = UnifiedCache(f"feature_extractor_{self.language_id}")
             await cache_coordinator.register_cache(self._cache)
+            
+            # Initialize cache analytics
+            analytics = await get_cache_analytics()
+            analytics.register_warmup_function(
+                f"feature_extractor_{self.language_id}",
+                self._warmup_cache
+            )
+            await analytics.optimize_ttl_values()
+    
+    async def _warmup_caches(self):
+        """Warm up caches with frequently used features."""
+        try:
+            # Get frequently used features
+            async with transaction_scope() as txn:
+                features = await txn.fetch("""
+                    SELECT feature_type, usage_count
+                    FROM feature_usage_stats
+                    WHERE usage_count > 10
+                    ORDER BY usage_count DESC
+                    LIMIT 100
+                """)
+                
+                # Warm up feature cache
+                for feature in features:
+                    await self._warmup_cache([feature["feature_type"]])
+                    
+            self._warmup_complete = True
+            await log(f"{self.language_id} feature extractor cache warmup complete", level="info")
+        except Exception as e:
+            await log(f"Error warming up caches: {e}", level="error")
+
+    async def _warmup_cache(self, keys: List[str]) -> Dict[str, Any]:
+        """Warmup function for feature cache."""
+        results = {}
+        for key in keys:
+            try:
+                feature = await self._get_feature(key)
+                if feature:
+                    results[key] = feature
+            except Exception as e:
+                await log(f"Error warming up feature {key}: {e}", level="warning")
+        return results
+
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for feature extractor."""
+        # Get error audit data
+        error_report = await ErrorAudit.get_error_report()
+        
+        # Get cache analytics
+        analytics = await get_cache_analytics()
+        cache_stats = await analytics.get_metrics()
+        
+        # Get resource usage
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        
+        # Calculate average extraction time
+        avg_extraction_time = sum(self._metrics["extraction_times"]) / len(self._metrics["extraction_times"]) if self._metrics["extraction_times"] else 0
+        
+        # Calculate health status
+        status = ComponentStatus.HEALTHY
+        details = {
+            "metrics": {
+                "total_extractions": self._metrics["total_extractions"],
+                "success_rate": self._metrics["successful_extractions"] / self._metrics["total_extractions"] if self._metrics["total_extractions"] > 0 else 0,
+                "cache_hit_rate": self._metrics["cache_hits"] / (self._metrics["cache_hits"] + self._metrics["cache_misses"]) if (self._metrics["cache_hits"] + self._metrics["cache_misses"]) > 0 else 0,
+                "avg_extraction_time": avg_extraction_time
+            },
+            "cache_stats": {
+                "hit_rates": cache_stats.get("hit_rates", {}),
+                "memory_usage": cache_stats.get("memory_usage", {}),
+                "eviction_rates": cache_stats.get("eviction_rates", {})
+            },
+            "error_stats": {
+                "total_errors": error_report.get("total_errors", 0),
+                "error_rate": error_report.get("error_rate", 0),
+                "top_errors": error_report.get("top_error_locations", [])[:3]
+            },
+            "resource_usage": {
+                "memory_rss": memory_info.rss,
+                "memory_vms": memory_info.vms,
+                "cpu_percent": process.cpu_percent(),
+                "thread_count": len(process.threads())
+            },
+            "warmup_status": {
+                "complete": self._warmup_complete,
+                "cache_ready": self._warmup_complete and self._cache is not None
+            }
+        }
+        
+        # Check for degraded conditions
+        if details["metrics"]["success_rate"] < 0.8:  # Less than 80% success rate
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Low extraction success rate"
+        elif error_report.get("error_rate", 0) > 0.1:  # More than 10% error rate
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High error rate"
+        elif details["resource_usage"]["cpu_percent"] > 80:  # High CPU usage
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High CPU usage"
+        elif avg_extraction_time > 1.0:  # Average extraction time > 1 second
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "High extraction times"
+        elif not self._warmup_complete:  # Cache not ready
+            status = ComponentStatus.DEGRADED
+            details["reason"] = "Cache warmup incomplete"
+            
+        return {
+            "status": status,
+            "details": details
+        }
     
     async def _check_features_cache(self, ast: Dict[str, Any], source_code: str) -> Optional[ExtractedFeatures]:
         """Check if features are cached."""
@@ -133,8 +259,38 @@ class BaseFeatureExtractor(ABC, AIParserInterface):
                 await asyncio.gather(*self._pending_tasks, return_exceptions=True)
                 self._pending_tasks.clear()
             
-            # Unregister from health monitoring
-            from utils.health_monitor import global_health_monitor
+            # Clean up cache
+            if self._cache:
+                await self._cache.clear_async()
+                await cache_coordinator.unregister_cache(f"feature_extractor_{self.language_id}")
+            
+            # Save error analysis
+            await ErrorAudit.save_report()
+            
+            # Save cache analytics
+            analytics = await get_cache_analytics()
+            await analytics.save_metrics_history(self._cache.get_metrics())
+            
+            # Save metrics to database
+            async with transaction_scope() as txn:
+                await txn.execute("""
+                    INSERT INTO feature_extractor_metrics (
+                        timestamp, language_id, total_extractions,
+                        successful_extractions, failed_extractions,
+                        cache_hits, cache_misses, avg_extraction_time
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """, (
+                    time.time(),
+                    self.language_id,
+                    self._metrics["total_extractions"],
+                    self._metrics["successful_extractions"],
+                    self._metrics["failed_extractions"],
+                    self._metrics["cache_hits"],
+                    self._metrics["cache_misses"],
+                    sum(self._metrics["extraction_times"]) / len(self._metrics["extraction_times"]) if self._metrics["extraction_times"] else 0
+                ))
+            
+            # Unregister from health monitor
             global_health_monitor.unregister_component(f"feature_extractor_{self.language_id}")
             
             self._initialized = False
@@ -990,61 +1146,90 @@ class UnifiedFeatureExtractor(BaseFeatureExtractor):
     
     async def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
         """Extract features using the unified category system."""
-        features = {category: {} for category in PatternCategory}
-        
-        # Extract features by category and purpose
-        for category in PatternCategory:
-            for purpose in PatternPurpose:
-                extracted = await self._extract_features_for_purpose(
-                    ast,
-                    source_code,
-                    category,
-                    purpose
-                )
-                if extracted:
-                    features[category][purpose.value] = extracted
-        
-        # Create documentation features
-        documentation = await self._extract_documentation(
-            features[PatternCategory.DOCUMENTATION]
-        )
-        
-        # Calculate complexity metrics
-        metrics = await self._calculate_metrics(
-            features[PatternCategory.SYNTAX],
-            source_code
-        )
-        
-        return ExtractedFeatures(
-            features=features,
-            documentation=documentation,
-            metrics=metrics
-        )
-    
-    async def _extract_features_for_purpose(
-        self,
-        ast: Dict[str, Any],
-        source_code: str,
-        category: PatternCategory,
-        purpose: PatternPurpose
-    ) -> Dict[str, Any]:
-        """Extract features for a specific category and purpose."""
-        features = {}
-        
-        # Get valid pattern types for this category/purpose
-        valid_types = PATTERN_CATEGORIES.get(category, {}).get(self.file_type, {}).get(purpose, [])
-        
-        if not valid_types:
-            return features
+        if not self._initialized:
+            await self.ensure_initialized()
             
-        # Extract features based on pattern types
-        for pattern_type in valid_types:
-            if pattern := self._patterns.get(category, {}).get(purpose, {}).get(pattern_type):
-                matches = await self._process_pattern(source_code, pattern)
-                if matches:
-                    features[pattern_type] = matches
-        
-        return features
+        async with AsyncErrorBoundary("extract_features", error_types=(ProcessingError,)):
+            try:
+                # Get pattern processor instances
+                from parsers.pattern_processor import pattern_processor
+                from parsers.ai_pattern_processor import ai_pattern_processor
+                
+                # Check cache first
+                cached_features = await self._check_features_cache(ast, source_code)
+                if cached_features:
+                    return cached_features
+                
+                features = {category: {} for category in PatternCategory}
+                
+                # Extract features by category and purpose
+                for category in PatternCategory:
+                    for purpose in PatternPurpose:
+                        # Get patterns from pattern processor
+                        patterns = await pattern_processor.get_patterns_for_category(
+                            category,
+                            purpose,
+                            self.language_id
+                        )
+                        
+                        # Process patterns
+                        if patterns:
+                            category_features = {}
+                            for pattern in patterns:
+                                # Validate pattern
+                                if await pattern_processor.validate_pattern(pattern, self.language_id):
+                                    # Process pattern
+                                    processed = await pattern_processor.process_pattern(
+                                        pattern["name"],
+                                        source_code,
+                                        self.language_id
+                                    )
+                                    
+                                    if processed.matches:
+                                        # Enhance with AI insights
+                                        enhanced = await ai_pattern_processor.process_pattern(
+                                            processed,
+                                            AIContext(
+                                                language_id=self.language_id,
+                                                file_type=self.file_type,
+                                                interaction_type=InteractionType.UNDERSTANDING
+                                            )
+                                        )
+                                        
+                                        if enhanced.success:
+                                            processed.metadata.update(enhanced.ai_insights)
+                                            
+                                        category_features[pattern["name"]] = processed
+                            
+                            if category_features:
+                                features[category][purpose.value] = category_features
+                
+                # Create documentation features
+                documentation = await self._extract_documentation(
+                    features[PatternCategory.DOCUMENTATION]
+                )
+                
+                # Calculate complexity metrics
+                metrics = await self._calculate_metrics(
+                    features[PatternCategory.SYNTAX],
+                    source_code
+                )
+                
+                # Create ExtractedFeatures instance
+                extracted_features = ExtractedFeatures(
+                    features=features,
+                    documentation=documentation,
+                    metrics=metrics
+                )
+                
+                # Cache the results
+                await self._store_features_in_cache(ast, source_code, extracted_features)
+                
+                return extracted_features
+                
+            except Exception as e:
+                await log(f"Error extracting features: {e}", level="error")
+                raise ProcessingError(f"Feature extraction failed: {e}")
 
     @handle_async_errors(error_types=(Exception,))
     async def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:

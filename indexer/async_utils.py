@@ -1,32 +1,3 @@
-import os
-import asyncio
-from typing import List, Set, Optional, Callable, Awaitable, Any, Dict
-import aiofiles
-from utils.logger import log
-# Remove circular import
-# from indexer.file_processor import FileProcessor
-from parsers.types import (
-    FileType,
-    ParserResult,  # Import ParserResult from types, not models
-    ExtractedFeatures,  # Import ExtractedFeatures from types, not models
-    # Other lightweight types (if needed)...
-)
-from parsers.models import (  # Domain-specific models
-    FileClassification,
-)
-from functools import wraps
-# Import shared functionality from common module
-from indexer.common import async_read_file
-from utils.error_handling import (
-    handle_async_errors,
-    AsyncErrorBoundary,
-    ErrorSeverity,
-    ProcessingError,
-    DatabaseError
-)
-from utils.async_runner import submit_async_task, get_loop
-from db.transaction import transaction_scope
-
 """[3.0] Asynchronous utilities for file processing.
 
 Flow:
@@ -46,22 +17,77 @@ Flow:
    - Resource management
 """
 
-# These functions are now imported from common
-# def async_handle_errors and async_read_file have been moved to common.py
+import os
+import asyncio
+from typing import (
+    List, Set, Optional, Callable, Awaitable, Any, Dict,
+    TypeVar, Union, Tuple
+)
+import aiofiles
+from utils.logger import log
+# Remove circular import
+# from indexer.file_processor import FileProcessor
+from parsers.types import (
+    FileType,
+    ParserResult,  # Import ParserResult from types, not models
+    ExtractedFeatures,  # Import ExtractedFeatures from types, not models
+    AIContext,
+    AIProcessingResult
+)
+from parsers.models import (  # Domain-specific models
+    FileClassification,
+)
+from functools import wraps
+# Import shared functionality from common module
+from indexer.common import async_read_file
+from utils.error_handling import (
+    handle_async_errors,
+    AsyncErrorBoundary,
+    ErrorSeverity,
+    ProcessingError,
+    DatabaseError
+)
+from utils.async_runner import submit_async_task, get_loop
+from db.transaction import transaction_scope
+
+# Type variables for generic functions
+T = TypeVar('T')
+ProcessorType = TypeVar('ProcessorType')
 
 @handle_async_errors
 async def async_process_index_file(
     file_path: str,
     base_path: str,
     repo_id: int,
-    processor: Any,  # Changed from FileProcessor to avoid import
-    file_type: FileType  # Now using FileType enum from parsers/types
-) -> None:
-    """Asynchronously process and index a file using FileProcessor"""
+    processor: ProcessorType,
+    file_type: FileType
+) -> Optional[ParserResult]:
+    """[3.1] Asynchronously process and index a file.
+    
+    Flow:
+    1. Read file content
+    2. Process within transaction
+    3. Track repository changes
+    4. Return processing result
+    
+    Args:
+        file_path: Path to the file
+        base_path: Base repository path
+        repo_id: Repository identifier
+        processor: File processor instance
+        file_type: Type of file being processed
+        
+    Returns:
+        Optional[ParserResult]: Processing result or None on failure
+    """
+    content = await async_read_file(file_path)
+    if content is None:
+        return None
+        
     async with AsyncErrorBoundary(f"processing file {file_path}", severity=ErrorSeverity.ERROR):
         async with transaction_scope() as txn:
             await txn.track_repo_change(repo_id)
-            await processor.process_file(file_path, repo_id, base_path)
+            return await processor.process_file(file_path, repo_id, base_path)
 
 @handle_async_errors
 async def batch_process_files(
@@ -71,14 +97,21 @@ async def batch_process_files(
     batch_size: int = 10,
     progress_callback: Optional[Callable[[int, int], None]] = None
 ) -> None:
-    """[3.3] Enhanced batch processing with progress tracking and error resilience.
+    """[3.2] Process files in batches with progress tracking.
     
     Flow:
     1. Initialize processor
     2. Process files in batches
     3. Track progress
     4. Clean up resources
-    5. Handle task errors without stopping the entire batch
+    5. Handle task errors
+    
+    Args:
+        files: List of file paths to process
+        base_path: Base repository path
+        repo_id: Repository identifier
+        batch_size: Number of files per batch
+        progress_callback: Optional callback for progress updates
     """
     async with AsyncErrorBoundary("batch processing files", severity=ErrorSeverity.ERROR):
         # Import here to avoid circular reference

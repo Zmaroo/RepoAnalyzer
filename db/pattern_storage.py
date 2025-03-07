@@ -20,6 +20,8 @@ from db.upsert_ops import UpsertCoordinator
 from db.graph_sync import graph_sync
 from utils.cache import UnifiedCache
 from utils.shutdown import register_shutdown_handler
+from db.connection import connection_manager
+from db.retry_utils import DatabaseRetryManager, RetryConfig
 
 @dataclass
 class PatternStorageMetrics:
@@ -30,6 +32,128 @@ class PatternStorageMetrics:
     arch_patterns: int = 0
     pattern_relationships: int = 0
     last_update: float = 0.0
+
+class PatternStorage:
+    """Storage for code patterns with optimized connection handling."""
+    
+    def __init__(self):
+        self._initialized = False
+        self._pool = None
+        self._retry_manager = None
+        self._pending_tasks = set()
+        self._lock = asyncio.Lock()
+    
+    async def initialize(self):
+        """Initialize pattern storage."""
+        if self._initialized:
+            return True
+            
+        try:
+            async with AsyncErrorBoundary("pattern_storage_initialization"):
+                # Initialize connection pool
+                self._pool = await connection_manager.create_pool(
+                    min_size=5,
+                    max_size=20,
+                    max_queries=50000,
+                    setup=["SET application_name = 'pattern_storage'"]
+                )
+                
+                # Initialize retry manager
+                self._retry_manager = DatabaseRetryManager(
+                    RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
+                )
+                
+                self._initialized = True
+                return True
+        except Exception as e:
+            await log(f"Error initializing pattern storage: {e}", level="error")
+            return False
+    
+    async def store_pattern(self, pattern: Dict[str, Any], repo_id: Optional[int] = None) -> int:
+        """Store a pattern with retry mechanism."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async def _store():
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    # Store pattern
+                    pattern_id = await conn.fetchval("""
+                        INSERT INTO patterns (
+                            repo_id, pattern_type, content, language,
+                            confidence, metadata, embedding
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, $6, $7
+                        ) RETURNING id
+                    """, repo_id, pattern["type"], pattern["content"],
+                        pattern.get("language"), pattern.get("confidence", 0.8),
+                        pattern.get("metadata"), pattern.get("embedding"))
+                    
+                    # Store relationships if present
+                    if "relationships" in pattern:
+                        for rel in pattern["relationships"]:
+                            await conn.execute("""
+                                INSERT INTO pattern_relationships (
+                                    source_id, target_id, relationship_type,
+                                    metadata
+                                ) VALUES ($1, $2, $3, $4)
+                            """, pattern_id, rel["target_id"],
+                                rel["type"], rel.get("metadata"))
+                    
+                    return pattern_id
+        
+        try:
+            return await self._retry_manager.with_retry(_store)
+        except Exception as e:
+            await log(f"Error storing pattern after retries: {e}", level="error")
+            raise
+    
+    async def get_pattern(self, pattern_id: int) -> Optional[Dict[str, Any]]:
+        """Get a pattern by ID with retry mechanism."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async def _get():
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    pattern = await conn.fetchrow("""
+                        SELECT * FROM patterns WHERE id = $1
+                    """, pattern_id)
+                    
+                    if pattern:
+                        # Get relationships
+                        relationships = await conn.fetch("""
+                            SELECT * FROM pattern_relationships
+                            WHERE source_id = $1
+                        """, pattern_id)
+                        
+                        return {
+                            **dict(pattern),
+                            "relationships": [dict(r) for r in relationships]
+                        }
+                    return None
+        
+        try:
+            return await self._retry_manager.with_retry(_get)
+        except Exception as e:
+            await log(f"Error getting pattern after retries: {e}", level="error")
+            return None
+    
+    async def cleanup(self):
+        """Clean up resources."""
+        try:
+            if self._pool:
+                await self._pool.close()
+            if self._retry_manager:
+                await self._retry_manager.cleanup()
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._initialized = False
+        except Exception as e:
+            await log(f"Error cleaning up pattern storage: {e}", level="error")
 
 class PatternStorageCoordinator:
     """Coordinates pattern storage operations across the system."""

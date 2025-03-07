@@ -7,7 +7,9 @@ from parsers.types import (
     PatternCategory, PatternPurpose, FileType,
     InteractionType, ConfidenceLevel,
     AIContext, AIProcessingResult,
-    AICapability
+    AICapability,
+    get_purpose_from_interaction,
+    get_categories_from_interaction
 )
 from parsers.pattern_processor import PatternProcessor, ProcessedPattern
 from parsers.ai_pattern_processor import AIPatternProcessor
@@ -20,6 +22,7 @@ from .rule_config import RuleConfig
 from utils.logger import log
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from db.pattern_storage import pattern_storage
+from db.transaction import transaction_scope
 
 @dataclass
 class PatternLearningMetrics:
@@ -86,25 +89,49 @@ class PatternIntegration:
             await self.create()
 
         try:
-            # Process with core pattern processor first
-            base_patterns = await self._pattern_processor.process_for_purpose(
-                source_code,
-                self._get_purpose_from_context(context),
-                context.project.file_type,
-                self._get_categories_from_context(context)
-            )
+            async with AsyncErrorBoundary("pattern_integration_processing"):
+                # Start coordinated transaction
+                async with transaction_scope() as txn:
+                    # Process with core pattern processor first
+                    base_patterns = await self._pattern_processor.process_for_purpose(
+                        source_code,
+                        get_purpose_from_interaction(context.interaction.interaction_type),
+                        context.project.file_type,
+                        get_categories_from_interaction(context.interaction.interaction_type)
+                    )
 
-            # Enhance with AI capabilities
-            ai_results = await self._ai_processor.process_with_ai(source_code, context)
+                    # Create embeddings for patterns
+                    for pattern in base_patterns:
+                        try:
+                            embedding = await self.embedder.embed_with_retry(pattern.content)
+                            pattern.embedding = embedding.tolist() if hasattr(embedding, 'tolist') else None
+                        except Exception as e:
+                            await log(f"Error creating embedding: {e}", level="warning")
+                            pattern.embedding = None
 
-            # Integrate results with other tools
-            integrated_results = await self._integrate_results(
-                base_patterns,
-                ai_results,
-                context
-            )
+                    # Enhance with AI capabilities
+                    ai_results = await self._ai_processor.process_with_ai(source_code, context)
 
-            return integrated_results
+                    # Store patterns and relationships in Neo4j
+                    if ai_results.learned_patterns:
+                        await self.graph_capabilities.store_patterns(
+                            ai_results.learned_patterns,
+                            context.repository_id if context else None
+                        )
+
+                    # Integrate results with other tools
+                    integrated_results = await self._integrate_results(
+                        base_patterns,
+                        ai_results,
+                        context
+                    )
+
+                    # Update metrics
+                    self._metrics.total_patterns_learned += len(integrated_results.learned_patterns)
+                    self._metrics.code_patterns_learned += len([p for p in base_patterns if p.category == PatternCategory.CODE_PATTERNS])
+                    self._metrics.doc_patterns_learned += len([p for p in base_patterns if p.category == PatternCategory.DOCUMENTATION])
+
+                    return integrated_results
 
         except Exception as e:
             await log(f"Error in pattern integration: {e}", level="error")
@@ -112,32 +139,6 @@ class PatternIntegration:
                 success=False,
                 response=f"Error in pattern integration: {str(e)}"
             )
-
-    def _get_purpose_from_context(self, context: AIContext) -> PatternPurpose:
-        """Get pattern purpose from context."""
-        purpose_map = {
-            InteractionType.QUESTION: PatternPurpose.EXPLANATION,
-            InteractionType.MODIFICATION: PatternPurpose.MODIFICATION,
-            InteractionType.ERROR: PatternPurpose.DEBUGGING,
-            InteractionType.COMPLETION: PatternPurpose.COMPLETION,
-            InteractionType.EXPLANATION: PatternPurpose.EXPLANATION,
-            InteractionType.SUGGESTION: PatternPurpose.SUGGESTION,
-            InteractionType.DOCUMENTATION: PatternPurpose.DOCUMENTATION
-        }
-        return purpose_map.get(context.interaction.interaction_type, PatternPurpose.UNDERSTANDING)
-
-    def _get_categories_from_context(self, context: AIContext) -> List[PatternCategory]:
-        """Get relevant pattern categories from context."""
-        category_map = {
-            InteractionType.QUESTION: [PatternCategory.CONTEXT, PatternCategory.SEMANTICS],
-            InteractionType.MODIFICATION: [PatternCategory.SYNTAX, PatternCategory.CODE_PATTERNS],
-            InteractionType.ERROR: [PatternCategory.COMMON_ISSUES, PatternCategory.SYNTAX],
-            InteractionType.COMPLETION: [PatternCategory.USER_PATTERNS, PatternCategory.CODE_PATTERNS],
-            InteractionType.EXPLANATION: [PatternCategory.CONTEXT, PatternCategory.DOCUMENTATION],
-            InteractionType.SUGGESTION: [PatternCategory.BEST_PRACTICES, PatternCategory.USER_PATTERNS],
-            InteractionType.DOCUMENTATION: [PatternCategory.DOCUMENTATION, PatternCategory.CONTEXT]
-        }
-        return category_map.get(context.interaction.interaction_type, [])
 
     async def _integrate_results(
         self,

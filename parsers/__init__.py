@@ -32,15 +32,13 @@ from .types import (
     PatternType,
     PatternDefinition,
     QueryPattern,
-    PatternInfo
+    PatternInfo,
+    ParserResult
 )
 
 # Core models
 from .models import (
     FileClassification,
-    ParserResult,
-    BaseNodeDict,
-    TreeSitterNodeDict,
     FileMetadata,
     LanguageFeatures,
     PatternMatch,
@@ -241,12 +239,10 @@ __all__ = [
     'PatternDefinition',
     'QueryPattern',
     'PatternInfo',
+    'ParserResult',
     
     # Core models
     'FileClassification',
-    'ParserResult',
-    'BaseNodeDict',
-    'TreeSitterNodeDict',
     'FileMetadata',
     'LanguageFeatures',
     'PatternMatch',

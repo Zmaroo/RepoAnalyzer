@@ -10,7 +10,9 @@ import numpy as np
 from typing import Union, Optional, Set, List, Dict, Any
 from utils.logger import log
 from utils.cache import UnifiedCache, cache_coordinator
+from utils.shutdown import register_shutdown_handler
 from parsers.models import FileType, FileClassification  # Add imports from models
+from db.transaction import transaction_scope
 from utils.error_handling import (
     handle_errors,
     handle_async_errors,
@@ -20,6 +22,10 @@ from utils.error_handling import (
 )
 import asyncio
 from utils.async_runner import submit_async_task
+from abc import ABC, abstractmethod
+from db.retry_utils import RetryManager, RetryConfig
+from semantic.vector_store import VectorStore
+import time
 
 # Initialize cache for embeddings
 embedding_cache = UnifiedCache("embeddings", ttl=3600)
@@ -28,6 +34,184 @@ embedding_cache = UnifiedCache("embeddings", ttl=3600)
 async def initialize():
     """Initialize the embedding models module."""
     await cache_coordinator.register_cache("embeddings", embedding_cache)
+
+class BaseEmbedder(ABC):
+    """Base class for embedding models."""
+    
+    def __init__(self):
+        self._initialized = False
+        self._cache = None
+        self._retry_manager = None
+        self._pending_tasks = set()
+        self._lock = asyncio.Lock()
+        self._vector_store = None
+        self._pattern_cache = {}
+    
+    async def initialize(self):
+        """Initialize embedder."""
+        if self._initialized:
+            return True
+            
+        try:
+            async with AsyncErrorBoundary("embedder_initialization"):
+                # Initialize cache
+                self._cache = UnifiedCache(f"embedder_{self.__class__.__name__.lower()}")
+                await cache_coordinator.register_cache(self._cache)
+                
+                # Initialize vector store
+                self._vector_store = await VectorStore.create(
+                    index_name=f"embeddings_{self.__class__.__name__.lower()}",
+                    dimension=768  # Default dimension, override in subclasses if needed
+                )
+                
+                # Initialize retry manager
+                self._retry_manager = RetryManager(
+                    RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
+                )
+                
+                # Register with health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.register_component(
+                    f"embedder_{self.__class__.__name__.lower()}",
+                    health_check=self._check_health
+                )
+                
+                self._initialized = True
+                return True
+        except Exception as e:
+            await log(f"Error initializing embedder: {e}", level="error")
+            return False
+    
+    async def embed_with_retry(self, text: str, pattern_type: Optional[str] = None) -> np.ndarray:
+        """Embed text with retry mechanism and optional pattern-specific caching."""
+        if not self._initialized:
+            await self.initialize()
+            
+        # Generate cache key based on text and pattern type
+        cache_key = f"embedding_{hash(text)}_{pattern_type or 'general'}"
+        
+        # Check pattern-specific cache first
+        if pattern_type and pattern_type in self._pattern_cache:
+            pattern_cached = self._pattern_cache[pattern_type].get(cache_key)
+            if pattern_cached is not None:
+                return np.array(pattern_cached)
+        
+        # Check general cache
+        if self._cache:
+            cached = await self._cache.get(cache_key)
+            if cached is not None:
+                return np.array(cached)
+        
+        # Retry embedding creation
+        async def _create_embedding():
+            embedding = await self.embed(text)
+            
+            # Store in vector store for similarity search
+            if self._vector_store:
+                await self._vector_store.add_embedding(
+                    embedding.tolist(),
+                    metadata={
+                        "text": text[:1000],  # Store first 1000 chars as reference
+                        "pattern_type": pattern_type,
+                        "timestamp": time.time()
+                    }
+                )
+            
+            # Cache the result
+            if self._cache:
+                await self._cache.set(cache_key, embedding.tolist())
+            
+            # Store in pattern-specific cache if applicable
+            if pattern_type:
+                if pattern_type not in self._pattern_cache:
+                    self._pattern_cache[pattern_type] = {}
+                self._pattern_cache[pattern_type][cache_key] = embedding.tolist()
+            
+            return embedding
+            
+        try:
+            return await self._retry_manager.with_retry(_create_embedding)
+        except Exception as e:
+            await log(f"Error creating embedding after retries: {e}", level="error")
+            raise
+    
+    async def find_similar(
+        self,
+        embedding: np.ndarray,
+        pattern_type: Optional[str] = None,
+        limit: int = 5,
+        min_similarity: float = 0.7
+    ) -> List[Dict[str, Any]]:
+        """Find similar embeddings using vector store."""
+        if not self._vector_store:
+            return []
+            
+        try:
+            results = await self._vector_store.search(
+                embedding.tolist(),
+                limit=limit,
+                min_score=min_similarity,
+                filter_dict={"pattern_type": pattern_type} if pattern_type else None
+            )
+            
+            return [{
+                "text": r["metadata"]["text"],
+                "similarity": r["score"],
+                "pattern_type": r["metadata"].get("pattern_type"),
+                "timestamp": r["metadata"].get("timestamp")
+            } for r in results]
+            
+        except Exception as e:
+            await log(f"Error searching similar embeddings: {e}", level="error")
+            return []
+    
+    async def _check_health(self) -> Dict[str, Any]:
+        """Check health of the embedder component."""
+        return {
+            "status": "healthy" if self._initialized else "unhealthy",
+            "cache_size": len(self._pattern_cache),
+            "vector_store_status": "connected" if self._vector_store else "disconnected",
+            "pending_tasks": len(self._pending_tasks)
+        }
+    
+    async def cleanup(self):
+        """Clean up resources."""
+        try:
+            # Clean up caches
+            if self._cache:
+                await cache_coordinator.unregister_cache(self._cache)
+            self._pattern_cache.clear()
+            
+            # Clean up vector store
+            if self._vector_store:
+                await self._vector_store.cleanup()
+            
+            # Clean up retry manager
+            if self._retry_manager:
+                await self._retry_manager.cleanup()
+            
+            # Cancel pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Unregister from health monitoring
+            from utils.health_monitor import global_health_monitor
+            global_health_monitor.unregister_component(f"embedder_{self.__class__.__name__.lower()}")
+            
+            self._initialized = False
+            await log("Embedder cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up embedder: {e}", level="error")
+            raise
+    
+    @abstractmethod
+    async def embed(self, text: str) -> np.ndarray:
+        """Embed text into vector. Must be implemented by subclasses."""
+        pass
 
 class PatternAwareEmbedder:
     """Base class for pattern-aware embedding generation."""

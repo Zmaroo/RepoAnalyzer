@@ -18,6 +18,10 @@ from db.retry_utils import RetryManager, RetryConfig
 from utils.async_runner import submit_async_task, get_loop
 from db.connection import connection_manager
 from utils.shutdown import register_shutdown_handler
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_database
+from utils.request_cache import cached_in_request
+import time
 
 # Initialize retry manager with AI-specific configuration
 _retry_manager = RetryManager(RetryConfig(
@@ -28,13 +32,68 @@ _retry_manager = RetryManager(RetryConfig(
     ai_retry_multiplier=2.0  # Longer delays for AI operations
 ))
 
+# Initialize cache
+_query_cache = UnifiedCache("psql_queries")
+
+# Initialize metrics
+_metrics = {
+    "total_queries": 0,
+    "successful_queries": 0,
+    "failed_queries": 0,
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "query_times": []
+}
+
+async def _check_health() -> Dict[str, Any]:
+    """Health check for PostgreSQL operations."""
+    # Calculate average query time
+    avg_query_time = sum(_metrics["query_times"]) / len(_metrics["query_times"]) if _metrics["query_times"] else 0
+    
+    # Calculate health status
+    status = ComponentStatus.HEALTHY
+    details = {
+        "metrics": {
+            "total_queries": _metrics["total_queries"],
+            "success_rate": _metrics["successful_queries"] / _metrics["total_queries"] if _metrics["total_queries"] > 0 else 0,
+            "cache_hit_rate": _metrics["cache_hits"] / (_metrics["cache_hits"] + _metrics["cache_misses"]) if (_metrics["cache_hits"] + _metrics["cache_misses"]) > 0 else 0,
+            "avg_query_time": avg_query_time
+        }
+    }
+    
+    # Check for degraded conditions
+    if details["metrics"]["success_rate"] < 0.8:
+        status = ComponentStatus.DEGRADED
+        details["reason"] = "Low query success rate"
+    elif avg_query_time > 1.0:
+        status = ComponentStatus.DEGRADED
+        details["reason"] = "High query times"
+    
+    return {
+        "status": status,
+        "details": details
+    }
+
 @handle_async_errors(error_types=DatabaseError, default_return=[])
+@cached_in_request
 async def query(
     sql: str,
     params: tuple = None,
     is_ai_operation: bool = False
 ) -> List[Dict[str, Any]]:
     """Execute a query and return results."""
+    start_time = time.time()
+    _metrics["total_queries"] += 1
+    
+    # Check cache first
+    cache_key = f"query:{sql}:{str(params)}"
+    cached_result = await _query_cache.get_async(cache_key)
+    if cached_result:
+        _metrics["cache_hits"] += 1
+        return cached_result
+    
+    _metrics["cache_misses"] += 1
+    
     async def _execute_query():
         conn = await connection_manager.get_connection()
         try:
@@ -43,18 +102,48 @@ async def query(
                     # Set longer timeout for AI operations
                     await conn.execute("SET LOCAL statement_timeout = '300s'")
                 
-                if params:
-                    results = await conn.fetch(sql, *params)
-                else:
-                    results = await conn.fetch(sql)
-                return [dict(row) for row in results]
+                with monitor_database("postgres", "query"):
+                    if params:
+                        results = await conn.fetch(sql, *params)
+                    else:
+                        results = await conn.fetch(sql)
+                    return [dict(row) for row in results]
         finally:
             await connection_manager.release_postgres_connection(conn)
     
-    return await _retry_manager.execute_with_retry(
-        _execute_query,
-        is_ai_operation=is_ai_operation
-    )
+    try:
+        results = await _retry_manager.execute_with_retry(
+            _execute_query,
+            is_ai_operation=is_ai_operation
+        )
+        
+        # Cache successful results
+        await _query_cache.set_async(cache_key, results)
+        
+        # Update metrics
+        _metrics["successful_queries"] += 1
+        query_time = time.time() - start_time
+        _metrics["query_times"].append(query_time)
+        
+        # Update health status
+        await global_health_monitor.update_component_status(
+            "psql_operations",
+            ComponentStatus.HEALTHY,
+            response_time=query_time * 1000,  # Convert to ms
+            error=False
+        )
+        
+        return results
+    except Exception as e:
+        _metrics["failed_queries"] += 1
+        # Update health status
+        await global_health_monitor.update_component_status(
+            "psql_operations",
+            ComponentStatus.DEGRADED,
+            error=True,
+            details={"error": str(e)}
+        )
+        raise
 
 @handle_async_errors(error_types=DatabaseError)
 async def execute(
@@ -63,6 +152,9 @@ async def execute(
     is_ai_operation: bool = False
 ) -> None:
     """Execute a SQL command."""
+    start_time = time.time()
+    _metrics["total_queries"] += 1
+    
     async def _execute_command():
         conn = await connection_manager.get_connection()
         try:
@@ -70,17 +162,42 @@ async def execute(
                 if is_ai_operation:
                     await conn.execute("SET LOCAL statement_timeout = '300s'")
                 
-                if params:
-                    await conn.execute(sql, *params)
-                else:
-                    await conn.execute(sql)
+                with monitor_database("postgres", "execute"):
+                    if params:
+                        await conn.execute(sql, *params)
+                    else:
+                        await conn.execute(sql)
         finally:
             await connection_manager.release_postgres_connection(conn)
     
-    await _retry_manager.execute_with_retry(
-        _execute_command,
-        is_ai_operation=is_ai_operation
-    )
+    try:
+        await _retry_manager.execute_with_retry(
+            _execute_command,
+            is_ai_operation=is_ai_operation
+        )
+        
+        # Update metrics
+        _metrics["successful_queries"] += 1
+        query_time = time.time() - start_time
+        _metrics["query_times"].append(query_time)
+        
+        # Update health status
+        await global_health_monitor.update_component_status(
+            "psql_operations",
+            ComponentStatus.HEALTHY,
+            response_time=query_time * 1000,
+            error=False
+        )
+    except Exception as e:
+        _metrics["failed_queries"] += 1
+        # Update health status
+        await global_health_monitor.update_component_status(
+            "psql_operations",
+            ComponentStatus.DEGRADED,
+            error=True,
+            details={"error": str(e)}
+        )
+        raise
 
 @handle_async_errors(error_types=DatabaseError)
 async def execute_many(
@@ -231,14 +348,40 @@ async def execute_pattern_metrics_update(
         is_ai_operation=True
     )
 
+# Initialize module
+async def initialize():
+    """Initialize PostgreSQL operations module."""
+    # Register cache with coordinator
+    await cache_coordinator.register_cache("psql_queries", _query_cache)
+    
+    # Register with health monitor
+    global_health_monitor.register_component("psql_operations", health_check=_check_health)
+    
+    log("PostgreSQL operations module initialized", level="info")
+
 # Register cleanup handler
 async def cleanup_psql():
     """Cleanup PostgreSQL resources."""
     try:
         await _retry_manager.cleanup()
+        await _query_cache.clear_async()
+        await cache_coordinator.unregister_cache("psql_queries")
         log("PostgreSQL resources cleaned up", level="info")
     except Exception as e:
         log(f"Error cleaning up PostgreSQL resources: {e}", level="error")
 
 register_shutdown_handler(cleanup_psql)
+
+# Export the module's functions
+__all__ = [
+    'query',
+    'execute',
+    'execute_many',
+    'execute_batch',
+    'execute_parallel_queries',
+    'execute_vector_similarity_search',
+    'execute_pattern_metrics_update',
+    'initialize',
+    'cleanup_psql'
+]
 

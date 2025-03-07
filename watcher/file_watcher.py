@@ -20,6 +20,7 @@ from utils.error_handling import (
 from utils.shutdown import register_shutdown_handler
 from typing import Callable, Dict, Any, Optional, Set
 import asyncio
+from ai_tools.reference_repository_learning import ReferenceRepositoryLearning
 
 # Initialize upsert coordinator
 _upsert_coordinator = UpsertCoordinator()
@@ -373,6 +374,14 @@ async def start_file_watcher(path: str = ".") -> None:
 
 # Export watch_directory as an alias for start_file_watcher
 watch_directory = start_file_watcher
+
+async def process_reference_repository(repo_id: int) -> None:
+    """Process a reference repository for learning."""
+    try:
+        ref_repo_learning = await ReferenceRepositoryLearning.create()
+        await ref_repo_learning.learn_from_repository(repo_id)
+    finally:
+        await ref_repo_learning.cleanup()
 
 def main():
     """Main entry point for the file watcher."""

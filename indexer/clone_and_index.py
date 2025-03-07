@@ -1,13 +1,29 @@
-"""Repository cloning and indexing coordination.
+"""[4.0] Repository cloning and indexing coordination.
 
 This module handles repository cloning and initial indexing setup,
 coordinating with the database layer for repository management.
+
+Flow:
+1. Repository Management:
+   - Clone repository
+   - Create/update repository records
+   - Track repository changes
+
+2. Transaction Handling:
+   - Atomic operations
+   - Error recovery
+   - Resource cleanup
+
+3. Indexing Integration:
+   - File discovery
+   - Batch processing
+   - Graph projection
 """
 
 import os
 import tempfile
 import subprocess
-from typing import Optional, Set
+from typing import Optional, Set, Dict, Any, Tuple
 from utils.logger import log
 from db.upsert_ops import UpsertCoordinator
 from db.transaction import transaction_scope
@@ -25,22 +41,59 @@ from utils.error_handling import (
     ErrorSeverity
 )
 from utils.shutdown import register_shutdown_handler
+from indexer.file_utils import get_files
+from indexer.common import async_read_file
 
 # Initialize the upsert coordinator
 _upsert_coordinator = UpsertCoordinator()
 
 @asynccontextmanager
 async def repository_transaction():
-    """Context manager for repository operations ensuring proper cleanup."""
-    async with transaction_scope() as txn:
-        try:
-            yield txn
-        except Exception as e:
-            log(f"Repository transaction failed: {e}", level="error")
-            raise
-        finally:
-            # Ensure any temporary resources are cleaned up
-            pass
+    """[4.1] Context manager for repository operations.
+    
+    Flow:
+    1. Begin transaction
+    2. Execute operation
+    3. Commit or rollback
+    4. Clean up resources
+    
+    Yields:
+        Transaction context for repository operations
+    """
+    temp_files = set()  # Track temporary files
+    temp_dirs = set()   # Track temporary directories
+    
+    try:
+        async with transaction_scope() as txn:
+            try:
+                # Create context with resource tracking
+                context = {
+                    'transaction': txn,
+                    'temp_files': temp_files,
+                    'temp_dirs': temp_dirs,
+                    'create_temp_file': lambda: tempfile.mktemp(),
+                    'create_temp_dir': lambda: tempfile.mkdtemp()
+                }
+                yield context
+            except Exception as e:
+                log(f"Repository transaction failed: {e}", level="error")
+                raise
+    finally:
+        # Clean up temporary resources
+        for file_path in temp_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except Exception as e:
+                log(f"Error cleaning up temporary file {file_path}: {e}", level="warning")
+        
+        for dir_path in temp_dirs:
+            try:
+                if os.path.exists(dir_path):
+                    import shutil
+                    shutil.rmtree(dir_path)
+            except Exception as e:
+                log(f"Error cleaning up temporary directory {dir_path}: {e}", level="warning")
 
 @handle_async_errors(error_types=ProcessingError)
 async def get_or_create_repo(
@@ -49,7 +102,25 @@ async def get_or_create_repo(
     repo_type: str = "active",
     active_repo_id: Optional[int] = None
 ) -> int:
-    """Retrieves or creates a repository using the centralized upsert operation."""
+    """[4.2] Retrieve or create a repository record.
+    
+    Flow:
+    1. Initialize coordinator
+    2. Upsert repository
+    3. Return repository ID
+    
+    Args:
+        repo_name: Name of the repository
+        source_url: Optional source URL
+        repo_type: Type of repository (active/reference)
+        active_repo_id: Optional ID of active repository
+        
+    Returns:
+        int: Repository identifier
+        
+    Raises:
+        ProcessingError: If repository operation fails
+    """
     async with AsyncErrorBoundary(
         operation_name=f"getting or creating repository '{repo_name}'",
         error_types=ProcessingError,
@@ -66,14 +137,29 @@ async def get_or_create_repo(
 
 @handle_async_errors(error_types=ProcessingError)
 async def clone_repository(repo_url: str, target_dir: str) -> bool:
-    """Clone a git repository to target directory."""
+    """[4.3] Clone a git repository.
+    
+    Flow:
+    1. Execute git clone
+    2. Handle process output
+    3. Verify clone success
+    
+    Args:
+        repo_url: URL of repository to clone
+        target_dir: Directory to clone into
+        
+    Returns:
+        bool: True if clone successful, False otherwise
+        
+    Raises:
+        ProcessingError: If clone operation fails
+    """
     async with AsyncErrorBoundary(
         operation_name=f"cloning repository from {repo_url}",
         error_types=ProcessingError,
         severity=ErrorSeverity.ERROR
     ):
         try:
-            # Run git clone in a way that doesn't block the event loop
             proc = await asyncio.create_subprocess_exec(
                 'git', 'clone', '--depth', '1', repo_url, target_dir,
                 stdout=asyncio.subprocess.PIPE,
@@ -99,7 +185,22 @@ async def clone_and_index_repo(
     repo_name: Optional[str] = None,
     active_repo_id: Optional[int] = None
 ) -> None:
-    """Clone and index a reference repository."""
+    """[4.4] Clone and index a reference repository.
+    
+    Flow:
+    1. Clone repository
+    2. Create repository record
+    3. Process repository files
+    4. Update graph projection
+    
+    Args:
+        repo_url: URL of repository to clone
+        repo_name: Optional repository name
+        active_repo_id: Optional ID of active repository
+        
+    Raises:
+        ProcessingError: If clone or indexing fails
+    """
     async with AsyncErrorBoundary(
         operation_name=f"cloning and indexing repository from {repo_url}",
         error_types=ProcessingError,
@@ -108,7 +209,7 @@ async def clone_and_index_repo(
         if not repo_name:
             repo_name = repo_url.split('/')[-1].replace('.git', '')
         
-        async with repository_transaction() as txn:
+        async with repository_transaction() as context:
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Clone repository
                 if not await clone_repository(repo_url, temp_dir):
@@ -123,7 +224,8 @@ async def clone_and_index_repo(
                 )
                 
                 # Track repository change
-                await txn.track_repo_change(repo_id)
+                await context['transaction'].track_repo_change(repo_id)
                 
                 # Index repository using unified indexer
-                await process_repository_indexing(temp_dir, repo_id, repo_type="reference")
+                files = await get_files(temp_dir)
+                await process_repository_indexing(temp_dir, repo_id, files=files)
