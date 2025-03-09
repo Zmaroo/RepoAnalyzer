@@ -21,7 +21,7 @@ from utils.health_monitor import ComponentStatus, global_health_monitor
 from utils.request_cache import request_cache_context, get_current_request_cache
 from utils.cache_analytics import get_cache_analytics
 from db.transaction import transaction_scope
-from utils.operation_monitor import monitor_operation
+from utils.monitoring import operation_monitor
 
 @dataclass
 class TreeSitterParser(BaseParserInterface, AIParserInterface):
@@ -160,7 +160,7 @@ class TreeSitterParser(BaseParserInterface, AIParserInterface):
                     )
                 
                 # Use monitor_operation context manager
-                with monitor_operation("parse", f"tree_sitter_{self.language_id}"):
+                with operation_monitor("parse", f"tree_sitter_{self.language_id}"):
                     tree = self._parser.parse(bytes(source_code, "utf8"))
                     
                 # Create result with proper error handling

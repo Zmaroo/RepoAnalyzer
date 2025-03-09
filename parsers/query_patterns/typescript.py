@@ -285,3 +285,8 @@ async def extract_type_features(
             )
     
     return features
+
+async def get_type_checker():
+    """Get or create a TypeScript type checker instance."""
+    from parsers.typescript_analyzer import TypeScriptTypeChecker
+    return await TypeScriptTypeChecker.create()

@@ -14,7 +14,10 @@ from parsers.types import (
     ExtractedFeatures, FileType, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES,
+    process_common_pattern, validate_common_pattern
+)
 from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
@@ -33,13 +36,10 @@ from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
 import time
 
-# C capabilities
-C_CAPABILITIES = {
-    AICapability.CODE_UNDERSTANDING,
-    AICapability.CODE_GENERATION,
-    AICapability.CODE_MODIFICATION,
-    AICapability.CODE_REVIEW,
-    AICapability.LEARNING
+# C capabilities (extends common capabilities)
+C_CAPABILITIES = COMMON_CAPABILITIES | {
+    AICapability.MEMORY_MANAGEMENT,
+    AICapability.POINTER_ANALYSIS
 }
 
 # Pattern relationships for C
@@ -117,6 +117,7 @@ C_PATTERNS = {
     
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
+            **COMMON_PATTERNS[PatternCategory.SYNTAX][PatternPurpose.UNDERSTANDING],  # Inherit common syntax patterns
             "function_definition": ResilientPattern(
                 name="function_definition",
                 pattern="""
@@ -295,129 +296,168 @@ def get_c_pattern_match_result(
     )
 
 class CPatternLearner(CrossProjectPatternLearner):
-    """Enhanced C pattern learner with full system integration."""
+    """Enhanced C pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
-        self._block_extractor = None
         self._feature_extractor = None
-        self._unified_parser = None
         self._pattern_processor = pattern_processor
         self._ai_processor = None
+        self._block_extractor = None
+        self._unified_parser = None
+        self._metrics = {
+            "total_patterns": 0,
+            "learned_patterns": 0,
+            "failed_patterns": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "learning_times": []
+        }
         register_shutdown_handler(self.cleanup)
 
     async def initialize(self):
-        """Initialize with all required components."""
-        await super().initialize()
+        """Initialize with C-specific components."""
+        await super().initialize()  # Initialize CrossProjectPatternLearner components
         
-        # Initialize required components
+        # Initialize core components
         self._block_extractor = await get_block_extractor()
         self._feature_extractor = await BaseFeatureExtractor.create("c", FileType.CODE)
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
-        # Register with pattern processor
+        # Register C patterns
         await self._pattern_processor.register_language_patterns(
             "c", 
             C_PATTERNS,
             self
         )
-
-    async def _get_parser(self) -> BaseParser:
-        """Get appropriate parser for C."""
-        # Try tree-sitter first
-        tree_sitter_parser = await get_tree_sitter_parser("c")
-        if tree_sitter_parser:
-            return tree_sitter_parser
-            
-        # Fallback to base parser
-        return await BaseParser.create(
-            language_id="c",
-            file_type=FileType.CODE,
-            parser_type=ParserType.CUSTOM
+        
+        # Initialize health monitoring
+        await global_health_monitor.update_component_status(
+            "c_pattern_learner",
+            ComponentStatus.HEALTHY,
+            details={
+                "patterns_loaded": len(C_PATTERNS),
+                "capabilities": list(C_CAPABILITIES)
+            }
         )
 
     async def learn_from_project(self, project_path: str) -> List[Dict[str, Any]]:
-        """Learn patterns with AI assistance."""
-        if not self._ai_processor:
-            await self.initialize()
-            
-        # Try AI-assisted learning first
-        ai_context = AIContext(
-            language_id="c",
-            file_type=FileType.CODE,
-            interaction_type=InteractionType.LEARNING,
-            repository_id=None,
-            file_path=project_path
-        )
+        """Learn patterns with cross-project and AI assistance."""
+        start_time = time.time()
+        self._metrics["total_patterns"] += 1
         
-        ai_result = await self._ai_processor.process_with_ai(
-            source_code="",  # Will be filled by processor
-            context=ai_context
-        )
-        
-        if ai_result.success:
-            return ai_result.learned_patterns
-            
-        # Fallback to standard learning
-        async with AsyncErrorBoundary("c_pattern_learning"):
-            # Extract blocks using block extractor
-            blocks = await self._block_extractor.extract_from_project(
-                project_path,
-                language_id="c"
+        try:
+            # First try AI-assisted learning
+            ai_context = AIContext(
+                language_id="c",
+                file_type=FileType.CODE,
+                interaction_type=InteractionType.LEARNING,
+                repository_id=None,
+                file_path=project_path
             )
-
-            # Extract features from blocks
-            features = []
-            for block in blocks:
-                block_features = await self._feature_extractor.extract_features(
-                    block.content,
-                    block.metadata
-                )
-                features.append(block_features)
-
-            # Learn patterns from features
-            patterns = await self._learn_patterns_from_features(features)
             
-            return patterns
-
-    async def _learn_patterns_from_features(
-        self,
-        features: List[ExtractedFeatures]
-    ) -> List[Dict[str, Any]]:
-        """Learn patterns from extracted features."""
-        patterns = []
-        
-        # Group features by category
-        for category in PatternCategory:
-            category_features = [
-                f for f in features 
-                if f.category == category
-            ]
+            ai_result = await self._ai_processor.process_with_ai(
+                source_code="",  # Will be filled by processor
+                context=ai_context
+            )
             
-            if category_features:
-                # Learn patterns for this category
-                learned = await self._learn_category_patterns(
-                    category,
-                    category_features
+            learned_patterns = []
+            if ai_result.success:
+                learned_patterns.extend(ai_result.learned_patterns)
+                self._metrics["learned_patterns"] += len(ai_result.learned_patterns)
+            
+            # Then do cross-project learning through base class
+            project_patterns = await self._extract_project_patterns(project_path)
+            await self._integrate_patterns(project_patterns, project_path)
+            learned_patterns.extend(project_patterns)
+            
+            # Finally add C-specific patterns
+            async with AsyncErrorBoundary("c_pattern_learning"):
+                # Extract blocks with caching
+                blocks = await self._block_extractor.get_child_blocks(
+                    "c",
+                    "",  # Will be filled from files
+                    None
                 )
-                patterns.extend(learned)
-        
-        return patterns
+                
+                # Extract features with metrics
+                features = []
+                for block in blocks:
+                    block_features = await self._feature_extractor.extract_features(
+                        block.content,
+                        block.metadata
+                    )
+                    features.append(block_features)
+                
+                # Learn patterns from features
+                c_patterns = await self._learn_patterns_from_features(features)
+                learned_patterns.extend(c_patterns)
+            
+            # Update metrics
+            learning_time = time.time() - start_time
+            self._metrics["learning_times"].append(learning_time)
+            
+            # Update health status
+            await global_health_monitor.update_component_status(
+                "c_pattern_learner",
+                ComponentStatus.HEALTHY,
+                details={
+                    "learned_patterns": len(learned_patterns),
+                    "learning_time": learning_time
+                }
+            )
+            
+            return learned_patterns
+            
+        except Exception as e:
+            self._metrics["failed_patterns"] += 1
+            await log(f"Error learning patterns: {e}", level="error")
+            
+            # Update health status
+            await global_health_monitor.update_component_status(
+                "c_pattern_learner",
+                ComponentStatus.DEGRADED,
+                error=True,
+                details={"error": str(e)}
+            )
+            
+            return []
 
     async def cleanup(self):
         """Clean up pattern learner resources."""
-        if self._block_extractor:
-            await self._block_extractor.cleanup()
-        if self._feature_extractor:
-            await self._feature_extractor.cleanup()
-        if self._unified_parser:
-            await self._unified_parser.cleanup()
-        if self._ai_processor:
-            await self._ai_processor.cleanup()
-
-# Initialize pattern learner
-c_pattern_learner = CPatternLearner()
+        try:
+            # Clean up base class resources
+            await super().cleanup()
+            
+            # Clean up specific components
+            if self._feature_extractor:
+                await self._feature_extractor.cleanup()
+            if self._block_extractor:
+                await self._block_extractor.cleanup()
+            if self._unified_parser:
+                await self._unified_parser.cleanup()
+            if self._ai_processor:
+                await self._ai_processor.cleanup()
+            
+            # Update final status
+            await global_health_monitor.update_component_status(
+                "c_pattern_learner",
+                ComponentStatus.SHUTDOWN,
+                details={
+                    "cleanup": "successful",
+                    "final_metrics": self._metrics
+                }
+            )
+            
+        except Exception as e:
+            await log(f"Error in cleanup: {e}", level="error")
+            await global_health_monitor.update_component_status(
+                "c_pattern_learner",
+                ComponentStatus.UNHEALTHY,
+                error=True,
+                details={"cleanup_error": str(e)}
+            )
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_c_pattern(
@@ -426,6 +466,12 @@ async def process_c_pattern(
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a C pattern with full system integration."""
+    # First try common pattern processing
+    common_result = await process_common_pattern(pattern, source_code, context)
+    if common_result:
+        return common_result
+    
+    # Fall back to C-specific processing
     async with AsyncErrorBoundary(
         operation_name=f"process_pattern_{pattern.name}",
         error_types=ProcessingError,
@@ -480,7 +526,9 @@ async def process_c_pattern(
         
         return matches
 
-# Update initialization
+# Initialize pattern learner
+c_pattern_learner = CPatternLearner()
+
 async def initialize_c_patterns():
     """Initialize C patterns during app startup."""
     global c_pattern_learner
@@ -551,6 +599,12 @@ async def validate_c_pattern(
     context: Optional[PatternContext] = None
 ) -> PatternValidationResult:
     """Validate a C pattern with system integration."""
+    # First try common pattern validation
+    common_result = await validate_common_pattern(pattern, context)
+    if common_result.is_valid:
+        return common_result
+    
+    # Fall back to C-specific validation
     async with AsyncErrorBoundary("c_pattern_validation"):
         # Get pattern processor
         validation_result = await pattern_processor.validate_pattern(

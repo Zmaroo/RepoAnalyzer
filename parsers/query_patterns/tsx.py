@@ -4,7 +4,7 @@ This module provides TSX-specific patterns that integrate with the enhanced
 pattern processing system, including proper typing, relationships, and context.
 """
 
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Set
 from dataclasses import dataclass, field
 from parsers.types import (
     PatternCategory, PatternPurpose, PatternType, PatternRelationType,
@@ -338,6 +338,11 @@ async def extract_component_features(
             context.jsx_prop_types.update(match.get("prop_types", {}))
     
     return features
+
+async def get_react_analyzer():
+    """Get or create a React analyzer instance."""
+    from parsers.react_analyzer import ReactAnalyzer
+    return await ReactAnalyzer.create()
 
 # Export public interfaces
 __all__ = [
