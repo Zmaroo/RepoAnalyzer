@@ -1,407 +1,329 @@
-"""Query patterns for reStructuredText files with enhanced pattern support."""
+"""Query patterns for reStructuredText files.
 
-from typing import Dict, Any, List, Match
-from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory
-import re
+This module provides reStructuredText-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
+"""
 
-def extract_section(match: Match) -> Dict[str, Any]:
-    """Extract section information."""
-    return {
-        "type": "section",
-        "underline": match.group(1),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
+)
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
 
-def extract_directive(match: Match) -> Dict[str, Any]:
-    """Extract directive information."""
-    return {
-        "type": "directive",
-        "name": match.group(1),
-        "content": match.group(2),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+# Language identifier
+LANGUAGE = "rst"
 
-def extract_field(match: Match) -> Dict[str, Any]:
-    """Extract field information."""
-    return {
-        "type": "field",
-        "name": match.group(1),
-        "content": match.group(2),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+@dataclass
+class RSTPatternContext(PatternContext):
+    """reStructuredText-specific pattern context."""
+    section_names: Set[str] = field(default_factory=set)
+    directive_names: Set[str] = field(default_factory=set)
+    role_names: Set[str] = field(default_factory=set)
+    reference_names: Set[str] = field(default_factory=set)
+    has_sections: bool = False
+    has_directives: bool = False
+    has_roles: bool = False
+    has_references: bool = False
+    has_substitutions: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.section_names)}:{self.has_directives}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "section": PatternPerformanceMetrics(),
+    "directive": PatternPerformanceMetrics(),
+    "role": PatternPerformanceMetrics(),
+    "reference": PatternPerformanceMetrics(),
+    "list": PatternPerformanceMetrics()
+}
 
 RST_PATTERNS = {
     PatternCategory.SYNTAX: {
-        "section": QueryPattern(
-            pattern=r'^([=`~:\'"^_*+#-])\1{3,}\s*$',
-            extract=extract_section,
-            description="Matches section underlines",
-            examples=["====", "----"]
-        ),
-        "directive": QueryPattern(
-            pattern=r'\.\.\s+(\w+)::\s*(.*)$',
-            extract=extract_directive,
-            description="Matches directives",
-            examples=[".. note::", ".. code-block:: python"]
-        ),
-        "role": QueryPattern(
-            pattern=r':([^:]+):`([^`]+)`',
-            extract=lambda m: {
-                "type": "role",
-                "role_type": m.group(1),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches inline roles",
-            examples=[":ref:`link`", ":class:`name`"]
-        ),
-        "literal_block": QueryPattern(
-            pattern=r'::\s*\n\n((?:\s+.+\n)+)',
-            extract=lambda m: {
-                "type": "literal_block",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches literal blocks",
-            examples=["Text::\n\n    Literal block"]
-        )
+        PatternPurpose.UNDERSTANDING: {
+            "section": ResilientPattern(
+                pattern="""
+                [
+                    (section
+                        title: (_) @syntax.section.title
+                        underline: (_) @syntax.section.underline
+                        content: (_)* @syntax.section.content) @syntax.section.def,
+                    (subsection
+                        title: (_) @syntax.subsection.title
+                        underline: (_) @syntax.subsection.underline
+                        content: (_)* @syntax.subsection.content) @syntax.subsection.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "section",
+                    "title": (
+                        node["captures"].get("syntax.section.title", {}).get("text", "") or
+                        node["captures"].get("syntax.subsection.title", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.section.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.subsection.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_subsection": "syntax.subsection.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["section", "directive", "list"],
+                        PatternRelationType.DEPENDS_ON: ["section"]
+                    }
+                },
+                name="section",
+                description="Matches reStructuredText section declarations",
+                examples=["Title\n=====", "Section\n-------"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["section"],
+                    "validation": {
+                        "required_fields": ["title"],
+                        "name_format": r'^[^\n]+$'
+                    }
+                }
+            ),
+            "directive": ResilientPattern(
+                pattern="""
+                [
+                    (directive
+                        name: (_) @syntax.directive.name
+                        options: (directive_options)? @syntax.directive.options
+                        content: (_)* @syntax.directive.content) @syntax.directive.def,
+                    (role
+                        name: (_) @syntax.role.name
+                        content: (_) @syntax.role.content) @syntax.role.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "directive",
+                    "name": (
+                        node["captures"].get("syntax.directive.name", {}).get("text", "") or
+                        node["captures"].get("syntax.role.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.directive.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.role.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_role": "syntax.role.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINED_BY: ["section"],
+                        PatternRelationType.DEPENDS_ON: ["directive"]
+                    }
+                },
+                name="directive",
+                description="Matches reStructuredText directives and roles",
+                examples=[".. note::", ":ref:`link`"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["directive"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-z][a-z0-9_-]*$'
+                    }
+                }
+            )
+        }
     },
-    
-    PatternCategory.STRUCTURE: {
-        "reference": QueryPattern(
-            pattern=r'`([^`]+)`_',
-            extract=lambda m: {
-                "type": "reference",
-                "target": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches references",
-            examples=["`link`_"]
-        ),
-        "include": QueryPattern(
-            pattern=r'\.\.\s+include::\s*(.+)$',
-            extract=lambda m: {
-                "type": "include",
-                "path": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches include directives",
-            examples=[".. include:: file.rst"]
-        ),
-        "list": QueryPattern(
-            pattern=r'^(\s*)(?:\*|\+|\-|\d+\.|\#\.|\[.*?\])\s+(.+)$',
-            extract=lambda m: {
-                "type": "list",
-                "indent": len(m.group(1)),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches lists",
-            examples=["* Item", "1. Item", "#. Auto-numbered"]
-        ),
-        "definition_list": QueryPattern(
-            pattern=r'^(\s*)([^\s].*)\n\1\s+(.+)$',
-            extract=lambda m: {
-                "type": "definition_list",
-                "term": m.group(2),
-                "definition": m.group(3),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches definition lists",
-            examples=["term\n    Definition"]
-        )
-    },
-    
-    PatternCategory.DOCUMENTATION: {
-        "field": QueryPattern(
-            pattern=r':([^:]+):\s+(.+)$',
-            extract=extract_field,
-            description="Matches field lists",
-            examples=[":author: Name"]
-        ),
-        "comment": QueryPattern(
-            pattern=r'\.\.\s+(.*)$',
-            extract=lambda m: {
-                "type": "comment",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches comments",
-            examples=[".. This is a comment"]
-        ),
-        "doctest_block": QueryPattern(
-            pattern=r'>>>.*?(?:\n\s+.*)*',
-            extract=lambda m: {
-                "type": "doctest_block",
-                "content": m.group(0),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches doctest blocks",
-            examples=[">>> print('test')\ntest"]
-        )
-    },
-    
-    PatternCategory.SEMANTICS: {
-        "link": QueryPattern(
-            pattern=r'`([^`]+)\s*<([^>]+)>`_',
-            extract=lambda m: {
-                "type": "link",
-                "text": m.group(1),
-                "url": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches external links",
-            examples=["`Python <https://python.org>`_"]
-        ),
-        "substitution": QueryPattern(
-            pattern=r'\|([^|]+)\|',
-            extract=lambda m: {
-                "type": "substitution",
-                "name": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches substitutions",
-            examples=["|name|"]
-        ),
-        "footnote": QueryPattern(
-            pattern=r'\[(\d+|#|\*|\w+)\]_',
-            extract=lambda m: {
-                "type": "footnote",
-                "label": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches footnotes",
-            examples=["[1]_", "[#]_", "[*]_"]
-        )
-    },
-    
-    PatternCategory.CODE_PATTERNS: {
-        "code_block": QueryPattern(
-            pattern=r'\.\.\s+code-block::\s*(\w+)\s*\n\n((?:\s+.+\n)+)',
-            extract=lambda m: {
-                "type": "code_block",
-                "language": m.group(1),
-                "code": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches code blocks",
-            examples=[".. code-block:: python\n\n    print('Hello')"]
-        ),
-        "code_role": QueryPattern(
-            pattern=r':code:`([^`]+)`',
-            extract=lambda m: {
-                "type": "code_role",
-                "code": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches inline code",
-            examples=[":code:`print('Hello')`"]
-        )
-    },
-    
-    PatternCategory.DEPENDENCIES: {
-        "internal_reference": QueryPattern(
-            pattern=r':ref:`([^`]+)`',
-            extract=lambda m: {
-                "type": "internal_reference",
-                "target": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches internal references",
-            examples=[":ref:`section-label`"]
-        ),
-        "external_reference": QueryPattern(
-            pattern=r'`([^`]+)`__',
-            extract=lambda m: {
-                "type": "external_reference",
-                "target": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches anonymous external references",
-            examples=["`link`__"]
-        )
-    },
-    
-    PatternCategory.BEST_PRACTICES: {
-        "section_hierarchy": QueryPattern(
-            pattern=r'([^\n]+)\n([=`~:\'"^_*+#-])\2{3,}\s*$(?:\n(?![=`~:\'"^_*+#-]).*)?\n([^\n]+)\n([=`~:\'"^_*+#-])\4{3,}\s*$',
-            extract=lambda m: {
-                "type": "section_hierarchy",
-                "parent_title": m.group(1),
-                "parent_char": m.group(2),
-                "child_title": m.group(3),
-                "child_char": m.group(4),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "follows_hierarchy": "=`~:'^_*+#-".index(m.group(2)) < "=`~:'^_*+#-".index(m.group(4))
-            },
-            description="Checks section hierarchy",
-            examples=["Title\n=====\n\nSection\n-------"]
-        ),
-        "directive_style": QueryPattern(
-            pattern=r'\.\.\s+(\w+)::\s*(.*)$',
-            extract=lambda m: {
-                "type": "directive_style",
-                "name": m.group(1),
-                "args": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "follows_convention": bool(re.match(r'^[a-z][a-z0-9-]*$', m.group(1)))
-            },
-            description="Checks directive naming conventions",
-            examples=[".. good-name::", ".. BadName::"]
-        )
-    },
-    
-    PatternCategory.COMMON_ISSUES: {
-        "broken_reference": QueryPattern(
-            pattern=r'(?:`[^`]+`_(?!_)|:ref:`[^`]+`)(?!\s*_)',
-            extract=lambda m: {
-                "type": "broken_reference",
-                "reference": m.group(0),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "needs_verification": True
-            },
-            description="Detects potentially broken references",
-            examples=["`missing`_", ":ref:`nonexistent`"]
-        ),
-        "inconsistent_indentation": QueryPattern(
-            pattern=r'^( +).*\n(?!\1|\s*$)( +)',
-            extract=lambda m: {
-                "type": "inconsistent_indentation",
-                "first_indent": len(m.group(1)),
-                "second_indent": len(m.group(2)),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "is_inconsistent": len(m.group(1)) != len(m.group(2))
-            },
-            description="Detects inconsistent indentation",
-            examples=["    First line\n  Second line"]
-        )
-    },
-    
-    PatternCategory.USER_PATTERNS: {
-        "custom_role": QueryPattern(
-            pattern=r'\.\.\s+role::\s*(\w+)\n\s+:([^:]+):\s*(.+)$',
-            extract=lambda m: {
-                "type": "custom_role",
-                "name": m.group(1),
-                "property": m.group(2),
-                "value": m.group(3),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches custom role definitions",
-            examples=[".. role:: custom\n    :class: special"]
-        ),
-        "custom_directive": QueryPattern(
-            pattern=r'\.\.\s+directive::\s*(\w+)\n(?:\s+:[\w-]+:\s*.+\n)*',
-            extract=lambda m: {
-                "type": "custom_directive",
-                "name": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches custom directive definitions",
-            examples=[".. directive:: custom\n    :option: value"]
-        )
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.REFERENCES: {
+            "reference": AdaptivePattern(
+                pattern="""
+                [
+                    (reference
+                        name: (_) @ref.name
+                        target: (_) @ref.target) @ref.def,
+                    (substitution
+                        name: (_) @ref.sub.name
+                        value: (_) @ref.sub.value) @ref.sub.def,
+                    (footnote
+                        label: (_) @ref.footnote.label
+                        content: (_) @ref.footnote.content) @ref.footnote.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "reference",
+                    "line_number": (
+                        node["captures"].get("ref.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("ref.sub.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("ref.footnote.def", {}).get("start_point", [0])[0]
+                    ),
+                    "name": (
+                        node["captures"].get("ref.name", {}).get("text", "") or
+                        node["captures"].get("ref.sub.name", {}).get("text", "") or
+                        node["captures"].get("ref.footnote.label", {}).get("text", "")
+                    ),
+                    "reference_type": (
+                        "reference" if "ref.def" in node["captures"] else
+                        "substitution" if "ref.sub.def" in node["captures"] else
+                        "footnote" if "ref.footnote.def" in node["captures"] else
+                        "unknown"
+                    ),
+                    "relationships": {
+                        PatternRelationType.REFERENCED_BY: ["section", "directive"],
+                        PatternRelationType.DEPENDS_ON: ["reference"]
+                    }
+                },
+                name="reference",
+                description="Matches reStructuredText references",
+                examples=["`link`_", "|substitution|", "[1]_"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.REFERENCES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["reference"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z0-9_-]+$'
+                    }
+                }
+            ),
+            "list": AdaptivePattern(
+                pattern="""
+                [
+                    (bullet_list
+                        items: (list_item
+                            content: (_) @list.bullet.content)* @list.bullet.items) @list.bullet.def,
+                    (enumerated_list
+                        items: (list_item
+                            content: (_) @list.enum.content)* @list.enum.items) @list.enum.def,
+                    (definition_list
+                        items: (definition_item
+                            term: (_) @list.def.term
+                            definition: (_) @list.def.content)* @list.def.items) @list.def.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "list",
+                    "line_number": (
+                        node["captures"].get("list.bullet.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("list.enum.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("list.def.def", {}).get("start_point", [0])[0]
+                    ),
+                    "list_type": (
+                        "bullet" if "list.bullet.def" in node["captures"] else
+                        "enumerated" if "list.enum.def" in node["captures"] else
+                        "definition" if "list.def.def" in node["captures"] else
+                        "unknown"
+                    ),
+                    "relationships": {
+                        PatternRelationType.CONTAINED_BY: ["section", "directive"],
+                        PatternRelationType.CONTAINS: ["list_item"]
+                    }
+                },
+                name="list",
+                description="Matches reStructuredText lists",
+                examples=["* Item", "1. Item", "term\n  Definition"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.REFERENCES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["list"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": None
+                    }
+                }
+            )
+        }
     }
 }
 
-# Add the repository learning patterns
-RST_PATTERNS[PatternCategory.LEARNING] = {
-    "document_structure": QueryPattern(
-        pattern=r'(?s)([^\n]+)\n([=`~:\'"^_*+#-])\2{3,}\s*\n\n(.*?)(?=\n[^\n]+\n[=`~:\'"^_*+#-]{4,}|$)',
-        extract=lambda m: {
-            "type": "document_structure",
-            "title": m.group(1),
-            "level_char": m.group(2),
-            "content": m.group(3),
-            "line_number": m.string.count('\n', 0, m.start()) + 1
-        },
-        description="Matches document structure patterns",
-        examples=["Title\n=====\n\nContent"]
-    ),
-    "section_patterns": QueryPattern(
-        pattern=r'(?s)([^\n]+)\n([=`~:\'"^_*+#-])\2{3,}\s*\n\n(.*?)(?=\n[^\n]+\n[=`~:\'"^_*+#-]{4,}|$)',
-        extract=lambda m: {
-            "type": "section_pattern",
-            "title": m.group(1),
-            "level_char": m.group(2),
-            "content": m.group(3),
-            "line_number": m.string.count('\n', 0, m.start()) + 1
-        },
-        description="Learns section organization patterns",
-        examples=["Section\n-------\n\nContent"]
-    )
-}
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
 
-# Function to extract patterns for repository learning
-def extract_rst_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
-    """Extract patterns from RST content for repository learning."""
+async def extract_rst_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from reStructuredText content for repository learning."""
     patterns = []
+    context = RSTPatternContext()
     
-    # Process each pattern category
-    for category in PatternCategory:
-        if category in RST_PATTERNS:
-            category_patterns = RST_PATTERNS[category]
-            for pattern_name, pattern in category_patterns.items():
-                if isinstance(pattern, QueryPattern):
-                    if isinstance(pattern.pattern, str):
-                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-                            pattern_data = pattern.extract(match)
-                            patterns.append({
-                                "name": pattern_name,
-                                "category": category.value,
-                                "content": match.group(0),
-                                "metadata": pattern_data,
-                                "confidence": 0.85
-                            })
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in RST_PATTERNS:
+                category_patterns = RST_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "section":
+                                        context.has_sections = True
+                                        context.section_names.add(match["title"])
+                                    elif match["type"] == "directive":
+                                        if match["is_role"]:
+                                            context.has_roles = True
+                                            context.role_names.add(match["name"])
+                                        else:
+                                            context.has_directives = True
+                                            context.directive_names.add(match["name"])
+                                    elif match["type"] == "reference":
+                                        context.has_references = True
+                                        context.reference_names.add(match["name"])
+                                        if match["reference_type"] == "substitution":
+                                            context.has_substitutions = True
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting reStructuredText patterns: {e}", level="error")
     
     return patterns
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
-    "document": {
-        "can_contain": ["section", "directive", "field_list", "comment"],
-        "can_be_contained_by": []
-    },
     "section": {
-        "can_contain": ["section", "directive", "paragraph", "list"],
-        "can_be_contained_by": ["document", "section"]
+        PatternRelationType.CONTAINS: ["section", "directive", "list"],
+        PatternRelationType.DEPENDS_ON: ["section"]
     },
     "directive": {
-        "can_contain": ["directive_option", "directive_content"],
-        "can_be_contained_by": ["document", "section"]
+        PatternRelationType.CONTAINED_BY: ["section"],
+        PatternRelationType.DEPENDS_ON: ["directive"]
+    },
+    "reference": {
+        PatternRelationType.REFERENCED_BY: ["section", "directive"],
+        PatternRelationType.DEPENDS_ON: ["reference"]
     },
     "list": {
-        "can_contain": ["list_item"],
-        "can_be_contained_by": ["document", "section", "list_item"]
-    },
-    "field_list": {
-        "can_contain": ["field"],
-        "can_be_contained_by": ["document", "section", "directive"]
+        PatternRelationType.CONTAINED_BY: ["section", "directive"],
+        PatternRelationType.CONTAINS: ["list_item"]
     }
 }
 
-def extract_rst_features(ast: dict) -> dict:
-    """Extract features that align with pattern categories."""
-    features = {
-        "syntax": {
-            "sections": [],
-            "directives": [],
-            "roles": []
-        },
-        "structure": {
-            "references": [],
-            "includes": [],
-            "lists": []
-        },
-        "semantics": {
-            "links": [],
-            "substitutions": [],
-            "footnotes": []
-        },
-        "documentation": {
-            "fields": [],
-            "comments": [],
-            "doctests": []
-        }
-    }
-    return features 
+# Export public interfaces
+__all__ = [
+    'RST_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_rst_patterns_for_learning',
+    'RSTPatternContext',
+    'pattern_learner'
+] 

@@ -37,12 +37,17 @@ from utils.error_handling import (
     AsyncErrorBoundary,
     ErrorSeverity,
     ProcessingError,
-    DatabaseError
+    DatabaseError,
+    ErrorAudit
 )
 from utils.request_cache import request_cache_context, cached_in_request
 from utils.shutdown import register_shutdown_handler
-from utils.async_runner import submit_async_task
+from utils.async_runner import submit_async_task, cleanup_tasks
 from embedding.embedding_models import code_embedder, doc_embedder, arch_embedder
+from utils.health_monitor import global_health_monitor, ComponentStatus
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.cache_analytics import get_cache_analytics
+from datetime import datetime
 
 # Initialize pattern system
 _pattern_system_initialized = False
@@ -319,22 +324,26 @@ class ProcessingCoordinator:
     """[1.2] Coordinates file processing tasks."""
     
     def __init__(self):
-        """Private constructor - use create() instead."""
+        """Initialize the processing coordinator."""
         self._initialized = False
         self._pending_tasks: Set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
-        self._processing_queue = asyncio.Queue()
-        self._active_tasks: Set[asyncio.Task] = set()
         self._file_processor = None
-        self._batch_size = 10
-        self._max_concurrent_tasks = 5
+        self._batch_size = 50
+        self._max_concurrent_batches = 5
+        self._semaphore = asyncio.Semaphore(self._max_concurrent_batches)
+        self._metrics = {
+            "total_files_processed": 0,
+            "successful_files": 0,
+            "failed_files": 0,
+            "processing_times": []
+        }
+        self._cache = None
     
     async def ensure_initialized(self):
-        """Ensure the instance is properly initialized before use."""
+        """Ensure the coordinator is initialized."""
         if not self._initialized:
-            raise ProcessingError("ProcessingCoordinator not initialized. Use create() to initialize.")
-        if not self._file_processor:
-            raise ProcessingError("File processor not initialized")
+            raise ProcessingError("Processing coordinator not initialized. Use create() to initialize.")
         return True
     
     @classmethod
@@ -350,6 +359,17 @@ class ProcessingCoordinator:
                 # Initialize required components
                 from indexer.file_processor import FileProcessor
                 instance._file_processor = await FileProcessor.create()
+                
+                # Initialize cache
+                instance._cache = UnifiedCache("processing_coordinator")
+                await cache_coordinator.register_cache(instance._cache)
+                
+                # Initialize cache analytics
+                analytics = await get_cache_analytics()
+                analytics.register_warmup_function(
+                    "processing_coordinator",
+                    instance._warmup_cache
+                )
                 
                 # Register shutdown handler
                 register_shutdown_handler(instance.cleanup)
@@ -367,44 +387,118 @@ class ProcessingCoordinator:
             await instance.cleanup()
             raise ProcessingError(f"Failed to initialize processing coordinator: {e}")
     
-    async def process_file(self, file_path: str, repo_id: int, repo_path: str) -> None:
-        """Process a single file for indexing."""
-        if not self._initialized:
-            await self.ensure_initialized()
-            
-        try:
-            async with self._lock:
-                task = asyncio.create_task(self._process_single_file(file_path, repo_id, repo_path))
-                self._pending_tasks.add(task)
-                task.add_done_callback(lambda t: self._pending_tasks.remove(t) if t in self._pending_tasks else None)
-                await task
-        except Exception as e:
-            await log(f"Error processing file {file_path}: {e}", level="error")
-            raise ProcessingError(f"Failed to process file {file_path}: {e}")
+    async def _warmup_cache(self, keys: List[str]) -> Dict[str, Any]:
+        """Warm up the cache with commonly used data."""
+        result = {}
+        for key in keys:
+            if key.startswith("batch_size:"):
+                result[key] = self._batch_size
+            elif key.startswith("max_concurrent:"):
+                result[key] = self._max_concurrent_batches
+        return result
     
-    async def process_batch(self, files: List[str], repo_id: int, repo_path: str) -> None:
-        """Process a batch of files for indexing."""
-        if not self._initialized:
-            await self.ensure_initialized()
-            
-        processable_files = [f for f in files if await is_processable_file(f)]
-        await self._process_batch(processable_files, repo_id, repo_path)
-    
-    async def _process_single_file(self, file_path: str, repo_id: int, repo_path: str) -> None:
-        """Process a single file with error handling."""
-        try:
-            await self._file_processor.process_file(file_path, repo_id, repo_path)
-        except Exception as e:
-            await log(f"Error processing file {file_path}: {e}", level="error")
-            raise ProcessingError(f"Failed to process file {file_path}: {e}")
-    
+    @cached_in_request(lambda files, repo_id, repo_path: f"batch:{repo_id}:{hash(tuple(files))}")
     async def _process_batch(self, files: List[str], repo_id: int, repo_path: str) -> None:
         """Process a batch of files with error handling."""
-        try:
-            await self._processing_coordinator.process_batch(files, repo_id, repo_path)
-        except Exception as e:
-            await log(f"Error processing batch: {e}", level="error")
-            raise ProcessingError(f"Failed to process batch: {e}")
+        if not files:
+            return
+            
+        async with self._semaphore:
+            try:
+                # Create task for batch processing
+                task = asyncio.create_task(
+                    self._file_processor.process_files(files, repo_id, repo_path)
+                )
+                self._pending_tasks.add(task)
+                
+                # Wait for batch completion
+                try:
+                    await task
+                    self._metrics["successful_files"] += len(files)
+                    
+                    # Cache successful batch processing
+                    cache_key = f"processed_batch:{repo_id}:{hash(tuple(files))}"
+                    await self._cache.set(cache_key, {
+                        "status": "success",
+                        "count": len(files),
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
+                except Exception as e:
+                    self._metrics["failed_files"] += len(files)
+                    await ErrorAudit.record_error(
+                        e,
+                        "batch_processing",
+                        ProcessingError,
+                        severity=ErrorSeverity.ERROR,
+                        details={
+                            "repo_id": repo_id,
+                            "files": files
+                        }
+                    )
+                    raise
+                finally:
+                    self._metrics["total_files_processed"] += len(files)
+                    if task in self._pending_tasks:
+                        self._pending_tasks.remove(task)
+                    
+            except Exception as e:
+                await log(f"Error processing batch: {e}", level="error")
+                await global_health_monitor.update_component_status(
+                    "processing_coordinator",
+                    ComponentStatus.DEGRADED,
+                    error=True,
+                    details={
+                        "error": str(e),
+                        "batch_size": len(files)
+                    }
+                )
+                raise ProcessingError(f"Failed to process batch: {e}")
+    
+    async def process_files(self, files: List[str], repo_id: int, repo_path: str) -> None:
+        """Process files in batches with proper error handling."""
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        async with request_cache_context() as cache:
+            try:
+                # Process files in batches
+                for i in range(0, len(files), self._batch_size):
+                    batch = files[i:i + self._batch_size]
+                    
+                    # Check request cache first
+                    cache_key = f"batch_result:{repo_id}:{hash(tuple(batch))}"
+                    if await cache.has(cache_key):
+                        continue
+                    
+                    await self._process_batch(batch, repo_id, repo_path)
+                    
+                    # Cache batch result
+                    await cache.set(cache_key, {
+                        "processed": True,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                
+                # Update health status
+                await global_health_monitor.update_component_status(
+                    "processing_coordinator",
+                    ComponentStatus.HEALTHY,
+                    details={
+                        "total_processed": self._metrics["total_files_processed"],
+                        "successful": self._metrics["successful_files"],
+                        "failed": self._metrics["failed_files"]
+                    }
+                )
+                
+            except Exception as e:
+                await log(f"Error processing files: {e}", level="error")
+                await global_health_monitor.update_component_status(
+                    "processing_coordinator",
+                    ComponentStatus.UNHEALTHY,
+                    error=True,
+                    details={"error": str(e)}
+                )
+                raise ProcessingError(f"Failed to process files: {e}")
     
     async def cleanup(self):
         """Clean up all resources."""
@@ -412,27 +506,46 @@ class ProcessingCoordinator:
             if not self._initialized:
                 return
                 
-            # Cancel all pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            # Clean up file processor
-            if self._file_processor:
-                await self._file_processor.cleanup()
-            
-            # Unregister from health monitoring
-            from utils.health_monitor import global_health_monitor
-            global_health_monitor.unregister_component("processing_coordinator")
-            
-            self._initialized = False
-            await log("Processing coordinator cleaned up", level="info")
+            async with self._lock:
+                # Cancel all pending tasks
+                if self._pending_tasks:
+                    for task in self._pending_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                    self._pending_tasks.clear()
+                
+                # Clean up file processor
+                if self._file_processor:
+                    await self._file_processor.cleanup()
+                
+                # Clean up cache
+                if self._cache:
+                    try:
+                        await cache_coordinator.unregister_cache("processing_coordinator")
+                        self._cache = None
+                    except Exception as e:
+                        await log(f"Error cleaning up cache: {e}", level="error")
+                
+                # Unregister from health monitoring
+                from utils.health_monitor import global_health_monitor
+                global_health_monitor.unregister_component("processing_coordinator")
+                
+                self._initialized = False
+                await log("Processing coordinator cleaned up", level="info")
         except Exception as e:
             await log(f"Error cleaning up processing coordinator: {e}", level="error")
             raise ProcessingError(f"Failed to cleanup processing coordinator: {e}")
+
+# Create singleton instance
+processing_coordinator = None
+
+async def get_processing_coordinator() -> ProcessingCoordinator:
+    """Get or create the processing coordinator singleton instance."""
+    global processing_coordinator
+    if processing_coordinator is None:
+        processing_coordinator = await ProcessingCoordinator.create()
+    return processing_coordinator
 
 @handle_async_errors
 async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: str = "active", single_file: bool = False) -> None:
@@ -457,7 +570,7 @@ async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: s
                 return
                 
             # Process files in batches
-            await batch_process_files(files, repo_id, repo_path)
+            await get_processing_coordinator().process_files(files, repo_id, repo_path)
             
             # Update graph projection
             await graph_sync.invalidate_projection(repo_id)
@@ -501,3 +614,10 @@ async def get_indexer() -> UnifiedIndexer:
     if not indexer._initialized:
         await indexer.ensure_initialized()
     return indexer 
+
+# Export public interfaces
+__all__ = [
+    'ProcessingCoordinator',
+    'get_processing_coordinator',
+    'processing_coordinator'
+] 

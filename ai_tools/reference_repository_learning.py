@@ -6,12 +6,15 @@ Flow:
    - Identify best practices and conventions
    - Create learning vectors for patterns
    - Identify similarities between current project and reference repos
+   - Support both custom and tree-sitter parsers
 
 2. Integration Points:
    - CodeEmbedder [3.1]: Code embeddings
    - Neo4jProjections [6.2]: Graph operations
    - AIAssistant [4.1]: AI interface
    - CodeUnderstanding [4.2]: Code analysis
+   - Tree-sitter Language Pack: AST analysis
+   - Custom Parsers: Specialized parsing
 
 3. Error Handling:
    - ProcessingError: Learning operations
@@ -32,7 +35,7 @@ from db.retry_utils import (
     with_retry,
     RetryableError,
     NonRetryableError,
-    DatabaseRetryManager,
+    RetryManager,
     RetryConfig
 )
 from embedding.embedding_models import code_embedder, doc_embedder
@@ -54,8 +57,10 @@ from parsers.types import (
     Documentation,
     ComplexityMetrics,
     ExtractedFeatures,
-    ParserResult
+    ParserResult,
+    ParserType
 )
+from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
 from ai_tools.code_understanding import CodeUnderstanding
 import os
 from utils.async_runner import submit_async_task
@@ -69,16 +74,38 @@ class ReferenceRepositoryLearning:
         self.embedder = code_embedder
         self.doc_embedder = doc_embedder
         self.neo4j_tools = None
-        self._retry_manager = DatabaseRetryManager(
+        self._retry_manager = RetryManager(
             RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
         )
         self._pending_tasks: Set[asyncio.Future] = set()
+        self._tree_sitter_parsers = {}  # Cache for tree-sitter parsers
+        self._parser_metrics = {
+            ParserType.CUSTOM: {"patterns": 0, "success": 0},
+            ParserType.TREE_SITTER: {"patterns": 0, "success": 0}
+        }
     
     @classmethod
     async def create(cls) -> 'ReferenceRepositoryLearning':
         instance = cls()
         instance.neo4j_tools = await get_neo4j_tools()
+        
+        # Initialize tree-sitter parsers
+        await instance._initialize_tree_sitter_parsers()
+        
         return instance
+    
+    async def _initialize_tree_sitter_parsers(self):
+        """Initialize tree-sitter parsers for supported languages."""
+        try:
+            for lang in SupportedLanguage.__args__:
+                try:
+                    parser = get_parser(lang)
+                    if parser:
+                        self._tree_sitter_parsers[lang] = parser
+                except Exception as e:
+                    await log(f"Error initializing tree-sitter parser for {lang}: {e}", level="warning")
+        except Exception as e:
+            await log(f"Error initializing tree-sitter parsers: {e}", level="error")
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def learn_from_repository(self, reference_repo_id: int) -> Dict[str, Any]:
@@ -109,13 +136,22 @@ class ReferenceRepositoryLearning:
                 # Find pattern clusters using graph projections
                 pattern_clusters = await graph_sync.compare_repository_structures(reference_repo_id, reference_repo_id)
                 
+                # Update parser metrics
+                for pattern in code_patterns:
+                    parser_type = pattern.get("parser_type", ParserType.UNKNOWN)
+                    if parser_type in self._parser_metrics:
+                        self._parser_metrics[parser_type]["patterns"] += 1
+                        if pattern.get("success", False):
+                            self._parser_metrics[parser_type]["success"] += 1
+                
                 return {
                     "code_patterns": len(code_patterns),
                     "doc_patterns": len(doc_patterns),
                     "architecture_patterns": len(arch_patterns),
                     "pattern_similarities": len(similarity_results),
                     "pattern_clusters": len(pattern_clusters.get("similarities", [])),
-                    "repository_id": reference_repo_id
+                    "repository_id": reference_repo_id,
+                    "parser_metrics": self._parser_metrics
                 }
     
     @handle_async_errors(error_types=ProcessingError)
@@ -126,7 +162,7 @@ class ReferenceRepositoryLearning:
         # Get all code files using transaction scope
         async with transaction_scope() as txn:
             files_query = """
-                SELECT file_path, file_content, language 
+                SELECT file_path, file_content, language, parser_type 
                 FROM code_snippets 
                 WHERE repo_id = $1 AND file_content IS NOT NULL
             """
@@ -134,6 +170,8 @@ class ReferenceRepositoryLearning:
             
             # Process files to extract patterns
             for file in files:
+                parser_type = ParserType(file["parser_type"])
+                
                 # Get code structure from Neo4j
                 structure_query = """
                     MATCH (f:Code {repo_id: $repo_id, file_path: $file_path})-[:CONTAINS]->(n)
@@ -155,12 +193,23 @@ class ReferenceRepositoryLearning:
                         
                         # Default value in case of error
                         embedding_list = None
+                        ast = None
                         
-                        # Define a function to create embedding with specific error handling
+                        # Create embedding with specific error handling
                         async def create_embedding():
                             nonlocal embedding_list
                             embedding = self.embedder.embed(pattern_text)
                             embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else None
+                        
+                        # Get AST if using tree-sitter
+                        if parser_type == ParserType.TREE_SITTER and file["language"] in self._tree_sitter_parsers:
+                            try:
+                                parser = self._tree_sitter_parsers[file["language"]]
+                                tree = parser.parse(bytes(pattern_text, "utf8"))
+                                if tree:
+                                    ast = self._convert_tree_to_dict(tree.root_node)
+                            except Exception as e:
+                                await log(f"Error getting tree-sitter AST: {e}", level="warning")
                         
                         # Use AsyncErrorBoundary with specific error types
                         try:
@@ -177,11 +226,27 @@ class ReferenceRepositoryLearning:
                             "pattern_type": "code_structure",
                             "elements": common_nodes,
                             "sample": pattern_text,
-                            "embedding": embedding_list
+                            "embedding": embedding_list,
+                            "parser_type": parser_type,
+                            "ast": ast,
+                            "success": embedding_list is not None or ast is not None
                         }
                         patterns.append(pattern)
         
         return patterns
+    
+    def _convert_tree_to_dict(self, node) -> Dict[str, Any]:
+        """Convert a tree-sitter node to a dictionary."""
+        result = {
+            "type": node.type,
+            "start_point": node.start_point,
+            "end_point": node.end_point
+        }
+        
+        if len(node.children) > 0:
+            result["children"] = [self._convert_tree_to_dict(child) for child in node.children]
+        
+        return result
     
     @handle_async_errors(error_types=ProcessingError)
     async def _extract_doc_patterns(self, repo_id: int) -> List[Dict[str, Any]]:
@@ -191,9 +256,10 @@ class ReferenceRepositoryLearning:
         # Get all documentation using transaction scope
         async with transaction_scope() as txn:
             docs_query = """
-                SELECT d.doc_id, d.title, d.content, d.doc_type, f.file_path 
+                SELECT d.doc_id, d.title, d.content, d.doc_type, f.file_path, f.parser_type
                 FROM repo_docs d
                 JOIN repo_doc_relations r ON d.id = r.doc_id
+                JOIN code_files f ON f.file_path = d.file_path AND f.repo_id = r.repo_id
                 WHERE r.repo_id = $1
             """
             docs = await query(docs_query, (repo_id,))
@@ -217,7 +283,7 @@ class ReferenceRepositoryLearning:
                         embedding = self.doc_embedder.embed(combined_text)
                         embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else None
                     except Exception as e:
-                        log(f"Error creating doc embedding: {e}", level="error")
+                        await log(f"Error creating doc embedding: {e}", level="error")
                         embedding_list = None
                     
                     pattern = {
@@ -226,58 +292,11 @@ class ReferenceRepositoryLearning:
                         "count": len(type_docs),
                         "samples": sample_texts,
                         "common_structure": self._analyze_doc_structure(type_docs),
-                        "embedding": embedding_list
+                        "embedding": embedding_list,
+                        "parser_type": ParserType(type_docs[0]["parser_type"]),
+                        "success": embedding_list is not None
                     }
                     patterns.append(pattern)
-        
-        return patterns
-    
-    @handle_async_errors(error_types=ProcessingError)
-    async def _extract_architecture_patterns(self, repo_id: int) -> List[Dict[str, Any]]:
-        """Extract architecture patterns from repository."""
-        patterns = []
-        
-        # Get repository structure
-        structure_query = """
-            SELECT file_path 
-            FROM file_metadata 
-            WHERE repo_id = $repo_id
-            ORDER BY file_path
-        """
-        files = await query(structure_query, {"repo_id": repo_id})
-        
-        # Extract directory structure
-        directories = {}
-        for file in files:
-            path = file["file_path"]
-            parts = path.split('/')
-            current = directories
-            for i, part in enumerate(parts[:-1]):  # Skip filename
-                if part not in current:
-                    current[part] = {}
-                current = current[part]
-        
-        # Identify common architectural patterns
-        if directories:
-            pattern = {
-                "pattern_type": "architecture",
-                "directory_structure": directories,
-                "top_level_dirs": list(directories.keys())
-            }
-            patterns.append(pattern)
-            
-            # Get dependencies between components
-            graph_name = f"code-repo-{repo_id}"
-            try:
-                dependencies = await self.neo4j_tools.get_component_dependencies(graph_name)
-                if dependencies:
-                    pattern = {
-                        "pattern_type": "component_dependencies",
-                        "dependencies": dependencies
-                    }
-                    patterns.append(pattern)
-            except Exception as e:
-                log(f"Error getting component dependencies: {e}", level="error")
         
         return patterns
     
@@ -332,6 +351,65 @@ class ReferenceRepositoryLearning:
             "common_headings": common_headings,
             "avg_heading_count": sum(len(h) for h in headings) / max(1, len(headings))
         }
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def _extract_architecture_patterns(self, repo_id: int) -> List[Dict[str, Any]]:
+        """Extract architecture patterns from repository."""
+        patterns = []
+        
+        # Get repository structure with parser types
+        structure_query = """
+            SELECT file_path, parser_type 
+            FROM file_metadata 
+            WHERE repo_id = $repo_id
+            ORDER BY file_path
+        """
+        files = await query(structure_query, {"repo_id": repo_id})
+        
+        # Extract directory structure
+        directories = {}
+        parser_types = {}
+        for file in files:
+            path = file["file_path"]
+            parts = path.split('/')
+            current = directories
+            for i, part in enumerate(parts[:-1]):  # Skip filename
+                if part not in current:
+                    current[part] = {}
+                    parser_types[part] = ParserType(file["parser_type"])
+                current = current[part]
+        
+        # Identify common architectural patterns
+        if directories:
+            pattern = {
+                "pattern_type": "architecture",
+                "directory_structure": directories,
+                "top_level_dirs": list(directories.keys()),
+                "parser_distribution": {
+                    dir_name: parser_type.value
+                    for dir_name, parser_type in parser_types.items()
+                }
+            }
+            patterns.append(pattern)
+            
+            # Get dependencies between components
+            graph_name = f"code-repo-{repo_id}"
+            try:
+                dependencies = await self.neo4j_tools.get_component_dependencies(graph_name)
+                if dependencies:
+                    pattern = {
+                        "pattern_type": "component_dependencies",
+                        "dependencies": dependencies,
+                        "parser_distribution": {
+                            dep["source"]: parser_types.get(dep["source"].split('/')[0], ParserType.UNKNOWN).value
+                            for dep in dependencies
+                        }
+                    }
+                    patterns.append(pattern)
+            except Exception as e:
+                log(f"Error getting component dependencies: {e}", level="error")
+        
+        return patterns
     
     @handle_async_errors(error_types=DatabaseError)
     async def _store_patterns(
@@ -789,6 +867,17 @@ class ReferenceRepositoryLearning:
             self.code_understanding.cleanup()
             if self.neo4j_tools:
                 await self.neo4j_tools.cleanup()
+            
+            # Clean up tree-sitter parsers
+            self._tree_sitter_parsers.clear()
+            
+            # Clean up pending tasks
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            self._pending_tasks.clear()
+            
         except Exception as e:
             log(f"Error during reference learning cleanup: {e}", level="error")
 

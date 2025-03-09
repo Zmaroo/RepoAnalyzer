@@ -2,27 +2,26 @@
 
 from typing import Dict, Optional, Set, List, Any, Union
 import asyncio
+import time
 from dataclasses import dataclass, field
-from tree_sitter import Language, Parser, Tree, Node
+from tree_sitter import Tree, Node
+from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
 from parsers.types import (
     FileType, ParserType, AICapability, AIContext, AIProcessingResult,
-    InteractionType, ConfidenceLevel, ParserResult
+    InteractionType, ConfidenceLevel, ParserResult, PatternCategory, PatternPurpose
 )
-from parsers.models import (
-    FileClassification, BaseNodeDict,
-    TreeSitterNodeDict
-)
+from parsers.models import FileClassification, BaseNodeDict
 from parsers.parser_interfaces import BaseParserInterface, AIParserInterface
-from parsers.language_mapping import (
-    TREE_SITTER_LANGUAGES,
-    get_parser_type,
-    get_file_type,
-    get_ai_capabilities
-)
 from utils.logger import log
-from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorAudit, ErrorSeverity
 from utils.shutdown import register_shutdown_handler
 from utils.cache import UnifiedCache, cache_coordinator
+from utils.async_runner import submit_async_task, cleanup_tasks
+from utils.health_monitor import ComponentStatus, global_health_monitor
+from utils.request_cache import request_cache_context, get_current_request_cache
+from utils.cache_analytics import get_cache_analytics
+from db.transaction import transaction_scope
+from utils.operation_monitor import monitor_operation
 
 @dataclass
 class TreeSitterParser(BaseParserInterface, AIParserInterface):
@@ -48,284 +47,206 @@ class TreeSitterParser(BaseParserInterface, AIParserInterface):
         self._language = None
         self._cache = None
         self._lock = asyncio.Lock()
+        self._metrics = {
+            "total_parses": 0,
+            "successful_parses": 0,
+            "failed_parses": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "parse_times": []
+        }
+        self._warmup_complete = False
     
-    async def ensure_initialized(self):
-        """Ensure the parser is initialized."""
-        if not self._initialized:
-            raise ProcessingError(f"Tree-sitter parser not initialized for {self.language_id}. Use create() to initialize.")
-        return True
-    
-    @classmethod
-    async def create(cls, language_id: str) -> 'TreeSitterParser':
-        """[4.1.1] Create and initialize a tree-sitter parser instance."""
-        instance = cls(language_id)
+    async def initialize(self) -> bool:
+        """Initialize the tree-sitter parser."""
+        if self._initialized:
+            return True
+            
         try:
-            async with AsyncErrorBoundary(f"tree_sitter_parser_initialization_{language_id}"):
-                # Initialize parser
-                instance._parser = Parser()
-                instance._language = await Language.load(language_id)
-                instance._parser.set_language(instance._language)
-                
-                # Initialize cache
-                instance._cache = UnifiedCache(f"tree_sitter_{language_id}")
-                await cache_coordinator.register_cache(instance._cache)
-                
-                # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
-                
-                instance._initialized = True
-                log(f"Tree-sitter parser initialized for {language_id}", level="info")
-                return instance
+            # Update status
+            await global_health_monitor.update_component_status(
+                f"tree_sitter_parser_{self.language_id}",
+                ComponentStatus.INITIALIZING,
+                details={"stage": "starting"}
+            )
+            
+            # Check if language is supported
+            if self.language_id not in SupportedLanguage.__args__:
+                raise ValueError(f"Language {self.language_id} not supported by tree-sitter-language-pack")
+            
+            # Initialize tree-sitter components
+            self._parser = get_parser(self.language_id)
+            self._language = get_language(self.language_id)
+            
+            if not self._parser or not self._language:
+                raise ValueError(f"Failed to initialize parser/language for {self.language_id}")
+            
+            # Initialize cache
+            self._cache = UnifiedCache(f"tree_sitter_parser_{self.language_id}")
+            await cache_coordinator.register_cache(self._cache)
+            
+            # Initialize cache analytics
+            analytics = await get_cache_analytics()
+            analytics.register_warmup_function(
+                f"tree_sitter_parser_{self.language_id}",
+                self._warmup_cache
+            )
+            
+            await global_health_monitor.update_component_status(
+                f"tree_sitter_parser_{self.language_id}",
+                ComponentStatus.INITIALIZING,
+                details={"stage": "language_loaded"}
+            )
+            
+            # Register shutdown handler
+            register_shutdown_handler(self.cleanup)
+            
+            self._initialized = True
+            await log(f"Tree-sitter parser initialized for {self.language_id}", level="info")
+            
+            # Update final status
+            await global_health_monitor.update_component_status(
+                f"tree_sitter_parser_{self.language_id}",
+                ComponentStatus.HEALTHY,
+                details={
+                    "stage": "complete",
+                    "language": self.language_id
+                }
+            )
+            
+            return True
         except Exception as e:
-            log(f"Error initializing tree-sitter parser for {language_id}: {e}", level="error")
-            # Cleanup on initialization failure
-            await instance.cleanup()
-            raise ProcessingError(f"Failed to initialize tree-sitter parser for {language_id}: {e}")
+            await log(f"Error initializing tree-sitter parser for {self.language_id}: {e}", level="error")
+            await global_health_monitor.update_component_status(
+                f"tree_sitter_parser_{self.language_id}",
+                ComponentStatus.UNHEALTHY,
+                error=True,
+                details={"initialization_error": str(e)}
+            )
+            return False
     
-    async def parse(self, source_code: str) -> Optional[ParserResult]:
-        """[4.1.2] Parse source code using tree-sitter."""
-        if not self._initialized:
-            await self.ensure_initialized()
-            
-        async with AsyncErrorBoundary(f"tree_sitter_parse_{self.language_id}"):
+    async def _warmup_cache(self, keys: List[str]) -> Dict[str, Any]:
+        """Warmup function for tree-sitter parser cache."""
+        results = {}
+        for key in keys:
             try:
-                # Check cache first
-                cache_key = f"ast:{hash(source_code)}"
-                cached_result = await self._cache.get(cache_key)
-                if cached_result:
-                    return ParserResult(**cached_result)
-                
-                # Parse source code
-                tree = self._parser.parse(bytes(source_code, "utf8"))
-                if not tree:
-                    return None
-                
-                # Convert tree to dictionary format
-                ast = await self._tree_to_dict(tree)
-                
-                # Extract features
-                features = await self._extract_features(tree.root_node, source_code)
-                
-                # Create result
-                result = ParserResult(
-                    success=True,
-                    ast=ast,
-                    features=features.features,
-                    documentation=features.documentation.__dict__,
-                    complexity=features.metrics.__dict__,
-                    statistics=self.stats.__dict__,
-                    errors=[]
-                )
-                
-                # Cache result
-                await self._cache.set(cache_key, result.__dict__)
-                
-                return result
+                # Parse some sample code for this key
+                sample_code = "// Sample code for warmup"
+                tree = self._parser.parse(bytes(sample_code, "utf8"))
+                if tree:
+                    results[key] = {"root": tree.root_node}
             except Exception as e:
-                log(f"Error parsing {self.language_id} code: {e}", level="error")
-                return None
+                await log(f"Error warming up cache for {key}: {e}", level="warning")
+        return results
     
-    async def process_with_ai(
-        self,
-        source_code: str,
-        context: AIContext
-    ) -> AIProcessingResult:
-        """[4.1.3] Process source code with AI assistance."""
+    @handle_async_errors(error_types=(ProcessingError,))
+    async def parse(self, source_code: str) -> Optional[ParserResult]:
+        """Parse source code using tree-sitter."""
         if not self._initialized:
-            await self.ensure_initialized()
+            await self.initialize()
             
-        async with AsyncErrorBoundary(f"tree_sitter_ai_processing_{self.language_id}"):
+        async with AsyncErrorBoundary(
+            operation_name=f"tree_sitter_parse_{self.language_id}",
+            error_types=(ProcessingError,),
+            severity=ErrorSeverity.ERROR
+        ):
             try:
-                results = AIProcessingResult(success=True)
-                
-                # Parse source code first
-                parse_result = await self.parse(source_code)
-                if not parse_result or not parse_result.success:
-                    return AIProcessingResult(
-                        success=False,
-                        response="Failed to parse source code"
+                # Get request context for metrics
+                request_cache = get_current_request_cache()
+                if request_cache:
+                    await request_cache.set(
+                        "parse_count",
+                        (await request_cache.get("parse_count", 0)) + 1
                     )
                 
-                # Process with understanding capability
-                if AICapability.CODE_UNDERSTANDING in self.capabilities:
-                    understanding = await self._process_with_understanding(parse_result, context)
-                    results.context_info.update(understanding)
-                
-                # Process with generation capability
-                if AICapability.CODE_GENERATION in self.capabilities:
-                    generation = await self._process_with_generation(parse_result, context)
-                    results.suggestions.extend(generation)
-                
-                # Process with modification capability
-                if AICapability.CODE_MODIFICATION in self.capabilities:
-                    modification = await self._process_with_modification(parse_result, context)
-                    results.ai_insights.update(modification)
-                
-                # Process with review capability
-                if AICapability.CODE_REVIEW in self.capabilities:
-                    review = await self._process_with_review(parse_result, context)
-                    results.ai_insights.update(review)
-                
-                # Process with learning capability
-                if AICapability.LEARNING in self.capabilities:
-                    learning = await self._process_with_learning(parse_result, context)
-                    results.learned_patterns.extend(learning)
-                
-                return results
-            except Exception as e:
-                log(f"Error in tree-sitter AI processing for {self.language_id}: {e}", level="error")
-                return AIProcessingResult(
-                    success=False,
-                    response=f"Error processing with AI: {str(e)}"
+                # Use monitor_operation context manager
+                with monitor_operation("parse", f"tree_sitter_{self.language_id}"):
+                    tree = self._parser.parse(bytes(source_code, "utf8"))
+                    
+                # Create result with proper error handling
+                result = ParserResult(
+                    success=True,
+                    ast={"root": tree.root_node},
+                    source_code=source_code
                 )
-    
-    async def _process_with_understanding(
-        self,
-        parse_result: ParserResult,
-        context: AIContext
-    ) -> Dict[str, Any]:
-        """[4.1.4] Process with code understanding capability."""
-        understanding = {}
-        
-        # Analyze AST structure
-        if parse_result.ast:
-            understanding["structure"] = await self._analyze_ast_structure(parse_result.ast)
-        
-        # Analyze semantic information
-        if parse_result.features:
-            understanding["semantics"] = await self._analyze_semantics(parse_result.features)
-        
-        # Add documentation insights
-        if parse_result.documentation:
-            understanding["documentation"] = parse_result.documentation
-        
-        return understanding
-    
-    async def _process_with_generation(
-        self,
-        parse_result: ParserResult,
-        context: AIContext
-    ) -> List[str]:
-        """[4.1.5] Process with code generation capability."""
-        suggestions = []
-        
-        # Generate completion suggestions
-        if parse_result.ast:
-            completions = await self._generate_completions(parse_result.ast, context)
-            suggestions.extend(completions)
-        
-        # Generate improvement suggestions
-        if parse_result.features:
-            improvements = await self._generate_improvements(parse_result.features, context)
-            suggestions.extend(improvements)
-        
-        return suggestions
-    
-    async def _process_with_modification(
-        self,
-        parse_result: ParserResult,
-        context: AIContext
-    ) -> Dict[str, Any]:
-        """[4.1.6] Process with code modification capability."""
-        insights = {}
-        
-        # Analyze modification impact
-        if parse_result.ast:
-            insights["impact"] = await self._analyze_modification_impact(parse_result.ast, context)
-        
-        # Generate modification suggestions
-        if parse_result.features:
-            insights["suggestions"] = await self._generate_modification_suggestions(
-                parse_result.features,
-                context
-            )
-        
-        return insights
-    
-    async def _process_with_review(
-        self,
-        parse_result: ParserResult,
-        context: AIContext
-    ) -> Dict[str, Any]:
-        """[4.1.7] Process with code review capability."""
-        return {
-            "quality": await self._assess_code_quality(parse_result),
-            "issues": await self._identify_code_issues(parse_result),
-            "suggestions": await self._generate_review_suggestions(parse_result, context)
-        }
-    
-    async def _process_with_learning(
-        self,
-        parse_result: ParserResult,
-        context: AIContext
-    ) -> List[Dict[str, Any]]:
-        """[4.1.8] Process with learning capability."""
-        patterns = []
-        
-        # Learn from code structure
-        if parse_result.ast:
-            structure_patterns = await self._learn_structure_patterns(parse_result.ast)
-            patterns.extend(structure_patterns)
-        
-        # Learn from features
-        if parse_result.features:
-            feature_patterns = await self._learn_feature_patterns(parse_result.features)
-            patterns.extend(feature_patterns)
-        
-        return patterns
-    
-    async def _tree_to_dict(self, tree: Tree) -> Dict[str, Any]:
-        """[4.1.9] Convert tree-sitter tree to dictionary format."""
-        return {
-            "root": await self._node_to_dict(tree.root_node),
-            "metadata": {
-                "language": self.language_id,
-                "parser_type": self.parser_type.value
-            }
-        }
-    
-    async def _node_to_dict(self, node: Node) -> TreeSitterNodeDict:
-        """[4.1.10] Convert tree-sitter node to dictionary format."""
-        return {
-            "type": node.type,
-            "start_point": list(node.start_point),
-            "end_point": list(node.end_point),
-            "children": [await self._node_to_dict(child) for child in node.children],
-            "metadata": {
-                "is_named": node.is_named,
-                "has_error": node.has_error,
-                "grammar_name": node.grammar_name
-            }
-        }
+                
+                return result
+                
+            except Exception as e:
+                await ErrorAudit.record_error(
+                    e,
+                    f"tree_sitter_parse_{self.language_id}",
+                    ProcessingError,
+                    context={"source_size": len(source_code)}
+                )
+                return None
     
     async def cleanup(self):
-        """[4.1.11] Clean up parser resources."""
+        """Clean up tree-sitter parser resources."""
         try:
             if not self._initialized:
                 return
                 
-            # Clear parser and language
-            self._parser = None
+            # Update status
+            await global_health_monitor.update_component_status(
+                f"tree_sitter_parser_{self.language_id}",
+                ComponentStatus.SHUTTING_DOWN,
+                details={"stage": "starting"}
+            )
+            
+            # Clean up parser
+            if self._parser:
+                self._parser.reset()
+                self._parser = None
+            
+            # Clean up language
             self._language = None
             
             # Clean up cache
             if self._cache:
-                await cache_coordinator.unregister_cache(self._cache)
+                await cache_coordinator.unregister_cache(f"tree_sitter_parser_{self.language_id}")
                 self._cache = None
             
-            # Cancel all pending tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
+            # Save metrics to database
+            async with transaction_scope() as txn:
+                await txn.execute("""
+                    INSERT INTO parser_metrics (
+                        timestamp, language_id, total_parses,
+                        successful_parses, failed_parses,
+                        cache_hits, cache_misses, avg_parse_time
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """, (
+                    time.time(),
+                    self.language_id,
+                    self._metrics["total_parses"],
+                    self._metrics["successful_parses"],
+                    self._metrics["failed_parses"],
+                    self._metrics["cache_hits"],
+                    self._metrics["cache_misses"],
+                    sum(self._metrics["parse_times"]) / len(self._metrics["parse_times"]) if self._metrics["parse_times"] else 0
+                ))
+            
+            # Let async_runner handle remaining tasks
+            cleanup_tasks()
+            self._pending_tasks.clear()
             
             self._initialized = False
-            log(f"Tree-sitter parser cleaned up for {self.language_id}", level="info")
+            await log(f"Tree-sitter parser cleaned up for {self.language_id}", level="info")
+            
+            # Update final status
+            await global_health_monitor.update_component_status(
+                f"tree_sitter_parser_{self.language_id}",
+                ComponentStatus.SHUTDOWN,
+                details={"cleanup": "successful"}
+            )
         except Exception as e:
-            log(f"Error cleaning up tree-sitter parser for {self.language_id}: {e}", level="error")
-            raise ProcessingError(f"Failed to cleanup tree-sitter parser for {self.language_id}: {e}")
+            await log(f"Error cleaning up tree-sitter parser for {self.language_id}: {e}", level="error")
+            await global_health_monitor.update_component_status(
+                f"tree_sitter_parser_{self.language_id}",
+                ComponentStatus.UNHEALTHY,
+                error=True,
+                details={"cleanup_error": str(e)}
+            )
 
 # Global instance cache
 _parser_instances: Dict[str, TreeSitterParser] = {}
@@ -333,11 +254,9 @@ _parser_instances: Dict[str, TreeSitterParser] = {}
 async def get_tree_sitter_parser(language_id: str) -> Optional[TreeSitterParser]:
     """[4.2] Get a tree-sitter parser instance for a language."""
     if language_id not in _parser_instances:
-        try:
-            parser = await TreeSitterParser.create(language_id)
+        parser = TreeSitterParser(language_id)
+        if await parser.initialize():
             _parser_instances[language_id] = parser
-        except Exception as e:
-            log(f"Error creating tree-sitter parser for {language_id}: {e}", level="error")
+        else:
             return None
-    
     return _parser_instances[language_id] 

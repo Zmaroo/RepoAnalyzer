@@ -1,41 +1,97 @@
-"""Query patterns for Dart files."""
+"""Dart-specific patterns with enhanced type system and relationships.
 
+This module provides Dart-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
 )
+from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
+# Pattern relationships for Dart
+DART_PATTERN_RELATIONSHIPS = {
+    "class_definition": [
+        PatternRelationship(
+            source_pattern="class_definition",
+            target_pattern="method_definition",
+            relationship_type=PatternRelationType.IMPLEMENTS,
+            confidence=0.95,
+            metadata={"methods": True}
+        ),
+        PatternRelationship(
+            source_pattern="class_definition",
+            target_pattern="comment",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"best_practice": True}
+        )
+    ],
+    "method_definition": [
+        PatternRelationship(
+            source_pattern="method_definition",
+            target_pattern="type_annotation",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.9,
+            metadata={"types": True}
+        )
+    ],
+    "widget": [
+        PatternRelationship(
+            source_pattern="widget",
+            target_pattern="build_method",
+            relationship_type=PatternRelationType.REQUIRES,
+            confidence=0.95,
+            metadata={"flutter": True}
+        )
+    ]
+}
+
+# Performance metrics tracking for Dart patterns
+DART_PATTERN_METRICS = {
+    "class_definition": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "method_definition": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "widget": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
+
+# Enhanced Dart patterns with proper typing and relationships
 DART_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
-                pattern="""
-                [
-                    (function_declaration
-                        metadata: (metadata)* @syntax.function.metadata
-                        return_type: (_)? @syntax.function.return_type
-                        name: (identifier) @syntax.function.name
-                        parameters: (formal_parameter_list) @syntax.function.params
-                        body: [(block) (arrow_body)]? @syntax.function.body) @syntax.function.def,
-                    
-                    (method_declaration
-                        metadata: (metadata)* @syntax.function.method.metadata
-                        modifiers: [(static) (abstract) (external)]* @syntax.function.method.modifier
-                        return_type: (_)? @syntax.function.method.return_type
-                        name: (identifier) @syntax.function.method.name
-                        parameters: (formal_parameter_list) @syntax.function.method.params
-                        body: [(block) (arrow_body)]? @syntax.function.method.body) @syntax.function.method
-                ]
-                """,
-                extract=lambda node: {
-                    "name": (node["captures"].get("syntax.function.name", {}).get("text", "") or 
-                            node["captures"].get("syntax.function.method.name", {}).get("text", "")),
-                    "type": "method" if "syntax.function.method" in node["captures"] else "function"
-                }
-            ),
-
-            "class": QueryPattern(
+            "class_definition": ResilientPattern(
+                name="class_definition",
                 pattern="""
                 [
                     (class_declaration
@@ -56,18 +112,53 @@ DART_PATTERNS = {
                         body: (class_body) @syntax.mixin.body) @syntax.mixin.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": (node["captures"].get("syntax.class.name", {}).get("text", "") or
-                            node["captures"].get("syntax.mixin.name", {}).get("text", "")),
-                    "type": "mixin" if "syntax.mixin.def" in node["captures"] else "class"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="dart",
+                confidence=0.95,
+                metadata={
+                    "relationships": DART_PATTERN_RELATIONSHIPS["class_definition"],
+                    "metrics": DART_PATTERN_METRICS["class_definition"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
+            ),
+            
+            "method_definition": ResilientPattern(
+                name="method_definition",
+                pattern="""
+                [
+                    (method_declaration
+                        metadata: (metadata)* @syntax.method.metadata
+                        modifiers: [(static) (abstract) (external)]* @syntax.method.modifier
+                        return_type: (_)? @syntax.method.return_type
+                        name: (identifier) @syntax.method.name
+                        parameters: (formal_parameter_list) @syntax.method.params
+                        body: [(block) (arrow_body)]? @syntax.method.body) @syntax.method.def
+                ]
+                """,
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="dart",
+                confidence=0.95,
+                metadata={
+                    "relationships": DART_PATTERN_RELATIONSHIPS["method_definition"],
+                    "metrics": DART_PATTERN_METRICS["method_definition"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
     },
-
+    
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "async": QueryPattern(
+            "async": AdaptivePattern(
+                name="async",
                 pattern="""
                 [
                     (function_declaration
@@ -85,14 +176,22 @@ DART_PATTERNS = {
                         expression: (_)? @semantics.async.yield.expr) @semantics.async.yield
                 ]
                 """,
-                extract=lambda node: {
-                    "type": ("async" if "semantics.async.marker" in node["captures"] or
-                            "semantics.async.method.marker" in node["captures"] else
-                            "await" if "semantics.async.await" in node["captures"] else "yield")
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="dart",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
-
-            "widget": QueryPattern(
+            
+            "widget": ResilientPattern(
+                name="widget",
                 pattern="""
                 [
                     (class_declaration
@@ -109,17 +208,26 @@ DART_PATTERNS = {
                                 expression: (_) @semantics.widget.build.return))) @semantics.widget.build_method
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.widget.name", {}).get("text", ""),
-                    "type": "widget"
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="dart",
+                confidence=0.95,
+                metadata={
+                    "relationships": DART_PATTERN_RELATIONSHIPS["widget"],
+                    "metrics": DART_PATTERN_METRICS["widget"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
     },
-
+    
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": QueryPattern(
+            "comments": AdaptivePattern(
+                name="comments",
                 pattern="""
                 [
                     (comment) @documentation.comment,
@@ -129,161 +237,85 @@ DART_PATTERNS = {
                         reference: (identifier) @documentation.doc.reference) @documentation.doc.ref
                 ]
                 """,
-                extract=lambda node: {
-                    "text": (node["captures"].get("documentation.comment", {}).get("text", "") or
-                            node["captures"].get("documentation.doc.content", {}).get("text", "")),
-                    "type": ("doc" if "documentation.doc" in node["captures"] else
-                            "ref" if "documentation.doc.ref" in node["captures"] else "comment")
-                }
-            )
-        }
-    },
-    
-    PatternCategory.LEARNING: {
-        PatternPurpose.BEST_PRACTICES: {
-            "flutter_widgets": QueryPattern(
-                pattern="""
-                [
-                    (class_declaration
-                        metadata: (metadata)? @widget.metadata
-                        name: (identifier) @widget.name
-                        superclass: (superclass
-                            type: [(type_identifier) (qualified_identifier)]+ @widget.superclass.type) @widget.superclass) @widget.class,
-                        
-                    (method_declaration
-                        name: (identifier) @widget.build.name
-                        (#match? @widget.build.name "^build$")
-                        parameters: (formal_parameter_list) @widget.build.params
-                        body: (block) @widget.build.body) @widget.build.method
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "flutter_widget_pattern",
-                    "widget_name": node["captures"].get("widget.name", {}).get("text", ""),
-                    "is_stateless": "StatelessWidget" in (node["captures"].get("widget.superclass.type", {}).get("text", "") or ""),
-                    "is_stateful": "StatefulWidget" in (node["captures"].get("widget.superclass.type", {}).get("text", "") or ""),
-                    "has_build_method": "widget.build.method" in node["captures"],
-                    "widget_type": ("stateless" if "StatelessWidget" in (node["captures"].get("widget.superclass.type", {}).get("text", "") or "") else
-                                  "stateful" if "StatefulWidget" in (node["captures"].get("widget.superclass.type", {}).get("text", "") or "") else
-                                  "other")
-                }
-            )
-        },
-        PatternPurpose.ASYNC_PATTERNS: {
-            "async_patterns": QueryPattern(
-                pattern="""
-                [
-                    (method_declaration
-                        body: (block
-                            (async_marker) @async.marker.method
-                            (#match? @async.marker.method "^(async|async\\*|sync\\*)$")) @async.method.body) @async.method,
-                        
-                    (function_declaration
-                        body: (block
-                            (async_marker) @async.marker.function
-                            (#match? @async.marker.function "^(async|async\\*|sync\\*)$")) @async.function.body) @async.function,
-                        
-                    (await_expression
-                        expression: (_) @async.await.expr) @async.await,
-                        
-                    (return_statement
-                        (await_expression) @async.return.await) @async.return,
-                        
-                    (method_declaration
-                        return_type: (type_identifier) @async.return.type
-                        (#match? @async.return.type "^(Future|Stream)$")
-                        name: (identifier) @async.return.method) @async.future.method
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "async_pattern",
-                    "is_async_method": "async.marker.method" in node["captures"],
-                    "is_async_function": "async.marker.function" in node["captures"],
-                    "uses_await": "async.await" in node["captures"],
-                    "returns_future": "async.return.type" in node["captures"] and "Future" in node["captures"].get("async.return.type", {}).get("text", ""),
-                    "returns_stream": "async.return.type" in node["captures"] and "Stream" in node["captures"].get("async.return.type", {}).get("text", ""),
-                    "async_style": (node["captures"].get("async.marker.method", {}).get("text", "") or
-                                  node["captures"].get("async.marker.function", {}).get("text", "") or "").strip()
-                }
-            )
-        },
-        PatternPurpose.CODE_ORGANIZATION: {
-            "null_safety": QueryPattern(
-                pattern="""
-                [
-                    (nullable_type
-                        type: (_) @nullable.type) @nullable,
-                        
-                    (formal_parameter
-                        type: (_) @param.type
-                        name: (identifier) @param.name
-                        default_value: (_)? @param.default) @param.def,
-                        
-                    (null_check
-                        expression: (_) @null.check.expr) @null.check,
-                        
-                    (null_aware
-                        expression: (_) @null.aware.expr) @null.aware,
-                        
-                    (binary_expression
-                        left: (_) @null.assert.left
-                        operator: (binary_operator) @null.assert.op
-                        (#match? @null.assert.op "\\!\\=")
-                        right: (null_literal) @null.assert.right) @null.assert
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "null_safety_pattern",
-                    "uses_nullable_type": "nullable" in node["captures"],
-                    "uses_null_check": "null.check" in node["captures"],
-                    "uses_null_aware": "null.aware" in node["captures"],
-                    "checks_for_null": "null.assert" in node["captures"],
-                    "nullable_type": node["captures"].get("nullable.type", {}).get("text", ""),
-                    "parameter_has_default": "param.def" in node["captures"] and "param.default" in node["captures"]
-                }
-            ),
-            "naming_conventions": QueryPattern(
-                pattern="""
-                [
-                    (class_declaration
-                        name: (identifier) @naming.class.name) @naming.class,
-                        
-                    (method_declaration
-                        name: (identifier) @naming.method.name) @naming.method,
-                        
-                    (variable_declaration
-                        (initialized_variable_declaration
-                            name: (identifier) @naming.variable.name)) @naming.variable,
-                            
-                    (constant_declaration
-                        (initialized_identifier_list
-                            (identifier) @naming.constant.name)) @naming.constant
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "naming_convention_pattern",
-                    "entity_type": ("class" if "naming.class.name" in node["captures"] else
-                                  "method" if "naming.method.name" in node["captures"] else
-                                  "constant" if "naming.constant.name" in node["captures"] else
-                                  "variable"),
-                    "name": (node["captures"].get("naming.class.name", {}).get("text", "") or
-                           node["captures"].get("naming.method.name", {}).get("text", "") or
-                           node["captures"].get("naming.constant.name", {}).get("text", "") or
-                           node["captures"].get("naming.variable.name", {}).get("text", "")),
-                    "is_pascal_case": (node["captures"].get("naming.class.name", {}).get("text", "") or "").strip() and
-                                    (node["captures"].get("naming.class.name", {}).get("text", "") or "")[0:1].isupper() and
-                                    not "_" in (node["captures"].get("naming.class.name", {}).get("text", "") or ""),
-                    "is_camel_case": (node["captures"].get("naming.method.name", {}).get("text", "") or 
-                                    node["captures"].get("naming.variable.name", {}).get("text", "") or "").strip() and
-                                   (node["captures"].get("naming.method.name", {}).get("text", "") or 
-                                    node["captures"].get("naming.variable.name", {}).get("text", "") or "")[0:1].islower() and
-                                   not "_" in (node["captures"].get("naming.method.name", {}).get("text", "") or 
-                                             node["captures"].get("naming.variable.name", {}).get("text", "") or ""),
-                    "is_screaming_snake_case": all(c.isupper() or not c.isalpha() for c in 
-                                                 (node["captures"].get("naming.constant.name", {}).get("text", "") or "")) and
-                                             "_" in (node["captures"].get("naming.constant.name", {}).get("text", "") or "")
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="dart",
+                confidence=0.9,
+                metadata={
+                    "relationships": [
+                        PatternRelationship(
+                            source_pattern="comments",
+                            target_pattern="class_definition",
+                            relationship_type=PatternRelationType.COMPLEMENTS,
+                            confidence=0.8
+                        )
+                    ],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
     }
-} 
+}
+
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for Dart files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "dart", "version": "2.19+"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(DART_PATTERNS.keys())
+    )
+
+def get_dart_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return DART_PATTERN_RELATIONSHIPS.get(pattern_name, [])
+
+def update_dart_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in DART_PATTERN_METRICS:
+        pattern_metrics = DART_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
+
+def get_dart_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_dart_pattern_relationships(pattern_name),
+        performance=DART_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "dart"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'DART_PATTERNS',
+    'DART_PATTERN_RELATIONSHIPS',
+    'DART_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_dart_pattern_relationships',
+    'update_dart_pattern_metrics',
+    'get_dart_pattern_match_result'
+] 

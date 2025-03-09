@@ -1,15 +1,86 @@
-"""Query patterns for Elixir files."""
+"""Elixir-specific patterns with enhanced type system and relationships.
 
+This module provides Elixir-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
 )
+from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
+# Pattern relationships for Elixir
+ELIXIR_PATTERN_RELATIONSHIPS = {
+    "function": [
+        PatternRelationship(
+            source_pattern="function",
+            target_pattern="module",
+            relationship_type=PatternRelationType.BELONGS_TO,
+            confidence=0.95,
+            metadata={"module_function": True}
+        ),
+        PatternRelationship(
+            source_pattern="function",
+            target_pattern="comment",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"documentation": True}
+        )
+    ],
+    "module": [
+        PatternRelationship(
+            source_pattern="module",
+            target_pattern="function",
+            relationship_type=PatternRelationType.CONTAINS,
+            confidence=0.95,
+            metadata={"functions": True}
+        ),
+        PatternRelationship(
+            source_pattern="module",
+            target_pattern="behaviour",
+            relationship_type=PatternRelationType.IMPLEMENTS,
+            confidence=0.9,
+            metadata={"behaviours": True}
+        )
+    ]
+}
+
+# Performance metrics tracking for Elixir patterns
+ELIXIR_PATTERN_METRICS = {
+    "function": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "module": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
+
+# Enhanced Elixir patterns with proper typing and relationships
 ELIXIR_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
+            "function": ResilientPattern(
+                name="function",
                 pattern="""
                 [
                     (stab_clause
@@ -29,19 +100,43 @@ ELIXIR_PATTERNS = {
                             body: (do_block)? @syntax.function.body)) @syntax.macro.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
-                    "type": "function"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
+                confidence=0.95,
+                metadata={
+                    "relationships": ELIXIR_PATTERN_RELATIONSHIPS["function"],
+                    "metrics": ELIXIR_PATTERN_METRICS["function"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
-            "class": QueryPattern(
+            
+            "module": ResilientPattern(
+                name="module",
                 pattern="""
-                (do_block
-                    (stab_clause)* @block.clauses) @class
+                [
+                    (call
+                        target: (identifier) @semantics.module.keyword
+                        (#match? @semantics.module.keyword "^(defmodule)$")
+                        arguments: (arguments
+                            (alias) @semantics.module.name
+                            (do_block)? @semantics.module.body)) @semantics.module.def
+                ]
                 """,
-                extract=lambda node: {
-                    "type": "class",
-                    "content": node["node"].text.decode('utf8')
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
+                confidence=0.95,
+                metadata={
+                    "relationships": ELIXIR_PATTERN_RELATIONSHIPS["module"],
+                    "metrics": ELIXIR_PATTERN_METRICS["module"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -64,15 +159,24 @@ ELIXIR_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": QueryPattern(
+            "variable": AdaptivePattern(
+                name="variable",
                 pattern="""
                 (string
                     quoted_content: (_)? @string.content
                     interpolation: (_)* @string.interpolation) @variable
                 """,
-                extract=lambda node: {
-                    "type": "variable",
-                    "content": node["node"].text.decode('utf8')
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
             "module": QueryPattern(
@@ -96,14 +200,31 @@ ELIXIR_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": QueryPattern(
+            "comments": AdaptivePattern(
+                name="comments",
                 pattern="""
                 [
                     (comment) @documentation.comment
                 ]
                 """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", "")
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
+                confidence=0.9,
+                metadata={
+                    "relationships": [
+                        PatternRelationship(
+                            source_pattern="comments",
+                            target_pattern="function",
+                            relationship_type=PatternRelationType.COMPLEMENTS,
+                            confidence=0.8
+                        )
+                    ],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -267,4 +388,66 @@ ELIXIR_PATTERNS = {
             )
         }
     }
-} 
+}
+
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for Elixir files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "elixir"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(ELIXIR_PATTERNS.keys())
+    )
+
+def get_elixir_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return ELIXIR_PATTERN_RELATIONSHIPS.get(pattern_name, [])
+
+def update_elixir_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in ELIXIR_PATTERN_METRICS:
+        pattern_metrics = ELIXIR_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
+
+def get_elixir_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_elixir_pattern_relationships(pattern_name),
+        performance=ELIXIR_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "elixir"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'ELIXIR_PATTERNS',
+    'ELIXIR_PATTERN_RELATIONSHIPS',
+    'ELIXIR_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_elixir_pattern_relationships',
+    'update_elixir_pattern_metrics',
+    'get_elixir_pattern_match_result'
+]
+
+# Module identification
+LANGUAGE = "elixir" 

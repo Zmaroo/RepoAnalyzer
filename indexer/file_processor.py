@@ -27,17 +27,18 @@ from typing import (
     Optional, Dict, List, Set, Tuple, Any,
     TypeVar, Union, Callable, Awaitable
 )
-from tree_sitter_language_pack import SupportedLanguage
-from indexer.file_utils import classify_file, get_relative_path, is_processable_file
+from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
+from indexer.file_utils import get_relative_path, is_processable_file
 from parsers.types import (
     FileType, ParserType, ExtractedFeatures,
     AIContext, AIProcessingResult, PatternCategory,
     PatternPurpose
 )
-from parsers.language_support import language_registry
-from parsers.unified_parser import unified_parser
-from parsers.pattern_processor import pattern_processor
-from parsers.language_mapping import get_suggested_alternatives
+from parsers.unified_parser import get_unified_parser
+from parsers.pattern_processor import get_pattern_processor
+from parsers.language_mapping import normalize_language_name
+from parsers.file_classification import classify_file
+from parsers.models import FileClassification
 from db.upsert_ops import UpsertCoordinator
 from db.transaction import transaction_scope
 from utils.logger import log
@@ -48,15 +49,14 @@ from utils.error_handling import (
     DatabaseError,
     ErrorSeverity
 )
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.request_cache import cached_in_request
+from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_operation
 import aiofiles
 import asyncio
 from indexer.common import async_read_file
 from embedding.embedding_models import code_embedder, doc_embedder, arch_embedder
-from utils.request_cache import cached_in_request
-from parsers.file_classification import classify_file
-from parsers.models import FileClassification
 from utils.shutdown import register_shutdown_handler
-from utils.async_runner import submit_async_task
 
 # Type variables for generic functions
 T = TypeVar('T')
@@ -87,6 +87,7 @@ class FileProcessor:
         """Private constructor - use create() instead."""
         self._initialized: bool = False
         self._pending_tasks: Set[asyncio.Task] = set()
+        self._cache: Optional[UnifiedCache] = None
         self._pattern_cache: Dict[str, Any] = {}
         self._processing_stats: Dict[str, int] = {
             "total_files": 0,
@@ -99,9 +100,10 @@ class FileProcessor:
         """[2.1.1] Initialize processor resources.
         
         Flow:
-        1. Initialize embedders
-        2. Setup caches
-        3. Register cleanup
+        1. Initialize cache
+        2. Initialize embedders
+        3. Register with health monitor
+        4. Register cleanup
         
         Returns:
             bool: True if initialization successful
@@ -115,10 +117,20 @@ class FileProcessor:
                     "file processor initialization",
                     severity=ErrorSeverity.CRITICAL
                 ):
+                    # Initialize cache
+                    self._cache = UnifiedCache("file_processor")
+                    await cache_coordinator.register_cache(self._cache)
+                    
                     # Initialize embedders
                     await code_embedder.initialize()
                     await doc_embedder.initialize()
                     await arch_embedder.initialize()
+                    
+                    # Register with health monitor
+                    global_health_monitor.register_component(
+                        "file_processor",
+                        health_check=self._check_health
+                    )
                     
                     # Register cleanup
                     register_shutdown_handler(self.cleanup)
@@ -131,6 +143,19 @@ class FileProcessor:
                 raise ProcessingError(f"Failed to initialize file processor: {e}")
         return True
 
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for file processor."""
+        return {
+            "status": ComponentStatus.HEALTHY,
+            "details": {
+                "initialized": self._initialized,
+                "cache_available": self._cache is not None,
+                "stats": self._processing_stats.copy()
+            }
+        }
+
+    @handle_async_errors
+    @cached_in_request(lambda self, file_path, content, language, reference_patterns: f"process:{file_path}")
     async def process_file(
         self,
         file_path: str,
@@ -141,10 +166,11 @@ class FileProcessor:
         """[2.1.2] Process file with pattern recognition and AI analysis.
         
         Flow:
-        1. Generate embeddings
-        2. Extract features
-        3. Match patterns
-        4. Generate insights
+        1. Check cache first
+        2. Generate embeddings with pattern awareness
+        3. Extract features
+        4. Match patterns
+        5. Generate AI insights
         
         Args:
             file_path: Path to the file
@@ -168,42 +194,56 @@ class FileProcessor:
                 f"processing file {file_path}",
                 severity=ErrorSeverity.ERROR
             ):
-                # Generate embeddings with pattern awareness
-                code_embedding = await code_embedder.embed_code(
-                    content,
-                    language,
-                    context={"file_path": file_path},
-                    pattern_type="code"
-                )
-                
-                # Extract features
-                features = await self._extract_features(content, language)
-                
-                # Match against reference patterns
-                patterns = []
-                if reference_patterns:
-                    patterns = await self._match_patterns(
+                with monitor_operation("process_file", "file_processor"):
+                    # Check cache first
+                    if self._cache:
+                        cache_key = f"file:{file_path}:lang:{language}"
+                        cached_result = await self._cache.get_async(cache_key)
+                        if cached_result:
+                            return cached_result
+                    
+                    # Generate embeddings with pattern awareness
+                    code_embedding = await code_embedder.embed_code(
                         content,
-                        code_embedding,
-                        reference_patterns,
+                        language,
+                        context={"file_path": file_path},
+                        pattern_type="code"
+                    )
+                    
+                    # Extract features
+                    features = await self._extract_features(content, language)
+                    
+                    # Match against reference patterns
+                    patterns = []
+                    if reference_patterns:
+                        patterns = await self._match_patterns(
+                            content,
+                            code_embedding,
+                            reference_patterns,
+                            features
+                        )
+                        self._processing_stats["pattern_matches"] += len(patterns)
+                    
+                    # Generate AI insights
+                    insights = await self._generate_ai_insights(
+                        content,
+                        language,
                         features
                     )
-                    self._processing_stats["pattern_matches"] += len(patterns)
-                
-                # Generate AI insights
-                insights = await self._generate_ai_insights(
-                    content,
-                    language,
-                    features
-                )
-                self._processing_stats["ai_insights"] += len(insights)
-                
-                return {
-                    "features": features.to_dict(),
-                    "patterns": patterns,
-                    "insights": insights,
-                    "embedding": code_embedding
-                }
+                    self._processing_stats["ai_insights"] += len(insights)
+                    
+                    result = {
+                        "features": features.to_dict(),
+                        "patterns": patterns,
+                        "insights": insights,
+                        "embedding": code_embedding
+                    }
+                    
+                    # Cache the result
+                    if self._cache:
+                        await self._cache.set_async(cache_key, result)
+                    
+                    return result
         except Exception as e:
             self._processing_stats["failed_files"] += 1
             log(f"Error processing file {file_path}: {e}", level="error")
@@ -214,30 +254,31 @@ class FileProcessor:
         content: str,
         language: str
     ) -> ExtractedFeatures:
-        """[2.1.3] Extract code features with AI assistance.
-        
-        Flow:
-        1. Parse content
-        2. Extract basic features
-        3. Enhance with AI
-        
-        Args:
-            content: Source code content
-            language: Programming language
+        """Extract features from file content."""
+        if not self._initialized:
+            await self.ensure_initialized()
             
-        Returns:
-            ExtractedFeatures object
+        try:
+            # Get parser for language
+            parser = get_parser(language)
+            if not parser:
+                return ExtractedFeatures()
+                
+            # Parse content
+            tree = parser.parse(bytes(content, "utf8"))
+            if not tree:
+                return ExtractedFeatures()
+                
+            # Get unified parser
+            unified = await get_unified_parser()
             
-        Raises:
-            ProcessingError: If feature extraction fails
-        """
-        async with AsyncErrorBoundary(
-            "feature extraction",
-            severity=ErrorSeverity.ERROR
-        ):
-            features = ExtractedFeatures()
-            features.language = language
+            # Extract features using unified parser
+            features = await unified.extract_features(tree, content, language)
+            
             return features
+        except Exception as e:
+            await log(f"Error extracting features: {e}", level="error")
+            return ExtractedFeatures()
 
     async def _match_patterns(
         self,
@@ -246,66 +287,48 @@ class FileProcessor:
         reference_patterns: List[Dict[str, Any]],
         features: ExtractedFeatures
     ) -> List[Dict[str, Any]]:
-        """[2.1.4] Match content against reference patterns.
-        
-        Flow:
-        1. Generate pattern embeddings
-        2. Calculate similarities
-        3. Filter matches
-        4. Calculate confidence
-        
-        Args:
-            content: Source code content
-            embedding: Code embedding
-            reference_patterns: Patterns to match
-            features: Extracted features
+        """Match content against reference patterns."""
+        if not self._initialized:
+            await self.ensure_initialized()
             
-        Returns:
-            List of pattern matches
-        """
         matches = []
-        
-        for pattern in reference_patterns:
-            # Generate pattern embedding
-            pattern_embedding = await code_embedder.embed_pattern(pattern)
+        try:
+            # Get pattern processor
+            processor = await get_pattern_processor()
             
-            # Calculate similarity
-            similarity = self._calculate_similarity(embedding, pattern_embedding)
+            # Process each pattern
+            for pattern in reference_patterns:
+                result = await processor.process_pattern(
+                    pattern["name"],
+                    content,
+                    pattern.get("language", "unknown")
+                )
+                
+                if result.matches:
+                    matches.append({
+                        "pattern": pattern["name"],
+                        "matches": result.matches,
+                        "confidence": self._calculate_confidence(
+                            embedding,
+                            features,
+                            pattern
+                        )
+                    })
             
-            if similarity > 0.8:  # High confidence threshold
-                match = {
-                    "pattern_id": pattern["id"],
-                    "pattern_type": pattern["type"],
-                    "similarity": similarity,
-                    "confidence": self._calculate_confidence(
-                        similarity,
-                        features,
-                        pattern
-                    )
-                }
-                matches.append(match)
-        
-        return matches
+            return matches
+        except Exception as e:
+            await log(f"Error matching patterns: {e}", level="error")
+            return []
 
-    def _calculate_similarity(
-        self,
-        embedding1: List[float],
-        embedding2: List[float]
-    ) -> float:
-        """Calculate cosine similarity between embeddings."""
-        import numpy as np
-        vec1 = np.array(embedding1)
-        vec2 = np.array(embedding2)
-        return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
-    
     def _calculate_confidence(
         self,
-        similarity: float,
+        embedding: List[float],
         features: ExtractedFeatures,
         pattern: Dict[str, Any]
     ) -> float:
         """Calculate confidence score for pattern match."""
         # Base confidence from similarity
+        similarity = self._calculate_similarity(embedding, pattern["embedding"])
         confidence = similarity
         
         # Adjust based on feature matching
@@ -318,6 +341,17 @@ class FileProcessor:
         
         # Cap at 1.0
         return min(1.0, confidence)
+
+    def _calculate_similarity(
+        self,
+        embedding1: List[float],
+        embedding2: List[float]
+    ) -> float:
+        """Calculate cosine similarity between embeddings."""
+        import numpy as np
+        vec1 = np.array(embedding1)
+        vec2 = np.array(embedding2)
+        return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
     async def _generate_ai_insights(
         self,
@@ -438,7 +472,7 @@ async def cached_parse_file(
 ) -> Optional[Dict[str, Any]]:
     """Cached file parsing to avoid redundant parsing operations."""
     from parsers.types import ParserResult
-    result = await unified_parser.parse_file(rel_path, content)
+    result = await get_unified_parser().parse_file(rel_path, content)
     
     # If the result is a dictionary without a 'success' property,
     # transform it into a proper ParserResult
@@ -469,4 +503,4 @@ async def cached_get_patterns(
     classification: FileClassification
 ) -> Dict[PatternCategory, Dict[PatternPurpose, Dict[str, Any]]]:
     """Cached pattern retrieval to avoid redundant pattern loading."""
-    return await pattern_processor.get_patterns_for_file(classification) 
+    return await get_pattern_processor().get_patterns_for_file(classification) 

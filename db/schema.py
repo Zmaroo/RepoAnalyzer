@@ -16,6 +16,7 @@ from utils.error_handling import (
     DatabaseError,
     PostgresError,
     Neo4jError,
+    ErrorAudit,
     ErrorSeverity
 )
 from db.retry_utils import RetryManager, RetryConfig
@@ -542,13 +543,22 @@ async def _create_ai_pattern_tables(self, txn):
             documentation TEXT,
             metadata JSONB,
             embedding VECTOR(1536),
-            ai_insights JSONB,  -- Store AI-generated insights
-            ai_confidence FLOAT,  -- AI confidence in pattern
-            ai_metrics JSONB,  -- AI-specific metrics
-            ai_recommendations JSONB,  -- AI recommendations
+            tree_sitter_type TEXT,
+            tree_sitter_language TEXT,
+            tree_sitter_metrics JSONB,
+            ai_insights JSONB,
+            ai_confidence FLOAT,
+            ai_metrics JSONB,
+            ai_recommendations JSONB,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         )
+    """)
+    
+    # Create indexes for tree-sitter fields
+    await txn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_code_patterns_tree_sitter_type ON code_patterns(tree_sitter_type);
+        CREATE INDEX IF NOT EXISTS idx_code_patterns_tree_sitter_language ON code_patterns(tree_sitter_language);
     """)
     
     # Create documentation patterns table

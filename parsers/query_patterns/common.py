@@ -10,12 +10,16 @@ COMMON_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
             "function": QueryPattern(
+                name="function",
                 pattern="""
                 [
                     (function_definition) @syntax.function,
                     (method_definition) @syntax.method
                 ]
                 """,
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",  # Wildcard for all languages
                 extract=lambda node: {
                     "type": "method" if "syntax.method" in node["captures"] else "function",
                     "name": node["node"].text.decode('utf8')
@@ -23,12 +27,16 @@ COMMON_PATTERNS = {
             ),
             
             "class": QueryPattern(
+                name="class",
                 pattern="""
                 [
                     (class_definition) @syntax.class,
                     (class_declaration) @syntax.class
                 ]
                 """,
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": "class",
                     "name": node["node"].text.decode('utf8')
@@ -36,12 +44,16 @@ COMMON_PATTERNS = {
             ),
             
             "module": QueryPattern(
+                name="module",
                 pattern="""
                 [
                     (module) @syntax.module,
                     (program) @syntax.module
                 ]
                 """,
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": "module",
                     "name": node["node"].text.decode('utf8')
@@ -53,12 +65,16 @@ COMMON_PATTERNS = {
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
             "variable": QueryPattern(
+                name="variable",
                 pattern="""
                 [
                     (identifier) @semantics.variable.ref,
                     (variable_declaration) @semantics.variable.def
                 ]
                 """,
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": "variable_def" if "semantics.variable.def" in node["captures"] else "variable_ref",
                     "name": node["node"].text.decode('utf8')
@@ -66,6 +82,7 @@ COMMON_PATTERNS = {
             ),
             
             "literal": QueryPattern(
+                name="literal",
                 pattern="""
                 [
                     (string_literal) @semantics.literal.string,
@@ -74,6 +91,9 @@ COMMON_PATTERNS = {
                     (null_literal) @semantics.literal.null
                 ]
                 """,
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": ("string" if "semantics.literal.string" in node["captures"] else
                             "number" if "semantics.literal.number" in node["captures"] else
@@ -84,12 +104,16 @@ COMMON_PATTERNS = {
             ),
             
             "expression": QueryPattern(
+                name="expression",
                 pattern="""
                 [
                     (binary_expression) @semantics.expression.binary,
                     (unary_expression) @semantics.expression.unary
                 ]
                 """,
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": "binary" if "semantics.expression.binary" in node["captures"] else "unary",
                     "expression": node["node"].text.decode('utf8')
@@ -101,6 +125,7 @@ COMMON_PATTERNS = {
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
             "documentation": QueryPattern(
+                name="documentation",
                 pattern="""
                 [
                     (comment) @documentation.comment,
@@ -109,6 +134,9 @@ COMMON_PATTERNS = {
                     (documentation_comment) @documentation.doc
                 ]
                 """,
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": ("doc" if "documentation.doc" in node["captures"] else
                             "block" if "documentation.block" in node["captures"] else
@@ -123,12 +151,16 @@ COMMON_PATTERNS = {
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
             "import": QueryPattern(
+                name="import",
                 pattern="""
                 [
                     (import_statement) @structure.import,
                     (import_declaration) @structure.import
                 ]
                 """,
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": "import",
                     "statement": node["node"].text.decode('utf8')
@@ -136,12 +168,16 @@ COMMON_PATTERNS = {
             ),
             
             "export": QueryPattern(
+                name="export",
                 pattern="""
                 [
                     (export_statement) @structure.export,
                     (export_declaration) @structure.export
                 ]
                 """,
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": "export",
                     "statement": node["node"].text.decode('utf8')
@@ -149,12 +185,16 @@ COMMON_PATTERNS = {
             ),
             
             "namespace": QueryPattern(
+                name="namespace",
                 pattern="""
                 [
                     (namespace_definition) @structure.namespace,
                     (package_declaration) @structure.namespace
                 ]
                 """,
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="*",
                 extract=lambda node: {
                     "type": "namespace",
                     "name": node["node"].text.decode('utf8')

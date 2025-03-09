@@ -1,376 +1,323 @@
 """
 Query patterns for Scala files.
+
+This module provides Scala-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
 """
 
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
-from .common import COMMON_PATTERNS
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
 
-SCALA_PATTERNS_FOR_LEARNING = {
-    "functional_programming": {
-        "pattern": """
-        [
-            (function_definition
-                name: (identifier) @fp.function.name
-                parameters: (parameters)? @fp.function.params
-                body: (_) @fp.function.body) @fp.function,
-            
-            (call_expression
-                function: [
-                    (identifier) @fp.call.func.id
-                    (field_expression 
-                        field: (identifier) @fp.call.func.field)
-                ]
-                arguments: (arguments
-                    (_)+ @fp.call.args.exp) @fp.call.args
-                (#match? @fp.call.func.id "^(map|flatMap|filter|fold|reduce|collect|foreach)$" @fp.call.func.field)) @fp.call,
-            
-            (lambda_expression
-                parameters: (_) @fp.lambda.params
-                body: (_) @fp.lambda.body) @fp.lambda,
-            
-            (pattern_match
-                value: (_) @fp.match.value
-                cases: (case_block)+ @fp.match.cases) @fp.match,
-            
-            (infix_expression
-                left: (_) @fp.infix.left
-                operator: (_) @fp.infix.op
-                right: (_) @fp.infix.right) @fp.infix
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "functional_programming",
-            "is_function_def": "fp.function" in node["captures"],
-            "is_higher_order_call": "fp.call" in node["captures"],
-            "is_lambda": "fp.lambda" in node["captures"],
-            "is_pattern_match": "fp.match" in node["captures"],
-            "is_infix_operation": "fp.infix" in node["captures"],
-            "function_name": node["captures"].get("fp.function.name", {}).get("text", ""),
-            "higher_order_func": (
-                node["captures"].get("fp.call.func.id", {}).get("text", "") or 
-                node["captures"].get("fp.call.func.field", {}).get("text", "")
-            ),
-            "infix_operator": node["captures"].get("fp.infix.op", {}).get("text", ""),
-            "functional_pattern": (
-                "function_definition" if "fp.function" in node["captures"] else
-                "higher_order_function" if "fp.call" in node["captures"] else
-                "lambda_expression" if "fp.lambda" in node["captures"] else
-                "pattern_matching" if "fp.match" in node["captures"] else
-                "infix_operation" if "fp.infix" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
+# Language identifier
+LANGUAGE = "scala"
+
+@dataclass
+class ScalaPatternContext(PatternContext):
+    """Scala-specific pattern context."""
+    class_names: Set[str] = field(default_factory=set)
+    trait_names: Set[str] = field(default_factory=set)
+    object_names: Set[str] = field(default_factory=set)
+    function_names: Set[str] = field(default_factory=set)
+    package_names: Set[str] = field(default_factory=set)
+    has_implicits: bool = False
+    has_case_classes: bool = False
+    has_type_classes: bool = False
+    has_for_comprehension: bool = False
+    has_pattern_matching: bool = False
     
-    "object_oriented": {
-        "pattern": """
-        [
-            (class_definition
-                name: (identifier) @oo.class.name
-                type_parameters: (type_parameters)? @oo.class.type_params
-                parameters: (parameters)? @oo.class.params
-                extends: (extends_clause)? @oo.class.extends
-                body: (template_body)? @oo.class.body) @oo.class,
-            
-            (object_definition
-                name: (identifier) @oo.object.name
-                extends: (extends_clause)? @oo.object.extends
-                body: (template_body)? @oo.object.body) @oo.object,
-            
-            (trait_definition
-                name: (identifier) @oo.trait.name
-                type_parameters: (type_parameters)? @oo.trait.type_params
-                extends: (extends_clause)? @oo.trait.extends
-                body: (template_body)? @oo.trait.body) @oo.trait,
-            
-            (method_definition
-                annotations: (annotation)* @oo.method.annotations
-                modifiers: (modifier)* @oo.method.modifiers
-                name: (identifier) @oo.method.name
-                type_parameters: (type_parameters)? @oo.method.type_params
-                parameters: (parameters)? @oo.method.params
-                return_type: (_)? @oo.method.return_type
-                body: (_)? @oo.method.body) @oo.method
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "object_oriented",
-            "is_class": "oo.class" in node["captures"],
-            "is_object": "oo.object" in node["captures"],
-            "is_trait": "oo.trait" in node["captures"],
-            "is_method": "oo.method" in node["captures"],
-            "name": (
-                node["captures"].get("oo.class.name", {}).get("text", "") or
-                node["captures"].get("oo.object.name", {}).get("text", "") or
-                node["captures"].get("oo.trait.name", {}).get("text", "") or
-                node["captures"].get("oo.method.name", {}).get("text", "")
-            ),
-            "has_inheritance": (
-                "oo.class.extends" in node["captures"] or
-                "oo.object.extends" in node["captures"] or
-                "oo.trait.extends" in node["captures"]
-            ),
-            "modifiers": [mod.text.decode('utf8') for mod in node["captures"].get("oo.method.modifiers", [])],
-            "oo_pattern": (
-                "class_definition" if "oo.class" in node["captures"] else
-                "object_definition" if "oo.object" in node["captures"] else
-                "trait_definition" if "oo.trait" in node["captures"] else
-                "method_definition" if "oo.method" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
-    
-    "type_system": {
-        "pattern": """
-        [
-            (type_definition
-                name: (identifier) @type.def.name
-                type_parameters: (type_parameters)? @type.def.params
-                body: (_) @type.def.body) @type.def,
-            
-            (function_definition
-                type_parameters: (type_parameters
-                    (type_parameter
-                        name: (identifier) @type.func.param.name
-                        bounds: (_)? @type.func.param.bounds)*) @type.func.params) @type.func,
-            
-            (implicit_parameter
-                name: (identifier) @type.implicit.name
-                type: (_) @type.implicit.type) @type.implicit,
-            
-            (type_class_definition
-                name: (identifier) @type.class.name
-                type_parameters: (type_parameters)? @type.class.params
-                body: (_) @type.class.body) @type.class,
-            
-            (infix_type
-                left: (_) @type.infix.left
-                operator: (_) @type.infix.op
-                right: (_) @type.infix.right) @type.infix
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "type_system",
-            "is_type_def": "type.def" in node["captures"],
-            "is_generic_function": "type.func.params" in node["captures"],
-            "is_implicit_param": "type.implicit" in node["captures"],
-            "is_type_class": "type.class" in node["captures"],
-            "is_type_operator": "type.infix" in node["captures"],
-            "name": (
-                node["captures"].get("type.def.name", {}).get("text", "") or
-                node["captures"].get("type.class.name", {}).get("text", "") or
-                node["captures"].get("type.implicit.name", {}).get("text", "")
-            ),
-            "type_param_names": [param.text.decode('utf8') for param in node["captures"].get("type.func.param.name", [])],
-            "type_infix_op": node["captures"].get("type.infix.op", {}).get("text", ""),
-            "type_system_pattern": (
-                "type_definition" if "type.def" in node["captures"] else
-                "generic_function" if "type.func.params" in node["captures"] else
-                "implicit_parameter" if "type.implicit" in node["captures"] else
-                "type_class" if "type.class" in node["captures"] else
-                "type_operator" if "type.infix" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
-    
-    "concurrency": {
-        "pattern": """
-        [
-            (call_expression
-                function: [
-                    (identifier) @concur.call.func.id
-                    (field_expression 
-                        field: (identifier) @concur.call.func.field)
-                ]
-                (#match? @concur.call.func.id "^(Future|Promise|async|Await|blocking)$" @concur.call.func.field)) @concur.future,
-            
-            (import_declaration
-                importers: (import_importers
-                    (importer
-                        name: (_) @concur.import.name
-                        (#match? @concur.import.name ".*\\.concurrent.*")))) @concur.import,
-            
-            (call_expression
-                function: [
-                    (identifier) @concur.actor.id
-                    (field_expression 
-                        field: (identifier) @concur.actor.field)
-                ]
-                (#match? @concur.actor.id "^(Actor|Props|ActorRef)$" @concur.actor.field)) @concur.actor,
-            
-            (call_expression
-                function: [
-                    (identifier) @concur.stream.id
-                    (field_expression 
-                        field: (identifier) @concur.stream.field)
-                ]
-                (#match? @concur.stream.id "^(Source|Flow|Sink|RunnableGraph)$" @concur.stream.field)) @concur.stream
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "concurrency",
-            "is_future": "concur.future" in node["captures"],
-            "is_concurrent_import": "concur.import" in node["captures"],
-            "is_actor": "concur.actor" in node["captures"],
-            "is_stream": "concur.stream" in node["captures"],
-            "future_function": (
-                node["captures"].get("concur.call.func.id", {}).get("text", "") or 
-                node["captures"].get("concur.call.func.field", {}).get("text", "")
-            ),
-            "actor_function": (
-                node["captures"].get("concur.actor.id", {}).get("text", "") or 
-                node["captures"].get("concur.actor.field", {}).get("text", "")
-            ),
-            "stream_function": (
-                node["captures"].get("concur.stream.id", {}).get("text", "") or 
-                node["captures"].get("concur.stream.field", {}).get("text", "")
-            ),
-            "concurrent_import": node["captures"].get("concur.import.name", {}).get("text", ""),
-            "concurrency_pattern": (
-                "future_promise" if "concur.future" in node["captures"] else
-                "concurrent_import" if "concur.import" in node["captures"] else
-                "actor_model" if "concur.actor" in node["captures"] else
-                "streaming" if "concur.stream" in node["captures"] else
-                "unknown"
-            )
-        }
-    }
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.class_names)}:{self.has_implicits}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "class": PatternPerformanceMetrics(),
+    "trait": PatternPerformanceMetrics(),
+    "object": PatternPerformanceMetrics(),
+    "function": PatternPerformanceMetrics(),
+    "package": PatternPerformanceMetrics()
 }
 
 SCALA_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
-                pattern="""
-                [
-                    (function_definition
-                        modifiers: [(annotation) (modifier)]* @syntax.function.modifier
-                        name: (identifier) @syntax.function.name
-                        type_parameters: (type_parameters
-                            (type_parameter
-                                name: (identifier) @syntax.function.type_param.name
-                                bounds: (upper_bound)? @syntax.function.type_param.bound)*)? @syntax.function.type_params
-                        parameters: (parameters
-                            [(parameter
-                                name: (identifier) @syntax.function.param.name
-                                type: (_) @syntax.function.param.type
-                                default: (_)? @syntax.function.param.default)
-                             (implicit_parameter
-                                name: (identifier) @syntax.function.param.implicit.name
-                                type: (_) @syntax.function.param.implicit.type)]*) @syntax.function.params
-                        return_type: (_)? @syntax.function.return_type
-                        body: (_) @syntax.function.body) @syntax.function.def
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
-                    "modifiers": [m.text.decode('utf8') for m in node["captures"].get("syntax.function.modifier", [])],
-                    "has_type_params": "syntax.function.type_params" in node["captures"],
-                    "has_implicit_params": any("syntax.function.param.implicit.name" in c for c in node["captures"])
-                }
-            ),
-            "class": QueryPattern(
+            "class": ResilientPattern(
                 pattern="""
                 [
                     (class_definition
-                        modifiers: [(annotation) (modifier)]* @syntax.class.modifier
+                        modifiers: [(case) (abstract)]* @syntax.class.modifier
                         name: (identifier) @syntax.class.name
                         type_parameters: (type_parameters)? @syntax.class.type_params
-                        constructor_parameters: (parameters)? @syntax.class.constructor_params
-                        extends_clause: (extends_clause)? @syntax.class.extends
-                        body: (_)? @syntax.class.body) @syntax.class.def
+                        parameters: (parameters)? @syntax.class.params
+                        extends: (extends_clause)? @syntax.class.extends
+                        body: (template_body)? @syntax.class.body) @syntax.class.def,
+                    (object_definition
+                        name: (identifier) @syntax.object.name
+                        extends: (extends_clause)? @syntax.object.extends
+                        body: (template_body)? @syntax.object.body) @syntax.object.def
                 ]
                 """,
                 extract=lambda node: {
-                    "name": node["captures"].get("syntax.class.name", {}).get("text", ""),
-                    "modifiers": [m.text.decode('utf8') for m in node["captures"].get("syntax.class.modifier", [])],
-                    "has_type_params": "syntax.class.type_params" in node["captures"],
-                    "has_constructor": "syntax.class.constructor_params" in node["captures"],
-                    "has_extends": "syntax.class.extends" in node["captures"]
-                }
-            )
-        }
-    },
-
-    PatternCategory.STRUCTURE: {
-        PatternPurpose.UNDERSTANDING: {
-            "module": QueryPattern(
-                pattern="""
-                [
-                    (package_clause
-                        name: (identifier) @structure.package.name) @structure.package,
-                    
-                    (import_declaration
-                        importers: (import_importers
-                            (importer
-                                name: (_) @structure.import.name
-                                selector: (import_selector)? @structure.import.selector))) @structure.import
-                ]
-                """,
-                extract=lambda node: {
-                    "package": node["captures"].get("structure.package.name", {}).get("text", ""),
-                    "imports": [imp.get("text", "") for imp in node["captures"].get("structure.import.name", [])]
-                }
-            )
-        }
-    },
-
-    PatternCategory.DOCUMENTATION: {
-        PatternPurpose.UNDERSTANDING: {
-            "comments": QueryPattern(
-                pattern="""
-                [
-                    (doc_comment) @documentation.doc,
-                    (comment) @documentation.comment,
-                    (block_comment) @documentation.block
-                ]
-                """,
-                extract=lambda node: {
-                    "text": (
-                        node["captures"].get("documentation.doc", {}).get("text", "") or
-                        node["captures"].get("documentation.comment", {}).get("text", "") or
-                        node["captures"].get("documentation.block", {}).get("text", "")
+                    "type": "class",
+                    "name": (
+                        node["captures"].get("syntax.class.name", {}).get("text", "") or
+                        node["captures"].get("syntax.object.name", {}).get("text", "")
                     ),
-                    "type": (
-                        "doc" if "documentation.doc" in node["captures"] else
-                        "line" if "documentation.comment" in node["captures"] else
-                        "block"
-                    )
+                    "line_number": (
+                        node["captures"].get("syntax.class.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.object.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_case": "case" in (node["captures"].get("syntax.class.modifier", {}).get("text", "") or ""),
+                    "is_abstract": "abstract" in (node["captures"].get("syntax.class.modifier", {}).get("text", "") or ""),
+                    "is_object": "syntax.object.def" in node["captures"],
+                    "has_type_params": "syntax.class.type_params" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["method", "field", "type"],
+                        PatternRelationType.DEPENDS_ON: ["trait", "class"]
+                    }
+                },
+                name="class",
+                description="Matches Scala class and object declarations",
+                examples=["class Point[T](x: T, y: T)", "case class Person(name: String)", "object Main"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["class"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
+                }
+            ),
+            "trait": ResilientPattern(
+                pattern="""
+                [
+                    (trait_definition
+                        name: (identifier) @syntax.trait.name
+                        type_parameters: (type_parameters)? @syntax.trait.type_params
+                        extends: (extends_clause)? @syntax.trait.extends
+                        body: (template_body)? @syntax.trait.body) @syntax.trait.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "trait",
+                    "name": node["captures"].get("syntax.trait.name", {}).get("text", ""),
+                    "line_number": node["captures"].get("syntax.trait.def", {}).get("start_point", [0])[0],
+                    "has_type_params": "syntax.trait.type_params" in node["captures"],
+                    "has_extends": "syntax.trait.extends" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["method", "type", "abstract"],
+                        PatternRelationType.DEPENDS_ON: ["trait"]
+                    }
+                },
+                name="trait",
+                description="Matches Scala trait declarations",
+                examples=["trait Printable[T]", "trait Monad[F[_]] extends Functor[F]"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["trait"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
+                }
+            ),
+            "function": ResilientPattern(
+                pattern="""
+                [
+                    (function_definition
+                        modifiers: [(implicit) (override)]* @syntax.func.modifier
+                        name: (identifier) @syntax.func.name
+                        type_parameters: (type_parameters)? @syntax.func.type_params
+                        parameters: (parameters)? @syntax.func.params
+                        return_type: (type_annotation)? @syntax.func.return
+                        body: (_)? @syntax.func.body) @syntax.func.def,
+                    (val_definition
+                        pattern: (identifier) @syntax.val.name
+                        type_annotation: (type_annotation)? @syntax.val.type
+                        value: (_)? @syntax.val.value) @syntax.val.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "function",
+                    "name": (
+                        node["captures"].get("syntax.func.name", {}).get("text", "") or
+                        node["captures"].get("syntax.val.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.func.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.val.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_implicit": "implicit" in (node["captures"].get("syntax.func.modifier", {}).get("text", "") or ""),
+                    "is_override": "override" in (node["captures"].get("syntax.func.modifier", {}).get("text", "") or ""),
+                    "is_val": "syntax.val.def" in node["captures"],
+                    "has_type_params": "syntax.func.type_params" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["parameter", "expression"],
+                        PatternRelationType.DEPENDS_ON: ["type", "class"]
+                    }
+                },
+                name="function",
+                description="Matches Scala function and value declarations",
+                examples=["def process[T](data: T): Option[T]", "implicit val ordering: Ordering[Int]"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["function"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-z][a-zA-Z0-9_]*$'
+                    }
                 }
             )
         }
     },
 
     PatternCategory.LEARNING: {
-        PatternPurpose.FUNCTIONAL: {
-            "functional_patterns": QueryPattern(
+        PatternPurpose.PACKAGES: {
+            "package": AdaptivePattern(
                 pattern="""
                 [
-                    (call_expression
-                        function: [
-                            (identifier) @learning.func.call.name
-                            (field_expression 
-                                field: (identifier) @learning.func.call.field)
-                        ]
-                        (#match? @learning.func.call.name "^(map|flatMap|filter|fold|reduce|collect|foreach)$" @learning.func.call.field)) @learning.func.call
+                    (package_clause
+                        name: (identifier) @pkg.name) @pkg.def,
+                    (import_declaration
+                        path: (identifier) @pkg.import.path
+                        selectors: (import_selectors)? @pkg.import.selectors) @pkg.import.def
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "functional",
-                    "function_name": (
-                        node["captures"].get("learning.func.call.name", {}).get("text", "") or
-                        node["captures"].get("learning.func.call.field", {}).get("text", "")
+                    "type": "package",
+                    "name": (
+                        node["captures"].get("pkg.name", {}).get("text", "") or
+                        node["captures"].get("pkg.import.path", {}).get("text", "")
                     ),
-                    "is_higher_order": True
+                    "line_number": (
+                        node["captures"].get("pkg.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("pkg.import.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_import": "pkg.import.def" in node["captures"],
+                    "has_selectors": "pkg.import.selectors" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["class", "trait", "object"],
+                        PatternRelationType.DEPENDS_ON: ["package"]
+                    }
+                },
+                name="package",
+                description="Matches Scala package declarations and imports",
+                examples=["package com.example", "import scala.collection.mutable"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.PACKAGES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["package"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-z][a-zA-Z0-9_.]*$'
+                    }
                 }
             )
         }
-    },
+    }
+}
 
-    "REPOSITORY_LEARNING": SCALA_PATTERNS_FOR_LEARNING
-} 
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
+
+async def extract_scala_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Scala content for repository learning."""
+    patterns = []
+    context = ScalaPatternContext()
+    
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in SCALA_PATTERNS:
+                category_patterns = SCALA_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "class":
+                                        context.class_names.add(match["name"])
+                                        if match["is_case"]:
+                                            context.has_case_classes = True
+                                        if match["is_object"]:
+                                            context.object_names.add(match["name"])
+                                    elif match["type"] == "trait":
+                                        context.trait_names.add(match["name"])
+                                        if match["has_type_params"]:
+                                            context.has_type_classes = True
+                                    elif match["type"] == "function":
+                                        context.function_names.add(match["name"])
+                                        if match["is_implicit"]:
+                                            context.has_implicits = True
+                                    elif match["type"] == "package":
+                                        context.package_names.add(match["name"])
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting Scala patterns: {e}", level="error")
+    
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "class": {
+        PatternRelationType.CONTAINS: ["method", "field", "type"],
+        PatternRelationType.DEPENDS_ON: ["trait", "class"]
+    },
+    "trait": {
+        PatternRelationType.CONTAINS: ["method", "type", "abstract"],
+        PatternRelationType.DEPENDS_ON: ["trait"]
+    },
+    "function": {
+        PatternRelationType.CONTAINS: ["parameter", "expression"],
+        PatternRelationType.DEPENDS_ON: ["type", "class"]
+    },
+    "package": {
+        PatternRelationType.CONTAINS: ["class", "trait", "object"],
+        PatternRelationType.DEPENDS_ON: ["package"]
+    }
+}
+
+# Export public interfaces
+__all__ = [
+    'SCALA_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_scala_patterns_for_learning',
+    'ScalaPatternContext',
+    'pattern_learner'
+] 

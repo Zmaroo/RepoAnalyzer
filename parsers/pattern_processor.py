@@ -2,6 +2,7 @@
 
 This module provides pattern processing capabilities for code analysis and manipulation.
 Core pattern processing functionality separated from AI capabilities.
+Integrates with cache analytics, error handling, and logging systems.
 """
 
 from typing import Dict, Any, List, Union, Optional, Set, Tuple
@@ -9,17 +10,22 @@ from dataclasses import dataclass, field
 import asyncio
 import re
 import time
+import importlib
 import numpy as np
+from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
 from parsers.types import (
     ParserType, PatternCategory, PatternPurpose, FileType, 
     PatternDefinition, QueryPattern, AIContext, 
-    AIProcessingResult, PatternType, PatternRelationType
+    AIProcessingResult, PatternType, PatternRelationType,
+    FeatureCategory, ParserResult, AICapability
 )
 from parsers.models import (
     PatternMatch, PATTERN_CATEGORIES, ProcessedPattern, 
     QueryResult, PatternRelationship
 )
-from parsers.parser_interfaces import AIParserInterface
+from parsers.parser_interfaces import BaseParserInterface, AIParserInterface
+from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+from parsers.language_mapping import normalize_language_name
 from utils.logger import log
 from utils.error_handling import (
     handle_async_errors,
@@ -28,34 +34,56 @@ from utils.error_handling import (
     ErrorAudit,
     ErrorSeverity
 )
-from utils.cache import UnifiedCache, cache_coordinator, cache_metrics
+from utils.cache import UnifiedCache, cache_coordinator
 from utils.cache_analytics import get_cache_analytics, CacheAnalytics
 from utils.request_cache import cached_in_request, request_cache_context, get_current_request_cache
 from utils.shutdown import register_shutdown_handler
-from db.pattern_storage import PatternStorageMetrics
+from db.pattern_storage import PatternStorageMetrics, get_pattern_storage
 from db.transaction import transaction_scope
-from ai_tools.pattern_integration import PatternLearningMetrics
 from utils.health_monitor import global_health_monitor, ComponentStatus, monitor_operation
+from utils.async_runner import submit_async_task, cleanup_tasks
 import traceback
 import os
 import psutil
+from parsers.query_patterns import (
+    create_pattern,
+    validate_pattern,
+    is_language_supported,
+    get_parser_type_for_language
+)
 
-class PatternProcessor(AIParserInterface):
+class PatternProcessor(BaseParserInterface, AIParserInterface):
     """Core pattern processing system."""
     
     def __init__(self):
         """Initialize pattern processor."""
-        super().__init__(
+        # Initialize base parser interface
+        BaseParserInterface.__init__(
+            self,
             language_id="pattern_processor",
             file_type=FileType.CODE,
-            capabilities=set()  # Core processor doesn't have AI capabilities
+            parser_type=ParserType.CUSTOM  # Since it's a core parser implementation
         )
+        
+        # Initialize AI parser interface
+        AIParserInterface.__init__(
+            self,
+            language_id="pattern_processor",
+            file_type=FileType.CODE,
+            capabilities={
+                AICapability.CODE_UNDERSTANDING,
+                AICapability.CODE_GENERATION,
+                AICapability.CODE_MODIFICATION,
+                AICapability.CODE_REVIEW,
+                AICapability.LEARNING
+            }
+        )
+        
         self._initialized = False
+        self._patterns: Dict[PatternCategory, Dict[str, Any]] = {}
         self._pending_tasks: Set[asyncio.Task] = set()
-        self._pattern_cache = None
-        self._validation_cache = None
+        self._lock = asyncio.Lock()
         self._metrics = PatternStorageMetrics()
-        self._learning_metrics = PatternLearningMetrics()
         self._processing_stats = {
             "total_patterns": 0,
             "matched_patterns": 0,
@@ -68,9 +96,17 @@ class PatternProcessor(AIParserInterface):
                 "validation_errors": {}  # Track common validation errors
             }
         }
-        self._lock = asyncio.Lock()
         self._validation_ttl = 300  # 5 minutes cache TTL
         self._warmup_complete = False
+        self._cache = None
+        self._tree_sitter_patterns = {}
+        self._custom_patterns = {}
+        
+        # Initialize caches
+        self._pattern_cache = UnifiedCache("pattern_processor_patterns")
+        self._validation_cache = UnifiedCache("pattern_processor_validation")
+        
+        register_shutdown_handler(self.cleanup)
 
     @classmethod
     async def create(cls) -> 'PatternProcessor':
@@ -85,153 +121,202 @@ class PatternProcessor(AIParserInterface):
             return True
 
         try:
-            async with AsyncErrorBoundary("pattern_processor_initialization"):
-                # Initialize caches with analytics
-                self._pattern_cache = UnifiedCache("pattern_processor_patterns", ttl=3600)
-                self._validation_cache = UnifiedCache("pattern_processor_validation", ttl=self._validation_ttl)
+            # Update status
+            await global_health_monitor.update_component_status(
+                "pattern_processor",
+                ComponentStatus.INITIALIZING,
+                details={"stage": "starting"}
+            )
+            
+            # Register caches with coordinator
+            await cache_coordinator.register_cache("pattern_processor_patterns", self._pattern_cache)
+            await cache_coordinator.register_cache("pattern_processor_validation", self._validation_cache)
+            
+            # Initialize cache analytics
+            analytics = await get_cache_analytics()
+            analytics.register_warmup_function(
+                "pattern_processor_patterns",
+                self._warmup_pattern_cache
+            )
+            
+            # Load patterns for each category
+            for category in PatternCategory:
+                init_task = submit_async_task(self._load_patterns(category))
+                await asyncio.wrap_future(init_task)
                 
-                # Register caches with coordinator
-                await cache_coordinator.register_cache("pattern_processor_patterns", self._pattern_cache)
-                await cache_coordinator.register_cache("pattern_processor_validation", self._validation_cache)
-                
-                # Initialize cache analytics
-                analytics = await get_cache_analytics()
-                analytics.register_warmup_function(
-                    "pattern_processor_patterns",
-                    self._warmup_pattern_cache
-                )
-                
-                # Enable cache optimization
-                await analytics.optimize_ttl_values()
-                
-                # Register with health monitor
-                global_health_monitor.register_component(
+                await global_health_monitor.update_component_status(
                     "pattern_processor",
-                    health_check=self._check_health
+                    ComponentStatus.INITIALIZING,
+                    details={"stage": f"loaded_{category.value}_patterns"}
                 )
-                
-                # Initialize error analysis
-                await ErrorAudit.analyze_codebase(os.path.dirname(__file__))
-                
-                # Register shutdown handler
-                register_shutdown_handler(self.cleanup)
-                
-                # Start warmup task
-                warmup_task = asyncio.create_task(self._warmup_caches())
-                self._pending_tasks.add(warmup_task)
-                
-                self._initialized = True
-                await log("Pattern processor initialized", level="info")
-                return True
+            
+            # Register cleanup handler
+            register_shutdown_handler(self.cleanup)
+            
+            self._initialized = True
+            await log("Pattern processor initialized successfully", level="info")
+            
+            # Update final status
+            await global_health_monitor.update_component_status(
+                "pattern_processor",
+                ComponentStatus.HEALTHY,
+                details={
+                    "stage": "complete",
+                    "patterns_by_category": {
+                        category.value: len(patterns)
+                        for category, patterns in self._patterns.items()
+                    }
+                }
+            )
+            
+            return True
         except Exception as e:
             await log(f"Error initializing pattern processor: {e}", level="error")
+            await global_health_monitor.update_component_status(
+                "pattern_processor",
+                ComponentStatus.UNHEALTHY,
+                error=True,
+                details={"initialization_error": str(e)}
+            )
             return False
-
-    async def _warmup_caches(self):
-        """Warm up caches with frequently used patterns."""
-        try:
-            # Get frequently used patterns
-            async with transaction_scope() as txn:
-                patterns = await txn.fetch("""
-                    SELECT pattern_name, usage_count
-                    FROM pattern_usage_stats
-                    WHERE usage_count > 10
-                    ORDER BY usage_count DESC
-                    LIMIT 100
-                """)
-                
-                # Warm up pattern cache
-                for pattern in patterns:
-                    await self._warmup_pattern_cache([pattern["pattern_name"]])
-                    
-            self._warmup_complete = True
-            await log("Pattern cache warmup complete", level="info")
-        except Exception as e:
-            await log(f"Error warming up caches: {e}", level="error")
 
     async def _warmup_pattern_cache(self, keys: List[str]) -> Dict[str, Any]:
         """Warmup function for pattern cache."""
         results = {}
         for key in keys:
             try:
-                pattern = await self._get_pattern(key, None)
-                if pattern:
-                    results[key] = pattern
+                # Get common patterns for warmup
+                patterns = await self._get_common_patterns()
+                if patterns:
+                    results[key] = patterns
             except Exception as e:
-                await log(f"Error warming up pattern {key}: {e}", level="warning")
+                await log(f"Error warming up pattern cache for {key}: {e}", level="warning")
         return results
 
-    async def process_pattern(
-        self,
-        pattern_name: str,
-        source_code: str,
-        language_id: str
-    ) -> ProcessedPattern:
-        """Process a single pattern against source code."""
-        if not self._initialized:
-            await self.initialize()
-
+    async def cleanup(self):
+        """Clean up pattern processor resources."""
         try:
-            async with self._lock:
-                # Check cache first
-                cache_key = f"{pattern_name}:{language_id}:{hash(source_code)}"
-                cached_result = await self._pattern_cache.get(cache_key)
-                if cached_result:
-                    return ProcessedPattern(**cached_result)
-
-                pattern = await self._get_pattern(pattern_name, language_id)
-                if not pattern:
-                    raise ProcessingError(f"Pattern {pattern_name} not found")
-
-                matches = await self._process_pattern_internal(source_code, pattern)
+            if not self._initialized:
+                return
                 
-                result = ProcessedPattern(
-                    pattern_name=pattern_name,
-                    matches=matches,
-                    category=pattern.category,
-                    purpose=pattern.purpose
-                )
-
-                # Cache result
-                await self._pattern_cache.set(cache_key, result.__dict__)
-                
-                self._processing_stats["total_patterns"] += 1
-                if matches:
-                    self._processing_stats["matched_patterns"] += 1
-                
-                return result
-
+            # Update status
+            await global_health_monitor.update_component_status(
+                "pattern_processor",
+                ComponentStatus.SHUTTING_DOWN,
+                details={"stage": "starting"}
+            )
+            
+            # Clean up caches
+            await cache_coordinator.unregister_cache("pattern_processor_patterns")
+            await cache_coordinator.unregister_cache("pattern_processor_validation")
+            
+            # Save error audit report
+            await ErrorAudit.save_report()
+            
+            # Clean up any remaining tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            self._initialized = False
+            await log("Pattern processor cleaned up successfully", level="info")
+            
+            # Update final status
+            await global_health_monitor.update_component_status(
+                "pattern_processor",
+                ComponentStatus.SHUTDOWN,
+                details={"cleanup": "successful"}
+            )
         except Exception as e:
-            self._processing_stats["failed_patterns"] += 1
-            await log(f"Error processing pattern {pattern_name}: {e}", level="error")
-            return ProcessedPattern(
-                pattern_name=pattern_name,
-                error=str(e)
+            await log(f"Error cleaning up pattern processor: {e}", level="error")
+            await global_health_monitor.update_component_status(
+                "pattern_processor",
+                ComponentStatus.UNHEALTHY,
+                error=True,
+                details={"cleanup_error": str(e)}
             )
 
-    async def process_for_purpose(
-        self,
-        source_code: str,
-        purpose: PatternPurpose,
-        file_type: FileType = FileType.CODE,
-        categories: Optional[List[PatternCategory]] = None
-    ) -> List[ProcessedPattern]:
-        """Process patterns for a specific purpose."""
-        if not self._initialized:
-            await self.initialize()
-        
-        results = []
-        if categories is None:
-            categories = self._get_relevant_categories(purpose)
-        
-        for category in categories:
-            patterns = await self._get_patterns_for_category(category, purpose)
-            category_results = await self._process_category_patterns(
-                source_code, patterns, category, purpose, file_type
-            )
-            results.extend(category_results)
-        
-        return results
+    async def _load_patterns(self, category: PatternCategory) -> None:
+        """Load patterns for a category."""
+        try:
+            # Get pattern storage instance
+            storage = await get_pattern_storage()
+            
+            # Map category to pattern type and subtype
+            category_mapping = {
+                PatternCategory.SYNTAX: ("code", "syntax"),
+                PatternCategory.SEMANTICS: ("code", "semantics"),
+                PatternCategory.DOCUMENTATION: ("doc", "documentation"),
+                PatternCategory.STRUCTURE: ("arch", "structure"),
+                PatternCategory.CONTEXT: ("code", "context"),
+                PatternCategory.DEPENDENCIES: ("code", "dependencies"),
+                PatternCategory.CODE_PATTERNS: ("code", "patterns"),
+                PatternCategory.BEST_PRACTICES: ("code", "best_practices"),
+                PatternCategory.COMMON_ISSUES: ("code", "issues"),
+                PatternCategory.USER_PATTERNS: ("code", "user"),
+                PatternCategory.LEARNING: ("code", "learning")
+            }
+            
+            if category not in category_mapping:
+                await log(f"Unsupported pattern category: {category.value}", level="warning")
+                return
+                
+            pattern_type, subtype = category_mapping[category]
+            
+            # Load patterns from storage
+            patterns_by_type = await storage.get_patterns(None, pattern_type)
+            all_patterns = patterns_by_type.get(pattern_type, [])
+            
+            # Filter patterns by subtype
+            patterns = [
+                pattern for pattern in all_patterns
+                if pattern.get("pattern_type") == subtype or
+                pattern.get("metadata", {}).get("subtype") == subtype
+            ]
+            
+            # Initialize category dict if needed
+            if category not in self._patterns:
+                self._patterns[category] = {}
+            
+            # Store patterns with proper metadata
+            for pattern in patterns:
+                if "name" in pattern:  # Only store patterns with names
+                    pattern_key = pattern["name"]
+                    self._patterns[category][pattern_key] = {
+                        **pattern,
+                        "category": category,
+                        "pattern_type": pattern_type,
+                        "subtype": subtype,
+                        "metadata": {
+                            **(pattern.get("metadata", {})),
+                            "source": pattern.get("file_path", ""),
+                            "last_updated": pattern.get("last_updated")
+                        }
+                    }
+            
+            await log(f"Loaded {len(patterns)} patterns for {category.value}", level="info")
+        except Exception as e:
+            await log(f"Error loading patterns for {category.value}: {e}", level="error")
+            raise
+
+    @cached_in_request(lambda self, pattern_name: f"pattern:{pattern_name}")
+    async def process_pattern(self, pattern_name: str, source_code: str, language_id: str):
+        """Process pattern with request-level caching."""
+        async with request_cache_context() as cache:
+            # Check if we've already processed this pattern
+            cache_key = f"pattern_result:{pattern_name}:{hash(source_code)}"
+            cached_result = await cache.get(cache_key)
+            if cached_result:
+                return cached_result
+                
+            # Process pattern
+            result = await self._process_pattern_impl(pattern_name, source_code, language_id)
+            
+            # Cache result
+            await cache.set(cache_key, result)
+            return result
 
     async def _process_pattern_internal(
         self,
@@ -240,18 +325,32 @@ class PatternProcessor(AIParserInterface):
     ) -> List[PatternMatch]:
         """Internal pattern processing implementation."""
         start_time = time.time()
-        matches = []
 
         try:
-            if pattern.tree_sitter:
-                matches = await self._process_tree_sitter_pattern(source_code, pattern)
-            elif pattern.regex:
-                matches = await self._process_regex_pattern(source_code, pattern)
-
-            execution_time = time.time() - start_time
-            await self._track_metrics(pattern.pattern_name, execution_time, len(matches))
+            # Get matches using enhanced QueryPattern functionality
+            matches = pattern.matches(source_code)
             
-            return matches
+            # Convert to PatternMatch instances
+            pattern_matches = []
+            for match in matches:
+                pattern_match = PatternMatch(
+                    pattern_name=pattern.name,
+                    start_line=match.get("start", 0),
+                    end_line=match.get("end", 0),
+                    start_col=0,  # These would need to be extracted from the match
+                    end_col=0,    # based on pattern type
+                    matched_text=match.get("text", ""),
+                    category=pattern.category,
+                    purpose=pattern.purpose,
+                    confidence=pattern.confidence,
+                    metadata=match
+                )
+                pattern_matches.append(pattern_match)
+            
+            execution_time = time.time() - start_time
+            await self._track_metrics(pattern.name, execution_time, len(pattern_matches))
+            
+            return pattern_matches
 
         except Exception as e:
             await log(f"Error in pattern processing: {e}", level="error")
@@ -300,14 +399,12 @@ class PatternProcessor(AIParserInterface):
         """Get pattern processing metrics."""
         return {
             "storage": self._metrics.__dict__,
-            "learning": self._learning_metrics.__dict__,
             "processing": self._processing_stats
         }
 
     def reset_metrics(self) -> None:
         """Reset all metrics."""
         self._metrics = PatternStorageMetrics()
-        self._learning_metrics = PatternLearningMetrics()
         self._processing_stats = {
             "total_patterns": 0,
             "matched_patterns": 0,
@@ -383,363 +480,274 @@ class PatternProcessor(AIParserInterface):
             "details": details
         }
 
-    async def cleanup(self):
-        """Clean up processor resources."""
-        try:
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            # Clean up caches
-            if self._pattern_cache:
-                await self._pattern_cache.clear_async()
-                await cache_coordinator.unregister_cache("pattern_processor_patterns")
-            if self._validation_cache:
-                await self._validation_cache.clear_async()
-                await cache_coordinator.unregister_cache("pattern_processor_validation")
-            
-            # Save error analysis
-            await ErrorAudit.save_report()
-            
-            # Save cache analytics
-            analytics = await get_cache_analytics()
-            await analytics.save_metrics_history(self._pattern_cache.get_metrics())
-            await analytics.save_metrics_history(self._validation_cache.get_metrics())
-            
-            # Save metrics to database
-            async with transaction_scope() as txn:
-                await txn.execute("""
-                    INSERT INTO pattern_processor_metrics (
-                        timestamp, total_patterns, matched_patterns,
-                        failed_patterns, validation_stats
-                    ) VALUES ($1, $2, $3, $4, $5)
-                """, (
-                    time.time(),
-                    self._processing_stats["total_patterns"],
-                    self._processing_stats["matched_patterns"],
-                    self._processing_stats["failed_patterns"],
-                    self._processing_stats["validation_stats"]
-                ))
-            
-            # Unregister from health monitor
-            global_health_monitor.unregister_component("pattern_processor")
-            
-            self._initialized = False
-            await log("Pattern processor cleaned up", level="info")
-        except Exception as e:
-            await log(f"Error cleaning up pattern processor: {e}", level="error")
-            raise ProcessingError(f"Failed to cleanup pattern processor: {e}")
-
-    async def _process_regex_pattern(self, source_code: str, pattern: QueryPattern) -> List[PatternMatch]:
-        """Process using regex pattern."""
-        matches = []
-        for match in pattern.regex.finditer(source_code):
-            result = PatternMatch(
-                text=match.group(0),
-                start=match.start(),
-                end=match.end(),
-                metadata={
-                    "groups": match.groups(),
-                    "named_groups": match.groupdict()
-                }
-            )
-            if pattern.extract:
-                try:
-                    extracted = pattern.extract(result)
-                    if extracted:
-                        result.metadata.update(extracted)
-                except Exception as e:
-                    await log(f"Error in pattern extraction: {e}", level="error")
-            matches.append(result)
-        return matches
-
-    async def _process_tree_sitter_pattern(self, source_code: str, pattern: QueryPattern) -> List[PatternMatch]:
-        """Process using tree-sitter pattern."""
-        from tree_sitter_language_pack import get_parser
-        
-        matches = []
-        parser = get_parser(pattern.language_id)
-        if not parser:
-            return matches
-
-        tree = await parser.parse(bytes(source_code, "utf8"))
-        if not tree:
-            return matches
-
-        query = parser.language.query(pattern.tree_sitter)
-        for match in query.matches(tree.root_node):
-            captures = {capture.name: capture.node for capture in match.captures}
-            result = PatternMatch(
-                text=match.pattern_node.text.decode('utf8'),
-                start=match.pattern_node.start_point,
-                end=match.pattern_node.end_point,
-                metadata={"captures": captures}
-            )
-            
-            if pattern.extract:
-                try:
-                    extracted = pattern.extract(result)
-                    if extracted:
-                        result.metadata.update(extracted)
-                except Exception as e:
-                    await log(f"Error in pattern extraction: {e}", level="error")
-            
-            matches.append(result)
-        
-        return matches
-
-    @monitor_operation("validate_pattern", "pattern_processor")
-    @cached_in_request
-    @handle_async_errors(error_types=(ProcessingError,))
-    async def validate_pattern(
+    async def _process_tree_sitter_pattern(
         self,
-        pattern: ProcessedPattern,
-        validation_context: Optional[Dict[str, Any]] = None,
-        skip_cache: bool = False
-    ) -> Tuple[bool, List[str]]:
-        """Validate a pattern with request-level caching and monitoring."""
+        pattern: Dict[str, Any],
+        source_code: str,
+        language_id: str
+    ) -> QueryResult:
+        """Process a tree-sitter pattern."""
+        try:
+            # Get tree-sitter components
+            parser = get_parser(language_id)
+            language = get_language(language_id)
+            
+            if not parser or not language:
+                raise ProcessingError(f"Failed to get tree-sitter components for {language_id}")
+            
+            # Parse source code
+            tree = parser.parse(bytes(source_code, "utf8"))
+            
+            # Create and execute query
+            query = language.query(pattern.pattern)
+            matches = query.matches(tree.root_node)
+            
+            # Process matches
+            result = QueryResult(pattern_name=pattern.name)
+            for match in matches:
+                match_data = {
+                    "node": match.pattern_node,
+                    "captures": {c.name: c.node for c in match.captures}
+                }
+                
+                # Apply extraction function if provided
+                if pattern.extract:
+                    try:
+                        extracted_data = pattern.extract(match_data)
+                        match_data.update(extracted_data)
+                    except Exception as e:
+                        await log(f"Error in pattern extraction: {e}", level="error")
+                
+                result.matches.append(match_data)
+            
+            return result
+        except Exception as e:
+            await log(f"Error processing tree-sitter pattern: {e}", level="error")
+            return QueryResult(pattern_name=pattern.name)
+
+    async def _process_custom_pattern(
+        self,
+        pattern: Dict[str, Any],
+        source_code: str,
+        language_id: str
+    ) -> QueryResult:
+        """Process a custom pattern."""
+        try:
+            # Get custom parser class
+            parser_class = CUSTOM_PARSER_CLASSES.get(language_id)
+            if not parser_class:
+                raise ProcessingError(f"No custom parser found for {language_id}")
+            
+            # Create parser instance
+            parser = parser_class()
+            
+            # Process pattern
+            result = QueryResult(pattern_name=pattern.name)
+            matches = await parser.process_pattern(pattern, source_code)
+            
+            # Apply extraction function if provided
+            if pattern.extract and matches:
+                try:
+                    for match in matches:
+                        extracted = pattern.extract(match)
+                        if extracted:
+                            match.update(extracted)
+                except Exception as e:
+                    await log(f"Error in pattern extraction: {e}", level="error")
+            
+            result.matches = matches
+            return result
+            
+        except Exception as e:
+            await log(f"Error processing custom pattern: {e}", level="error")
+            return QueryResult(pattern_name=pattern.name)
+
+    async def get_patterns_for_category(
+        self,
+        category: FeatureCategory,
+        purpose: PatternPurpose,
+        language_id: str,
+        parser_type: ParserType
+    ) -> List[QueryPattern]:
+        """Get patterns for a specific category, purpose, and language."""
         if not self._initialized:
-            await self.initialize()
-            
-        # Get request context for metrics
-        request_cache = get_current_request_cache()
-        if request_cache:
-            await request_cache.set(
-                "pattern_validation_count",
-                (await request_cache.get("pattern_validation_count", 0)) + 1
-            )
-            
-        try:
-            async with AsyncErrorBoundary(
-                operation_name="pattern_validation",
-                error_types=ProcessingError,
-                severity=ErrorSeverity.WARNING
-            ):
-                self._processing_stats["validation_stats"]["total_validations"] += 1
-                
-                # Generate cache key
-                cache_key = self._generate_validation_cache_key(pattern, validation_context)
-                
-                # Check validation cache if not skipping
-                if not skip_cache:
-                    cached_result = await self._validation_cache.get_async(cache_key)
-                    if cached_result:
-                        self._processing_stats["validation_stats"]["cache_hits"] += 1
-                        await cache_metrics.increment("pattern_processor_validation", "hits")
-                        await log(
-                            "Pattern validation cache hit",
-                            level="debug",
-                            context={
-                                "pattern_name": pattern.pattern_name,
-                                "cache_key": cache_key,
-                                "is_valid": cached_result["is_valid"]
-                            }
-                        )
-                        return cached_result["is_valid"], cached_result["errors"]
-                
-                validation_errors = []
-                validation_context = validation_context or {}
-                
-                try:
-                    # Basic validation with detailed error context
-                    if not pattern.pattern_name:
-                        await self._track_validation_error(
-                            "missing_pattern_name",
-                            {"pattern_type": getattr(pattern, "pattern_type", None)}
-                        )
-                        validation_errors.append({
-                            "error": "Pattern name is required",
-                            "context": {"pattern_type": getattr(pattern, "pattern_type", None)}
-                        })
-                    if not pattern.category:
-                        await self._track_validation_error(
-                            "missing_category",
-                            {"pattern_name": pattern.pattern_name}
-                        )
-                        validation_errors.append({
-                            "error": "Pattern category is required",
-                            "context": {"pattern_name": pattern.pattern_name}
-                        })
-                        
-                    # Content validation with size analysis
-                    if hasattr(pattern, 'content'):
-                        if not pattern.content:
-                            await self._track_validation_error(
-                                "empty_content",
-                                {"pattern_name": pattern.pattern_name}
-                            )
-                            validation_errors.append({
-                                "error": "Pattern content is empty",
-                                "context": {"pattern_name": pattern.pattern_name}
-                            })
-                        elif len(pattern.content) > 10000:  # Arbitrary limit
-                            await self._track_validation_error(
-                                "content_too_large",
-                                {
-                                    "pattern_name": pattern.pattern_name,
-                                    "content_size": len(pattern.content),
-                                    "max_size": 10000
-                                }
-                            )
-                            validation_errors.append({
-                                "error": "Pattern content exceeds size limit",
-                                "context": {
-                                    "pattern_name": pattern.pattern_name,
-                                    "content_size": len(pattern.content),
-                                    "max_size": 10000
-                                }
-                            })
-                    
-                    # Context-specific validation
-                    if validation_context:
-                        await self._validate_with_context(pattern, validation_context, validation_errors)
-                    
-                    # Relationship validation
-                    if hasattr(pattern, 'relationships'):
-                        await self._validate_relationships(pattern, validation_errors)
-                    
-                    # Track pattern evolution if valid
-                    is_valid = len(validation_errors) == 0
-                    if is_valid:
-                        await self._track_pattern_evolution(pattern)
-                        self._processing_stats["validation_stats"]["successful_validations"] += 1
-                        await log(
-                            "Pattern validated successfully",
-                            level="info",
-                            context={
-                                "pattern_name": pattern.pattern_name,
-                                "pattern_type": getattr(pattern, "pattern_type", None),
-                                "validation_context": validation_context
-                            }
-                        )
-                    else:
-                        self._processing_stats["validation_stats"]["failed_validations"] += 1
-                        await log(
-                            "Pattern validation failed",
-                            level="warning",
-                            context={
-                                "pattern_name": pattern.pattern_name,
-                                "error_count": len(validation_errors),
-                                "errors": [err["error"] for err in validation_errors],
-                                "validation_context": validation_context
-                            }
-                        )
-                    
-                    # Cache validation result
-                    cache_data = {
-                        "is_valid": is_valid,
-                        "errors": [err["error"] for err in validation_errors],
-                        "timestamp": time.time()
-                    }
-                    await self._validation_cache.set_async(cache_key, cache_data)
-                    await cache_metrics.increment("pattern_processor_validation", "sets")
-                    
-                    # Track request-level metrics
-                    if request_cache:
-                        validation_metrics = {
-                            "pattern_name": pattern.pattern_name,
-                            "validation_time": time.time(),
-                            "is_valid": is_valid,
-                            "error_count": len(validation_errors)
-                        }
-                        await request_cache.set(
-                            f"validation_metrics_{pattern.pattern_name}",
-                            validation_metrics
-                        )
-                    
-                    return is_valid, [err["error"] for err in validation_errors]
-                    
-                except Exception as e:
-                    error_msg = f"Validation error: {str(e)}"
-                    
-                    # Get error recommendations
-                    recommendations = await ErrorAudit.get_standardization_recommendations()
-                    relevant_recs = [r for r in recommendations if r["location"] == "validate_pattern"]
-                    
-                    if relevant_recs:
-                        await log(
-                            "Error handling recommendations available",
-                            level="warning",
-                            context={"recommendations": relevant_recs}
-                        )
-                    
-                    await self._track_validation_error(
-                        "validation_exception",
-                        {
-                            "pattern_name": pattern.pattern_name,
-                            "error": str(e),
-                            "validation_context": validation_context,
-                            "recommendations": relevant_recs
-                        }
-                    )
-                    
-                    # Track in request context
-                    if request_cache:
-                        await request_cache.set(
-                            "last_validation_error",
-                            {
-                                "error": str(e),
-                                "pattern": pattern.pattern_name,
-                                "timestamp": time.time()
-                            }
-                        )
-                    
-                    return False, [error_msg]
-            
-        except Exception as e:
-            error_msg = f"Validation error: {str(e)}"
-            
-            # Get error recommendations
-            recommendations = await ErrorAudit.get_standardization_recommendations()
-            relevant_recs = [r for r in recommendations if r["location"] == "validate_pattern"]
-            
-            if relevant_recs:
-                await log(
-                    "Error handling recommendations available",
-                    level="warning",
-                    context={"recommendations": relevant_recs}
-                )
-            
-            await self._track_validation_error(
-                "validation_exception",
-                {
-                    "pattern_name": pattern.pattern_name,
-                    "error": str(e),
-                    "validation_context": validation_context,
-                    "recommendations": relevant_recs
-                }
-            )
-            
-            # Track in request context
-            if request_cache:
-                await request_cache.set(
-                    "last_validation_error",
-                    {
-                        "error": str(e),
-                        "pattern": pattern.pattern_name,
-                        "timestamp": time.time()
-                    }
-                )
-            
-            return False, [error_msg]
-
-    def _generate_validation_cache_key(
+            await self.ensure_initialized()
+        
+        # Check cache first
+        cache_key = f"patterns:{category.value}:{purpose.value}:{language_id}:{parser_type.value}"
+        cached_patterns = await self._cache.get(cache_key)
+        if cached_patterns:
+            return [QueryPattern(**p) for p in cached_patterns]
+        
+        patterns = []
+        
+        # Get patterns based on parser type
+        if parser_type == ParserType.CUSTOM:
+            patterns.extend(await self._get_custom_patterns(category, purpose, language_id))
+        elif parser_type == ParserType.TREE_SITTER:
+            patterns.extend(await self._get_tree_sitter_patterns(category, purpose, language_id))
+        
+        # Cache patterns
+        await self._cache.set(cache_key, [p.__dict__ for p in patterns])
+        
+        return patterns
+    
+    async def _get_tree_sitter_patterns(
         self,
-        pattern: ProcessedPattern,
-        validation_context: Optional[Dict[str, Any]]
-    ) -> str:
-        """Generate a cache key for validation results."""
-        key_parts = [
-            pattern.pattern_name,
-            str(pattern.category) if pattern.category else "",
-            str(hash(pattern.content)) if hasattr(pattern, "content") else "",
-            str(hash(str(validation_context))) if validation_context else ""
-        ]
-        return ":".join(key_parts)
-
+        category: FeatureCategory,
+        purpose: PatternPurpose,
+        language_id: str
+    ) -> List[QueryPattern]:
+        """Get tree-sitter patterns for a specific category, purpose, and language."""
+        patterns = []
+        
+        # Get pattern files for this category and language
+        pattern_files = await self._get_pattern_files(category, language_id, ParserType.TREE_SITTER)
+        
+        for pattern_file in pattern_files:
+            # Load patterns
+            file_patterns = await self._load_pattern_file(pattern_file)
+            for pattern_data in file_patterns:
+                try:
+                    # Create QueryPattern instance
+                    pattern = create_pattern(
+                        name=pattern_data["name"],
+                        pattern=pattern_data["pattern"],
+                        category=category,
+                        purpose=purpose,
+                        language_id=language_id,
+                        extract=pattern_data.get("extract"),
+                        confidence=pattern_data.get("confidence", 0.0),
+                        metadata=pattern_data.get("metadata", {})
+                    )
+                    patterns.append(pattern)
+                except Exception as e:
+                    await log(f"Error creating pattern from {pattern_file}: {e}", level="error")
+        
+        return patterns
+    
+    async def _get_custom_patterns(
+        self,
+        category: FeatureCategory,
+        purpose: PatternPurpose,
+        language_id: str
+    ) -> List[QueryPattern]:
+        """Get custom patterns for a specific category, purpose, and language."""
+        patterns = []
+        
+        # Get pattern files for this category and language
+        pattern_files = await self._get_pattern_files(category, language_id, ParserType.CUSTOM)
+        
+        for pattern_file in pattern_files:
+            # Load patterns
+            file_patterns = await self._load_pattern_file(pattern_file)
+            for pattern_data in file_patterns:
+                try:
+                    # Create QueryPattern instance
+                    pattern = create_pattern(
+                        name=pattern_data["name"],
+                        pattern=pattern_data["pattern"],
+                        category=category,
+                        purpose=purpose,
+                        language_id=language_id,
+                        extract=pattern_data.get("extract"),
+                        confidence=pattern_data.get("confidence", 0.0),
+                        metadata=pattern_data.get("metadata", {})
+                    )
+                    patterns.append(pattern)
+                except Exception as e:
+                    await log(f"Error creating pattern from {pattern_file}: {e}", level="error")
+        
+        return patterns
+    
+    async def _get_pattern_files(
+        self,
+        category: FeatureCategory,
+        language_id: str,
+        parser_type: ParserType
+    ) -> List[str]:
+        """Get pattern files for a specific category and language."""
+        import glob
+        import os
+        
+        pattern_files = []
+        
+        # Get pattern files from query_patterns directory
+        pattern_dir = os.path.join("parsers", "query_patterns")
+        
+        if parser_type == ParserType.CUSTOM:
+            # For custom parsers, look for language-specific pattern files
+            pattern_glob = os.path.join(pattern_dir, f"{language_id}_{category.value}_*.py")
+        else:
+            # For tree-sitter, look for tree-sitter pattern files
+            pattern_glob = os.path.join(pattern_dir, f"tree_sitter_{language_id}_{category.value}_*.scm")
+        
+        pattern_files.extend(glob.glob(pattern_glob))
+        
+        return pattern_files
+    
+    async def _load_pattern_file(self, pattern_file: str) -> List[Dict[str, Any]]:
+        """Load patterns from a pattern file."""
+        import json
+        
+        try:
+            with open(pattern_file, "r") as f:
+                patterns = json.load(f)
+            return patterns
+        except Exception as e:
+            await log(f"Error loading pattern file {pattern_file}: {e}", level="error")
+            return []
+    
+    async def validate_pattern(self, pattern: Dict[str, Any], language_id: str) -> bool:
+        """Validate a pattern for a specific language."""
+        try:
+            # Check required fields
+            required_fields = ["name", "pattern", "purpose"]
+            for field in required_fields:
+                if field not in pattern:
+                    await log(f"Pattern missing required field {field}", level="error")
+                    return False
+            
+            # Validate pattern syntax
+            if pattern.get("type") == "tree-sitter":
+                # Validate tree-sitter query syntax
+                if language_id in SupportedLanguage.__args__:
+                    language = get_language(language_id)
+                    try:
+                        language.query(pattern["pattern"])
+                    except Exception as e:
+                        await log(f"Invalid tree-sitter query: {e}", level="error")
+                        return False
+            else:
+                # Validate regex pattern
+                import re
+                try:
+                    re.compile(pattern["pattern"])
+                except Exception as e:
+                    await log(f"Invalid regex pattern: {e}", level="error")
+                    return False
+            
+            return True
+        except Exception as e:
+            await log(f"Error validating pattern: {e}", level="error")
+            return False
+    
+    async def _get_pattern(
+        self,
+        pattern_name: str,
+        language_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get a pattern by name and language."""
+        # Check tree-sitter patterns
+        if pattern_name in self._tree_sitter_patterns.get(language_id, {}):
+            return self._tree_sitter_patterns[language_id][pattern_name]
+        
+        # Check custom patterns
+        if pattern_name in self._custom_patterns.get(language_id, {}):
+            return self._custom_patterns[language_id][pattern_name]
+        
+        return None
+    
     async def _track_validation_error(self, error_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Track validation error types for monitoring."""
         stats = self._processing_stats["validation_stats"]
@@ -926,11 +934,295 @@ class PatternProcessor(AIParserInterface):
             await log(f"Error checking cyclic relationships: {e}", level="error")
             return False
 
+    async def _parse_source(self, source_code: str) -> Optional[Dict[str, Any]]:
+        """Parse source code into AST."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary(f"{self.language_id} parsing"):
+            try:
+                # For pattern processor, we create a simple AST-like structure
+                ast = {
+                    "type": "pattern_root",
+                    "content": source_code,
+                    "patterns": await self._process_pattern_internal(source_code, None)
+                }
+                return ast
+            except Exception as e:
+                log(f"Error parsing pattern content: {e}", level="error")
+                return None
+
+    def _parse_content(self, source_code: str) -> Dict[str, Any]:
+        """Internal synchronous parsing method."""
+        # Pattern processor doesn't need synchronous parsing
+        # All work is done in _parse_source
+        return {
+            "type": "pattern_root",
+            "content": source_code
+        }
+
+    async def parse(self, source_code: str) -> Optional[ParserResult]:
+        """Parse source code and return structured results."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary(f"{self.language_id} parsing"):
+            try:
+                # Parse the source
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return None
+                
+                # Extract features
+                features = await self.extract_features(ast, source_code)
+                
+                return ParserResult(
+                    success=True,
+                    ast=ast,
+                    features=features,
+                    documentation=features.get(FeatureCategory.DOCUMENTATION.value, {}),
+                    complexity=features.get(FeatureCategory.SYNTAX.value, {}).get("metrics", {}),
+                    statistics=self.stats
+                )
+            except Exception as e:
+                log(f"Error in pattern processor: {e}", level="error")
+                return None
+
+    async def extract_features(self, ast: Dict[str, Any], source_code: str) -> Dict[str, Dict[str, Any]]:
+        """Extract features from parsed content."""
+        features = {
+            FeatureCategory.SYNTAX.value: {
+                "patterns": ast.get("patterns", []),
+                "metrics": {
+                    "pattern_count": len(ast.get("patterns", [])),
+                    "source_length": len(source_code)
+                }
+            },
+            FeatureCategory.DOCUMENTATION.value: {}  # Pattern processor doesn't handle docs
+        }
+        return features
+
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process source code with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        try:
+            async with AsyncErrorBoundary("ai_pattern_processing"):
+                # Process patterns with AI context
+                patterns = await self.process_for_purpose(
+                    source_code,
+                    context.purpose,
+                    context.file_type
+                )
+                
+                return AIProcessingResult(
+                    success=True,
+                    patterns=patterns,
+                    confidence=context.confidence_threshold,
+                    metadata={
+                        "pattern_count": len(patterns),
+                        "processing_time": time.time()
+                    }
+                )
+        except Exception as e:
+            await log(f"Error in AI pattern processing: {e}", level="error")
+            return AIProcessingResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def process_with_deep_learning(
+        self,
+        source_code: str,
+        context: AIContext,
+        repositories: List[int]
+    ) -> AIProcessingResult:
+        """Process with deep learning capabilities."""
+        if not self._initialized:
+            await self.initialize()
+            
+        try:
+            async with AsyncErrorBoundary("deep_learning_pattern_processing"):
+                # First learn from repositories
+                learning_results = await self.learn_from_repositories(repositories)
+                
+                # Then process with learned patterns
+                context.metadata = {
+                    "learning_results": learning_results,
+                    "repositories": repositories
+                }
+                
+                return await self.process_with_ai(source_code, context)
+        except Exception as e:
+            await log(f"Error in deep learning pattern processing: {e}", level="error")
+            return AIProcessingResult(
+                success=False,
+                error=str(e)
+            )
+
+    async def learn_from_repositories(
+        self,
+        repo_ids: List[int]
+    ) -> Dict[str, Any]:
+        """Learn patterns from multiple repositories."""
+        if not self._initialized:
+            await self.initialize()
+            
+        try:
+            async with AsyncErrorBoundary("repository_pattern_learning"):
+                learned_patterns = {}
+                
+                async with transaction_scope() as txn:
+                    # Get repository patterns
+                    patterns = await txn.fetch("""
+                        SELECT pattern_name, content, category, purpose
+                        FROM repository_patterns
+                        WHERE repository_id = ANY($1)
+                    """, repo_ids)
+                    
+                    # Process and store learned patterns
+                    for pattern in patterns:
+                        pattern_key = f"{pattern['pattern_name']}_{pattern['category']}"
+                        learned_patterns[pattern_key] = {
+                            "content": pattern["content"],
+                            "category": pattern["category"],
+                            "purpose": pattern["purpose"],
+                            "source_repos": repo_ids
+                        }
+                        
+                    # Update learning metrics
+                    await txn.execute("""
+                        INSERT INTO pattern_learning_metrics (
+                            timestamp, repository_count, pattern_count,
+                            success_rate
+                        ) VALUES ($1, $2, $3, $4)
+                    """, (
+                        time.time(),
+                        len(repo_ids),
+                        len(learned_patterns),
+                        1.0  # Assuming all patterns were learned successfully
+                    ))
+                
+                return {
+                    "learned_patterns": len(learned_patterns),
+                    "repositories": len(repo_ids),
+                    "timestamp": time.time()
+                }
+        except Exception as e:
+            await log(f"Error learning from repositories: {e}", level="error")
+            return {
+                "error": str(e),
+                "learned_patterns": 0,
+                "repositories": len(repo_ids)
+            }
+
+    async def validate_all_patterns(patterns: List[Dict[str, Any]], language_id: Optional[str] = None) -> Dict[str, Any]:
+        """Validate all patterns for all languages or a specific language.
+        
+        Args:
+            patterns: List of patterns to validate
+            language_id: Optional language ID to filter patterns
+            
+        Returns:
+            Dictionary containing validation results and statistics
+        """
+        validation_results = {
+            "valid_patterns": [],
+            "invalid_patterns": [],
+            "validation_time": 0,
+            "stats": {
+                "total": 0,
+                "valid": 0,
+                "invalid": 0
+            }
+        }
+        
+        start_time = time.time()
+        
+        for pattern in patterns:
+            # Skip if language_id is specified and doesn't match
+            if language_id and pattern.get("language_id") != language_id:
+                continue
+            
+            validation_results["stats"]["total"] += 1
+            
+            # Create ProcessedPattern instance
+            processed_pattern = ProcessedPattern(
+                pattern_name=pattern["name"],
+                category=pattern.get("category"),
+                purpose=pattern.get("purpose"),
+                content=pattern.get("pattern"),
+                metadata=pattern.get("metadata", {})
+            )
+            
+            # Validate pattern
+            is_valid, errors = await pattern_processor.validate_pattern(
+                processed_pattern,
+                {"language": pattern.get("language_id", "unknown")}
+            )
+            
+            if is_valid:
+                validation_results["valid_patterns"].append({
+                    "pattern": pattern["name"],
+                    "language": pattern.get("language_id", "unknown")
+                })
+                validation_results["stats"]["valid"] += 1
+            else:
+                validation_results["invalid_patterns"].append({
+                    "pattern": pattern["name"],
+                    "language": pattern.get("language_id", "unknown"),
+                    "errors": errors
+                })
+                validation_results["stats"]["invalid"] += 1
+        
+        validation_results["validation_time"] = time.time() - start_time
+        
+        return validation_results
+
+    async def report_validation_results(results: Dict[str, Any]) -> str:
+        """Generate a human-readable report of pattern validation results.
+        
+        Args:
+            results: Validation results from validate_all_patterns
+            
+        Returns:
+            Formatted string containing the validation report
+        """
+        report = []
+        report.append("Pattern Validation Report")
+        report.append("=" * 25)
+        report.append("")
+        
+        # Add statistics
+        report.append("Statistics:")
+        report.append(f"- Total patterns: {results['stats']['total']}")
+        report.append(f"- Valid patterns: {results['stats']['valid']}")
+        report.append(f"- Invalid patterns: {results['stats']['invalid']}")
+        report.append(f"- Validation time: {results['validation_time']:.2f}s")
+        report.append("")
+        
+        # Add invalid patterns if any
+        if results["invalid_patterns"]:
+            report.append("Invalid Patterns:")
+            for pattern in results["invalid_patterns"]:
+                report.append(f"- {pattern['pattern']} ({pattern['language']}):")
+                for error in pattern["errors"]:
+                    report.append(f"  - {error}")
+            report.append("")
+        
+        return "\n".join(report)
+
 # Global instance
 pattern_processor = PatternProcessor()
 
-async def get_pattern_processor() -> PatternProcessor:
-    """Get the global pattern processor instance."""
-    if not pattern_processor._initialized:
-        await pattern_processor.initialize()
-    return pattern_processor 
+# Export commonly used functions
+__all__ = [
+    'pattern_processor',
+    'validate_all_patterns',
+    'report_validation_results'
+] 

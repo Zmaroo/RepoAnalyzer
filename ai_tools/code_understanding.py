@@ -5,11 +5,15 @@ Flow:
    - Codebase analysis
    - Code context retrieval
    - Embedding management
+   - Tree-sitter AST analysis
+   - Custom parser AST analysis
 
 2. Integration Points:
    - GraphSync [6.3]: Graph projections
    - SearchEngine [5.0]: Code search
    - CodeEmbedder [3.1]: Code embeddings
+   - Tree-sitter Language Pack: AST generation
+   - Custom Parsers: Specialized parsing
 
 3. Error Handling:
    - ProcessingError: Analysis operations
@@ -37,8 +41,10 @@ from parsers.models import (
 )
 from parsers.types import (
     ParserResult,
-    ExtractedFeatures
+    ExtractedFeatures,
+    ParserType
 )
+from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
 from config import ParserConfig
 from embedding.embedding_models import code_embedder
 from db.graph_sync import get_graph_sync
@@ -58,6 +64,12 @@ class CodeUnderstanding:
         self._pending_tasks: Set[asyncio.Task] = set()
         self._initialized = False
         self._lock = asyncio.Lock()
+        self._tree_sitter_parsers = {}  # Cache for tree-sitter parsers
+        self._parser_metrics = {
+            ParserType.CUSTOM: {"processed": 0, "success": 0},
+            ParserType.TREE_SITTER: {"processed": 0, "success": 0},
+            ParserType.UNKNOWN: {"processed": 0, "success": 0}
+        }
     
     async def ensure_initialized(self):
         """Ensure the instance is properly initialized before use."""
@@ -83,6 +95,9 @@ class CodeUnderstanding:
                 instance.graph_analysis = await GraphAnalysis.create()
                 instance.code_embedder = code_embedder
                 
+                # Initialize tree-sitter parsers
+                await instance._initialize_tree_sitter_parsers()
+                
                 # Register shutdown handler
                 register_shutdown_handler(instance.cleanup)
                 
@@ -99,6 +114,19 @@ class CodeUnderstanding:
             await instance.cleanup()
             raise ProcessingError(f"Failed to initialize code understanding: {e}")
     
+    async def _initialize_tree_sitter_parsers(self):
+        """Initialize tree-sitter parsers for supported languages."""
+        try:
+            for lang in SupportedLanguage.__args__:
+                try:
+                    parser = get_parser(lang)
+                    if parser:
+                        self._tree_sitter_parsers[lang] = parser
+                except Exception as e:
+                    await log(f"Error initializing tree-sitter parser for {lang}: {e}", level="warning")
+        except Exception as e:
+            await log(f"Error initializing tree-sitter parsers: {e}", level="error")
+    
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def analyze_codebase(self, repo_id: int) -> Dict[str, Any]:
         """[4.2.2] Analyze codebase structure and relationships."""
@@ -109,7 +137,7 @@ class CodeUnderstanding:
                 
                 # Query for repository files
                 files_query = """
-                SELECT file_path, language FROM code_files 
+                SELECT file_path, language, parser_type FROM code_files 
                 WHERE repo_id = $1
                 """
                 task = asyncio.create_task(query(files_query, [repo_id]))
@@ -132,7 +160,8 @@ class CodeUnderstanding:
                 WITH gds.util.asNode(nodeId) AS node, communityId
                 RETURN collect({
                     file_path: node.file_path,
-                    community: communityId
+                    community: communityId,
+                    parser_type: node.parser_type
                 }) AS communities
                 """
                 task = asyncio.create_task(run_query(community_query, {"repo_id": repo_id}))
@@ -150,7 +179,8 @@ class CodeUnderstanding:
                 WHERE score > 0.1
                 RETURN collect({
                     file_path: node.file_path,
-                    centrality: score
+                    centrality: score,
+                    parser_type: node.parser_type
                 }) AS central_components
                 """
                 task = asyncio.create_task(run_query(centrality_query, {"repo_id": repo_id}))
@@ -162,7 +192,7 @@ class CodeUnderstanding:
                 
                 # Get embeddings
                 embeddings_query = """
-                    SELECT file_path, embedding 
+                    SELECT file_path, embedding, parser_type 
                     FROM code_snippets 
                     WHERE repo_id = %s AND embedding IS NOT NULL
                 """
@@ -173,21 +203,34 @@ class CodeUnderstanding:
                 finally:
                     self._pending_tasks.remove(task)
                 
+                # Analyze parser distribution
+                parser_stats = {
+                    "custom": len([f for f in files if f["parser_type"] == ParserType.CUSTOM.value]),
+                    "tree_sitter": len([f for f in files if f["parser_type"] == ParserType.TREE_SITTER.value]),
+                    "unknown": len([f for f in files if f["parser_type"] == ParserType.UNKNOWN.value])
+                }
+                
                 return {
                     "communities": communities[0]["communities"] if communities else [],
                     "central_components": central_components[0]["central_components"] if central_components else [],
-                    "embedded_files": len(code_embeddings) if code_embeddings else 0
+                    "embedded_files": len(code_embeddings) if code_embeddings else 0,
+                    "parser_distribution": parser_stats
                 }
             except Exception as e:
                 raise ProcessingError(f"Error in analyze_codebase: {e}")
     
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
-    async def get_code_context(self, file_path: str, repo_id: int) -> Dict[str, Any]:
+    async def get_code_context(
+        self,
+        file_path: str,
+        repo_id: int,
+        parser_type: Optional[ParserType] = None
+    ) -> Dict[str, Any]:
         """[4.2.3] Retrieve context for a specific file."""
         async with AsyncErrorBoundary(operation_name="code context retrieval", severity=ErrorSeverity.ERROR):
-            # Get file content
+            # Get file content and metadata
             file_query = """
-            SELECT file_content FROM code_files 
+            SELECT file_content, language, parser_type FROM code_files 
             WHERE repo_id = $1 AND file_path = $2
             """
             file_result = await query(file_query, [repo_id, file_path])
@@ -196,6 +239,8 @@ class CodeUnderstanding:
                 return {"error": f"File not found: {file_path}"}
                 
             content = file_result[0]["file_content"]
+            language = file_result[0]["language"]
+            actual_parser_type = parser_type or ParserType(file_result[0]["parser_type"])
             
             # Get similar files
             # Import locally to avoid circular dependencies
@@ -211,24 +256,53 @@ class CodeUnderstanding:
             MATCH (n:Code {file_path: $file_path, repo_id: $repo_id})-[r]-(m:Code)
             RETURN type(r) as relationship_type,
                    m.file_path as related_file,
-                   m.type as component_type
+                   m.type as component_type,
+                   m.parser_type as parser_type
             """
             relationships = await run_query(deps_query, {
                 'file_path': file_path,
                 'repo_id': repo_id
             })
             
+            # Get AST if available
+            ast = None
+            if actual_parser_type == ParserType.TREE_SITTER and language in self._tree_sitter_parsers:
+                try:
+                    parser = self._tree_sitter_parsers[language]
+                    tree = parser.parse(bytes(content, "utf8"))
+                    if tree:
+                        ast = self._convert_tree_to_dict(tree.root_node)
+                except Exception as e:
+                    await log(f"Error getting tree-sitter AST: {e}", level="warning")
+            
             return {
                 "relationships": relationships,
-                "similar_files": similar_files
+                "similar_files": similar_files,
+                "ast": ast,
+                "parser_type": actual_parser_type.value,
+                "language": language
             }
+    
+    def _convert_tree_to_dict(self, node) -> Dict[str, Any]:
+        """Convert a tree-sitter node to a dictionary."""
+        result = {
+            "type": node.type,
+            "start_point": node.start_point,
+            "end_point": node.end_point
+        }
+        
+        if len(node.children) > 0:
+            result["children"] = [self._convert_tree_to_dict(child) for child in node.children]
+        
+        return result
     
     @handle_async_errors(error_types=ProcessingError)
     async def update_embeddings(
         self,
         file_path: str,
         repo_id: int,
-        code_content: str
+        code_content: str,
+        parser_type: ParserType
     ) -> None:
         """Update both graph and content embeddings."""
         async with AsyncErrorBoundary("embedding update", severity=ErrorSeverity.ERROR):
@@ -236,10 +310,10 @@ class CodeUnderstanding:
             embedding = await self.code_embedder.embed_async(code_content)
             update_query = """
                 UPDATE code_snippets 
-                SET embedding = %s 
+                SET embedding = %s, parser_type = %s
                 WHERE repo_id = %s AND file_path = %s
             """
-            await query(update_query, (embedding.tolist(), repo_id, file_path))
+            await query(update_query, (embedding.tolist(), parser_type.value, repo_id, file_path))
             
             # Update graph projection
             graph_sync = await get_graph_sync()
@@ -263,6 +337,9 @@ class CodeUnderstanding:
             # Clean up graph analysis
             if self.graph_analysis:
                 await self.graph_analysis.cleanup()
+            
+            # Clean up tree-sitter parsers
+            self._tree_sitter_parsers.clear()
             
             # Unregister from health monitoring
             from utils.health_monitor import global_health_monitor

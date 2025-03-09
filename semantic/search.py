@@ -24,11 +24,15 @@ from utils.logger import log, ErrorSeverity
 from utils.cache import cache_coordinator
 from embedding.embedding_models import code_embedder, doc_embedder
 from ai_tools.graph_capabilities import graph_analysis
-from parsers.models import (
+from parsers.types import (
     FileType,
-    FileClassification
+    ParserResult,
+    ExtractedFeatures,
+    ParserType
 )
-from parsers.types import ParserResult, ExtractedFeatures
+from parsers.models import FileClassification
+from parsers.language_mapping import normalize_language_name
+from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
 from utils.error_handling import (
     handle_async_errors,
     handle_errors,
@@ -38,6 +42,7 @@ from utils.error_handling import (
 )
 from utils.shutdown import register_shutdown_handler
 import asyncio
+import os
 
 class SearchEngine:
     """[5.1] Handles all search operations combining vector and graph-based search."""
@@ -51,6 +56,20 @@ class SearchEngine:
         self._vector_store = None
         self._search_config = None
         self._cache = None
+    
+    async def _get_language_for_file(self, file_path: str) -> Optional[str]:
+        """Get normalized language name for a file."""
+        _, ext = os.path.splitext(file_path)
+        if not ext:
+            return None
+            
+        try:
+            language = normalize_language_name(ext[1:].lower())
+            if language in SupportedLanguage.__args__:
+                return language
+        except:
+            pass
+        return None
     
     async def ensure_initialized(self):
         """Ensure the instance is properly initialized before use."""
@@ -203,6 +222,166 @@ class SearchEngine:
         except Exception as e:
             await log(f"Error cleaning up search engine: {e}", level="error")
             raise ProcessingError(f"Failed to cleanup search engine: {e}")
+
+    @handle_async_errors(error_types=ProcessingError)
+    async def search_code(self, query: str, language: Optional[str] = None, **kwargs) -> List[Dict[str, Any]]:
+        """Search code using vector similarity."""
+        if not self._initialized:
+            await self.ensure_initialized()
+            
+        try:
+            # If language is provided, normalize it
+            if language:
+                language = normalize_language_name(language)
+                if language not in SupportedLanguage.__args__:
+                    language = None
+            
+            # Get query embedding
+            query_embedding = await code_embedder.embed_code(
+                query,
+                language or "unknown",
+                context={"is_query": True}
+            )
+            
+            # Search vector store
+            results = await self._vector_store.search_code(
+                query_embedding,
+                language=language,
+                **kwargs
+            )
+            
+            # Enhance results with tree-sitter parsing
+            enhanced_results = []
+            for result in results:
+                file_path = result.get("file")
+                if not file_path:
+                    continue
+                    
+                # Get language for file
+                file_language = await self._get_language_for_file(file_path)
+                if not file_language:
+                    enhanced_results.append(result)
+                    continue
+                    
+                # Get parser for language
+                parser = get_parser(file_language)
+                if not parser:
+                    enhanced_results.append(result)
+                    continue
+                    
+                # Parse snippet
+                snippet = result.get("snippet", "")
+                if not snippet:
+                    enhanced_results.append(result)
+                    continue
+                    
+                tree = parser.parse(bytes(snippet, "utf8"))
+                if not tree:
+                    enhanced_results.append(result)
+                    continue
+                    
+                # Get unified parser
+                unified = await get_unified_parser()
+                
+                # Extract features
+                features = await unified.extract_features(tree, snippet, file_language)
+                
+                # Add features to result
+                result["features"] = features.to_dict()
+                enhanced_results.append(result)
+            
+            return enhanced_results
+        except Exception as e:
+            await log(f"Error searching code: {e}", level="error")
+            return []
+
+    @handle_async_errors(error_types=ProcessingError)
+    async def search_docs(self, query: str, **kwargs) -> List[Dict[str, Any]]:
+        """Search documentation using vector similarity."""
+        if not self._initialized:
+            await self.ensure_initialized()
+            
+        try:
+            # Get query embedding
+            query_embedding = await doc_embedder.embed_text(
+                query,
+                context={"is_query": True}
+            )
+            
+            # Search vector store
+            results = await self._vector_store.search_docs(
+                query_embedding,
+                **kwargs
+            )
+            
+            # Enhance results with tree-sitter parsing for code blocks
+            enhanced_results = []
+            for result in results:
+                # Extract code blocks from doc content
+                code_blocks = self._extract_code_blocks(result.get("content", ""))
+                
+                # Process each code block
+                processed_blocks = []
+                for block in code_blocks:
+                    language = block.get("language")
+                    if not language:
+                        processed_blocks.append(block)
+                        continue
+                        
+                    # Normalize language
+                    language = normalize_language_name(language)
+                    if language not in SupportedLanguage.__args__:
+                        processed_blocks.append(block)
+                        continue
+                        
+                    # Get parser for language
+                    parser = get_parser(language)
+                    if not parser:
+                        processed_blocks.append(block)
+                        continue
+                        
+                    # Parse code block
+                    tree = parser.parse(bytes(block["content"], "utf8"))
+                    if not tree:
+                        processed_blocks.append(block)
+                        continue
+                        
+                    # Get unified parser
+                    unified = await get_unified_parser()
+                    
+                    # Extract features
+                    features = await unified.extract_features(tree, block["content"], language)
+                    
+                    # Add features to block
+                    block["features"] = features.to_dict()
+                    processed_blocks.append(block)
+                
+                # Add processed blocks to result
+                result["code_blocks"] = processed_blocks
+                enhanced_results.append(result)
+            
+            return enhanced_results
+        except Exception as e:
+            await log(f"Error searching docs: {e}", level="error")
+            return []
+
+    def _extract_code_blocks(self, content: str) -> List[Dict[str, Any]]:
+        """Extract code blocks from markdown content."""
+        import re
+        
+        code_blocks = []
+        pattern = r"```(\w+)?\n(.*?)\n```"
+        matches = re.finditer(pattern, content, re.DOTALL)
+        
+        for match in matches:
+            language = match.group(1) or "text"
+            code = match.group(2)
+            code_blocks.append({
+                "language": language,
+                "content": code
+            })
+        
+        return code_blocks
 
 # Global instance
 _search_engine = None

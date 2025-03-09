@@ -364,7 +364,7 @@ class HealthMonitor:
             
         # Log alerts
         if alerts:
-            log(f"Health alert for {name}: {', '.join(alerts)}", level="warning")
+            await log(f"Health alert for {name}: {', '.join(alerts)}", level="warning")
             
     async def _check_system_alerts(self) -> None:
         """Check if system metrics exceed alert thresholds."""
@@ -384,7 +384,7 @@ class HealthMonitor:
             
         # Log alerts
         if alerts:
-            log(f"System health alert: {', '.join(alerts)}", level="warning")
+            await log(f"System health alert: {', '.join(alerts)}", level="warning")
             
     async def check_health(self) -> HealthReport:
         """Check health of all components and system resources.

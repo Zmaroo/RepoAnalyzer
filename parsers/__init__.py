@@ -1,320 +1,214 @@
-"""[0.0] Parser package initialization.
+"""Parser system for RepoAnalyzer.
 
-This module provides centralized initialization and cleanup for all parser components:
-1. Language Support & Registry
-2. File Classification & Analysis
-3. Tree-sitter & Custom Parsers
-4. Feature & Block Extraction
-5. Pattern Processing & AI Integration
+This module provides a unified interface for parsing source code using either
+tree-sitter-language-pack or custom parsers, depending on availability and precedence.
+
+Core Components:
+1. UnifiedParser - Main entry point for parsing source code
+2. TreeSitterParser - Tree-sitter based parser implementation
+3. CustomParser - Custom parser implementation
+4. PatternProcessor - Handles pattern matching and feature extraction
 """
 
-from typing import Dict, Optional, Set, List, Any, Union
+from typing import Dict, Any, List, Optional, Union, Tuple, Set
 import asyncio
-from dataclasses import dataclass, field
+import time
+from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
+from parsers.types import (
+    FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics,
+    ExtractedFeatures, PatternCategory, PatternPurpose,
+    AICapability, AIContext, AIProcessingResult, InteractionType, ConfidenceLevel
+)
+from parsers.models import QueryResult, FileClassification, PATTERN_CATEGORIES
+from parsers.language_mapping import normalize_language_name
+from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+from parsers.parser_interfaces import BaseParser, TreeSitterParser, CustomParser
+from parsers.unified_parser import UnifiedParser, get_unified_parser
+from parsers.pattern_processor import PatternProcessor, get_pattern_processor
+from parsers.feature_extractor import BaseFeatureExtractor, TreeSitterFeatureExtractor, CustomFeatureExtractor
+from parsers.language_config import LanguageConfig, get_language_config
+from parsers.language_support import LanguageSupport, get_language_support
+from parsers.file_classification import FileClassifier, get_file_classifier
+from parsers.block_extractor import BlockExtractor, get_block_extractor
+from parsers.ai_pattern_processor import AIPatternProcessor, get_ai_pattern_processor
 from utils.logger import log
-from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ProcessingError
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError
 from utils.shutdown import register_shutdown_handler
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.health_monitor import ComponentStatus, global_health_monitor
+from utils.async_runner import submit_async_task, cleanup_tasks
+from utils.request_cache import request_cache_context
+from utils.cache_analytics import get_cache_analytics
+from db.transaction import transaction_scope
 
-# Core types and interfaces
-from .types import (
-    FileType,
-    ParserType,
-    AICapability,
-    AIContext,
-    AIProcessingResult,
-    InteractionType,
-    ConfidenceLevel,
-    Documentation,
-    ComplexityMetrics,
-    ExtractedFeatures,
-    PatternCategory,
-    PatternPurpose,
-    PatternType,
-    PatternDefinition,
-    QueryPattern,
-    PatternInfo,
-    ParserResult
-)
-
-# Core models
-from .models import (
-    FileClassification,
-    FileMetadata,
-    LanguageFeatures,
-    PatternMatch,
-    QueryResult,
-    ProcessedPattern,
-    AIPatternResult
-)
-
-# Parser interfaces
-from .parser_interfaces import (
-    BaseParserInterface,
-    ParserRegistryInterface,
-    AIParserInterface
-)
-
-# Language support
-from .language_support import (
-    language_registry,
-    get_parser_availability,
-    determine_file_type,
-    is_documentation_code,
-    get_language_by_extension,
-    get_extensions_for_language
-)
-
-# Language mapping
-from .language_mapping import (
-    normalize_language_name,
-    get_parser_type,
-    get_file_type,
-    get_ai_capabilities,
-    get_fallback_parser_type,
-    get_language_features,
-    get_suggested_alternatives,
-    detect_language_from_filename,
-    get_complete_language_info,
-    get_parser_info_for_language
-)
-
-# File classification
-from .file_classification import (
-    get_file_classifier,
-    classify_file,
-    get_supported_languages,
-    get_supported_extensions
-)
-
-# Tree-sitter parser
-from .tree_sitter_parser import (
-    TreeSitterParser,
-    get_tree_sitter_parser
-)
-
-# Feature extraction
-from .feature_extractor import (
-    BaseFeatureExtractor,
-    TreeSitterFeatureExtractor,
-    CustomFeatureExtractor,
-    UnifiedFeatureExtractor
-)
-
-# Block extraction
-from .block_extractor import (
-    TreeSitterBlockExtractor,
-    get_block_extractor,
-    ExtractedBlock
-)
-
-# Pattern processing
-from .pattern_processor import (
-    PatternProcessor,
-    pattern_processor,
-    process_pattern,
-    validate_pattern
-)
-
-# AI pattern processing
-from .ai_pattern_processor import (
-    AIPatternProcessor,
-    process_with_ai,
-    validate_with_ai
-)
-
-# Unified parser
-from .unified_parser import (
-    UnifiedParser,
-    get_unified_parser
-)
-
-# Custom parsers
-from .custom_parsers import CUSTOM_PARSER_CLASSES
-
-# Version information
-__version__ = "3.2.0"
-__author__ = "RepoAnalyzer Team"
-
-# Track initialization state
-_initialized = False
-_pending_tasks: Set[asyncio.Task] = set()
-
-@handle_async_errors(error_types=(Exception,))
-async def initialize():
-    """[0.1] Initialize parser package components."""
-    global _initialized
-    
-    if _initialized:
-        return
-    
+async def initialize_parser_system() -> bool:
+    """Initialize the parser system with proper dependency management."""
     try:
-        async with AsyncErrorBoundary("parser initialization"):
-            # Initialize language registry first
-            task = asyncio.create_task(language_registry.initialize())
-            _pending_tasks.add(task)
+        # Initialize components in order with health monitoring
+        components = [
+            ("language_config", get_language_config),
+            ("language_support", get_language_support),
+            ("file_classifier", get_file_classifier),
+            ("block_extractor", get_block_extractor),
+            ("pattern_processor", get_pattern_processor),
+            ("ai_pattern_processor", get_ai_pattern_processor),
+            ("unified_parser", get_unified_parser)
+        ]
+        
+        for name, get_component in components:
             try:
-                await task
-            finally:
-                _pending_tasks.remove(task)
-            
-            # Initialize file classifier
-            classifier = await get_file_classifier()
-            task = asyncio.create_task(classifier.initialize())
-            _pending_tasks.add(task)
-            try:
-                await task
-            finally:
-                _pending_tasks.remove(task)
-            
-            # Initialize pattern processor
-            task = asyncio.create_task(pattern_processor.initialize())
-            _pending_tasks.add(task)
-            try:
-                await task
-            finally:
-                _pending_tasks.remove(task)
-            
-            _initialized = True
-            log("Parser components initialized successfully", level="info")
+                await global_health_monitor.update_component_status(
+                    "parser_system",
+                    ComponentStatus.INITIALIZING,
+                    details={"stage": f"initializing_{name}"}
+                )
+                
+                component = await get_component()
+                if not component:
+                    raise ProcessingError(f"Failed to initialize {name}")
+                
+                # Register shutdown handler for each component
+                register_shutdown_handler(component.cleanup)
+                
+                await log(f"{name} initialized", level="info")
+                
+            except Exception as e:
+                await log(f"Error initializing {name}: {e}", level="error")
+                await global_health_monitor.update_component_status(
+                    "parser_system",
+                    ComponentStatus.UNHEALTHY,
+                    error=True,
+                    details={
+                        "stage": f"initializing_{name}",
+                        "error": str(e)
+                    }
+                )
+                return False
+        
+        # Initialize cache analytics
+        analytics = await get_cache_analytics()
+        await analytics.start_monitoring()
+        
+        return True
+        
     except Exception as e:
-        log(f"Error initializing parser components: {e}", level="error")
-        raise ProcessingError(f"Failed to initialize parser components: {e}")
+        await log(f"Error initializing parser system: {e}", level="error")
+        return False
 
-async def cleanup():
-    """[0.2] Clean up parser package resources."""
-    global _initialized
-    
+async def cleanup_parser_system():
+    """Clean up parser system resources."""
     try:
-        # Clean up in reverse initialization order
-        cleanup_tasks = []
+        # Update status
+        await global_health_monitor.update_component_status(
+            "parser_system",
+            ComponentStatus.SHUTTING_DOWN,
+            details={"stage": "starting"}
+        )
         
-        # Clean up pattern processor
-        task = asyncio.create_task(pattern_processor.cleanup())
-        cleanup_tasks.append(task)
+        # Clean up components in reverse order
+        components = [
+            ("unified_parser", get_unified_parser),
+            ("ai_pattern_processor", get_ai_pattern_processor),
+            ("pattern_processor", get_pattern_processor),
+            ("block_extractor", get_block_extractor),
+            ("file_classifier", get_file_classifier),
+            ("language_support", get_language_support),
+            ("language_config", get_language_config)
+        ]
         
-        # Clean up file classifier
-        classifier = await get_file_classifier()
-        task = asyncio.create_task(classifier.cleanup())
-        cleanup_tasks.append(task)
+        for name, get_component in components:
+            try:
+                await global_health_monitor.update_component_status(
+                    "parser_system",
+                    ComponentStatus.SHUTTING_DOWN,
+                    details={"stage": f"cleaning_up_{name}"}
+                )
+                
+                component = await get_component()
+                if component:
+                    await component.cleanup()
+                    await log(f"{name} cleaned up", level="info")
+                    
+            except Exception as e:
+                await log(f"Error cleaning up {name}: {e}", level="error")
+                await global_health_monitor.update_component_status(
+                    "parser_system",
+                    ComponentStatus.UNHEALTHY,
+                    error=True,
+                    details={
+                        "stage": f"cleaning_up_{name}",
+                        "error": str(e)
+                    }
+                )
         
-        # Clean up language registry
-        task = asyncio.create_task(language_registry.cleanup())
-        cleanup_tasks.append(task)
+        # Stop cache analytics
+        analytics = await get_cache_analytics()
+        await analytics.stop_monitoring()
         
-        # Wait for all cleanup tasks
-        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-        
-        # Clean up any remaining pending tasks
-        if _pending_tasks:
-            for task in _pending_tasks:
-                task.cancel()
-            await asyncio.gather(*_pending_tasks, return_exceptions=True)
-            _pending_tasks.clear()
-        
-        _initialized = False
-        log("Parser components cleaned up", level="info")
+        # Update final status
+        await global_health_monitor.update_component_status(
+            "parser_system",
+            ComponentStatus.SHUTDOWN,
+            details={"cleanup": "successful"}
+        )
     except Exception as e:
-        log(f"Error cleaning up parser components: {e}", level="error")
-        raise ProcessingError(f"Failed to cleanup parser components: {e}")
+        await log(f"Error cleaning up parser system: {e}", level="error")
+        await global_health_monitor.update_component_status(
+            "parser_system",
+            ComponentStatus.UNHEALTHY,
+            error=True,
+            details={"cleanup_error": str(e)}
+        )
+        raise ProcessingError(f"Failed to cleanup parser system: {e}")
 
-# Register cleanup handler
-register_shutdown_handler(cleanup)
+async def parse_source_code(source_code: str, language_id: str, file_type: FileType) -> Dict[str, Any]:
+    """Parse source code using the unified parser."""
+    try:
+        async with request_cache_context() as cache:
+            # Get unified parser instance
+            unified_parser = await get_unified_parser()
+            
+            # Parse source code
+            result = await unified_parser.parse(source_code, language_id, file_type)
+            
+            # Store parse result in request cache
+            await cache.set(
+                f"parse_result_{language_id}",
+                {
+                    "language_id": language_id,
+                    "file_type": file_type.value,
+                    "timestamp": time.time(),
+                    "result": result
+                }
+            )
+            
+            return result
+    except Exception as e:
+        await log(f"Error parsing source code: {e}", level="error")
+        return {}
 
 # Export public interfaces
 __all__ = [
-    # Core types
-    'FileType',
-    'ParserType',
-    'AICapability',
-    'AIContext',
-    'AIProcessingResult',
-    'InteractionType',
-    'ConfidenceLevel',
-    'Documentation',
-    'ComplexityMetrics',
-    'ExtractedFeatures',
-    'PatternCategory',
-    'PatternPurpose',
-    'PatternType',
-    'PatternDefinition',
-    'QueryPattern',
-    'PatternInfo',
-    'ParserResult',
-    
-    # Core models
-    'FileClassification',
-    'FileMetadata',
-    'LanguageFeatures',
-    'PatternMatch',
-    'QueryResult',
-    'ProcessedPattern',
-    'AIPatternResult',
-    
-    # Interfaces
-    'BaseParserInterface',
-    'ParserRegistryInterface',
-    'AIParserInterface',
-    
-    # Language support
-    'language_registry',
-    'get_parser_availability',
-    'determine_file_type',
-    'is_documentation_code',
-    'get_language_by_extension',
-    'get_extensions_for_language',
-    
-    # Language mapping
-    'normalize_language_name',
-    'get_parser_type',
-    'get_file_type',
-    'get_ai_capabilities',
-    'get_fallback_parser_type',
-    'get_language_features',
-    'get_suggested_alternatives',
-    'detect_language_from_filename',
-    'get_complete_language_info',
-    'get_parser_info_for_language',
-    
-    # File classification
-    'get_file_classifier',
-    'classify_file',
-    'get_supported_languages',
-    'get_supported_extensions',
-    
-    # Tree-sitter parser
+    'initialize_parser_system',
+    'cleanup_parser_system',
+    'parse_source_code',
+    'UnifiedParser',
     'TreeSitterParser',
-    'get_tree_sitter_parser',
-    
-    # Feature extraction
+    'CustomParser',
+    'PatternProcessor',
     'BaseFeatureExtractor',
     'TreeSitterFeatureExtractor',
     'CustomFeatureExtractor',
-    'UnifiedFeatureExtractor',
-    
-    # Block extraction
-    'TreeSitterBlockExtractor',
-    'get_block_extractor',
-    'ExtractedBlock',
-    
-    # Pattern processing
-    'PatternProcessor',
-    'pattern_processor',
-    'process_pattern',
-    'validate_pattern',
-    
-    # AI pattern processing
+    'LanguageConfig',
+    'LanguageSupport',
+    'FileClassifier',
+    'BlockExtractor',
     'AIPatternProcessor',
-    'process_with_ai',
-    'validate_with_ai',
-    
-    # Unified parser
-    'UnifiedParser',
     'get_unified_parser',
-    
-    # Custom parsers
-    'CUSTOM_PARSER_CLASSES',
-    
-    # Package functions
-    'initialize',
-    'cleanup'
+    'get_pattern_processor',
+    'get_language_config',
+    'get_language_support',
+    'get_file_classifier',
+    'get_block_extractor',
+    'get_ai_pattern_processor'
 ] 

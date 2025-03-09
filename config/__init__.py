@@ -5,7 +5,11 @@ from .config import (
     Neo4jConfig,
     ParserConfig,
     RedisConfig,
-    FileConfig
+    FileConfig,
+    Config,
+    DatabaseConfig,
+    GraphConfig,
+    RetryConfig
 )
 
 __all__ = [
@@ -13,5 +17,9 @@ __all__ = [
     'Neo4jConfig',
     'ParserConfig',
     'RedisConfig',
-    'FileConfig'
+    'FileConfig',
+    'Config',
+    'DatabaseConfig',
+    'GraphConfig',
+    'RetryConfig'
 ] 

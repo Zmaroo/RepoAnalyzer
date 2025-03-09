@@ -133,13 +133,17 @@ class DatabaseInitializer:
                 error_types=(DatabaseError,),
                 severity=ErrorSeverity.CRITICAL
             ):
-                # Initialize schema first
-                await schema_manager.create_all_tables()
-                await log("Database schema initialized with AI pattern support", level="info")
-                
-                # Initialize connections with AI operation settings
+                # Initialize connections with AI operation settings first
                 await connection_manager.initialize()
                 await log("Database connections initialized with AI support", level="info")
+                
+                # Initialize PostgreSQL connection specifically
+                await connection_manager.initialize_postgres()
+                await log("PostgreSQL connection initialized", level="info")
+                
+                # Initialize schema after connections are ready
+                await schema_manager.create_all_tables()
+                await log("Database schema initialized with AI pattern support", level="info")
                 
                 # Initialize upsert coordinator
                 await upsert_coordinator.initialize()

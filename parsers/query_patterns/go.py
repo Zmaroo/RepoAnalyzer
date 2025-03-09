@@ -1,15 +1,111 @@
-"""Query patterns for Go files."""
+"""Go-specific patterns with enhanced type system and relationships.
 
+This module provides Go-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
 )
+from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
+# Pattern relationships for Go
+GO_PATTERN_RELATIONSHIPS = {
+    "function": [
+        PatternRelationship(
+            source_pattern="function",
+            target_pattern="type",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.95,
+            metadata={"return_type": True}
+        ),
+        PatternRelationship(
+            source_pattern="function",
+            target_pattern="comment",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"documentation": True}
+        )
+    ],
+    "type": [
+        PatternRelationship(
+            source_pattern="type",
+            target_pattern="interface",
+            relationship_type=PatternRelationType.IMPLEMENTS,
+            confidence=0.95,
+            metadata={"interfaces": True}
+        ),
+        PatternRelationship(
+            source_pattern="type",
+            target_pattern="struct",
+            relationship_type=PatternRelationType.DEFINES,
+            confidence=0.9,
+            metadata={"struct_fields": True}
+        )
+    ],
+    "package": [
+        PatternRelationship(
+            source_pattern="package",
+            target_pattern="import",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.95,
+            metadata={"imports": True}
+        ),
+        PatternRelationship(
+            source_pattern="package",
+            target_pattern="function",
+            relationship_type=PatternRelationType.CONTAINS,
+            confidence=0.9,
+            metadata={"package_functions": True}
+        )
+    ]
+}
+
+# Performance metrics tracking for Go patterns
+GO_PATTERN_METRICS = {
+    "function": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "type": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "package": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
+
+# Enhanced Go patterns with proper typing and relationships
 GO_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
+            "function": ResilientPattern(
+                name="function",
                 pattern="""
                 [
                     (function_declaration
@@ -25,13 +121,22 @@ GO_PATTERNS = {
                         body: (_) @syntax.function.body) @syntax.function.method
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
-                    "type": "function",
-                    "is_method": "syntax.function.method" in node["captures"]
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="go",
+                confidence=0.95,
+                metadata={
+                    "relationships": GO_PATTERN_RELATIONSHIPS["function"],
+                    "metrics": GO_PATTERN_METRICS["function"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
-            "type": QueryPattern(
+            
+            "type": ResilientPattern(
+                name="type",
                 pattern="""
                 [
                     (type_declaration
@@ -43,21 +148,26 @@ GO_PATTERNS = {
                         methods: (_) @syntax.type.interface.methods) @syntax.type.interface
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.type.name", {}).get("text", ""),
-                    "type": (
-                        "struct" if "syntax.type.struct" in node["captures"] else
-                        "interface" if "syntax.type.interface" in node["captures"] else
-                        "type"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="go",
+                confidence=0.95,
+                metadata={
+                    "relationships": GO_PATTERN_RELATIONSHIPS["type"],
+                    "metrics": GO_PATTERN_METRICS["type"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
                     )
                 }
             )
         }
     },
-
+    
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": QueryPattern(
+            "variable": AdaptivePattern(
+                name="variable",
                 pattern="""
                 [
                     (var_declaration
@@ -73,18 +183,22 @@ GO_PATTERNS = {
                         right: (_) @semantics.variable.short.value) @semantics.variable.short
                 ]
                 """,
-                extract=lambda node: {
-                    "name": (
-                        node["captures"].get("semantics.variable.name", {}).get("text", "") or
-                        node["captures"].get("semantics.variable.const.name", {}).get("text", "") or
-                        node["captures"].get("semantics.variable.short.name", {}).get("text", "")
-                    ),
-                    "type": "variable",
-                    "is_const": "semantics.variable.const" in node["captures"],
-                    "is_short_decl": "semantics.variable.short" in node["captures"]
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="go",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
-            "expression": QueryPattern(
+            
+            "expression": AdaptivePattern(
+                name="expression",
                 pattern="""
                 [
                     (binary_expression
@@ -96,48 +210,79 @@ GO_PATTERNS = {
                         arguments: (_) @semantics.expression.call.args) @semantics.expression.call
                 ]
                 """,
-                extract=lambda node: {
-                    "type": "expression",
-                    "expression_type": (
-                        "binary" if "semantics.expression.binary" in node["captures"] else
-                        "call" if "semantics.expression.call" in node["captures"] else
-                        "other"
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="go",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
                     )
                 }
             )
         }
     },
-
+    
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
+            "comments": AdaptivePattern(
+                name="comments",
                 pattern="""
                 [
                     (comment) @documentation.comment,
                     (interpreted_string_literal) @documentation.string
                 ]
                 """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", ""),
-                    "type": "comment"
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="go",
+                confidence=0.9,
+                metadata={
+                    "relationships": [
+                        PatternRelationship(
+                            source_pattern="comments",
+                            target_pattern="function",
+                            relationship_type=PatternRelationType.COMPLEMENTS,
+                            confidence=0.8
+                        )
+                    ],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
     },
-
+    
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
-            "package": QueryPattern(
+            "package": ResilientPattern(
+                name="package",
                 pattern="""
                 (package_clause
                     name: (_) @structure.package.name) @structure.package.def
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("structure.package.name", {}).get("text", ""),
-                    "type": "package"
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="go",
+                confidence=0.95,
+                metadata={
+                    "relationships": GO_PATTERN_RELATIONSHIPS["package"],
+                    "metrics": GO_PATTERN_METRICS["package"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
-            "import": QueryPattern(
+            
+            "import": AdaptivePattern(
+                name="import",
                 pattern="""
                 [
                     (import_declaration
@@ -147,218 +292,81 @@ GO_PATTERNS = {
                         path: (_) @structure.import.path) @structure.import.spec
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("structure.import.name", {}).get("text", ""),
-                    "path": node["captures"].get("structure.import.path", {}).get("text", ""),
-                    "type": "import"
-                }
-            )
-        }
-    },
-
-    PatternCategory.LEARNING: {
-        PatternPurpose.CONCURRENCY: {
-            "concurrency_patterns": QueryPattern(
-                pattern="""
-                [
-                    (go_statement
-                        expression: (_) @concur.go.expr) @concur.go,
-                        
-                    (channel_type
-                        element: (_) @concur.chan.type
-                        direction: (_)? @concur.chan.dir) @concur.chan.def,
-                        
-                    (receive_statement
-                        left: (_)? @concur.rcv.left
-                        right: (_) @concur.rcv.right) @concur.rcv,
-                        
-                    (send_statement
-                        channel: (_) @concur.send.chan
-                        value: (_) @concur.send.val) @concur.send,
-                        
-                    (select_statement
-                        communication: (_) @concur.select.comm) @concur.select,
-                        
-                    (communication_case
-                        communication: (_) @concur.case.comm
-                        block: (_) @concur.case.block) @concur.case
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": (
-                        "goroutine" if "concur.go" in node["captures"] else
-                        "channel_definition" if "concur.chan.def" in node["captures"] else
-                        "receive_operation" if "concur.rcv" in node["captures"] else
-                        "send_operation" if "concur.send" in node["captures"] else
-                        "select_statement" if "concur.select" in node["captures"] else
-                        "communication_case" if "concur.case" in node["captures"] else
-                        "other"
-                    ),
-                    "uses_goroutine": "concur.go" in node["captures"],
-                    "uses_channel": any(chan_op in node["captures"] for chan_op in ["concur.chan.def", "concur.rcv", "concur.send"]),
-                    "uses_select": "concur.select" in node["captures"],
-                    "channel_direction": node["captures"].get("concur.chan.dir", {}).get("text", "bidirectional"),
-                    "is_buffered_channel": "make" in (node["captures"].get("concur.chan.def", {}).get("text", "") or "") and "," in (node["captures"].get("concur.chan.def", {}).get("text", "") or "")
-                }
-            )
-        },
-        PatternPurpose.ERROR_HANDLING: {
-            "error_handling": QueryPattern(
-                pattern="""
-                [
-                    (if_statement
-                        condition: (binary_expression
-                            left: (_) @error.if.var
-                            right: (identifier) @error.if.err
-                            (#eq? @error.if.err "err"))
-                        consequence: (_) @error.if.body) @error.if,
-                        
-                    (assignment_statement
-                        left: (_) @error.assign.left
-                        right: (_) @error.assign.right
-                        (#match? @error.assign.left ".*err.*|.*Err.*")) @error.assign,
-                        
-                    (return_statement
-                        expression: (_) @error.return.expr
-                        (#match? @error.return.expr ".*err.*|.*Err.*|.*error.*|.*nil.*")) @error.return,
-                        
-                    (function_declaration
-                        name: (_) @error.func.name
-                        parameters: (_) @error.func.params
-                        result: (_) @error.func.result
-                        (#match? @error.func.result ".*error.*")) @error.func,
-                        
-                    (defer_statement
-                        expression: (_) @error.defer.expr) @error.defer
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": (
-                        "error_check_if" if "error.if" in node["captures"] else
-                        "error_assignment" if "error.assign" in node["captures"] else
-                        "error_return" if "error.return" in node["captures"] else
-                        "error_function" if "error.func" in node["captures"] else
-                        "defer_statement" if "error.defer" in node["captures"] else
-                        "other"
-                    ),
-                    "uses_error_check": "error.if" in node["captures"],
-                    "returns_error": "error.return" in node["captures"] or "error.func" in node["captures"],
-                    "uses_defer": "error.defer" in node["captures"],
-                    "error_variable_name": (
-                        node["captures"].get("error.if.err", {}).get("text", "") or
-                        (node["captures"].get("error.assign.left", {}).get("text", "") if "error.assign" in node["captures"] else "")
-                    ),
-                    "error_handling_style": (
-                        "if_err_not_nil" if "error.if" in node["captures"] and "!= nil" in (node["captures"].get("error.if.var", {}).get("text", "") or "") else
-                        "if_err_comparison" if "error.if" in node["captures"] else
-                        "return_error" if "error.return" in node["captures"] else
-                        "other"
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="go",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
                     )
-                }
-            )
-        },
-        PatternPurpose.CODE_ORGANIZATION: {
-            "package_organization": QueryPattern(
-                pattern="""
-                [
-                    (package_clause
-                        name: (_) @pkg.name) @pkg,
-                        
-                    (import_declaration
-                        import_spec: (_) @pkg.import.spec) @pkg.import,
-                        
-                    (import_spec
-                        name: (_)? @pkg.spec.name
-                        path: (_) @pkg.spec.path) @pkg.spec,
-                        
-                    (function_declaration
-                        name: (_) @pkg.func.name
-                        parameters: (_) @pkg.func.params
-                        result: (_)? @pkg.func.result
-                        body: (_) @pkg.func.body) @pkg.func,
-                        
-                    (method_declaration
-                        name: (_) @pkg.method.name
-                        receiver: (_) @pkg.method.recv
-                        parameters: (_) @pkg.method.params
-                        result: (_)? @pkg.method.result
-                        body: (_) @pkg.method.body) @pkg.method
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": (
-                        "package_declaration" if "pkg" in node["captures"] else
-                        "import_declaration" if "pkg.import" in node["captures"] else
-                        "import_spec" if "pkg.spec" in node["captures"] else
-                        "function_declaration" if "pkg.func" in node["captures"] else
-                        "method_declaration" if "pkg.method" in node["captures"] else
-                        "other"
-                    ),
-                    "package_name": node["captures"].get("pkg.name", {}).get("text", ""),
-                    "import_path": node["captures"].get("pkg.spec.path", {}).get("text", "").strip('"'),
-                    "uses_named_import": "pkg.spec.name" in node["captures"] and node["captures"].get("pkg.spec.name", {}).get("text", ""),
-                    "is_exported_symbol": (
-                        node["captures"].get("pkg.func.name", {}).get("text", "")[0:1].isupper() if "pkg.func.name" in node["captures"] else
-                        node["captures"].get("pkg.method.name", {}).get("text", "")[0:1].isupper() if "pkg.method.name" in node["captures"] else
-                        False
-                    ),
-                    "is_interface_implementation": "pkg.method" in node["captures"]
-                }
-            )
-        },
-        PatternPurpose.BEST_PRACTICES: {
-            "idiomatic_go": QueryPattern(
-                pattern="""
-                [
-                    (short_var_declaration
-                        left: (_) @idiom.short.left
-                        right: (_) @idiom.short.right) @idiom.short,
-                        
-                    (range_clause
-                        left: (_)? @idiom.range.left
-                        right: (_) @idiom.range.right) @idiom.range,
-                        
-                    (for_statement
-                        initializer: (_)? @idiom.for.init
-                        condition: (_)? @idiom.for.cond
-                        update: (_)? @idiom.for.update
-                        body: (_) @idiom.for.body) @idiom.for,
-                        
-                    (type_assertion_expression
-                        operand: (_) @idiom.assert.expr
-                        type: (_) @idiom.assert.type) @idiom.assert,
-                        
-                    (interface_type
-                        methods: (_)? @idiom.iface.methods) @idiom.iface,
-                        
-                    (struct_type
-                        fields: (_) @idiom.struct.fields) @idiom.struct
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": (
-                        "short_var_declaration" if "idiom.short" in node["captures"] else
-                        "range_loop" if "idiom.range" in node["captures"] else
-                        "for_loop" if "idiom.for" in node["captures"] else
-                        "type_assertion" if "idiom.assert" in node["captures"] else
-                        "interface_definition" if "idiom.iface" in node["captures"] else
-                        "struct_definition" if "idiom.struct" in node["captures"] else
-                        "other"
-                    ),
-                    "uses_short_declaration": "idiom.short" in node["captures"],
-                    "uses_range_loop": "idiom.range" in node["captures"],
-                    "uses_blank_identifier": (
-                        "_" in (node["captures"].get("idiom.range.left", {}).get("text", "") or "") or
-                        "_" in (node["captures"].get("idiom.short.left", {}).get("text", "") or "")
-                    ),
-                    "is_empty_interface": "idiom.iface" in node["captures"] and not node["captures"].get("idiom.iface.methods", {}).get("text", ""),
-                    "has_comments": any(comment in node_text for comment in ["//", "/*"]
-                                    for node_text in [
-                                        node["captures"].get("idiom.struct.fields", {}).get("text", ""),
-                                        node["captures"].get("idiom.iface.methods", {}).get("text", "")
-                                    ])
                 }
             )
         }
     }
-} 
+}
+
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for Go files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "go"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(GO_PATTERNS.keys())
+    )
+
+def get_go_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return GO_PATTERN_RELATIONSHIPS.get(pattern_name, [])
+
+def update_go_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in GO_PATTERN_METRICS:
+        pattern_metrics = GO_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
+
+def get_go_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_go_pattern_relationships(pattern_name),
+        performance=GO_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "go"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'GO_PATTERNS',
+    'GO_PATTERN_RELATIONSHIPS',
+    'GO_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_go_pattern_relationships',
+    'update_go_pattern_metrics',
+    'get_go_pattern_match_result'
+]
+
+# Module identification
+LANGUAGE = "go" 

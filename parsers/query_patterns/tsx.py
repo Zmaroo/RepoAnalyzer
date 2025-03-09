@@ -1,398 +1,350 @@
-"""TSX-specific Tree-sitter patterns."""
+"""TSX-specific patterns with enhanced type system and relationships.
 
-from parsers.types import FileType
-from .js_ts_shared import JS_TS_SHARED_PATTERNS
-from .typescript import TYPESCRIPT_PATTERNS
+This module provides TSX-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional, Union
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose, 
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern,
+    AICapability, AIContext, AIProcessingResult, InteractionType,
+    ExtractedFeatures, FileType, ParserType
 )
+from parsers.models import PATTERN_CATEGORIES
+from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
+from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
+from utils.request_cache import cached_in_request
+from utils.cache_analytics import get_cache_analytics
+from utils.async_runner import submit_async_task, cleanup_tasks
+from utils.logger import log
+from utils.shutdown import register_shutdown_handler
+import asyncio
+from parsers.pattern_processor import pattern_processor
+from parsers.block_extractor import get_block_extractor
+from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.unified_parser import get_unified_parser
+from parsers.base_parser import BaseParser
+from parsers.tree_sitter_parser import get_tree_sitter_parser
+from parsers.ai_pattern_processor import get_ai_pattern_processor
+from .typescript import (
+    TS_PATTERNS,
+    TS_CAPABILITIES,
+    TypeScriptPatternLearner,
+    TypeScriptPatternContext,
+    process_typescript_pattern,
+    extract_typescript_features,
+    validate_typescript_pattern
+)
+from .js_ts_shared import (
+    JS_TS_SHARED_PATTERNS,
+    process_js_ts_pattern
+)
+import time
 
-TSX_PATTERNS_FOR_LEARNING = {
-    PatternCategory.LEARNING: {
-        PatternPurpose.LEARNING: {
-            "component_patterns": QueryPattern(
+# TSX capabilities (extends TypeScript capabilities)
+TSX_CAPABILITIES = TS_CAPABILITIES | {
+    AICapability.JSX_SUPPORT,
+    AICapability.REACT_INTEGRATION
+}
+
+@dataclass
+class TSXPatternContext(TypeScriptPatternContext):
+    """TSX-specific pattern context."""
+    jsx_component_names: Set[str] = field(default_factory=set)
+    jsx_prop_types: Dict[str, str] = field(default_factory=dict)
+    has_jsx_fragments: bool = False
+    has_react_hooks: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.jsx_component_names)}:{self.has_react_hooks}"
+
+# TSX patterns extend TypeScript patterns
+TSX_PATTERNS = {
+    **TS_PATTERNS,  # Inherit TypeScript patterns
+    
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "jsx_element": ResilientPattern(
+                name="jsx_element",
+                pattern="""
+                [
+                    (jsx_element
+                        open_tag: (jsx_opening_element
+                            name: (_) @syntax.jsx.element.name
+                            attributes: (jsx_attributes
+                                (jsx_attribute
+                                    name: (jsx_attribute_name) @syntax.jsx.attribute.name
+                                    value: (_)? @syntax.jsx.attribute.value)*)?
+                            ) @syntax.jsx.open_tag
+                        children: (_)* @syntax.jsx.children
+                        close_tag: (jsx_closing_element)? @syntax.jsx.close_tag) @syntax.jsx.element,
+                    
+                    (jsx_self_closing_element
+                        name: (_) @syntax.jsx.self_closing.name
+                        attributes: (jsx_attributes
+                            (jsx_attribute
+                                name: (jsx_attribute_name) @syntax.jsx.self_closing.attribute.name
+                                value: (_)? @syntax.jsx.self_closing.attribute.value)*)?
+                        ) @syntax.jsx.self_closing
+                ]
+                """,
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="tsx",
+                confidence=0.95,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
+            ),
+            
+            "jsx_component": ResilientPattern(
+                name="jsx_component",
                 pattern="""
                 [
                     (function_declaration
-                        name: (identifier) @component.func.name
-                        parameters: (formal_parameters) @component.func.params
-                        return_type: (type_annotation)? @component.func.return
+                        modifiers: [(export) (default)]* @syntax.component.modifier
+                        name: (identifier) @syntax.component.name
+                        parameters: (formal_parameters
+                            (required_parameter
+                                name: (identifier) @syntax.component.props.name
+                                type: (type_annotation)? @syntax.component.props.type)) @syntax.component.props
+                        return_type: (type_annotation)? @syntax.component.return_type
                         body: (statement_block
                             (return_statement
-                                (jsx_element) @component.func.jsx)) @component.func.body) @component.func.comp,
-                        
-                    (variable_declaration
-                        (variable_declarator
-                            name: (identifier) @component.var.name
-                            value: (arrow_function
-                                parameters: (formal_parameters) @component.var.params
-                                return_type: (type_annotation)? @component.var.return
-                                body: [(jsx_element) (statement_block)])) @component.var.decl) @component.var.comp,
-                        
-                    (class_declaration
-                        name: (identifier) @component.class.name
-                        body: (class_body
-                            (method_definition
-                                name: (property_identifier) @component.class.render {
-                                    match: "^render$"
-                                }
-                                body: (statement_block
-                                    (return_statement
-                                        (jsx_element) @component.class.jsx)) @component.class.render_body)) @component.class.body) @component.class.comp
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "component_patterns",
-                    "is_function_component": "component.func.comp" in node["captures"],
-                    "is_arrow_component": "component.var.comp" in node["captures"],
-                    "is_class_component": "component.class.comp" in node["captures"],
-                    "component_name": (
-                        node["captures"].get("component.func.name", {}).get("text", "") or 
-                        node["captures"].get("component.var.name", {}).get("text", "") or 
-                        node["captures"].get("component.class.name", {}).get("text", "")
-                    ),
-                    "has_type_annotation": (
-                        ("component.func.return" in node["captures"] and node["captures"].get("component.func.return", {}).get("text", "") != "") or
-                        ("component.var.return" in node["captures"] and node["captures"].get("component.var.return", {}).get("text", "") != "")
-                    ),
-                    "component_type": (
-                        "function_component" if "component.func.comp" in node["captures"] else
-                        "arrow_function_component" if "component.var.comp" in node["captures"] else 
-                        "class_component" if "component.class.comp" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches React component patterns",
-                examples=[
-                    "function MyComponent(props: Props) { return <div />; }",
-                    "const MyComponent = () => <div />;",
-                    "class MyComponent extends React.Component { render() { return <div />; } }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "hooks_usage": QueryPattern(
-                pattern="""
-                [
-                    (call_expression
-                        function: (identifier) @hook.call.name {
-                            match: "^use[A-Z].*$"
-                        }
-                        arguments: (arguments) @hook.call.args) @hook.call,
-                        
-                    (lexical_declaration
-                        declarator: (variable_declarator
-                            name: [(identifier) @hook.state.var
-                                  (array_pattern
-                                    (identifier) @hook.state.var 
-                                    (identifier) @hook.state.setter)]
-                            value: (call_expression
-                                function: (identifier) @hook.state.func {
-                                    match: "^(useState|useReducer)$"
-                                }
-                                arguments: (arguments) @hook.state.args)) @hook.state.decl) @hook.state,
-                        
-                    (call_expression
-                        function: (identifier) @hook.effect.name {
-                            match: "^(useEffect|useLayoutEffect)$"
-                        }
-                        arguments: (arguments
-                            (arrow_function) @hook.effect.callback
-                            (array_expression)? @hook.effect.deps)) @hook.effect,
-                        
-                    (call_expression
-                        function: (identifier) @hook.context.name {
-                            match: "^(useContext)$"
-                        }
-                        arguments: (arguments) @hook.context.args) @hook.context
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "hooks_usage",
-                    "is_custom_hook": "hook.call" in node["captures"] and node["captures"].get("hook.call.name", {}).get("text", "").startswith("use"),
-                    "is_state_hook": "hook.state" in node["captures"],
-                    "is_effect_hook": "hook.effect" in node["captures"],
-                    "is_context_hook": "hook.context" in node["captures"],
-                    "hook_name": (
-                        node["captures"].get("hook.call.name", {}).get("text", "") or
-                        node["captures"].get("hook.state.func", {}).get("text", "") or
-                        node["captures"].get("hook.effect.name", {}).get("text", "") or
-                        node["captures"].get("hook.context.name", {}).get("text", "")
-                    ),
-                    "state_var": node["captures"].get("hook.state.var", {}).get("text", ""),
-                    "has_deps_array": "hook.effect" in node["captures"] and "hook.effect.deps" in node["captures"] and node["captures"].get("hook.effect.deps", {}).get("text", "") != "",
-                    "hook_type": (
-                        "custom_hook" if "hook.call" in node["captures"] and node["captures"].get("hook.call.name", {}).get("text", "").startswith("use") else
-                        "state_management" if "hook.state" in node["captures"] else
-                        "effect" if "hook.effect" in node["captures"] else
-                        "context" if "hook.context" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches React hooks usage patterns",
-                examples=[
-                    "const [state, setState] = useState(0);",
-                    "useEffect(() => { }, [deps]);",
-                    "const value = useContext(MyContext);"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "jsx_patterns": QueryPattern(
-                pattern="""
-                [
-                    (jsx_element
-                        opening_element: (jsx_opening_element
-                            name: (_) @jsx.element.name
-                            attributes: (jsx_attributes
-                                [(jsx_attribute
-                                    name: (jsx_attribute_name) @jsx.element.attr.name
-                                    value: (_)? @jsx.element.attr.value)
-                                 (jsx_expression
-                                    (binary_expression
-                                        left: (identifier) @jsx.element.cond.left
-                                        right: (_) @jsx.element.cond.right) @jsx.element.attr.condition) @jsx.element.attr.expr])* @jsx.element.attrs)
-                        @jsx.element.open) @jsx.element,
-                        
-                    (jsx_self_closing_element
-                        name: (_) @jsx.self.name
-                        attributes: (jsx_attributes
-                            [(jsx_attribute
-                                name: (jsx_attribute_name) @jsx.self.attr.name
-                                value: (_)? @jsx.self.attr.value)
-                             (jsx_expression) @jsx.self.attr.expr]*) @jsx.self.attrs) @jsx.self,
-                             
-                    (jsx_expression
-                        [(conditional_expression
-                            condition: (_) @jsx.cond.test
-                            consequence: (_) @jsx.cond.then
-                            alternative: (_) @jsx.cond.else) @jsx.conditional_render
-                         (binary_expression
-                            left: (_) @jsx.binary.left
-                            right: (_) @jsx.binary.right) @jsx.binary
-                         (call_expression
-                            function: (member_expression
-                                object: (_) @jsx.map.array
-                                property: (property_identifier) @jsx.map.method {
-                                    match: "^map$"
-                                }) @jsx.map.func
-                            arguments: (arguments
-                                (arrow_function) @jsx.map.callback)) @jsx.array_map]) @jsx.expr
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "jsx_patterns",
-                    "is_jsx_element": "jsx.element" in node["captures"],
-                    "is_self_closing": "jsx.self" in node["captures"],
-                    "is_conditional_render": "jsx.conditional_render" in node["captures"],
-                    "is_array_map": "jsx.array_map" in node["captures"],
-                    "element_name": node["captures"].get("jsx.element.name", {}).get("text", "") or node["captures"].get("jsx.self.name", {}).get("text", ""),
-                    "attributes": [attr.get("text", "") for attr in node["captures"].get("jsx.element.attr.name", []) + node["captures"].get("jsx.self.attr.name", [])],
-                    "has_condition": "jsx.element.attr.condition" in node["captures"],
-                    "map_array": node["captures"].get("jsx.map.array", {}).get("text", ""),
-                    "jsx_pattern_type": (
-                        "element" if "jsx.element" in node["captures"] else
-                        "self_closing_element" if "jsx.self" in node["captures"] else
-                        "conditional_rendering" if "jsx.conditional_render" in node["captures"] else
-                        "array_mapping" if "jsx.array_map" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches JSX usage patterns",
-                examples=[
-                    "<div className={condition ? 'a' : 'b'} />",
-                    "{items.map(item => <Item key={item.id} {...item} />)}",
-                    "{condition && <Component />}"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "typescript_integration": QueryPattern(
-                pattern="""
-                [
-                    (interface_declaration
-                        name: (type_identifier) @ts.interface.name {
-                            match: "^.*Props$"
-                        }
-                        body: (object_type) @ts.interface.body) @ts.interface,
-                        
-                    (type_alias_declaration
-                        name: (type_identifier) @ts.type.name {
-                            match: "^.*Props$"
-                        }
-                        value: (_) @ts.type.value) @ts.type,
-                        
-                    (export_statement
-                        [(interface_declaration) (type_alias_declaration) (enum_declaration)] @ts.export.declaration) @ts.export,
-                        
+                                (jsx_element) @syntax.component.jsx))) @syntax.component.function,
+                    
                     (arrow_function
                         parameters: (formal_parameters
                             (required_parameter
-                                pattern: (identifier) @ts.param.name
-                                type: (type_annotation
-                                    (type_identifier) @ts.param.type)) @ts.typed_param)+ @ts.params) @ts.function,
-                                    
-                    (property_signature
-                        name: (property_identifier) @ts.prop.name
-                        type: (type_annotation) @ts.prop.type
-                        value: (_)? @ts.prop.default) @ts.prop
+                                name: (identifier) @syntax.component.arrow.props.name
+                                type: (type_annotation)? @syntax.component.arrow.props.type)) @syntax.component.arrow.props
+                        return_type: (type_annotation)? @syntax.component.arrow.return_type
+                        body: (jsx_element) @syntax.component.arrow.jsx) @syntax.component.arrow
                 ]
                 """,
-                extract=lambda node: {
-                    "pattern_type": "typescript_integration",
-                    "is_props_interface": "ts.interface" in node["captures"] and node["captures"].get("ts.interface.name", {}).get("text", "").endswith("Props"),
-                    "is_props_type": "ts.type" in node["captures"] and node["captures"].get("ts.type.name", {}).get("text", "").endswith("Props"),
-                    "is_export": "ts.export" in node["captures"],
-                    "is_typed_function": "ts.function" in node["captures"],
-                    "is_typed_property": "ts.prop" in node["captures"],
-                    "name": (
-                        node["captures"].get("ts.interface.name", {}).get("text", "") or
-                        node["captures"].get("ts.type.name", {}).get("text", "") or
-                        node["captures"].get("ts.param.name", {}).get("text", "") or
-                        node["captures"].get("ts.prop.name", {}).get("text", "")
-                    ),
-                    "type_name": node["captures"].get("ts.param.type", {}).get("text", ""),
-                    "ts_pattern_type": (
-                        "props_interface" if "ts.interface" in node["captures"] and node["captures"].get("ts.interface.name", {}).get("text", "").endswith("Props") else
-                        "props_type_alias" if "ts.type" in node["captures"] and node["captures"].get("ts.type.name", {}).get("text", "").endswith("Props") else
-                        "type_export" if "ts.export" in node["captures"] else
-                        "typed_function" if "ts.function" in node["captures"] else
-                        "typed_property" if "ts.prop" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches TypeScript integration patterns in React",
-                examples=[
-                    "interface ComponentProps { prop: string; }",
-                    "type Props = { prop: string; };",
-                    "function Component(props: Props) { }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            )
-        }
-    }
-}
-
-TSX_PATTERNS = {
-    **JS_TS_SHARED_PATTERNS,  # Include shared JS/TS patterns
-    **TYPESCRIPT_PATTERNS,  # Include TypeScript patterns
-    
-    PatternCategory.SYNTAX: {
-        **JS_TS_SHARED_PATTERNS.get("syntax", {}),  # Keep shared JS/TS syntax patterns
-        **TYPESCRIPT_PATTERNS.get("syntax", {}),  # Keep TypeScript syntax patterns
-        PatternPurpose.UNDERSTANDING: {
-            "jsx": QueryPattern(
-                pattern="""
-                [
-                    (jsx_element
-                        opening_element: (jsx_opening_element
-                            name: (_) @syntax.jsx.tag.name
-                            type_arguments: (type_arguments)? @syntax.jsx.type_args
-                            attributes: (jsx_attributes
-                                [(jsx_attribute
-                                    name: (jsx_attribute_name) @syntax.jsx.attr.name
-                                    value: (_)? @syntax.jsx.attr.value)
-                                 (jsx_expression) @syntax.jsx.attr.expression]*)?
-                        ) @syntax.jsx.open
-                        children: [
-                            (jsx_text) @syntax.jsx.text
-                            (jsx_expression) @syntax.jsx.expression
-                            (jsx_element) @syntax.jsx.child
-                            (jsx_self_closing_element) @syntax.jsx.child.self_closing
-                        ]* @syntax.jsx.children
-                        closing_element: (jsx_closing_element)? @syntax.jsx.close
-                    ) @syntax.jsx.element,
-                    
-                    (jsx_self_closing_element
-                        name: (_) @syntax.jsx.self.name
-                        type_arguments: (type_arguments)? @syntax.jsx.self.type_args
-                        attributes: (jsx_attributes
-                            [(jsx_attribute
-                                name: (jsx_attribute_name) @syntax.jsx.self.attr.name
-                                value: (_)? @syntax.jsx.self.attr.value)
-                             (jsx_expression) @syntax.jsx.self.attr.expression]*)?
-                    ) @syntax.jsx.self
-                ]
-                """,
-                extract=lambda node: {
-                    "tag": node["captures"].get("syntax.jsx.tag.name", {}).get("text", "") or
-                           node["captures"].get("syntax.jsx.self.name", {}).get("text", ""),
-                    "attributes": [
-                        {
-                            "name": attr.get("text", ""),
-                            "value": val.get("text", "") if val else None
-                        }
-                        for attr, val in zip(
-                            node["captures"].get("syntax.jsx.attr.name", []) +
-                            node["captures"].get("syntax.jsx.self.attr.name", []),
-                            node["captures"].get("syntax.jsx.attr.value", []) +
-                            node["captures"].get("syntax.jsx.self.attr.value", [])
-                        )
-                    ]
-                },
-                description="Matches TSX elements and attributes",
-                examples=[
-                    "<Component<Props> prop={value} />",
-                    "<div className='container'>...</div>"
-                ],
                 category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    },
-    
-    PatternCategory.SEMANTICS: {
-        **JS_TS_SHARED_PATTERNS.get("semantics", {}),  # Keep shared JS/TS semantic patterns
-        **TYPESCRIPT_PATTERNS.get("semantics", {}),  # Keep TypeScript semantic patterns
-        PatternPurpose.UNDERSTANDING: {
-            "jsx_type": QueryPattern(
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="tsx",
+                confidence=0.95,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
+            ),
+            
+            "react_hook": ResilientPattern(
+                name="react_hook",
                 pattern="""
                 [
-                    (jsx_opening_element
-                        type_arguments: (type_arguments
-                            [(type_identifier) @semantics.jsx.type.name
-                             (union_type) @semantics.jsx.type.union
-                             (intersection_type) @semantics.jsx.type.intersection
-                             (generic_type) @semantics.jsx.type.generic]*
-                        )) @semantics.jsx.type.args,
-                        
-                    (jsx_self_closing_element
-                        type_arguments: (type_arguments
-                            [(type_identifier) @semantics.jsx.type.self.name
-                             (union_type) @semantics.jsx.type.self.union
-                             (intersection_type) @semantics.jsx.type.self.intersection
-                             (generic_type) @semantics.jsx.type.self.generic]*
-                        )) @semantics.jsx.type.self.args
+                    (call_expression
+                        function: (identifier) @syntax.hook.name
+                        arguments: (arguments) @syntax.hook.args) @syntax.hook.call
                 ]
                 """,
-                extract=lambda node: {
-                    "type": node["captures"].get("semantics.jsx.type.name", {}).get("text", "") or
-                           node["captures"].get("semantics.jsx.type.self.name", {}).get("text", ""),
-                    "kind": ("union" if "semantics.jsx.type.union" in node["captures"] or
-                                     "semantics.jsx.type.self.union" in node["captures"] else
-                            "intersection" if "semantics.jsx.type.intersection" in node["captures"] or
-                                           "semantics.jsx.type.self.intersection" in node["captures"] else
-                            "generic" if "semantics.jsx.type.generic" in node["captures"] or
-                                      "semantics.jsx.type.self.generic" in node["captures"] else
-                            "basic")
-                },
-                description="Matches TSX type system usage",
-                examples=[
-                    "<Component<Props> />",
-                    "<Generic<T | U> />",
-                    "<Component<A & B> />"
-                ],
-                category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="tsx",
+                confidence=0.95,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     }
 }
 
-# Add the repository learning patterns to the main patterns
-TSX_PATTERNS.update(TSX_PATTERNS_FOR_LEARNING)
+class TSXPatternLearner(TypeScriptPatternLearner):
+    """TSX-specific pattern learner extending TypeScript learner."""
+    
+    async def initialize(self):
+        """Initialize with TSX-specific components."""
+        await super().initialize()
+        
+        # Register TSX-specific patterns
+        await self._pattern_processor.register_language_patterns(
+            "tsx",
+            TSX_PATTERNS,
+            self
+        )
+
+    async def _get_parser(self) -> BaseParser:
+        """Get appropriate parser for TSX."""
+        # Try tree-sitter first
+        tree_sitter_parser = await get_tree_sitter_parser("tsx")
+        if tree_sitter_parser:
+            return tree_sitter_parser
+            
+        # Fallback to base parser
+        return await BaseParser.create(
+            language_id="tsx",
+            file_type=FileType.CODE,
+            parser_type=ParserType.CUSTOM
+        )
+
+    async def learn_from_project(self, project_path: str) -> List[Dict[str, Any]]:
+        """Learn patterns with AI assistance and React component information."""
+        patterns = await super().learn_from_project(project_path)
+        
+        # Add TSX-specific pattern learning
+        async with AsyncErrorBoundary("tsx_pattern_learning"):
+            # Extract React component information
+            component_patterns = await self._extract_component_patterns(project_path)
+            patterns.extend(component_patterns)
+            
+            return patterns
+
+    async def _extract_component_patterns(self, project_path: str) -> List[Dict[str, Any]]:
+        """Extract TSX-specific React component patterns."""
+        component_patterns = []
+        
+        # Get React analyzer
+        react_analyzer = await get_react_analyzer()
+        
+        # Extract component information
+        component_info = await react_analyzer.analyze_project(project_path)
+        
+        # Convert component information to patterns
+        for component in component_info:
+            pattern = {
+                "name": component.name,
+                "category": PatternCategory.COMPONENTS,
+                "content": component.content,
+                "confidence": 0.95,
+                "metadata": {
+                    "component_type": component.type,
+                    "has_hooks": component.uses_hooks,
+                    "prop_types": component.prop_types
+                }
+            }
+            component_patterns.append(pattern)
+        
+        return component_patterns
+
+# Initialize pattern learner
+tsx_pattern_learner = TSXPatternLearner()
+
+@handle_async_errors(error_types=ProcessingError)
+async def process_tsx_pattern(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    source_code: str,
+    context: Optional[TSXPatternContext] = None
+) -> List[Dict[str, Any]]:
+    """Process a TSX pattern with full system integration."""
+    # Use TypeScript pattern processing with TSX-specific context
+    return await process_typescript_pattern(pattern, source_code, context)
+
+# Update initialization
+async def initialize_tsx_patterns():
+    """Initialize TSX patterns during app startup."""
+    global tsx_pattern_learner
+    
+    # Initialize pattern processor first
+    await pattern_processor.initialize()
+    
+    # Register TSX patterns
+    await pattern_processor.register_language_patterns(
+        "tsx",
+        TSX_PATTERNS,
+        metadata={
+            "parser_type": ParserType.TREE_SITTER,
+            "supports_learning": True,
+            "supports_adaptation": True,
+            "capabilities": TSX_CAPABILITIES
+        }
+    )
+    
+    # Create and initialize learner
+    tsx_pattern_learner = await TSXPatternLearner.create()
+    
+    # Register learner with pattern processor
+    await pattern_processor.register_pattern_learner(
+        "tsx",
+        tsx_pattern_learner
+    )
+    
+    await global_health_monitor.update_component_status(
+        "tsx_patterns",
+        ComponentStatus.HEALTHY,
+        details={
+            "patterns_loaded": len(TSX_PATTERNS),
+            "capabilities": list(TSX_CAPABILITIES)
+        }
+    )
+
+async def extract_tsx_features(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    matches: List[Dict[str, Any]],
+    context: TSXPatternContext
+) -> ExtractedFeatures:
+    """Extract features from TSX pattern matches."""
+    # Use TypeScript feature extraction with TSX-specific context
+    features = await extract_typescript_features(pattern, matches, context)
+    
+    # Add TSX-specific features
+    if pattern.category == PatternCategory.COMPONENTS:
+        component_features = await extract_component_features(matches, context)
+        features.update(component_features)
+    
+    return features
+
+async def validate_tsx_pattern(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    context: Optional[TSXPatternContext] = None
+) -> PatternValidationResult:
+    """Validate a TSX pattern with system integration."""
+    # Use TypeScript pattern validation with TSX-specific context
+    return await validate_typescript_pattern(pattern, context)
+
+async def extract_component_features(
+    matches: List[Dict[str, Any]],
+    context: TSXPatternContext
+) -> ExtractedFeatures:
+    """Extract TSX-specific React component features."""
+    features = ExtractedFeatures()
+    
+    for match in matches:
+        if "component" in match:
+            features.add_component_info(
+                name=match["name"],
+                type=match.get("component_type"),
+                has_hooks=match.get("has_hooks", False),
+                prop_types=match.get("prop_types", {})
+            )
+            
+            # Update context
+            context.jsx_component_names.add(match["name"])
+            if match.get("has_hooks"):
+                context.has_react_hooks = True
+            context.jsx_prop_types.update(match.get("prop_types", {}))
+    
+    return features
+
+# Export public interfaces
+__all__ = [
+    'TSX_PATTERNS',
+    'TSX_PATTERN_RELATIONSHIPS',
+    'TSX_PATTERN_METRICS',
+    'get_tsx_pattern_relationships',
+    'update_tsx_pattern_metrics',
+    'get_tsx_pattern_match_result'
+]

@@ -1,336 +1,321 @@
-"""Elm-specific Tree-sitter patterns.
+"""Elm-specific patterns with enhanced type system and relationships.
 
-This module defines basic queries for capturing Elm constructs such as module declarations,
-value declarations, type aliases, and union types.
+This module provides Elm-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
 """
 
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
 )
+from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
+# Pattern relationships for Elm
+ELM_PATTERN_RELATIONSHIPS = {
+    "function": [
+        PatternRelationship(
+            source_pattern="function",
+            target_pattern="type",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.95,
+            metadata={"type_annotation": True}
+        ),
+        PatternRelationship(
+            source_pattern="function",
+            target_pattern="comment",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"documentation": True}
+        )
+    ],
+    "type": [
+        PatternRelationship(
+            source_pattern="type",
+            target_pattern="type_variable",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.95,
+            metadata={"type_variables": True}
+        ),
+        PatternRelationship(
+            source_pattern="type",
+            target_pattern="constructor",
+            relationship_type=PatternRelationType.DEFINES,
+            confidence=0.9,
+            metadata={"constructors": True}
+        )
+    ],
+    "module": [
+        PatternRelationship(
+            source_pattern="module",
+            target_pattern="import",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.95,
+            metadata={"imports": True}
+        ),
+        PatternRelationship(
+            source_pattern="module",
+            target_pattern="export",
+            relationship_type=PatternRelationType.DEFINES,
+            confidence=0.9,
+            metadata={"exports": True}
+        )
+    ]
+}
+
+# Performance metrics tracking for Elm patterns
+ELM_PATTERN_METRICS = {
+    "function": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "type": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "module": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
+
+# Enhanced Elm patterns with proper typing and relationships
 ELM_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
+            "function": ResilientPattern(
+                name="function",
                 pattern="""
                 (value_declaration
                   pattern: (lower_pattern) @syntax.function.name
                   type_annotation: (type_annotation)? @syntax.function.type
                   value: (value_expr) @syntax.function.body) @syntax.function.def
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
-                    "type": "function"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elm",
+                confidence=0.95,
+                metadata={
+                    "relationships": ELM_PATTERN_RELATIONSHIPS["function"],
+                    "metrics": ELM_PATTERN_METRICS["function"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
-            "class": QueryPattern(
+            
+            "type": ResilientPattern(
+                name="type",
                 pattern="""
                 [
                     (type_declaration
-                        name: (upper_case_identifier) @syntax.class.name
-                        type_variables: (lower_pattern)* @syntax.class.type_vars
-                        constructors: (union_variant)+ @syntax.class.constructors) @syntax.class.def,
+                        name: (upper_case_identifier) @syntax.type.name
+                        type_variables: (lower_pattern)* @syntax.type.type_vars
+                        constructors: (union_variant)+ @syntax.type.constructors) @syntax.type.def,
                     (type_alias_declaration
-                        name: (upper_case_identifier) @syntax.class.name
-                        type_variables: (lower_pattern)* @syntax.class.type_vars
-                        type_expression: (_) @syntax.class.type) @syntax.class.def
+                        name: (upper_case_identifier) @syntax.type.name
+                        type_variables: (lower_pattern)* @syntax.type.type_vars
+                        type_expression: (_) @syntax.type.type) @syntax.type.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.class.name", {}).get("text", ""),
-                    "type": "class"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elm",
+                confidence=0.95,
+                metadata={
+                    "relationships": ELM_PATTERN_RELATIONSHIPS["type"],
+                    "metrics": ELM_PATTERN_METRICS["type"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
     },
-
-    PatternCategory.SEMANTICS: {
-        PatternPurpose.UNDERSTANDING: {
-            "type": QueryPattern(
-                pattern="""
-                [
-                    (type_annotation
-                        name: (_) @semantics.type.name
-                        expression: (_) @semantics.type.expr) @semantics.type.def,
-                    (type_variable
-                        name: (lower_case_identifier) @semantics.type.var) @semantics.type.def
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.type.name", {}).get("text", ""),
-                    "type": "type"
-                }
-            ),
-            "variable": QueryPattern(
-                pattern="""
-                [
-                    (lower_pattern) @semantics.variable,
-                    (record_pattern
-                        fields: (lower_pattern)+ @semantics.variable.fields) @semantics.variable.def
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.variable", {}).get("text", ""),
-                    "type": "variable"
-                }
-            )
-        }
-    },
-
-    PatternCategory.DOCUMENTATION: {
-        PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
-                pattern="""
-                [
-                    (line_comment) @documentation.comment.line,
-                    (block_comment) @documentation.comment.block
-                ]
-                """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment.line", {}).get("text", "") or
-                           node["captures"].get("documentation.comment.block", {}).get("text", ""),
-                    "type": "line" if "documentation.comment.line" in node["captures"] else "block"
-                }
-            ),
-            "docstring": QueryPattern(
-                pattern="""
-                (block_comment
-                    content: (_) @documentation.docstring.content
-                    (#match? @documentation.docstring.content "^\\|\\s*@docs")) @documentation.docstring.def
-                """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.docstring.content", {}).get("text", ""),
-                    "type": "docstring"
-                }
-            )
-        }
-    },
-
+    
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
-            "module": QueryPattern(
+            "module": ResilientPattern(
+                name="module",
                 pattern="""
                 (module_declaration
                     name: (upper_case_qid) @structure.module.name
                     exposing: (exposed_values)? @structure.module.exports) @structure.module.def
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("structure.module.name", {}).get("text", ""),
-                    "type": "module"
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elm",
+                confidence=0.95,
+                metadata={
+                    "relationships": ELM_PATTERN_RELATIONSHIPS["module"],
+                    "metrics": ELM_PATTERN_METRICS["module"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
-            "import": QueryPattern(
+            
+            "import": AdaptivePattern(
+                name="import",
                 pattern="""
                 (import_declaration
                     module_name: (upper_case_qid) @structure.import.module
                     as_name: (upper_case_identifier)? @structure.import.alias
                     exposing: (exposed_values)? @structure.import.exposed) @structure.import.def
                 """,
-                extract=lambda node: {
-                    "module": node["captures"].get("structure.import.module", {}).get("text", ""),
-                    "alias": node["captures"].get("structure.import.alias", {}).get("text", ""),
-                    "type": "import"
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elm",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
     },
     
-    PatternCategory.LEARNING: {
-        PatternPurpose.BEST_PRACTICES: {
-            "naming_conventions": QueryPattern(
+    PatternCategory.DOCUMENTATION: {
+        PatternPurpose.UNDERSTANDING: {
+            "comments": AdaptivePattern(
+                name="comments",
                 pattern="""
                 [
-                    (module_declaration
-                        name: (upper_case_qid) @naming.module.name) @naming.module,
-                        
-                    (type_declaration
-                        name: (upper_case_identifier) @naming.type.name) @naming.type,
-                        
-                    (type_alias_declaration
-                        name: (upper_case_identifier) @naming.alias.name) @naming.alias,
-                        
-                    (value_declaration
-                        pattern: (lower_pattern) @naming.function.name) @naming.function,
-                        
-                    (lower_pattern) @naming.variable
+                    (line_comment) @documentation.comment.line,
+                    (block_comment) @documentation.comment.block
                 ]
                 """,
-                extract=lambda node: {
-                    "entity_type": ("module" if "naming.module.name" in node["captures"] else
-                                 "type" if "naming.type.name" in node["captures"] else
-                                 "alias" if "naming.alias.name" in node["captures"] else
-                                 "function" if "naming.function.name" in node["captures"] else
-                                 "variable"),
-                    "name": (node["captures"].get("naming.module.name", {}).get("text", "") or
-                           node["captures"].get("naming.type.name", {}).get("text", "") or
-                           node["captures"].get("naming.alias.name", {}).get("text", "") or
-                           node["captures"].get("naming.function.name", {}).get("text", "") or
-                           node["captures"].get("naming.variable", {}).get("text", "")),
-                    "uses_camel_case": any(
-                        name and name[0].islower() and any(c.isupper() for c in name)
-                        for name in [node["captures"].get("naming.function.name", {}).get("text", ""),
-                                   node["captures"].get("naming.variable", {}).get("text", "")]
-                        if name
-                    ),
-                    "uses_pascal_case": any(
-                        name and name[0].isupper() and not "_" in name
-                        for name in [node["captures"].get("naming.module.name", {}).get("text", ""),
-                                   node["captures"].get("naming.type.name", {}).get("text", ""),
-                                   node["captures"].get("naming.alias.name", {}).get("text", "")]
-                        if name
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elm",
+                confidence=0.9,
+                metadata={
+                    "relationships": [
+                        PatternRelationship(
+                            source_pattern="comments",
+                            target_pattern="function",
+                            relationship_type=PatternRelationType.COMPLEMENTS,
+                            confidence=0.8
+                        )
+                    ],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
                     )
                 }
-            )
-        },
-        PatternPurpose.TYPE_SYSTEM: {
-            "type_system": QueryPattern(
+            ),
+            
+            "docstring": AdaptivePattern(
+                name="docstring",
                 pattern="""
-                [
-                    (type_annotation
-                        name: (_) @type_system.annotation.name
-                        expression: (_) @type_system.annotation.expr) @type_system.annotation,
-                        
-                    (type_declaration
-                        name: (upper_case_identifier) @type_system.union.name
-                        type_variables: (lower_pattern)* @type_system.union.type_vars
-                        constructors: (union_variant)+ @type_system.union.constructors) @type_system.union,
-                        
-                    (type_alias_declaration
-                        name: (upper_case_identifier) @type_system.alias.name
-                        type_variables: (lower_pattern)* @type_system.alias.type_vars
-                        type_expression: (_) @type_system.alias.type) @type_system.alias,
-                        
-                    (type_expression
-                        (_) @type_system.type_expr) @type_system.type
-                ]
+                (block_comment
+                    content: (_) @documentation.docstring.content
+                    (#match? @documentation.docstring.content "^\\|\\s*@docs")) @documentation.docstring.def
                 """,
-                extract=lambda node: {
-                    "pattern_type": ("annotation" if "type_system.annotation" in node["captures"] else
-                                  "union" if "type_system.union" in node["captures"] else
-                                  "alias" if "type_system.alias" in node["captures"] else
-                                  "type_expression"),
-                    "uses_type_annotation": "type_system.annotation" in node["captures"],
-                    "uses_union_types": "type_system.union" in node["captures"],
-                    "uses_type_aliases": "type_system.alias" in node["captures"],
-                    "has_type_variables": any(
-                        type_vars and type_vars.strip() 
-                        for type_vars in [
-                            node["captures"].get("type_system.union.type_vars", {}).get("text", ""),
-                            node["captures"].get("type_system.alias.type_vars", {}).get("text", "")
-                        ]
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elm",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
                     )
-                }
-            )
-        },
-        PatternPurpose.FUNCTIONAL_PATTERNS: {
-            "functional_patterns": QueryPattern(
-                pattern="""
-                [
-                    (case_of_expr
-                        expr: (_) @fp.case.expr
-                        branches: (case_of_branch)+ @fp.case.branches) @fp.case,
-                        
-                    (let_in_expr
-                        declarations: (value_declaration)+ @fp.let.decls
-                        expression: (_) @fp.let.expr) @fp.let,
-                        
-                    (function_call_expr
-                        target: (_) @fp.call.func
-                        arguments: (_)+ @fp.call.args) @fp.call,
-                        
-                    (lambda_expr
-                        patterns: (pattern)+ @fp.lambda.params
-                        expr: (_) @fp.lambda.body) @fp.lambda,
-                        
-                    (pipe_right_expr
-                        left: (_) @fp.pipe.left
-                        right: (_) @fp.pipe.right) @fp.pipe
-                ]
-                """,
-                extract=lambda node: {
-                    "uses_pattern_matching": "fp.case" in node["captures"],
-                    "uses_let_expressions": "fp.let" in node["captures"],
-                    "uses_lambda": "fp.lambda" in node["captures"],
-                    "uses_pipe": "fp.pipe" in node["captures"],
-                    "pattern_type": ("case" if "fp.case" in node["captures"] else
-                                  "let" if "fp.let" in node["captures"] else
-                                  "lambda" if "fp.lambda" in node["captures"] else
-                                  "pipe" if "fp.pipe" in node["captures"] else
-                                  "function_call")
-                }
-            )
-        },
-        PatternPurpose.CODE_ORGANIZATION: {
-            "module_organization": QueryPattern(
-                pattern="""
-                [
-                    (module_declaration
-                        name: (upper_case_qid) @mod.name
-                        exposing: (exposed_values) @mod.exposing) @mod.decl,
-                        
-                    (import_declaration
-                        module_name: (upper_case_qid) @mod.import.name
-                        as_name: (upper_case_identifier)? @mod.import.alias
-                        exposing: (exposed_values)? @mod.import.exposing) @mod.import,
-                        
-                    (port_annotation
-                        name: (_) @mod.port.name) @mod.port
-                ]
-                """,
-                extract=lambda node: {
-                    "module_name": node["captures"].get("mod.name", {}).get("text", ""),
-                    "imports_with_alias": "mod.import.alias" in node["captures"] and node["captures"].get("mod.import.alias", {}).get("text", ""),
-                    "exposes_all": "exposing (..)" in node["captures"].get("mod.exposing", {}).get("text", ""),
-                    "uses_ports": "mod.port" in node["captures"],
-                    "module_type": "port" if "mod.port" in node["captures"] else "regular"
                 }
             )
         }
     }
 }
 
-# Additional metadata for pattern categories
-PATTERN_METADATA = {
-    "syntax": {
-        "function": {
-            "contains": ["type", "body"],
-            "contained_by": ["namespace"]
-        },
-        "class": {
-            "contains": ["type_vars", "constructors", "type"],
-            "contained_by": ["namespace"]
-        }
-    },
-    "structure": {
-        "namespace": {
-            "contains": ["exports", "function", "class", "variable"],
-            "contained_by": []
-        },
-        "import": {
-            "contains": ["exposed"],
-            "contained_by": ["namespace"]
-        }
-    },
-    "semantics": {
-        "variable": {
-            "contains": ["fields"],
-            "contained_by": ["function", "expression"]
-        },
-        "expression": {
-            "contains": ["args", "condition", "then", "else", "branches", "declarations"],
-            "contained_by": ["function", "let_in_expr"]
-        }
-    },
-    "documentation": {
-        "docstring": {
-            "contains": [],
-            "contained_by": ["function", "class", "namespace"]
-        },
-        "comment": {
-            "contains": [],
-            "contained_by": ["function", "class", "namespace", "expression"]
-        }
-    }
-} 
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for Elm files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "elm"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(ELM_PATTERNS.keys())
+    )
+
+def get_elm_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return ELM_PATTERN_RELATIONSHIPS.get(pattern_name, [])
+
+def update_elm_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in ELM_PATTERN_METRICS:
+        pattern_metrics = ELM_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
+
+def get_elm_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_elm_pattern_relationships(pattern_name),
+        performance=ELM_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "elm"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'ELM_PATTERNS',
+    'ELM_PATTERN_RELATIONSHIPS',
+    'ELM_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_elm_pattern_relationships',
+    'update_elm_pattern_metrics',
+    'get_elm_pattern_match_result'
+]
+
+# Module identification
+LANGUAGE = "elm" 

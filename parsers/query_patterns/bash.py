@@ -1,61 +1,145 @@
-"""Query patterns for Bash files."""
+"""Bash-specific patterns with enhanced type system and relationships.
 
+This module provides Bash-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
 )
+from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
+# Pattern relationships for Bash
+BASH_PATTERN_RELATIONSHIPS = {
+    "function_definition": [
+        PatternRelationship(
+            source_pattern="function_definition",
+            target_pattern="comments",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"documentation": True}
+        )
+    ],
+    "variable_assignment": [
+        PatternRelationship(
+            source_pattern="variable_assignment",
+            target_pattern="comments",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"documentation": True}
+        )
+    ],
+    "control_flow": [
+        PatternRelationship(
+            source_pattern="control_flow",
+            target_pattern="comments",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"documentation": True}
+        )
+    ]
+}
+
+# Performance metrics tracking for Bash patterns
+BASH_PATTERN_METRICS = {
+    "function_definition": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "variable_assignment": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "control_flow": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
+
+# Enhanced Bash patterns with proper typing and relationships
 BASH_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
+            "function_definition": ResilientPattern(
+                name="function_definition",
                 pattern="""
                 [
                     (function_definition
                         name: (word) @syntax.function.name
-                        body: (compound_statement) @syntax.function.body) @syntax.function.def,
-                    
-                    (command
-                        name: (command_name) @syntax.command.name
-                        argument: (_)* @syntax.command.args) @syntax.command.def
+                        body: (compound_statement) @syntax.function.body) @syntax.function.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", "") or
-                           node["captures"].get("syntax.command.name", {}).get("text", ""),
-                    "type": "function" if "syntax.function.def" in node["captures"] else "command"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="bash",
+                confidence=0.95,
+                metadata={
+                    "relationships": BASH_PATTERN_RELATIONSHIPS["function_definition"],
+                    "metrics": BASH_PATTERN_METRICS["function_definition"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
             
-            "control_flow": QueryPattern(
+            "control_flow": ResilientPattern(
+                name="control_flow",
                 pattern="""
                 [
                     (if_statement
                         condition: (_) @syntax.if.condition
-                        [(elif_clause) @syntax.if.elif
-                         (else_clause) @syntax.if.else]*) @syntax.if.def,
+                        consequence: (_) @syntax.if.then
+                        alternative: (_)? @syntax.if.else) @syntax.if.statement,
+                    
+                    (for_statement
+                        variable: (_) @syntax.for.variable
+                        value: (_) @syntax.for.value
+                        body: (_) @syntax.for.body) @syntax.for.statement,
                     
                     (while_statement
                         condition: (_) @syntax.while.condition
-                        body: (_) @syntax.while.body) @syntax.while.def,
-                    
-                    (for_statement
-                        value: (_) @syntax.for.value
-                        body: (_) @syntax.for.body) @syntax.for.def,
+                        body: (_) @syntax.while.body) @syntax.while.statement,
                     
                     (case_statement
                         value: (_) @syntax.case.value
-                        (case_item
-                            value: (_) @syntax.case.pattern
-                            body: (_)? @syntax.case.body)*) @syntax.case.def
+                        body: (_) @syntax.case.body) @syntax.case.statement
                 ]
                 """,
-                extract=lambda node: {
-                    "type": ("if" if "syntax.if.def" in node["captures"] else
-                            "while" if "syntax.while.def" in node["captures"] else
-                            "for" if "syntax.for.def" in node["captures"] else
-                            "case")
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="bash",
+                confidence=0.95,
+                metadata={
+                    "relationships": BASH_PATTERN_RELATIONSHIPS["control_flow"],
+                    "metrics": BASH_PATTERN_METRICS["control_flow"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -63,60 +147,29 @@ BASH_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": QueryPattern(
+            "variable_assignment": AdaptivePattern(
+                name="variable_assignment",
                 pattern="""
                 [
                     (variable_assignment
-                        name: (_) @semantics.variable.name
-                        value: (_) @semantics.variable.value) @semantics.variable.def,
+                        name: (_) @semantics.var.name
+                        value: (_) @semantics.var.value) @semantics.var.assignment,
                     
-                    (simple_expansion
-                        [(variable_name) @semantics.variable.ref
-                         (special_variable_name) @semantics.variable.special]) @semantics.variable.expansion
+                    (command_substitution
+                        command: (_) @semantics.var.command) @semantics.var.substitution
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.variable.name", {}).get("text", "") or
-                           node["captures"].get("semantics.variable.ref", {}).get("text", ""),
-                    "type": "assignment" if "semantics.variable.def" in node["captures"] else "expansion"
-                }
-            ),
-            
-            "expansion": QueryPattern(
-                pattern="""
-                [
-                    (command_substitution) @semantics.expansion.command,
-                    (process_substitution) @semantics.expansion.process,
-                    (arithmetic_expansion) @semantics.expansion.arithmetic,
-                    (string) @semantics.expansion.string
-                ]
-                """,
-                extract=lambda node: {
-                    "type": ("command" if "semantics.expansion.command" in node["captures"] else
-                            "process" if "semantics.expansion.process" in node["captures"] else
-                            "arithmetic" if "semantics.expansion.arithmetic" in node["captures"] else
-                            "string")
-                }
-            )
-        }
-    },
-    
-    PatternCategory.STRUCTURE: {
-        PatternPurpose.UNDERSTANDING: {
-            "redirection": QueryPattern(
-                pattern="""
-                [
-                    (redirected_statement
-                        body: (_) @structure.redirect.body
-                        redirect: [(file_redirect) @structure.redirect.file
-                                 (heredoc_redirect) @structure.redirect.heredoc
-                                 (herestring_redirect) @structure.redirect.herestring]) @structure.redirect.def
-                ]
-                """,
-                extract=lambda node: {
-                    "type": ("file" if "structure.redirect.file" in node["captures"] else
-                            "heredoc" if "structure.redirect.heredoc" in node["captures"] else
-                            "herestring")
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="bash",
+                confidence=0.9,
+                metadata={
+                    "relationships": BASH_PATTERN_RELATIONSHIPS["variable_assignment"],
+                    "metrics": BASH_PATTERN_METRICS["variable_assignment"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -124,152 +177,88 @@ BASH_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": QueryPattern(
+            "comments": AdaptivePattern(
+                name="comments",
                 pattern="""
                 [
                     (comment) @documentation.comment
                 ]
                 """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", "")
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="bash",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
-        }
-    },
-    
-    PatternCategory.LEARNING: {
-        PatternPurpose.BEST_PRACTICES: {
-            "naming_conventions": QueryPattern(
-                pattern="""
-                [
-                    (function_definition
-                        name: (word) @naming.function.name) @naming.function,
-                        
-                    (variable_assignment
-                        name: (_) @naming.variable.name) @naming.variable
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "naming_convention_pattern",
-                    "name": node["node"].text.decode('utf8'),
-                    "convention": "function" if "naming.function" in node["captures"] else "variable",
-                    "is_snake_case": "_" in node["node"].text.decode('utf8') and not any(c.isupper() for c in node["node"].text.decode('utf8')),
-                    "is_screaming_snake": all(c.isupper() or not c.isalpha() for c in node["node"].text.decode('utf8'))
-                }
-            )
-        },
-        PatternPurpose.ERROR_HANDLING: {
-            "error_handling": QueryPattern(
-                pattern="""
-                [
-                    (command
-                        name: (command_name) @error.cmd.name
-                        (#eq? @error.cmd.name "trap")) @error.trap,
-                        
-                    (binary_expression
-                        left: (_) @error.check.left
-                        operator: (_) @error.check.op
-                        (#eq? @error.check.op "||")
-                        right: (_) @error.check.right) @error.check
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "error_handling_pattern",
-                    "is_trap": "error.trap" in node["captures"],
-                    "is_error_check": "error.check" in node["captures"],
-                    "trap_command": node["node"].text.decode('utf8') if "error.trap" in node["captures"] else ""
-                }
-            )
-        },
-        PatternPurpose.CODE_ORGANIZATION: {
-            "code_structure": QueryPattern(
-                pattern="""
-                [
-                    (shebang) @structure.shebang,
-                    
-                    (function_definition) @structure.function,
-                    
-                    (case_statement) @structure.case,
-                    
-                    (if_statement) @structure.if
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "code_structure_pattern",
-                    "has_shebang": "structure.shebang" in node["captures"],
-                    "has_functions": "structure.function" in node["captures"],
-                    "has_case": "structure.case" in node["captures"],
-                    "has_conditionals": "structure.if" in node["captures"]
-                }
-            )
-        }
-    }
-} 
-
-# Repository learning patterns for Bash
-BASH_PATTERNS_FOR_LEARNING = {
-    "naming_conventions": {
-        "pattern": """
-        [
-            (function_definition
-                name: (word) @naming.function.name) @naming.function,
-                
-            (variable_assignment
-                name: (_) @naming.variable.name) @naming.variable
-        ]
-        """,
-        "extract": lambda node: {
-            "type": "naming_convention_pattern",
-            "name": node["node"].text.decode('utf8'),
-            "convention": "function" if "naming.function" in node["captures"] else "variable",
-            "is_snake_case": "_" in node["node"].text.decode('utf8') and not any(c.isupper() for c in node["node"].text.decode('utf8')),
-            "is_screaming_snake": all(c.isupper() or not c.isalpha() for c in node["node"].text.decode('utf8'))
-        }
-    },
-    
-    "error_handling": {
-        "pattern": """
-        [
-            (command
-                name: (command_name) @error.cmd.name
-                (#eq? @error.cmd.name "trap")) @error.trap,
-                
-            (binary_expression
-                left: (_) @error.check.left
-                operator: (_) @error.check.op
-                (#eq? @error.check.op "||")
-                right: (_) @error.check.right) @error.check
-        ]
-        """,
-        "extract": lambda node: {
-            "type": "error_handling_pattern",
-            "is_trap": "error.trap" in node["captures"],
-            "is_error_check": "error.check" in node["captures"],
-            "trap_command": node["node"].text.decode('utf8') if "error.trap" in node["captures"] else ""
-        }
-    },
-    
-    "code_structure": {
-        "pattern": """
-        [
-            (shebang) @structure.shebang,
-            
-            (function_definition) @structure.function,
-            
-            (case_statement) @structure.case,
-            
-            (if_statement) @structure.if
-        ]
-        """,
-        "extract": lambda node: {
-            "type": "code_structure_pattern",
-            "has_shebang": "structure.shebang" in node["captures"],
-            "has_functions": "structure.function" in node["captures"],
-            "has_case": "structure.case" in node["captures"],
-            "has_conditionals": "structure.if" in node["captures"]
         }
     }
 }
 
-# Add the repository learning patterns to the main patterns
-BASH_PATTERNS['REPOSITORY_LEARNING'] = BASH_PATTERNS_FOR_LEARNING 
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for Bash files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "bash", "version": "5.0+"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(BASH_PATTERNS.keys())
+    )
+
+def get_bash_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return BASH_PATTERN_RELATIONSHIPS.get(pattern_name, [])
+
+def update_bash_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in BASH_PATTERN_METRICS:
+        pattern_metrics = BASH_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
+
+def get_bash_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_bash_pattern_relationships(pattern_name),
+        performance=BASH_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "bash"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'BASH_PATTERNS',
+    'BASH_PATTERN_RELATIONSHIPS',
+    'BASH_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_bash_pattern_relationships',
+    'update_bash_pattern_metrics',
+    'get_bash_pattern_match_result'
+]
+
+# Module identification
+LANGUAGE = "bash" 

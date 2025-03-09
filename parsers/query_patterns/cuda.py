@@ -1,15 +1,97 @@
-"""Query patterns for CUDA files."""
+"""CUDA-specific patterns with enhanced type system and relationships.
 
+This module provides CUDA-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
 )
+from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
+# Pattern relationships for CUDA
+CUDA_PATTERN_RELATIONSHIPS = {
+    "kernel_definition": [
+        PatternRelationship(
+            source_pattern="kernel_definition",
+            target_pattern="memory_management",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.95,
+            metadata={"gpu_memory": True}
+        ),
+        PatternRelationship(
+            source_pattern="kernel_definition",
+            target_pattern="comment",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"best_practice": True}
+        )
+    ],
+    "memory_management": [
+        PatternRelationship(
+            source_pattern="memory_management",
+            target_pattern="synchronization",
+            relationship_type=PatternRelationType.REQUIRES,
+            confidence=0.9,
+            metadata={"memory_sync": True}
+        )
+    ],
+    "synchronization": [
+        PatternRelationship(
+            source_pattern="synchronization",
+            target_pattern="kernel_definition",
+            relationship_type=PatternRelationType.SUPPORTS,
+            confidence=0.95,
+            metadata={"kernel_sync": True}
+        )
+    ]
+}
+
+# Performance metrics tracking for CUDA patterns
+CUDA_PATTERN_METRICS = {
+    "kernel_definition": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "memory_management": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "synchronization": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
+
+# Enhanced CUDA patterns with proper typing and relationships
 CUDA_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
+            "kernel_definition": ResilientPattern(
+                name="kernel_definition",
                 pattern="""
                 [
                     (function_definition
@@ -27,10 +109,17 @@ CUDA_PATTERNS = {
                         body: (_) @syntax.function.body) @syntax.function.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": (node["captures"].get("syntax.kernel.name", {}).get("text", "") or
-                            node["captures"].get("syntax.function.name", {}).get("text", "")),
-                    "type": "kernel" if "syntax.kernel.def" in node["captures"] else "function"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda",
+                confidence=0.95,
+                metadata={
+                    "relationships": CUDA_PATTERN_RELATIONSHIPS["kernel_definition"],
+                    "metrics": CUDA_PATTERN_METRICS["kernel_definition"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -55,7 +144,8 @@ CUDA_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": QueryPattern(
+            "memory_management": ResilientPattern(
+                name="memory_management",
                 pattern="""
                 [
                     (declaration
@@ -66,13 +156,22 @@ CUDA_PATTERNS = {
                         declarator: (_) @semantics.var.name) @semantics.var.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.var.name", {}).get("text", ""),
-                    "attribute": node["captures"].get("semantics.var.attr.name", {}).get("text", "")
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda",
+                confidence=0.95,
+                metadata={
+                    "relationships": CUDA_PATTERN_RELATIONSHIPS["memory_management"],
+                    "metrics": CUDA_PATTERN_METRICS["memory_management"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
             
-            "synchronization": QueryPattern(
+            "synchronization": ResilientPattern(
+                name="synchronization",
                 pattern="""
                 [
                     (call_expression
@@ -81,8 +180,17 @@ CUDA_PATTERNS = {
                         arguments: (_)? @semantics.sync.args) @semantics.sync.def
                 ]
                 """,
-                extract=lambda node: {
-                    "function": node["captures"].get("semantics.sync.func", {}).get("text", "")
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda",
+                confidence=0.95,
+                metadata={
+                    "relationships": CUDA_PATTERN_RELATIONSHIPS["synchronization"],
+                    "metrics": CUDA_PATTERN_METRICS["synchronization"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -90,17 +198,32 @@ CUDA_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": QueryPattern(
+            "comments": AdaptivePattern(
+                name="comments",
                 pattern="""
                 [
                     (comment) @documentation.comment.single,
                     (comment_multiline) @documentation.comment.multi
                 ]
                 """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment.single", {}).get("text", "") or
-                           node["captures"].get("documentation.comment.multi", {}).get("text", ""),
-                    "type": "single" if "documentation.comment.single" in node["captures"] else "multi"
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda",
+                confidence=0.9,
+                metadata={
+                    "relationships": [
+                        PatternRelationship(
+                            source_pattern="comments",
+                            target_pattern="kernel_definition",
+                            relationship_type=PatternRelationType.COMPLEMENTS,
+                            confidence=0.8
+                        )
+                    ],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -227,4 +350,63 @@ CUDA_PATTERNS = {
             )
         }
     }
-} 
+}
+
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for CUDA files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "cuda", "version": "11.0"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(CUDA_PATTERNS.keys())
+    )
+
+def get_cuda_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return CUDA_PATTERN_RELATIONSHIPS.get(pattern_name, [])
+
+def update_cuda_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in CUDA_PATTERN_METRICS:
+        pattern_metrics = CUDA_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
+
+def get_cuda_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_cuda_pattern_relationships(pattern_name),
+        performance=CUDA_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "cuda"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'CUDA_PATTERNS',
+    'CUDA_PATTERN_RELATIONSHIPS',
+    'CUDA_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_cuda_pattern_relationships',
+    'update_cuda_pattern_metrics',
+    'get_cuda_pattern_match_result'
+] 

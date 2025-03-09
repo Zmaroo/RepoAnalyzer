@@ -1,407 +1,287 @@
-"""TypeScript-specific Tree-sitter patterns."""
+"""TypeScript-specific patterns with enhanced type system and relationships.
 
-from parsers.types import FileType
-from .js_ts_shared import JS_TS_SHARED_PATTERNS
+This module provides TypeScript-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional, Union, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose, 
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern,
+    AICapability, AIContext, AIProcessingResult, InteractionType,
+    ExtractedFeatures, FileType, ParserType
 )
+from parsers.models import PATTERN_CATEGORIES
+from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
+from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
+from utils.request_cache import cached_in_request
+from utils.cache_analytics import get_cache_analytics
+from utils.async_runner import submit_async_task, cleanup_tasks
+from utils.logger import log
+from utils.shutdown import register_shutdown_handler
+import asyncio
+from parsers.pattern_processor import pattern_processor
+from parsers.block_extractor import get_block_extractor
+from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.unified_parser import get_unified_parser
+from parsers.base_parser import BaseParser
+from parsers.tree_sitter_parser import get_tree_sitter_parser
+from parsers.ai_pattern_processor import get_ai_pattern_processor
+from .js_ts_shared import (
+    JS_TS_SHARED_PATTERNS,
+    JS_TS_CAPABILITIES,
+    JSTSPatternLearner,
+    process_js_ts_pattern,
+    extract_js_ts_features,
+    validate_js_ts_pattern
+)
+import time
 
-TYPESCRIPT_PATTERNS_FOR_LEARNING = {
-    PatternCategory.LEARNING: {
-        PatternPurpose.LEARNING: {
-            "type_system": QueryPattern(
+# TypeScript capabilities (extends JS/TS capabilities)
+TS_CAPABILITIES = JS_TS_CAPABILITIES | {
+    AICapability.TYPE_CHECKING,
+    AICapability.INTERFACE_GENERATION,
+    AICapability.TYPE_INFERENCE
+}
+
+@dataclass
+class TypeScriptPatternContext(PatternContext):
+    """TypeScript-specific pattern context."""
+    class_names: Set[str] = field(default_factory=set)
+    interface_names: Set[str] = field(default_factory=set)
+    type_names: Set[str] = field(default_factory=set)
+    function_names: Set[str] = field(default_factory=set)
+    module_names: Set[str] = field(default_factory=set)
+    has_generics: bool = False
+    has_decorators: bool = False
+    has_async: bool = False
+    has_jsx: bool = False
+    has_modules: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.class_names)}:{self.has_generics}"
+
+# TypeScript patterns extend shared patterns
+TS_PATTERNS = {
+    **JS_TS_SHARED_PATTERNS,  # Inherit shared patterns
+    
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "type_definition": ResilientPattern(
+                name="type_definition",
                 pattern="""
                 [
-                    (interface_declaration
-                        name: (type_identifier) @type.interface.name
-                        type_parameters: (type_parameters
-                            (type_parameter
-                                name: (type_identifier) @type.interface.generic.param
-                                constraint: (_)? @type.interface.generic.constraint
-                                value: (_)? @type.interface.generic.default)* @type.interface.generic.params)? @type.interface.generics
-                        extends: (extends_type_clause
-                            (type_reference)+ @type.interface.extends)? @type.interface.extends_clause
-                        body: (interface_body) @type.interface.body) @type.interface,
-                        
                     (type_alias_declaration
-                        name: (type_identifier) @type.alias.name
-                        type_parameters: (type_parameters)? @type.alias.generics
-                        value: [(object_type) (union_type) (intersection_type) (function_type)] @type.alias.value) @type.alias,
-                        
-                    (enum_declaration
-                        name: (identifier) @type.enum.name
-                        body: (enum_body
-                            (enum_member
-                                name: (property_identifier) @type.enum.member)* @type.enum.members) @type.enum.body) @type.enum,
-                        
-                    (method_signature
-                        name: (property_identifier) @type.func_sig.name
-                        parameters: (formal_parameters
-                            (required_parameter
-                                name: (_) @type.func_sig.param.name
-                                type: (type_annotation) @type.func_sig.param.type)* @type.func_sig.params)
-                        return_type: (type_annotation) @type.func_sig.return) @type.func_sig
+                        name: (type_identifier) @syntax.type.name
+                        type_parameters: (type_parameters)? @syntax.type.generics
+                        value: (_) @syntax.type.value) @syntax.type.def,
+                    (interface_declaration
+                        name: (type_identifier) @syntax.interface.name
+                        type_parameters: (type_parameters)? @syntax.interface.generics
+                        extends: (interface_heritage)? @syntax.interface.extends
+                        body: (object_type) @syntax.interface.body) @syntax.interface.def
                 ]
                 """,
-                extract=lambda node: {
-                    "pattern_type": "type_system",
-                    "is_interface": "type.interface" in node["captures"],
-                    "is_type_alias": "type.alias" in node["captures"],
-                    "is_enum": "type.enum" in node["captures"],
-                    "is_function_signature": "type.func_sig" in node["captures"],
-                    "type_name": (
-                        node["captures"].get("type.interface.name", {}).get("text", "") or
-                        node["captures"].get("type.alias.name", {}).get("text", "") or
-                        node["captures"].get("type.enum.name", {}).get("text", "") or
-                        node["captures"].get("type.func_sig.name", {}).get("text", "")
-                    ),
-                    "is_generic": (
-                        "type.interface.generics" in node["captures"] and node["captures"].get("type.interface.generics", {}).get("text", "") != "" or
-                        "type.alias.generics" in node["captures"] and node["captures"].get("type.alias.generics", {}).get("text", "") != ""
-                    ),
-                    "extends_types": [ext.get("text", "") for ext in node["captures"].get("type.interface.extends", [])],
-                    "enum_members": [member.get("text", "") for member in node["captures"].get("type.enum.member", [])],
-                    "type_kind": (
-                        "interface" if "type.interface" in node["captures"] else
-                        "type_alias" if "type.alias" in node["captures"] else
-                        "enum" if "type.enum" in node["captures"] else
-                        "function_signature" if "type.func_sig" in node["captures"] else
-                        "unknown"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="typescript",
+                confidence=0.95,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
                     )
-                },
-                description="Matches TypeScript type system patterns",
-                examples=[
-                    "interface MyInterface<T> { }",
-                    "type MyType = string | number;",
-                    "enum MyEnum { A, B, C }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
+                }
             ),
             
-            "advanced_types": QueryPattern(
-                pattern="""
-                [
-                    (union_type
-                        (_)+ @adv.union.member) @adv.union,
-                        
-                    (intersection_type
-                        (_)+ @adv.intersection.member) @adv.intersection,
-                        
-                    (conditional_type
-                        check: (_) @adv.conditional.check
-                        extends: (_) @adv.conditional.extends
-                        true_type: (_) @adv.conditional.true
-                        false_type: (_) @adv.conditional.false) @adv.conditional,
-                        
-                    (mapped_type
-                        parameter: (type_parameter
-                            name: (type_identifier) @adv.mapped.param.name
-                            constraint: (_) @adv.mapped.param.constraint) @adv.mapped.param
-                        type: (_) @adv.mapped.type) @adv.mapped,
-                        
-                    (index_signature
-                        name: (identifier) @adv.index.name
-                        type: (type_annotation
-                            type: (_) @adv.index.key_type) @adv.index.key
-                        value_type: (type_annotation
-                            type: (_) @adv.index.value_type) @adv.index.value) @adv.index,
-                        
-                    (lookup_type
-                        object: (_) @adv.lookup.object
-                        index: (_) @adv.lookup.index) @adv.lookup
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "advanced_types",
-                    "is_union": "adv.union" in node["captures"],
-                    "is_intersection": "adv.intersection" in node["captures"],
-                    "is_conditional": "adv.conditional" in node["captures"],
-                    "is_mapped": "adv.mapped" in node["captures"],
-                    "is_index_signature": "adv.index" in node["captures"],
-                    "is_lookup": "adv.lookup" in node["captures"],
-                    "union_members": [member.get("text", "") for member in node["captures"].get("adv.union.member", [])],
-                    "intersection_members": [member.get("text", "") for member in node["captures"].get("adv.intersection.member", [])],
-                    "conditional_check": node["captures"].get("adv.conditional.check", {}).get("text", ""),
-                    "conditional_true": node["captures"].get("adv.conditional.true", {}).get("text", ""),
-                    "conditional_false": node["captures"].get("adv.conditional.false", {}).get("text", ""),
-                    "mapped_param": node["captures"].get("adv.mapped.param.name", {}).get("text", ""),
-                    "index_key_type": node["captures"].get("adv.index.key_type", {}).get("text", ""),
-                    "index_value_type": node["captures"].get("adv.index.value_type", {}).get("text", ""),
-                    "lookup_object": node["captures"].get("adv.lookup.object", {}).get("text", ""),
-                    "lookup_index": node["captures"].get("adv.lookup.index", {}).get("text", ""),
-                    "type_kind": (
-                        "union" if "adv.union" in node["captures"] else
-                        "intersection" if "adv.intersection" in node["captures"] else
-                        "conditional" if "adv.conditional" in node["captures"] else
-                        "mapped" if "adv.mapped" in node["captures"] else
-                        "index_signature" if "adv.index" in node["captures"] else
-                        "lookup" if "adv.lookup" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches TypeScript advanced type patterns",
-                examples=[
-                    "type Union = A | B;",
-                    "type Intersection = A & B;",
-                    "type Conditional<T> = T extends U ? A : B;"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "type_manipulations": QueryPattern(
-                pattern="""
-                [
-                    (generic_type
-                        name: (type_identifier) @util.type.name {
-                            match: "^(Partial|Required|Readonly|Pick|Omit|Extract|Exclude|Parameters|ReturnType|InstanceType|ThisType|Record)$"
-                        }
-                        type_arguments: (type_arguments
-                            (_)+ @util.type.arg) @util.type.args) @util.type,
-                        
-                    (property_signature
-                        readonly: "readonly"? @manip.readonly
-                        name: (property_identifier) @manip.prop.name
-                        optional: "?"? @manip.optional
-                        type: (type_annotation
-                            type: (_) @manip.prop.type) @manip.prop.annotation) @manip.prop,
-                        
-                    (generic_type
-                        name: (type_identifier) @manip.generic.name
-                        type_arguments: (type_arguments
-                            (_)+ @manip.generic.arg) @manip.generic.args) @manip.generic,
-                        
-                    (type_predicate
-                         name: (identifier) @manip.predicate.name
-                         type: (type_annotation)? @manip.predicate.type) @manip.predicate
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "type_manipulations",
-                    "is_utility_type": "util.type" in node["captures"],
-                    "is_property_signature": "manip.prop" in node["captures"],
-                    "is_generic_type": "manip.generic" in node["captures"],
-                    "is_type_predicate": "manip.predicate" in node["captures"],
-                    "utility_name": node["captures"].get("util.type.name", {}).get("text", ""),
-                    "utility_args": [arg.get("text", "") for arg in node["captures"].get("util.type.arg", [])],
-                    "property_name": node["captures"].get("manip.prop.name", {}).get("text", ""),
-                    "property_type": node["captures"].get("manip.prop.type", {}).get("text", ""),
-                    "is_readonly": "manip.readonly" in node["captures"] and node["captures"].get("manip.readonly", {}).get("text", "") != "",
-                    "is_optional": "manip.optional" in node["captures"] and node["captures"].get("manip.optional", {}).get("text", "") != "",
-                    "generic_name": node["captures"].get("manip.generic.name", {}).get("text", ""),
-                    "generic_args": [arg.get("text", "") for arg in node["captures"].get("manip.generic.arg", [])],
-                    "predicate_name": node["captures"].get("manip.predicate.name", {}).get("text", ""),
-                    "manipulation_type": (
-                        "utility_type" if "util.type" in node["captures"] else
-                        "property_signature" if "manip.prop" in node["captures"] else
-                        "generic_type" if "manip.generic" in node["captures"] else
-                        "type_predicate" if "manip.predicate" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches TypeScript type manipulation patterns",
-                examples=[
-                    "type Partial<T> = { [P in keyof T]?: T[P] };",
-                    "interface Props { readonly id: string; }",
-                    "function isString(x: any): x is string { }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "decorators": QueryPattern(
+            "decorator": ResilientPattern(
+                name="decorator",
                 pattern="""
                 [
                     (decorator
-                        name: (identifier) @decorator.name
-                        arguments: (arguments
-                            (_)* @decorator.arg) @decorator.args) @decorator,
-                        
-                    (class_declaration
-                        decorators: (decorator)+ @class.decorators
-                        name: (identifier) @class.name) @class.decorated,
-                        
-                    (method_definition
-                        decorators: (decorator)+ @method.decorators
-                        name: (property_identifier) @method.name) @method.decorated,
-                        
-                    (property_definition
-                        decorators: (decorator)+ @property.decorators
-                        name: (property_identifier) @property.name) @property.decorated,
-                        
-                    (parameter
-                        decorators: (decorator)+ @param.decorators
-                        name: (identifier) @param.name) @param.decorated
+                        expression: (call_expression
+                            function: (identifier) @syntax.decorator.name
+                            arguments: (arguments)? @syntax.decorator.args)) @syntax.decorator.def
                 ]
                 """,
-                extract=lambda node: {
-                    "pattern_type": "decorators",
-                    "is_decorator": "decorator" in node["captures"],
-                    "is_decorated_class": "class.decorated" in node["captures"],
-                    "is_decorated_method": "method.decorated" in node["captures"],
-                    "is_decorated_property": "property.decorated" in node["captures"],
-                    "is_decorated_parameter": "param.decorated" in node["captures"],
-                    "decorator_name": node["captures"].get("decorator.name", {}).get("text", ""),
-                    "decorated_name": (
-                        node["captures"].get("class.name", {}).get("text", "") or
-                        node["captures"].get("method.name", {}).get("text", "") or
-                        node["captures"].get("property.name", {}).get("text", "") or
-                        node["captures"].get("param.name", {}).get("text", "")
-                    ),
-                    "has_args": "decorator.args" in node["captures"] and len([arg for arg in node["captures"].get("decorator.arg", [])]) > 0,
-                    "decorator_target": (
-                        "class" if "class.decorated" in node["captures"] else
-                        "method" if "method.decorated" in node["captures"] else
-                        "property" if "property.decorated" in node["captures"] else
-                        "parameter" if "param.decorated" in node["captures"] else
-                        "unknown" if "decorator" in node["captures"] else
-                        "unknown"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="typescript",
+                confidence=0.95,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
                     )
-                },
-                description="Matches TypeScript decorator patterns",
-                examples=[
-                    "@Component()",
-                    "@Input() prop: string;",
-                    "@Inject() service: Service;"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
+                }
             )
         }
     }
 }
 
-TYPESCRIPT_PATTERNS = {
-    **JS_TS_SHARED_PATTERNS,  # Include shared patterns
+class TypeScriptPatternLearner(JSTSPatternLearner):
+    """TypeScript-specific pattern learner extending JS/TS learner."""
     
-    PatternCategory.SYNTAX: {
-        **JS_TS_SHARED_PATTERNS[PatternCategory.SYNTAX],  # Keep shared syntax patterns
-        PatternPurpose.UNDERSTANDING: {
-            "interface": QueryPattern(
-                pattern="""
-                (interface_declaration
-                    modifiers: [(declare) (export)]* @syntax.interface.modifier
-                    name: (type_identifier) @syntax.interface.name
-                    type_parameters: (type_parameters
-                        (type_parameter
-                            name: (type_identifier) @syntax.interface.type_param.name
-                            constraint: (constraint)? @syntax.interface.type_param.constraint
-                            value: (default_type)? @syntax.interface.type_param.default)*
-                    )? @syntax.interface.type_params
-                    extends: (extends_type_clause
-                        value: (type_reference)+ @syntax.interface.extends.type)? @syntax.interface.extends
-                    body: (interface_body
-                        [(method_signature
-                            name: (property_identifier) @syntax.interface.method.name
-                            parameters: (formal_parameters) @syntax.interface.method.params
-                            return_type: (type_annotation)? @syntax.interface.method.return_type)
-                         (property_signature
-                            name: (property_identifier) @syntax.interface.property.name
-                            type: (type_annotation) @syntax.interface.property.type)
-                         (index_signature) @syntax.interface.index]*
-                    ) @syntax.interface.body) @syntax.interface.def
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.interface.name", {}).get("text", ""),
-                    "modifiers": [m.text.decode('utf8') for m in node["captures"].get("syntax.interface.modifier", [])]
-                },
-                description="Matches TypeScript interface declarations",
-                examples=[
-                    "interface MyInterface<T> { prop: T; }",
-                    "export interface Props extends Base { }"
-                ],
-                category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
-            ),
-            "type": QueryPattern(
-                pattern="""
-                [
-                    (type_alias_declaration
-                        modifiers: [(declare) (export)]* @syntax.type.modifier
-                        name: (type_identifier) @syntax.type.name
-                        type_parameters: (type_parameters)? @syntax.type.type_params
-                        value: (_) @syntax.type.value) @syntax.type.def,
-                    
-                    (enum_declaration
-                        modifiers: [(declare) (export) (const)]* @syntax.enum.modifier
-                        name: (identifier) @syntax.enum.name
-                        body: (enum_body
-                            (enum_member
-                                name: (property_identifier) @syntax.enum.member.name
-                                value: (_)? @syntax.enum.member.value)*) @syntax.enum.body) @syntax.enum.def
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.type.name", {}).get("text", "") or
-                           node["captures"].get("syntax.enum.name", {}).get("text", ""),
-                    "kind": "type_alias" if "syntax.type.name" in node["captures"] else "enum"
-                },
-                description="Matches TypeScript type aliases and enums",
-                examples=[
-                    "type MyType<T> = T | null;",
-                    "enum Direction { Up, Down }"
-                ],
-                category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    },
-    
-    PatternCategory.SEMANTICS: {
-        PatternPurpose.UNDERSTANDING: {
-            "type_system": QueryPattern(
-                pattern="""
-                [
-                    (type_annotation
-                        type: (_) @semantics.type.annotation) @semantics.type,
-                    
-                    (type_predicate
-                        name: (_) @semantics.type.predicate.name
-                        type: (_) @semantics.type.predicate.type) @semantics.type.predicate,
-                    
-                    (type_query
-                        (_) @semantics.type.query.target) @semantics.type.query,
-                    
-                    (union_type
-                        (_)+ @semantics.type.union.member) @semantics.type.union,
-                    
-                    (intersection_type
-                        (_)+ @semantics.type.intersection.member) @semantics.type.intersection,
-                    
-                    (tuple_type
-                        (_)* @semantics.type.tuple.member) @semantics.type.tuple,
-                    
-                    (type_assertion
-                        type: (_) @semantics.type_assertion.type
-                        value: (_) @semantics.type_assertion.value) @semantics.type_assertion,
-                    
-                    (as_expression
-                        value: (_) @semantics.as.value
-                        type: (_) @semantics.as.type) @semantics.as
-                ]
-                """,
-                extract=lambda node: {
-                    "type": node["captures"].get("semantics.type.annotation", {}).get("text", "") or
-                           node["captures"].get("semantics.type_assertion.type", {}).get("text", "") or
-                           node["captures"].get("semantics.as.type", {}).get("text", ""),
-                    "kind": ("type_annotation" if "semantics.type.annotation" in node["captures"] else
-                            "type_assertion" if "semantics.type_assertion" in node["captures"] else
-                            "as_expression")
-                },
-                description="Matches TypeScript type system usage",
-                examples=[
-                    "let x: number;",
-                    "<string>value;",
-                    "value as string;"
-                ],
-                category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    }
-}
+    async def initialize(self):
+        """Initialize with TypeScript-specific components."""
+        await super().initialize()
+        
+        # Register TypeScript-specific patterns
+        await self._pattern_processor.register_language_patterns(
+            "typescript",
+            TS_PATTERNS,
+            self
+        )
 
-# Add the repository learning patterns to the main patterns
-TYPESCRIPT_PATTERNS.update(TYPESCRIPT_PATTERNS_FOR_LEARNING)
+    async def _get_parser(self) -> BaseParser:
+        """Get appropriate parser for TypeScript."""
+        # Try tree-sitter first
+        tree_sitter_parser = await get_tree_sitter_parser("typescript")
+        if tree_sitter_parser:
+            return tree_sitter_parser
+            
+        # Fallback to base parser
+        return await BaseParser.create(
+            language_id="typescript",
+            file_type=FileType.CODE,
+            parser_type=ParserType.CUSTOM
+        )
+
+    async def learn_from_project(self, project_path: str) -> List[Dict[str, Any]]:
+        """Learn patterns with AI assistance and type information."""
+        patterns = await super().learn_from_project(project_path)
+        
+        # Add TypeScript-specific pattern learning
+        async with AsyncErrorBoundary("typescript_pattern_learning"):
+            # Extract type information
+            type_patterns = await self._extract_type_patterns(project_path)
+            patterns.extend(type_patterns)
+            
+            return patterns
+
+    async def _extract_type_patterns(self, project_path: str) -> List[Dict[str, Any]]:
+        """Extract TypeScript-specific type patterns."""
+        type_patterns = []
+        
+        # Get type checker
+        type_checker = await get_type_checker()
+        
+        # Extract type information
+        type_info = await type_checker.analyze_project(project_path)
+        
+        # Convert type information to patterns
+        for type_def in type_info:
+            pattern = {
+                "name": type_def.name,
+                "category": PatternCategory.TYPES,
+                "content": type_def.content,
+                "confidence": 0.95,
+                "metadata": {
+                    "type_kind": type_def.kind,
+                    "is_generic": type_def.has_generics
+                }
+            }
+            type_patterns.append(pattern)
+        
+        return type_patterns
+
+# Initialize pattern learner
+ts_pattern_learner = TypeScriptPatternLearner()
+
+@handle_async_errors(error_types=ProcessingError)
+async def process_typescript_pattern(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    source_code: str,
+    context: Optional[TypeScriptPatternContext] = None
+) -> List[Dict[str, Any]]:
+    """Process a TypeScript pattern with full system integration."""
+    # Use shared JS/TS pattern processing with TypeScript-specific context
+    return await process_js_ts_pattern(pattern, source_code, context)
+
+# Update initialization
+async def initialize_typescript_patterns():
+    """Initialize TypeScript patterns during app startup."""
+    global ts_pattern_learner
+    
+    # Initialize pattern processor first
+    await pattern_processor.initialize()
+    
+    # Register TypeScript patterns
+    await pattern_processor.register_language_patterns(
+        "typescript",
+        TS_PATTERNS,
+        metadata={
+            "parser_type": ParserType.TREE_SITTER,
+            "supports_learning": True,
+            "supports_adaptation": True,
+            "capabilities": TS_CAPABILITIES
+        }
+    )
+    
+    # Create and initialize learner
+    ts_pattern_learner = await TypeScriptPatternLearner.create()
+    
+    # Register learner with pattern processor
+    await pattern_processor.register_pattern_learner(
+        "typescript",
+        ts_pattern_learner
+    )
+    
+    await global_health_monitor.update_component_status(
+        "typescript_patterns",
+        ComponentStatus.HEALTHY,
+        details={
+            "patterns_loaded": len(TS_PATTERNS),
+            "capabilities": list(TS_CAPABILITIES)
+        }
+    )
+
+async def extract_typescript_features(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    matches: List[Dict[str, Any]],
+    context: TypeScriptPatternContext
+) -> ExtractedFeatures:
+    """Extract features from TypeScript pattern matches."""
+    # Use shared JS/TS feature extraction with TypeScript-specific context
+    features = await extract_js_ts_features(pattern, matches, context)
+    
+    # Add TypeScript-specific features
+    if pattern.category == PatternCategory.TYPES:
+        type_features = await extract_type_features(matches, context)
+        features.update(type_features)
+    
+    return features
+
+async def validate_typescript_pattern(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    context: Optional[TypeScriptPatternContext] = None
+) -> PatternValidationResult:
+    """Validate a TypeScript pattern with system integration."""
+    # Use shared JS/TS pattern validation with TypeScript-specific context
+    return await validate_js_ts_pattern(pattern, context)
+
+async def extract_type_features(
+    matches: List[Dict[str, Any]],
+    context: TypeScriptPatternContext
+) -> ExtractedFeatures:
+    """Extract TypeScript-specific type features."""
+    features = ExtractedFeatures()
+    
+    for match in matches:
+        if "type" in match:
+            features.add_type_info(
+                name=match["name"],
+                kind=match.get("type_kind"),
+                is_generic=match.get("is_generic", False)
+            )
+    
+    return features

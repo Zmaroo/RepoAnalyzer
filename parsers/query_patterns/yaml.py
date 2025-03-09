@@ -1,346 +1,302 @@
+"""Query patterns for YAML files.
+
+This module provides YAML-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
 """
-Query patterns for YAML files aligned with standard PATTERN_CATEGORIES.
-"""
 
-from typing import Dict, Any, List, Match, Optional
-from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory
-import re
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
+)
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
 
-def extract_mapping(match: Match) -> Dict[str, Any]:
-    """Extract mapping information."""
-    return {
-        "type": "mapping",
-        "indent": len(match.group(1)),
-        "key": match.group(2).strip(),
-        "value": match.group(3).strip(),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+# Language identifier
+LANGUAGE = "yaml"
 
-def extract_sequence(match: Match) -> Dict[str, Any]:
-    """Extract sequence information."""
-    return {
-        "type": "sequence",
-        "indent": len(match.group(1)),
-        "value": match.group(2).strip(),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+@dataclass
+class YAMLPatternContext(PatternContext):
+    """YAML-specific pattern context."""
+    key_names: Set[str] = field(default_factory=set)
+    anchor_names: Set[str] = field(default_factory=set)
+    tag_names: Set[str] = field(default_factory=set)
+    has_anchors: bool = False
+    has_aliases: bool = False
+    has_tags: bool = False
+    has_sequences: bool = False
+    has_mappings: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.key_names)}:{self.has_anchors}"
 
-def extract_anchor(match: Match) -> Dict[str, Any]:
-    """Extract anchor information."""
-    return {
-        "type": "anchor",
-        "name": match.group(1),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "mapping": PatternPerformanceMetrics(),
+    "sequence": PatternPerformanceMetrics(),
+    "anchor": PatternPerformanceMetrics(),
+    "tag": PatternPerformanceMetrics(),
+    "scalar": PatternPerformanceMetrics()
+}
 
 YAML_PATTERNS = {
     PatternCategory.SYNTAX: {
-        "mapping": QueryPattern(
-            pattern=r'^(\s*)([^:]+):\s*(.*)$',
-            extract=extract_mapping,
-            description="Matches YAML key-value mappings",
-            examples=["key: value"]
-        ),
-        "sequence": QueryPattern(
-            pattern=r'^(\s*)-\s+(.+)$',
-            extract=extract_sequence,
-            description="Matches YAML sequence items",
-            examples=["- item"]
-        ),
-        "scalar": QueryPattern(
-            pattern=r'^(\s*)([^:-].*)$',
-            extract=lambda m: {
-                "type": "scalar",
-                "value": m.group(2).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML scalar values"
-        )
+        PatternPurpose.UNDERSTANDING: {
+            "mapping": ResilientPattern(
+                pattern="""
+                [
+                    (block_mapping_pair
+                        key: (_) @syntax.map.key
+                        value: (_) @syntax.map.value) @syntax.map.pair,
+                    (flow_mapping
+                        (flow_pair
+                            key: (_) @syntax.flow.map.key
+                            value: (_) @syntax.flow.map.value) @syntax.flow.map.pair) @syntax.flow.map
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "mapping",
+                    "line_number": (
+                        node["captures"].get("syntax.map.pair", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.flow.map", {}).get("start_point", [0])[0]
+                    ),
+                    "key": (
+                        node["captures"].get("syntax.map.key", {}).get("text", "") or
+                        node["captures"].get("syntax.flow.map.key", {}).get("text", "")
+                    ),
+                    "is_flow": "syntax.flow.map" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["scalar", "sequence", "mapping"],
+                        PatternRelationType.DEPENDS_ON: ["anchor", "tag"]
+                    }
+                },
+                name="mapping",
+                description="Matches YAML mapping patterns",
+                examples=["key: value", "{ key: value }"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["mapping"],
+                    "validation": {
+                        "required_fields": ["key"],
+                        "name_format": r'^[a-zA-Z_][a-zA-Z0-9_-]*$'
+                    }
+                }
+            ),
+            "sequence": ResilientPattern(
+                pattern="""
+                [
+                    (block_sequence
+                        (block_sequence_item
+                            (_) @syntax.seq.item) @syntax.seq.entry) @syntax.seq,
+                    (flow_sequence
+                        (_)* @syntax.flow.seq.item) @syntax.flow.seq
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "sequence",
+                    "line_number": (
+                        node["captures"].get("syntax.seq", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.flow.seq", {}).get("start_point", [0])[0]
+                    ),
+                    "is_flow": "syntax.flow.seq" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["scalar", "sequence", "mapping"],
+                        PatternRelationType.DEPENDS_ON: ["anchor", "tag"]
+                    }
+                },
+                name="sequence",
+                description="Matches YAML sequence patterns",
+                examples=["- item1\n- item2", "[item1, item2]"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["sequence"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": None
+                    }
+                }
+            )
+        }
     },
-    
-    PatternCategory.STRUCTURE: {
-        "anchor": QueryPattern(
-            pattern=r'&(\w+)\s',
-            extract=extract_anchor,
-            description="Matches YAML anchors",
-            examples=["&anchor_name"]
-        ),
-        "alias": QueryPattern(
-            pattern=r'\*(\w+)',
-            extract=lambda m: {
-                "type": "alias",
-                "name": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML aliases",
-            examples=["*anchor_reference"]
-        ),
-        "tag": QueryPattern(
-            pattern=r'!(\w+)(?:\s|$)',
-            extract=lambda m: {
-                "type": "tag",
-                "name": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML tags",
-            examples=["!tag_name"]
-        )
-    },
-    
-    PatternCategory.DOCUMENTATION: {
-        "comment": QueryPattern(
-            pattern=r'^\s*#\s*(.*)$',
-            extract=lambda m: {
-                "type": "comment",
-                "content": m.group(1).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML comments",
-            examples=["# Comment"]
-        ),
-        "doc_comment": QueryPattern(
-            pattern=r'^\s*#\s*@(\w+)\s+(.*)$',
-            extract=lambda m: {
-                "type": "doc_comment",
-                "tag": m.group(1),
-                "content": m.group(2).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML documentation comments",
-            examples=["# @param description"]
-        )
-    },
-    
-    PatternCategory.SEMANTICS: {
-        "variable": QueryPattern(
-            pattern=r'^\s*(\w+):\s*\$\{([^}]+)\}$',
-            extract=lambda m: {
-                "type": "variable",
-                "name": m.group(1),
-                "reference": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML variable references",
-            examples=["key: ${VARIABLE}"]
-        ),
-        "import": QueryPattern(
-            pattern=r'^\s*(import|include|require):\s*(.+)$',
-            extract=lambda m: {
-                "type": "import",
-                "kind": m.group(1),
-                "path": m.group(2).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML imports and includes",
-            examples=[
-                "import: other.yaml",
-                "include: config/*.yaml"
-            ]
-        )
-    },
-    
-    PatternCategory.CODE_PATTERNS: {
-        "function": QueryPattern(
-            pattern=r'^\s*(\w+):\s*!(\w+)\s+(.*)$',
-            extract=lambda m: {
-                "type": "function",
-                "name": m.group(1),
-                "tag": m.group(2),
-                "args": m.group(3).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML function tags",
-            examples=["calculate: !function add(x, y)"]
-        ),
-        "code_block": QueryPattern(
-            pattern=r'^\s*(\w+):\s*\|\s*\n((?:\s+.*\n)+)',
-            extract=lambda m: {
-                "type": "code_block",
-                "name": m.group(1),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches YAML code blocks",
-            examples=["script: |\n  def main():\n    print('hello')"]
-        )
-    },
-    
-    PatternCategory.DEPENDENCIES: {
-        "dependency": QueryPattern(
-            pattern=r'^\s*dependencies:\s*\n((?:\s+-\s+.*\n)+)',
-            extract=lambda m: {
-                "type": "dependencies",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches dependency declarations",
-            examples=["dependencies:\n  - package: ^1.0.0"]
-        ),
-        "version": QueryPattern(
-            pattern=r'^\s*version:\s*[\'"]?(\d+\.\d+(?:\.\d+)?(?:-\w+)?)[\'"]?',
-            extract=lambda m: {
-                "type": "version",
-                "value": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches version declarations",
-            examples=["version: 1.0.0", "version: '2.1.3-beta'"]
-        )
-    },
-    
-    PatternCategory.BEST_PRACTICES: {
-        "environment_var": QueryPattern(
-            pattern=r'^\s*(\w+):\s*\$\{([^:}]+)(?::([^}]+))?\}$',
-            extract=lambda m: {
-                "type": "environment_var",
-                "name": m.group(1),
-                "var": m.group(2),
-                "default": m.group(3) if m.group(3) else None,
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches environment variable usage with defaults",
-            examples=["api_key: ${API_KEY:default_key}"]
-        ),
-        "secret": QueryPattern(
-            pattern=r'^\s*(password|secret|key|token):\s*(.+)$',
-            extract=lambda m: {
-                "type": "secret",
-                "key": m.group(1),
-                "value": m.group(2).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "is_sensitive": True
-            },
-            description="Identifies sensitive information",
-            examples=["password: secret123"]
-        )
-    },
-    
-    PatternCategory.COMMON_ISSUES: {
-        "duplicate_key": QueryPattern(
-            pattern=r'^\s*([^:]+):\s*(.*)$',
-            extract=lambda m: {
-                "type": "duplicate_key",
-                "key": m.group(1).strip(),
-                "value": m.group(2).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Detects potential duplicate keys",
-            examples=["key: value1", "key: value2"]
-        ),
-        "invalid_indent": QueryPattern(
-            pattern=r'^( +)[^ -]',
-            extract=lambda m: {
-                "type": "invalid_indent",
-                "spaces": len(m.group(1)),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Detects invalid indentation",
-            examples=["   key: value"]
-        )
-    },
-    
-    PatternCategory.USER_PATTERNS: {
-        "custom_tag": QueryPattern(
-            pattern=r'^\s*(\w+):\s*!(\w+)(?:\s+(.*))?$',
-            extract=lambda m: {
-                "type": "custom_tag",
-                "key": m.group(1),
-                "tag": m.group(2),
-                "value": m.group(3).strip() if m.group(3) else None,
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches custom YAML tags",
-            examples=["data: !custom value"]
-        ),
-        "custom_format": QueryPattern(
-            pattern=r'^\s*(\w+):\s*([^{\n]*\{[^}\n]+\}[^\n]*)$',
-            extract=lambda m: {
-                "type": "custom_format",
-                "key": m.group(1),
-                "format": m.group(2).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches custom format strings",
-            examples=["message: Hello {name}!"]
-        )
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.ANCHORS: {
+            "anchor": AdaptivePattern(
+                pattern="""
+                [
+                    (anchor
+                        name: (_) @anchor.name) @anchor.def,
+                    (alias
+                        name: (_) @alias.name) @alias.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "anchor",
+                    "name": (
+                        node["captures"].get("anchor.name", {}).get("text", "") or
+                        node["captures"].get("alias.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("anchor.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("alias.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_alias": "alias.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.REFERENCED_BY: ["mapping", "sequence", "scalar"],
+                        PatternRelationType.DEPENDS_ON: ["anchor"]
+                    }
+                },
+                name="anchor",
+                description="Matches YAML anchor and alias patterns",
+                examples=["&anchor value", "*alias"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.ANCHORS,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["anchor"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z_][a-zA-Z0-9_-]*$'
+                    }
+                }
+            )
+        },
+        PatternPurpose.TAGS: {
+            "tag": AdaptivePattern(
+                pattern="""
+                [
+                    (tag
+                        name: (_) @tag.name) @tag.def,
+                    (verbatim_tag
+                        name: (_) @tag.verbatim.name) @tag.verbatim.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "tag",
+                    "name": (
+                        node["captures"].get("tag.name", {}).get("text", "") or
+                        node["captures"].get("tag.verbatim.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("tag.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("tag.verbatim.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_verbatim": "tag.verbatim.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.APPLIES_TO: ["mapping", "sequence", "scalar"],
+                        PatternRelationType.DEPENDS_ON: ["tag"]
+                    }
+                },
+                name="tag",
+                description="Matches YAML tag patterns",
+                examples=["!!str value", "!<tag> value"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.TAGS,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["tag"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[!][a-zA-Z0-9_-]*$'
+                    }
+                }
+            )
+        }
     }
 }
 
-# Add the repository learning patterns
-YAML_PATTERNS[PatternCategory.LEARNING] = {
-    "document_structure": QueryPattern(
-        pattern=r'(?s)^(.*?)(?=^\s*#|\Z)',
-        extract=lambda m: {
-            "type": "document_structure_pattern",
-            "content": m.group(1).strip(),
-            "is_top_level": True
-        },
-        description="Matches top-level document structure in YAML",
-        examples=["key1: value1\nkey2: value2"]
-    ),
-    "nested_mapping": QueryPattern(
-        pattern=r'(?s)^(\s*)([^:\n]+):\s*\n(\1\s+[^-\s].*?(?=\n\1[^:\s]|\n\1$|\Z))',
-        extract=lambda m: {
-            "type": "nested_mapping_pattern",
-            "key": m.group(2).strip(),
-            "content": m.group(3),
-            "indentation": len(m.group(1)),
-            "has_nested_content": True
-        },
-        description="Matches nested mapping structures in YAML",
-        examples=["parent:\n  child1: value1\n  child2: value2"]
-    ),
-    "list_structure": QueryPattern(
-        pattern=r'(?s)^(\s*)([^:\n]+):\s*\n(\1\s+-.*?(?=\n\1[^-\s]|\n\1$|\Z))',
-        extract=lambda m: {
-            "type": "list_structure_pattern",
-            "key": m.group(2).strip(),
-            "items": m.group(3).count('-'),
-            "content": m.group(3),
-            "indentation": len(m.group(1))
-        },
-        description="Matches list structures in YAML",
-        examples=["items:\n  - item1\n  - item2"]
-    )
-}
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
 
-# Function to extract patterns for repository learning
-def extract_yaml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+async def extract_yaml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
     """Extract patterns from YAML content for repository learning."""
     patterns = []
+    context = YAMLPatternContext()
     
-    # Process each pattern category
-    for category in PatternCategory:
-        if category in YAML_PATTERNS:
-            category_patterns = YAML_PATTERNS[category]
-            for pattern_name, pattern in category_patterns.items():
-                if isinstance(pattern, QueryPattern):
-                    if isinstance(pattern.pattern, str):
-                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-                            pattern_data = pattern.extract(match)
-                            patterns.append({
-                                "name": pattern_name,
-                                "category": category.value,
-                                "content": match.group(0),
-                                "metadata": pattern_data,
-                                "confidence": 0.85
-                            })
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in YAML_PATTERNS:
+                category_patterns = YAML_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "mapping":
+                                        context.key_names.add(match["key"])
+                                        context.has_mappings = True
+                                    elif match["type"] == "sequence":
+                                        context.has_sequences = True
+                                    elif match["type"] == "anchor":
+                                        if match["is_alias"]:
+                                            context.has_aliases = True
+                                        else:
+                                            context.anchor_names.add(match["name"])
+                                            context.has_anchors = True
+                                    elif match["type"] == "tag":
+                                        context.tag_names.add(match["name"])
+                                        context.has_tags = True
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting YAML patterns: {e}", level="error")
     
     return patterns
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
-    "document": {
-        "can_contain": ["mapping", "sequence", "comment"],
-        "can_be_contained_by": []
-    },
     "mapping": {
-        "can_contain": ["mapping", "sequence"],
-        "can_be_contained_by": ["document", "mapping", "sequence"]
+        PatternRelationType.CONTAINS: ["scalar", "sequence", "mapping"],
+        PatternRelationType.DEPENDS_ON: ["anchor", "tag"]
     },
     "sequence": {
-        "can_contain": ["mapping", "sequence"],
-        "can_be_contained_by": ["document", "mapping", "sequence"]
+        PatternRelationType.CONTAINS: ["scalar", "sequence", "mapping"],
+        PatternRelationType.DEPENDS_ON: ["anchor", "tag"]
+    },
+    "anchor": {
+        PatternRelationType.REFERENCED_BY: ["mapping", "sequence", "scalar"],
+        PatternRelationType.DEPENDS_ON: ["anchor"]
+    },
+    "tag": {
+        PatternRelationType.APPLIES_TO: ["mapping", "sequence", "scalar"],
+        PatternRelationType.DEPENDS_ON: ["tag"]
     }
-} 
+}
+
+# Export public interfaces
+__all__ = [
+    'YAML_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_yaml_patterns_for_learning',
+    'YAMLPatternContext',
+    'pattern_learner'
+] 

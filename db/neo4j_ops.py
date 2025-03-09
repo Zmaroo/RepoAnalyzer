@@ -491,7 +491,7 @@ projections = Neo4jProjections()
 
 @handle_async_errors(error_types=DatabaseError)
 async def store_pattern_node(pattern_data: dict) -> None:
-    """Store pattern node with AI enhancements."""
+    """Store pattern node with tree-sitter enhancements."""
     tools = await get_neo4j_tools()
     session = await connection_manager.get_session()
     try:
@@ -500,72 +500,70 @@ async def store_pattern_node(pattern_data: dict) -> None:
             error_types=(Neo4jError, DatabaseError),
             severity=ErrorSeverity.ERROR
         ):
-            with monitor_database("neo4j", "store_pattern_node"):
-                # Create pattern node
-                pattern_query = """
-                MERGE (p:Pattern {id: $id})
-                SET p += $properties,
-                    p.updated_at = timestamp()
+            # Create pattern node with tree-sitter data
+            pattern_query = """
+            MERGE (p:Pattern {id: $id})
+            SET p += $properties,
+                p.tree_sitter_type = $tree_sitter_type,
+                p.tree_sitter_language = $tree_sitter_language,
+                p.updated_at = timestamp()
+            """
+            pattern_props = {
+                "id": pattern_data["pattern_id"],
+                "type": pattern_data["pattern_type"],
+                "language": pattern_data.get("language"),
+                "confidence": pattern_data.get("confidence", 0.7),
+                "ai_confidence": pattern_data.get("ai_confidence"),
+                "complexity": pattern_data.get("complexity"),
+                "embedding": pattern_data.get("embedding"),
+                "tree_sitter_type": pattern_data.get("tree_sitter_type"),
+                "tree_sitter_language": pattern_data.get("tree_sitter_language")
+            }
+            
+            await session.run(pattern_query, {
+                "id": pattern_data["pattern_id"],
+                "properties": pattern_props,
+                "tree_sitter_type": pattern_data.get("tree_sitter_type"),
+                "tree_sitter_language": pattern_data.get("tree_sitter_language")
+            })
+            
+            # Store AI insights if available
+            if pattern_data.get("ai_insights"):
+                insights_query = """
+                MATCH (p:Pattern {id: $pattern_id})
+                MERGE (ai:AIInsight {id: $insight_id})
+                SET ai += $properties
+                MERGE (p)-[r:HAS_INSIGHT]->(ai)
                 """
-                pattern_props = {
-                    "id": pattern_data["pattern_id"],
-                    "type": pattern_data["pattern_type"],
-                    "language": pattern_data.get("language"),
-                    "confidence": pattern_data.get("confidence", 0.7),
-                    "ai_confidence": pattern_data.get("ai_confidence"),
-                    "complexity": pattern_data.get("complexity"),
-                    "embedding": pattern_data.get("embedding")
-                }
                 
-                await session.run(pattern_query, {
-                    "id": pattern_data["pattern_id"],
-                    "properties": pattern_props
-                })
+                for i, insight in enumerate(pattern_data["ai_insights"]):
+                    insight_id = f"{pattern_data['pattern_id']}_insight_{i}"
+                    await session.run(insights_query, {
+                        "pattern_id": pattern_data["pattern_id"],
+                        "insight_id": insight_id,
+                        "properties": insight
+                    })
+            
+            # Store tree-sitter specific metrics if available
+            if pattern_data.get("tree_sitter_metrics"):
+                metrics_query = """
+                MATCH (p:Pattern {id: $pattern_id})
+                MERGE (m:TreeSitterMetric {id: $metric_id})
+                SET m += $properties
+                MERGE (p)-[r:HAS_TREE_SITTER_METRIC]->(m)
+                """
                 
-                # Store AI insights if available
-                if pattern_data.get("ai_insights"):
-                    with monitor_database("neo4j", "store_pattern_insights"):
-                        insights_query = """
-                        MATCH (p:Pattern {id: $pattern_id})
-                        MERGE (ai:AIInsight {id: $insight_id})
-                        SET ai += $properties
-                        MERGE (p)-[r:HAS_INSIGHT]->(ai)
-                        """
-                        
-                        for i, insight in enumerate(pattern_data["ai_insights"]):
-                            insight_id = f"{pattern_data['pattern_id']}_insight_{i}"
-                            await session.run(insights_query, {
-                                "pattern_id": pattern_data["pattern_id"],
-                                "insight_id": insight_id,
-                                "properties": insight
-                            })
-                
-                # Store AI metrics if available
-                if pattern_data.get("ai_metrics"):
-                    with monitor_database("neo4j", "store_pattern_metrics"):
-                        metrics_query = """
-                        MATCH (p:Pattern {id: $pattern_id})
-                        MERGE (m:AIMetric {id: $metric_id})
-                        SET m += $properties
-                        MERGE (p)-[r:HAS_METRIC]->(m)
-                        """
-                        
-                        for metric_type, value in pattern_data["ai_metrics"].items():
-                            metric_id = f"{pattern_data['pattern_id']}_{metric_type}"
-                            await session.run(metrics_query, {
-                                "pattern_id": pattern_data["pattern_id"],
-                                "metric_id": metric_id,
-                                "properties": {
-                                    "type": metric_type,
-                                    "value": value,
-                                    "updated_at": pattern_data.get("updated_at")
-                                }
-                            })
-                
-                await log("Stored pattern node with AI enhancements", level="debug", context={
-                    "pattern_id": pattern_data["pattern_id"],
-                    "type": pattern_data["pattern_type"]
-                })
+                for metric_type, value in pattern_data["tree_sitter_metrics"].items():
+                    metric_id = f"{pattern_data['pattern_id']}_{metric_type}"
+                    await session.run(metrics_query, {
+                        "pattern_id": pattern_data["pattern_id"],
+                        "metric_id": metric_id,
+                        "properties": {
+                            "type": metric_type,
+                            "value": value,
+                            "updated_at": pattern_data.get("updated_at")
+                        }
+                    })
     finally:
         await session.close()
 

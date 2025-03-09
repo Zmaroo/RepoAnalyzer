@@ -1,323 +1,318 @@
-"""Query patterns for XML files with enhanced pattern support."""
+"""Query patterns for XML files.
 
-from typing import Dict, Any, List, Match, Optional
-from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory, PatternPurpose
-import re
+This module provides XML-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
+"""
 
-def extract_element(match: Match) -> Dict[str, Any]:
-    """Extract element information."""
-    return {
-        "type": "element",
-        "tag": match.group(1) or match.group(4),
-        "attributes": match.group(2) or match.group(5),
-        "content": match.group(3) if match.group(3) else None,
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
+)
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
 
-def extract_attribute(match: Match) -> Dict[str, Any]:
-    """Extract attribute information."""
-    return {
-        "type": "attribute",
-        "name": match.group(1),
-        "value": match.group(2),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+# Language identifier
+LANGUAGE = "xml"
+
+@dataclass
+class XMLPatternContext(PatternContext):
+    """XML-specific pattern context."""
+    tag_names: Set[str] = field(default_factory=set)
+    attribute_names: Set[str] = field(default_factory=set)
+    namespace_names: Set[str] = field(default_factory=set)
+    script_types: Set[str] = field(default_factory=set)
+    style_types: Set[str] = field(default_factory=set)
+    has_namespaces: bool = False
+    has_dtd: bool = False
+    has_cdata: bool = False
+    has_processing_instructions: bool = False
+    has_comments: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.tag_names)}:{self.has_namespaces}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "element": PatternPerformanceMetrics(),
+    "attribute": PatternPerformanceMetrics(),
+    "namespace": PatternPerformanceMetrics(),
+    "script": PatternPerformanceMetrics(),
+    "doctype": PatternPerformanceMetrics()
+}
 
 XML_PATTERNS = {
     PatternCategory.SYNTAX: {
-        "element": QueryPattern(
-            pattern=r'<(\w+)([^>]*)>(.*?)</\1>|<(\w+)([^>]*?)/?>',
-            extract=extract_element,
-            description="Matches XML elements",
-            examples=["<tag>content</tag>", "<tag/>"]
-        ),
-        "attribute": QueryPattern(
-            pattern=r'(\w+)=["\'](.*?)["\']',
-            extract=extract_attribute,
-            description="Matches XML attributes",
-            examples=["id=\"123\"", "name='value'"]
-        ),
-        "namespace": QueryPattern(
-            pattern=r'xmlns(?::(\w+))?=["\'](.*?)["\']',
-            extract=lambda m: {
-                "type": "namespace",
-                "prefix": m.group(1),
-                "uri": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches XML namespaces",
-            examples=["xmlns=\"uri\"", "xmlns:prefix=\"uri\""]
-        )
+        PatternPurpose.UNDERSTANDING: {
+            "element": ResilientPattern(
+                pattern="""
+                [
+                    (element
+                        start_tag: (start_tag
+                            name: (_) @syntax.element.name
+                            attributes: (attribute)* @syntax.element.attrs) @syntax.element.start
+                        content: (_)* @syntax.element.content
+                        end_tag: (end_tag) @syntax.element.end) @syntax.element.def,
+                    (empty_element
+                        name: (_) @syntax.empty.name
+                        attributes: (attribute)* @syntax.empty.attrs) @syntax.empty.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "element",
+                    "name": (
+                        node["captures"].get("syntax.element.name", {}).get("text", "") or
+                        node["captures"].get("syntax.empty.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.element.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.empty.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_empty": "syntax.empty.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["element", "attribute", "text"],
+                        PatternRelationType.DEPENDS_ON: ["namespace"]
+                    }
+                },
+                name="element",
+                description="Matches XML element declarations",
+                examples=["<tag>content</tag>", "<empty-tag/>"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["element"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z_][a-zA-Z0-9_:-]*$'
+                    }
+                }
+            ),
+            "attribute": ResilientPattern(
+                pattern="""
+                [
+                    (attribute
+                        name: (_) @syntax.attr.name
+                        value: (_) @syntax.attr.value) @syntax.attr.def,
+                    (namespace_attribute
+                        name: (_) @syntax.ns.attr.name
+                        value: (_) @syntax.ns.attr.value) @syntax.ns.attr.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "attribute",
+                    "name": (
+                        node["captures"].get("syntax.attr.name", {}).get("text", "") or
+                        node["captures"].get("syntax.ns.attr.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.attr.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.ns.attr.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_namespace": "syntax.ns.attr.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINED_BY: ["element"],
+                        PatternRelationType.DEPENDS_ON: ["namespace"]
+                    }
+                },
+                name="attribute",
+                description="Matches XML attribute declarations",
+                examples=['id="123"', 'xmlns:prefix="uri"'],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["attribute"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z_][a-zA-Z0-9_:-]*$'
+                    }
+                }
+            )
+        }
     },
-    
-    PatternCategory.STRUCTURE: {
-        "processing_instruction": QueryPattern(
-            pattern=r'<\?(.*?)\?>',
-            extract=lambda m: {
-                "type": "processing_instruction",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches XML processing instructions",
-            examples=["<?xml version=\"1.0\"?>"]
-        ),
-        "doctype": QueryPattern(
-            pattern=r'<!DOCTYPE\s+([^>]+)>',
-            extract=lambda m: {
-                "type": "doctype",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches DOCTYPE declarations",
-            examples=["<!DOCTYPE html>"]
-        )
-    },
-    
-    PatternCategory.DOCUMENTATION: {
-        "comment": QueryPattern(
-            pattern=r'<!--(.*?)-->',
-            extract=lambda m: {
-                "type": "comment",
-                "content": m.group(1).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches XML comments",
-            examples=["<!-- comment -->"]
-        ),
-        "cdata": QueryPattern(
-            pattern=r'<!\[CDATA\[(.*?)\]\]>',
-            extract=lambda m: {
-                "type": "cdata",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches CDATA sections",
-            examples=["<![CDATA[content]]>"]
-        )
-    },
-    
-    PatternCategory.SEMANTICS: {
-        "entity": QueryPattern(
-            pattern=r'<!ENTITY\s+(\w+)\s+"([^"]+)"',
-            extract=lambda m: {
-                "type": "entity",
-                "name": m.group(1),
-                "value": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches entity declarations",
-            examples=["<!ENTITY name \"value\">"]
-        ),
-        "schema": QueryPattern(
-            pattern=r'schemaLocation=["\'](.*?)["\']',
-            extract=lambda m: {
-                "type": "schema",
-                "location": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches schema locations",
-            examples=["schemaLocation=\"http://example.com/schema.xsd\""]
-        )
-    },
-    
-    PatternCategory.CODE_PATTERNS: {
-        "script": QueryPattern(
-            pattern=r'<script([^>]*)>(.*?)</script>',
-            extract=lambda m: {
-                "type": "script",
-                "attributes": m.group(1),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches script elements",
-            examples=["<script>console.log('Hello');</script>"]
-        ),
-        "embedded_code": QueryPattern(
-            pattern=r'<(\w+:)?code([^>]*)>(.*?)</\1code>',
-            extract=lambda m: {
-                "type": "embedded_code",
-                "namespace": m.group(1),
-                "attributes": m.group(2),
-                "content": m.group(3),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches embedded code elements",
-            examples=["<code>print('hello')</code>"]
-        )
-    },
-    
-    PatternCategory.DEPENDENCIES: {
-        "import": QueryPattern(
-            pattern=r'<import\s+([^>]*)/?>',
-            extract=lambda m: {
-                "type": "import",
-                "attributes": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches import declarations",
-            examples=["<import namespace=\"http://example.com\"/>"]
-        ),
-        "include": QueryPattern(
-            pattern=r'<include\s+([^>]*)/?>',
-            extract=lambda m: {
-                "type": "include",
-                "attributes": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches include declarations",
-            examples=["<include href=\"common.xml\"/>"]
-        )
-    },
-    
-    PatternCategory.BEST_PRACTICES: {
-        "schema_validation": QueryPattern(
-            pattern=r'<\w+[^>]*xsi:schemaLocation=["\'](.*?)["\'][^>]*>',
-            extract=lambda m: {
-                "type": "schema_validation",
-                "location": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches schema validation attributes",
-            examples=["<root xsi:schemaLocation=\"http://example.com schema.xsd\">"]
-        ),
-        "namespace_declaration": QueryPattern(
-            pattern=r'<[^>]+xmlns:([a-zA-Z0-9]+)=["\'](.*?)["\'][^>]*>',
-            extract=lambda m: {
-                "type": "namespace_declaration",
-                "prefix": m.group(1),
-                "uri": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches namespace declarations",
-            examples=["<root xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"]
-        )
-    },
-    
-    PatternCategory.COMMON_ISSUES: {
-        "unclosed_tag": QueryPattern(
-            pattern=r'<([a-zA-Z0-9:]+)[^>]*>[^<]*$',
-            extract=lambda m: {
-                "type": "unclosed_tag",
-                "tag": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Detects potentially unclosed tags",
-            examples=["<div>unclosed content"]
-        ),
-        "mismatched_tag": QueryPattern(
-            pattern=r'<(\w+)[^>]*>.*?</(?!\1)[^>]+>',
-            extract=lambda m: {
-                "type": "mismatched_tag",
-                "opening_tag": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Detects mismatched tags",
-            examples=["<div>content</span>"]
-        )
-    },
-    
-    PatternCategory.USER_PATTERNS: {
-        "custom_element": QueryPattern(
-            pattern=r'<([a-z]+-[a-z-]+)([^>]*)(?:>(.*?)</\1>|/>)',
-            extract=lambda m: {
-                "type": "custom_element",
-                "tag": m.group(1),
-                "attributes": m.group(2),
-                "content": m.group(3) if m.group(3) else None,
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches custom elements",
-            examples=["<my-component>content</my-component>"]
-        ),
-        "custom_attribute": QueryPattern(
-            pattern=r'\sdata-[a-z-]+=["\'](.*?)["\']',
-            extract=lambda m: {
-                "type": "custom_attribute",
-                "value": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches custom data attributes",
-            examples=["data-custom=\"value\""]
-        )
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.STRUCTURE: {
+            "doctype": AdaptivePattern(
+                pattern="""
+                [
+                    (doctype
+                        name: (_) @struct.doctype.name
+                        external_id: (_)? @struct.doctype.external
+                        dtd: (_)? @struct.doctype.dtd) @struct.doctype.def,
+                    (processing_instruction
+                        name: (_) @struct.pi.name
+                        content: (_)? @struct.pi.content) @struct.pi.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "doctype",
+                    "name": (
+                        node["captures"].get("struct.doctype.name", {}).get("text", "") or
+                        node["captures"].get("struct.pi.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("struct.doctype.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("struct.pi.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_processing_instruction": "struct.pi.def" in node["captures"],
+                    "has_dtd": "struct.doctype.dtd" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["entity", "notation"],
+                        PatternRelationType.DEPENDS_ON: ["doctype"]
+                    }
+                },
+                name="doctype",
+                description="Matches XML DOCTYPE and processing instruction declarations",
+                examples=["<!DOCTYPE html>", "<?xml version='1.0'?>"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.STRUCTURE,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["doctype"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z_][a-zA-Z0-9_:-]*$'
+                    }
+                }
+            )
+        },
+        PatternPurpose.NAMESPACES: {
+            "namespace": AdaptivePattern(
+                pattern="""
+                [
+                    (namespace_declaration
+                        prefix: (_)? @ns.prefix
+                        uri: (_) @ns.uri) @ns.def,
+                    (namespace_reference
+                        prefix: (_) @ns.ref.prefix
+                        local: (_) @ns.ref.local) @ns.ref.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "namespace",
+                    "line_number": (
+                        node["captures"].get("ns.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("ns.ref.def", {}).get("start_point", [0])[0]
+                    ),
+                    "prefix": (
+                        node["captures"].get("ns.prefix", {}).get("text", "") or
+                        node["captures"].get("ns.ref.prefix", {}).get("text", "")
+                    ),
+                    "is_reference": "ns.ref.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.APPLIES_TO: ["element", "attribute"],
+                        PatternRelationType.DEPENDS_ON: ["namespace"]
+                    }
+                },
+                name="namespace",
+                description="Matches XML namespace declarations and references",
+                examples=['xmlns="uri"', 'xmlns:prefix="uri"'],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.NAMESPACES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["namespace"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": r'^[a-zA-Z_][a-zA-Z0-9_:-]*$'
+                    }
+                }
+            )
+        }
     }
 }
 
-# Add repository learning patterns
-XML_PATTERNS[PatternCategory.LEARNING] = {
-    "document_structure": QueryPattern(
-        pattern=r'<([a-zA-Z][a-zA-Z0-9:-]*)(?:\s+[^>]*)?(?:>.*?</\1>|/>)',
-        extract=lambda m: {
-            "type": "root_element_pattern",
-            "tag": m.group(1),
-            "is_root": True,
-            "line_number": m.string.count('\n', 0, m.start()) + 1
-        },
-        description="Matches root elements in XML documents",
-        examples=["<root>...</root>"]
-    ),
-    "nested_elements": QueryPattern(
-        pattern=r'<([a-zA-Z][a-zA-Z0-9:-]*)(?:\s+[^>]*)?>(.*?)<\/\1>',
-        extract=lambda m: {
-            "type": "nested_elements_pattern",
-            "parent_tag": m.group(1),
-            "content": m.group(2),
-            "has_nested_content": '<' in m.group(2) and '>' in m.group(2),
-            "line_number": m.string.count('\n', 0, m.start()) + 1
-        },
-        description="Matches nested element structures in XML",
-        examples=["<parent><child>content</child></parent>"]
-    ),
-    "processing_instruction_use": QueryPattern(
-        pattern=r'<\?([a-zA-Z][a-zA-Z0-9:-]*)\s+([^?]*)\?>',
-        extract=lambda m: {
-            "type": "processing_instruction_pattern",
-            "target": m.group(1),
-            "content": m.group(2),
-            "is_standard": m.group(1).lower() in ['xml', 'xml-stylesheet'],
-            "line_number": m.string.count('\n', 0, m.start()) + 1
-        },
-        description="Matches processing instruction usage in XML",
-        examples=["<?xml version=\"1.0\" encoding=\"UTF-8\"?>"]
-    )
-}
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
 
-# Function to extract patterns for repository learning
-def extract_xml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+async def extract_xml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
     """Extract patterns from XML content for repository learning."""
     patterns = []
+    context = XMLPatternContext()
     
-    # Process each pattern category
-    for category in PatternCategory:
-        if category in XML_PATTERNS:
-            category_patterns = XML_PATTERNS[category]
-            for pattern_name, pattern in category_patterns.items():
-                if isinstance(pattern, QueryPattern):
-                    if isinstance(pattern.pattern, str):
-                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-                            pattern_data = pattern.extract(match)
-                            patterns.append({
-                                "name": pattern_name,
-                                "category": category.value,
-                                "content": match.group(0),
-                                "metadata": pattern_data,
-                                "confidence": 0.85
-                            })
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in XML_PATTERNS:
+                category_patterns = XML_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "element":
+                                        context.tag_names.add(match["name"])
+                                    elif match["type"] == "attribute":
+                                        context.attribute_names.add(match["name"])
+                                        if match["is_namespace"]:
+                                            context.has_namespaces = True
+                                    elif match["type"] == "doctype":
+                                        if match["has_dtd"]:
+                                            context.has_dtd = True
+                                        if match["is_processing_instruction"]:
+                                            context.has_processing_instructions = True
+                                    elif match["type"] == "namespace":
+                                        context.has_namespaces = True
+                                        if match["prefix"]:
+                                            context.namespace_names.add(match["prefix"])
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting XML patterns: {e}", level="error")
     
     return patterns
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
-    "document": {
-        "can_contain": ["element", "processing_instruction", "comment", "doctype"],
-        "can_be_contained_by": []
-    },
     "element": {
-        "can_contain": ["element", "comment", "cdata"],
-        "can_be_contained_by": ["document", "element"]
+        PatternRelationType.CONTAINS: ["element", "attribute", "text"],
+        PatternRelationType.DEPENDS_ON: ["namespace"]
     },
     "attribute": {
-        "can_contain": [],
-        "can_be_contained_by": ["element"]
+        PatternRelationType.CONTAINED_BY: ["element"],
+        PatternRelationType.DEPENDS_ON: ["namespace"]
+    },
+    "doctype": {
+        PatternRelationType.CONTAINS: ["entity", "notation"],
+        PatternRelationType.DEPENDS_ON: ["doctype"]
+    },
+    "namespace": {
+        PatternRelationType.APPLIES_TO: ["element", "attribute"],
+        PatternRelationType.DEPENDS_ON: ["namespace"]
     }
-} 
+}
+
+# Export public interfaces
+__all__ = [
+    'XML_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_xml_patterns_for_learning',
+    'XMLPatternContext',
+    'pattern_learner'
+] 

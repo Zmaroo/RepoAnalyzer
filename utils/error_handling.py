@@ -124,6 +124,14 @@ class CacheError(DatabaseError):
     """Cache operation errors."""
     pass
 
+class TreeSitterError(ProcessingError):
+    """Tree-sitter specific errors."""
+    pass
+
+class ParserError(ProcessingError):
+    """Parser-related errors."""
+    pass
+
 # Map of error types to their categories for auditing
 ERROR_CATEGORIES = {
     ProcessingError: "processing",
@@ -138,6 +146,8 @@ ERROR_CATEGORIES = {
     NonRetryableError: "database",
     RetryableNeo4jError: "database",
     NonRetryableNeo4jError: "database",
+    TreeSitterError: "parsing",
+    ParserError: "parsing",
     Exception: "general"
 }
 
@@ -172,7 +182,7 @@ async def AsyncErrorBoundary(operation_name=None, error_types=(Exception,), erro
         logging.warning(f"{msg_prefix}: {str(e)}")
         
         # Record the error for audit purposes with severity
-        await ErrorAudit.record_error(e, operation_name or "unknown", error_types)
+        await ErrorAudit.record_error(e, operation_name or "unknown", error_types, severity)
         
         # Store the error
         error_container.error = e
@@ -217,15 +227,23 @@ class ErrorAudit:
     _all_functions: Set[str] = set()
     
     @classmethod
-    async def record_error(cls, error: Exception, operation_name: str, handled_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]]) -> None:
+    async def record_error(
+        cls,
+        error: Exception,
+        operation_name: str,
+        handled_types: Union[Type[Exception], Tuple[Type[Exception], ...], List[Type[Exception]]],
+        severity: str = ErrorSeverity.ERROR,
+        context: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
         Record an error for audit purposes.
         
         Args:
             error: The exception that was caught
             operation_name: The name of the operation where the error occurred
-            handled_types: The type(s) of exceptions that were handled. Can be a single exception type,
-                          a tuple of exception types, or a list of exception types.
+            handled_types: The type(s) of exceptions that were handled
+            severity: The severity level of the error (default: ERROR)
+            context: Additional context about the error
         """
         async with cls._lock:
             # Ensure handled_types is a tuple
@@ -251,14 +269,21 @@ class ErrorAudit:
                     break
             
             # Record the error with context
-            cls._errors[error_type].append({
+            error_data = {
                 "message": str(error),
                 "location": operation_name,
                 "category": category,
+                "severity": severity,
                 "timestamp": datetime.now().isoformat(),
                 "handled_by": [t.__name__ for t in handled_types],
                 "traceback": traceback.format_exc()
-            })
+            }
+            
+            # Add additional context if provided
+            if context:
+                error_data["context"] = context
+                
+            cls._errors[error_type].append(error_data)
         
         # Get the current file and line number
         frame = inspect.currentframe()

@@ -1,182 +1,195 @@
-"""JavaScript-specific Tree-sitter patterns."""
+"""JavaScript-specific patterns with enhanced type system and relationships.
 
-from .js_ts_shared import JS_TS_SHARED_PATTERNS
+This module provides JavaScript-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional, Union
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose, 
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern,
+    AICapability, AIContext, AIProcessingResult, InteractionType,
+    ExtractedFeatures, FileType, ParserType
 )
+from parsers.models import PATTERN_CATEGORIES
+from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
+from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
+from utils.request_cache import cached_in_request
+from utils.cache_analytics import get_cache_analytics
+from utils.async_runner import submit_async_task, cleanup_tasks
+from utils.logger import log
+from utils.shutdown import register_shutdown_handler
+import asyncio
+from parsers.pattern_processor import pattern_processor
+from parsers.block_extractor import get_block_extractor
+from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.unified_parser import get_unified_parser
+from parsers.base_parser import BaseParser
+from parsers.tree_sitter_parser import get_tree_sitter_parser
+from parsers.ai_pattern_processor import get_ai_pattern_processor
+from .js_ts_shared import (
+    JS_TS_SHARED_PATTERNS,
+    JS_TS_CAPABILITIES,
+    JSTSPatternLearner,
+    process_js_ts_pattern,
+    extract_js_ts_features,
+    validate_js_ts_pattern
+)
+import time
 
-JAVASCRIPT_PATTERNS = {
-    **JS_TS_SHARED_PATTERNS,  # Include shared patterns
+# JavaScript capabilities (extends JS/TS capabilities)
+JS_CAPABILITIES = JS_TS_CAPABILITIES | {
+    AICapability.NODE_INTEGRATION,
+    AICapability.NPM_ECOSYSTEM
+}
+
+# JavaScript patterns extend shared patterns
+JS_PATTERNS = {
+    **JS_TS_SHARED_PATTERNS,  # Inherit shared patterns
     
-    PatternCategory.SYNTAX: {
-        **JS_TS_SHARED_PATTERNS[PatternCategory.SYNTAX],  # Keep shared syntax patterns
+    PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "jsx": QueryPattern(
+            "node_module": AdaptivePattern(
+                name="node_module",
                 pattern="""
                 [
-                    (jsx_element
-                        opening_element: (jsx_opening_element
-                            name: (_) @syntax.jsx.tag.name
-                            attributes: (jsx_attributes
-                                (jsx_attribute
-                                    name: (jsx_attribute_name) @syntax.jsx.attr.name
-                                    value: (_)? @syntax.jsx.attr.value)*)?
-                        ) @syntax.jsx.open
-                        children: (_)* @syntax.jsx.children
-                        closing_element: (jsx_closing_element)? @syntax.jsx.close
-                    ) @syntax.jsx.element,
-                    
-                    (jsx_self_closing_element
-                        name: (_) @syntax.jsx.self.name
-                        attributes: (jsx_attributes
-                            (jsx_attribute
-                                name: (jsx_attribute_name) @syntax.jsx.self.attr.name
-                                value: (_)? @syntax.jsx.self.attr.value)*)?
-                    ) @syntax.jsx.self
+                    (call_expression
+                        function: (identifier) @semantics.require.function
+                        arguments: (arguments
+                            (string) @semantics.require.module)) @semantics.require,
+                        
+                    (member_expression
+                        object: (identifier) @semantics.module.object
+                        property: (property_identifier) @semantics.module.property) @semantics.module.exports
                 ]
                 """,
-                extract=lambda node: {
-                    "tag": node["captures"].get("syntax.jsx.tag.name", {}).get("text", ""),
-                    "attributes": [a.text.decode('utf8') for a in node["captures"].get("syntax.jsx.attr.name", [])]
-                },
-                description="Matches JSX elements and attributes",
-                examples=[
-                    "<div className='container'>...</div>",
-                    "<Button onClick={handleClick} />"
-                ],
-                category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="javascript",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     }
 }
 
-# Repository learning patterns for JavaScript
-JAVASCRIPT_PATTERNS_FOR_LEARNING = {
-    PatternCategory.LEARNING: {
-        PatternPurpose.LEARNING: {
-            "naming_conventions": QueryPattern(
-                pattern="""
-                [
-                    (function_declaration
-                        name: (identifier) @naming.function.name) @naming.function,
-                        
-                    (variable_declarator
-                        name: (identifier) @naming.variable.name) @naming.variable,
-                        
-                    (class_declaration
-                        name: (identifier) @naming.class.name) @naming.class,
-                        
-                    (property_identifier) @naming.property
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "naming_convention_pattern",
-                    "entity_type": ("function" if "naming.function" in node["captures"] else
-                                  "variable" if "naming.variable" in node["captures"] else
-                                  "class" if "naming.class" in node["captures"] else
-                                  "property"),
-                    "name": (node["captures"].get("naming.function.name", {}).get("text", "") or
-                            node["captures"].get("naming.variable.name", {}).get("text", "") or
-                            node["captures"].get("naming.class.name", {}).get("text", "") or
-                            node["captures"].get("naming.property", {}).get("text", "")),
-                    "is_camel_case": not "_" in (node["captures"].get("naming.function.name", {}).get("text", "") or
-                                               node["captures"].get("naming.variable.name", {}).get("text", "") or
-                                               node["captures"].get("naming.property", {}).get("text", "")) and
-                                   any(c.isupper() for c in (node["captures"].get("naming.function.name", {}).get("text", "") or
-                                                           node["captures"].get("naming.variable.name", {}).get("text", "") or
-                                                           node["captures"].get("naming.property", {}).get("text", ""))) and
-                                   (node["captures"].get("naming.function.name", {}).get("text", "") or
-                                    node["captures"].get("naming.variable.name", {}).get("text", "") or
-                                    node["captures"].get("naming.property", {}).get("text", ""))[0].islower(),
-                    "is_pascal_case": (node["captures"].get("naming.class.name", {}).get("text", "")) and
-                                    not "_" in node["captures"].get("naming.class.name", {}).get("text", "") and
-                                    node["captures"].get("naming.class.name", {}).get("text", "")[0].isupper()
-                },
-                description="Matches JavaScript naming conventions",
-                examples=[
-                    "function myFunction() { }",
-                    "const myVariable = 42;",
-                    "class MyClass { }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "jsx_patterns": QueryPattern(
-                pattern="""
-                [
-                    (jsx_element
-                        opening_element: (jsx_opening_element
-                            name: (_) @jsx.element.name)) @jsx.element,
-                            
-                    (jsx_self_closing_element
-                        name: (_) @jsx.self.name) @jsx.self,
-                        
-                    (jsx_attribute
-                        name: (jsx_attribute_name) @jsx.attr.name
-                        value: (_)? @jsx.attr.value) @jsx.attr
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "jsx_pattern",
-                    "is_component": (node["captures"].get("jsx.element.name", {}).get("text", "") or
-                                  node["captures"].get("jsx.self.name", {}).get("text", "")).strip() and
-                                 (node["captures"].get("jsx.element.name", {}).get("text", "") or
-                                  node["captures"].get("jsx.self.name", {}).get("text", ""))[0].isupper() if 
-                                  node["captures"].get("jsx.element.name", {}).get("text", "") or
-                                  node["captures"].get("jsx.self.name", {}).get("text", "") else False,
-                    "is_html_element": (node["captures"].get("jsx.element.name", {}).get("text", "") or
-                                     node["captures"].get("jsx.self.name", {}).get("text", "")).strip() and
-                                    (node["captures"].get("jsx.element.name", {}).get("text", "") or
-                                     node["captures"].get("jsx.self.name", {}).get("text", ""))[0].islower() if 
-                                     node["captures"].get("jsx.element.name", {}).get("text", "") or
-                                     node["captures"].get("jsx.self.name", {}).get("text", "") else False,
-                    "prop_name": node["captures"].get("jsx.attr.name", {}).get("text", "")
-                },
-                description="Matches JSX component patterns",
-                examples=[
-                    "<MyComponent prop={value} />",
-                    "<div className='container'>"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "error_handling": QueryPattern(
-                pattern="""
-                [
-                    (try_statement
-                        body: (statement_block) @error.try.body
-                        [(catch_clause
-                            parameter: (identifier)? @error.catch.param
-                            body: (statement_block) @error.catch.body) @error.catch
-                         (finally_clause
-                            body: (statement_block) @error.finally.body) @error.finally]) @error.try,
-                            
-                    (throw_statement
-                        value: (_) @error.throw.value) @error.throw
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "error_handling_pattern",
-                    "has_catch": "error.catch" in node["captures"],
-                    "has_finally": "error.finally" in node["captures"],
-                    "is_throw": "error.throw" in node["captures"],
-                    "error_param": node["captures"].get("error.catch.param", {}).get("text", "")
-                },
-                description="Matches JavaScript error handling patterns",
-                examples=[
-                    "try { ... } catch (error) { ... }",
-                    "throw new Error('message');"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            )
-        }
-    }
-}
+class JavaScriptPatternLearner(JSTSPatternLearner):
+    """JavaScript-specific pattern learner extending JS/TS learner."""
+    
+    async def initialize(self):
+        """Initialize with JavaScript-specific components."""
+        await super().initialize()
+        
+        # Register JavaScript-specific patterns
+        await self._pattern_processor.register_language_patterns(
+            "javascript",
+            JS_PATTERNS,
+            self
+        )
 
-# Add the repository learning patterns to the main patterns
-JAVASCRIPT_PATTERNS.update(JAVASCRIPT_PATTERNS_FOR_LEARNING) 
+    async def _get_parser(self) -> BaseParser:
+        """Get appropriate parser for JavaScript."""
+        # Try tree-sitter first
+        tree_sitter_parser = await get_tree_sitter_parser("javascript")
+        if tree_sitter_parser:
+            return tree_sitter_parser
+            
+        # Fallback to base parser
+        return await BaseParser.create(
+            language_id="javascript",
+            file_type=FileType.CODE,
+            parser_type=ParserType.CUSTOM
+        )
+
+# Initialize pattern learner
+js_pattern_learner = JavaScriptPatternLearner()
+
+@handle_async_errors(error_types=ProcessingError)
+async def process_javascript_pattern(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    source_code: str,
+    context: Optional[PatternContext] = None
+) -> List[Dict[str, Any]]:
+    """Process a JavaScript pattern with full system integration."""
+    # Use shared JS/TS pattern processing with JavaScript-specific context
+    return await process_js_ts_pattern(pattern, source_code, context)
+
+# Update initialization
+async def initialize_javascript_patterns():
+    """Initialize JavaScript patterns during app startup."""
+    global js_pattern_learner
+    
+    # Initialize pattern processor first
+    await pattern_processor.initialize()
+    
+    # Register JavaScript patterns
+    await pattern_processor.register_language_patterns(
+        "javascript",
+        JS_PATTERNS,
+        metadata={
+            "parser_type": ParserType.TREE_SITTER,
+            "supports_learning": True,
+            "supports_adaptation": True,
+            "capabilities": JS_CAPABILITIES
+        }
+    )
+    
+    # Create and initialize learner
+    js_pattern_learner = await JavaScriptPatternLearner.create()
+    
+    # Register learner with pattern processor
+    await pattern_processor.register_pattern_learner(
+        "javascript",
+        js_pattern_learner
+    )
+    
+    await global_health_monitor.update_component_status(
+        "javascript_patterns",
+        ComponentStatus.HEALTHY,
+        details={
+            "patterns_loaded": len(JS_PATTERNS),
+            "capabilities": list(JS_CAPABILITIES)
+        }
+    )
+
+async def extract_javascript_features(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> ExtractedFeatures:
+    """Extract features from JavaScript pattern matches."""
+    # Use shared JS/TS feature extraction
+    return await extract_js_ts_features(pattern, matches, context)
+
+async def validate_javascript_pattern(
+    pattern: Union[AdaptivePattern, ResilientPattern],
+    context: Optional[PatternContext] = None
+) -> PatternValidationResult:
+    """Validate a JavaScript pattern with system integration."""
+    # Use shared JS/TS pattern validation
+    return await validate_js_ts_pattern(pattern, context)
+
+# Export public interfaces
+__all__ = [
+    'JS_PATTERNS',
+    'JS_PATTERN_RELATIONSHIPS',
+    'JS_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_js_pattern_relationships',
+    'update_js_pattern_metrics',
+    'get_js_pattern_match_result'
+]
+
+# Module identification
+LANGUAGE = "javascript" 

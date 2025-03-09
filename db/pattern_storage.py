@@ -21,7 +21,7 @@ from db.graph_sync import graph_sync
 from utils.cache import UnifiedCache
 from utils.shutdown import register_shutdown_handler
 from db.connection import connection_manager
-from db.retry_utils import DatabaseRetryManager, RetryConfig
+from db.retry_utils import RetryManager, RetryConfig
 
 @dataclass
 class PatternStorageMetrics:
@@ -59,7 +59,7 @@ class PatternStorage:
                 )
                 
                 # Initialize retry manager
-                self._retry_manager = DatabaseRetryManager(
+                self._retry_manager = RetryManager(
                     RetryConfig(max_retries=3, base_delay=1.0, max_delay=10.0)
                 )
                 
@@ -243,7 +243,7 @@ class PatternStorageCoordinator:
         repo_id: int,
         pattern: Dict[str, Any]
     ) -> Optional[int]:
-        """Store a code pattern."""
+        """Store a code pattern with tree-sitter support."""
         pattern_data = {
             "repo_id": repo_id,
             "file_path": pattern["file_path"],
@@ -255,7 +255,10 @@ class PatternStorageCoordinator:
             "dependencies": pattern.get("dependencies", []),
             "documentation": pattern.get("documentation"),
             "metadata": pattern.get("metadata", {}),
-            "embedding": pattern.get("embedding")
+            "embedding": pattern.get("embedding"),
+            "tree_sitter_type": pattern.get("tree_sitter_type"),
+            "tree_sitter_language": pattern.get("tree_sitter_language"),
+            "tree_sitter_metrics": pattern.get("tree_sitter_metrics", {})
         }
         
         # Use upsert coordinator
@@ -267,7 +270,7 @@ class PatternStorageCoordinator:
         )
         
         if pattern_id:
-            # Store in Neo4j
+            # Store in Neo4j with tree-sitter data
             await graph_sync.store_pattern_node({
                 "repo_id": repo_id,
                 "pattern_id": pattern_id,
@@ -275,7 +278,10 @@ class PatternStorageCoordinator:
                 "language": pattern["language"],
                 "file_path": pattern["file_path"],
                 "embedding": pattern.get("embedding"),
-                "elements": pattern.get("elements", {})
+                "elements": pattern.get("elements", {}),
+                "tree_sitter_type": pattern.get("tree_sitter_type"),
+                "tree_sitter_language": pattern.get("tree_sitter_language"),
+                "tree_sitter_metrics": pattern.get("tree_sitter_metrics", {})
             })
         
         return pattern_id

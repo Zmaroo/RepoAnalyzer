@@ -1,15 +1,104 @@
-"""Tree-sitter patterns for Clojure programming language."""
+"""Clojure-specific patterns with enhanced type system and relationships.
 
+This module provides Clojure-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
 )
+from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
+# Pattern relationships for Clojure
+CLOJURE_PATTERN_RELATIONSHIPS = {
+    "function_definition": [
+        PatternRelationship(
+            source_pattern="function_definition",
+            target_pattern="docstring",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"best_practice": True}
+        )
+    ],
+    "class_definition": [
+        PatternRelationship(
+            source_pattern="class_definition",
+            target_pattern="function_definition",
+            relationship_type=PatternRelationType.IMPLEMENTS,
+            confidence=0.9,
+            metadata={"methods": True}
+        ),
+        PatternRelationship(
+            source_pattern="class_definition",
+            target_pattern="docstring",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"best_practice": True}
+        )
+    ],
+    "namespace": [
+        PatternRelationship(
+            source_pattern="namespace",
+            target_pattern="function_definition",
+            relationship_type=PatternRelationType.CONTAINS,
+            confidence=0.95,
+            metadata={"namespace_members": True}
+        ),
+        PatternRelationship(
+            source_pattern="namespace",
+            target_pattern="class_definition",
+            relationship_type=PatternRelationType.CONTAINS,
+            confidence=0.95,
+            metadata={"namespace_members": True}
+        )
+    ]
+}
+
+# Performance metrics tracking for Clojure patterns
+CLOJURE_PATTERN_METRICS = {
+    "function_definition": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "class_definition": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "namespace": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
+
+# Enhanced Clojure patterns with proper typing and relationships
 CLOJURE_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
+            "function_definition": ResilientPattern(
+                name="function_definition",
                 pattern="""
                 [
                     (list_lit
@@ -35,14 +124,22 @@ CLOJURE_PATTERNS = {
                         (_)* @syntax.macro.body) @syntax.macro.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", "") or
-                           node["captures"].get("syntax.macro.name", {}).get("text", ""),
-                    "type": "macro" if "syntax.macro.def" in node["captures"] else "function"
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="clojure",
+                confidence=0.95,
+                metadata={
+                    "relationships": CLOJURE_PATTERN_RELATIONSHIPS["function_definition"],
+                    "metrics": CLOJURE_PATTERN_METRICS["function_definition"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             ),
             
-            "class": QueryPattern(
+            "class_definition": ResilientPattern(
+                name="class_definition",
                 pattern="""
                 [
                     (list_lit
@@ -56,9 +153,17 @@ CLOJURE_PATTERNS = {
                          (_)* @syntax.class.body]) @syntax.class.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.class.name", {}).get("text", ""),
-                    "type": node["captures"].get("syntax.class.type", {}).get("text", "")
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="clojure",
+                confidence=0.95,
+                metadata={
+                    "relationships": CLOJURE_PATTERN_RELATIONSHIPS["class_definition"],
+                    "metrics": CLOJURE_PATTERN_METRICS["class_definition"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -66,7 +171,8 @@ CLOJURE_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": QueryPattern(
+            "variable": AdaptivePattern(
+                name="variable",
                 pattern="""
                 [
                     (list_lit
@@ -79,9 +185,17 @@ CLOJURE_PATTERNS = {
                         (_)? @semantics.var.value) @semantics.var.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.var.name", {}).get("text", ""),
-                    "type": "defonce" if "defonce" in node["captures"].get("semantics.var.type", {}).get("text", "") else "def"
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="clojure",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -89,7 +203,8 @@ CLOJURE_PATTERNS = {
     
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
-            "namespace": QueryPattern(
+            "namespace": ResilientPattern(
+                name="namespace",
                 pattern="""
                 [
                     (list_lit
@@ -103,9 +218,17 @@ CLOJURE_PATTERNS = {
                         (_)* @structure.ns.body) @structure.ns.def
                 ]
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("structure.ns.name", {}).get("text", ""),
-                    "type": node["captures"].get("structure.ns.type", {}).get("text", "")
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="clojure",
+                confidence=0.95,
+                metadata={
+                    "relationships": CLOJURE_PATTERN_RELATIONSHIPS["namespace"],
+                    "metrics": CLOJURE_PATTERN_METRICS["namespace"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
@@ -113,221 +236,96 @@ CLOJURE_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": QueryPattern(
+            "comments": AdaptivePattern(
+                name="comments",
                 pattern="""
                 [
                     (comment) @documentation.comment,
                     (dis_expr) @documentation.disabled
                 ]
                 """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", "") or
-                           node["captures"].get("documentation.disabled", {}).get("text", ""),
-                    "type": "comment" if "documentation.comment" in node["captures"] else "disabled"
-                }
-            )
-        }
-    },
-    
-    PatternCategory.LEARNING: {
-        PatternPurpose.BEST_PRACTICES: {
-            "naming_conventions": QueryPattern(
-                pattern="""
-                [
-                    (sym_lit) @naming.symbol
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "naming_convention_pattern",
-                    "name": node["node"].text.decode('utf8'),
-                    "is_kebab_case": "-" in node["node"].text.decode('utf8') and not "_" in node["node"].text.decode('utf8'),
-                    "is_snake_case": "_" in node["node"].text.decode('utf8') and not "-" in node["node"].text.decode('utf8'),
-                    "is_camel_case": not ("-" in node["node"].text.decode('utf8') or "_" in node["node"].text.decode('utf8')) and 
-                                   any(c.isupper() for c in node["node"].text.decode('utf8'))
-                }
-            ),
-            "function_style": QueryPattern(
-                pattern="""
-                [
-                    (list_lit
-                        .
-                        (sym_lit) @function.type
-                        (#match? @function.type "^(defn|defn-|fn)$")
-                        .
-                        (sym_lit)? @function.name
-                        .
-                        (vec_lit) @function.params
-                        .
-                        (str_lit)? @function.docstring
-                        .
-                        (_)* @function.body) @function.def
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "function_style_pattern",
-                    "has_docstring": "function.docstring" in node["captures"],
-                    "param_count": len(node["captures"].get("function.params", {}).get("text", "").split()),
-                    "is_anonymous": "fn" in node["captures"].get("function.type", {}).get("text", "") and 
-                                  not node["captures"].get("function.name", {}).get("text", "")
-                }
-            )
-        },
-        PatternPurpose.CODE_ORGANIZATION: {
-            "code_structure": QueryPattern(
-                pattern="""
-                [
-                    (list_lit
-                        .
-                        (sym_lit) @structure.ns.keyword
-                        (#eq? @structure.ns.keyword "ns")
-                        .
-                        (sym_lit) @structure.ns.name
-                        .
-                        [(list_lit
-                            .
-                            (kwd_lit) @structure.ns.require.keyword
-                            (#eq? @structure.ns.require.keyword ":require")
-                            .
-                            (_)* @structure.ns.require.specs) @structure.ns.require
-                         (list_lit
-                            .
-                            (kwd_lit) @structure.ns.import.keyword
-                            (#eq? @structure.ns.import.keyword ":import")
-                            .
-                            (_)* @structure.ns.import.specs) @structure.ns.import]*) @structure.ns.def
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "code_structure_pattern",
-                    "has_requires": "structure.ns.require" in node["captures"],
-                    "has_imports": "structure.ns.import" in node["captures"],
-                    "namespace": node["captures"].get("structure.ns.name", {}).get("text", "")
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="clojure",
+                confidence=0.9,
+                metadata={
+                    "relationships": [
+                        PatternRelationship(
+                            source_pattern="comments",
+                            target_pattern="function_definition",
+                            relationship_type=PatternRelationType.COMPLEMENTS,
+                            confidence=0.8
+                        )
+                    ],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
                 }
             )
         }
     }
 }
 
-# Additional metadata for pattern categories
-PATTERN_METADATA = {
-    "syntax": {
-        "function": {
-            "contains": ["params", "body", "docstring"],
-            "contained_by": ["namespace"]
-        },
-        "class": {
-            "contains": ["fields", "methods", "protocols", "implementations", "docstring"],
-            "contained_by": ["namespace"]
-        }
-    },
-    "structure": {
-        "namespace": {
-            "contains": ["import", "function", "class", "variable"],
-            "contained_by": []
-        },
-        "import": {
-            "contains": [],
-            "contained_by": ["namespace"]
-        }
-    },
-    "semantics": {
-        "variable": {
-            "contains": ["value"],
-            "contained_by": ["namespace", "function"]
-        },
-        "expression": {
-            "contains": ["forms", "branches"],
-            "contained_by": ["function", "variable"]
-        }
-    },
-    "documentation": {
-        "docstring": {
-            "contains": [],
-            "contained_by": ["function", "class", "namespace"]
-        },
-        "comment": {
-            "contains": [],
-            "contained_by": ["function", "class", "namespace", "expression"]
-        }
-    }
-} 
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for Clojure files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "clojure", "version": "1.11+"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(CLOJURE_PATTERNS.keys())
+    )
 
-# Repository learning patterns for Clojure
-CLOJURE_PATTERNS_FOR_LEARNING = {
-    "naming_conventions": {
-        "pattern": """
-        [
-            (sym_lit) @naming.symbol
-        ]
-        """,
-        "extract": lambda node: {
-            "type": "naming_convention_pattern",
-            "name": node["node"].text.decode('utf8'),
-            "is_kebab_case": "-" in node["node"].text.decode('utf8') and not "_" in node["node"].text.decode('utf8'),
-            "is_snake_case": "_" in node["node"].text.decode('utf8') and not "-" in node["node"].text.decode('utf8'),
-            "is_camel_case": not ("-" in node["node"].text.decode('utf8') or "_" in node["node"].text.decode('utf8')) and 
-                           any(c.isupper() for c in node["node"].text.decode('utf8'))
-        }
-    },
-    
-    "function_style": {
-        "pattern": """
-        [
-            (list_lit
-                .
-                (sym_lit) @function.type
-                (#match? @function.type "^(defn|defn-|fn)$")
-                .
-                (sym_lit)? @function.name
-                .
-                (vec_lit) @function.params
-                .
-                (str_lit)? @function.docstring
-                .
-                (_)* @function.body) @function.def
-        ]
-        """,
-        "extract": lambda node: {
-            "type": "function_style_pattern",
-            "has_docstring": "function.docstring" in node["captures"],
-            "param_count": len(node["captures"].get("function.params", {}).get("text", "").split()),
-            "is_anonymous": "fn" in node["captures"].get("function.type", {}).get("text", "") and 
-                          not node["captures"].get("function.name", {}).get("text", "")
-        }
-    },
-    
-    "code_structure": {
-        "pattern": """
-        [
-            (list_lit
-                .
-                (sym_lit) @structure.ns.keyword
-                (#eq? @structure.ns.keyword "ns")
-                .
-                (sym_lit) @structure.ns.name
-                .
-                [(list_lit
-                    .
-                    (kwd_lit) @structure.ns.require.keyword
-                    (#eq? @structure.ns.require.keyword ":require")
-                    .
-                    (_)* @structure.ns.require.specs) @structure.ns.require
-                 (list_lit
-                    .
-                    (kwd_lit) @structure.ns.import.keyword
-                    (#eq? @structure.ns.import.keyword ":import")
-                    .
-                    (_)* @structure.ns.import.specs) @structure.ns.import]*) @structure.ns.def
-        ]
-        """,
-        "extract": lambda node: {
-            "type": "code_structure_pattern",
-            "has_requires": "structure.ns.require" in node["captures"],
-            "has_imports": "structure.ns.import" in node["captures"],
-            "namespace": node["captures"].get("structure.ns.name", {}).get("text", "")
-        }
-    }
-}
+def get_clojure_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return CLOJURE_PATTERN_RELATIONSHIPS.get(pattern_name, [])
 
-# Add the repository learning patterns to the main patterns
-CLOJURE_PATTERNS['REPOSITORY_LEARNING'] = CLOJURE_PATTERNS_FOR_LEARNING 
+def update_clojure_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in CLOJURE_PATTERN_METRICS:
+        pattern_metrics = CLOJURE_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
+
+def get_clojure_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_clojure_pattern_relationships(pattern_name),
+        performance=CLOJURE_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "clojure"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'CLOJURE_PATTERNS',
+    'CLOJURE_PATTERN_RELATIONSHIPS',
+    'CLOJURE_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_clojure_pattern_relationships',
+    'update_clojure_pattern_metrics',
+    'get_clojure_pattern_match_result'
+]
+
+# Module identification
+LANGUAGE = "clojure" 

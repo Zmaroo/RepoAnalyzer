@@ -2,8 +2,9 @@
 
 from typing import Dict, Any, List, Match
 from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory
+from parsers.types import FileType, QueryPattern, PatternCategory, PatternPurpose
 import re
+from .common import COMMON_PATTERNS
 
 def extract_type(match: Match) -> Dict[str, Any]:
     """Extract type definition information."""
@@ -33,7 +34,52 @@ def extract_argument(match: Match) -> Dict[str, Any]:
     }
 
 GRAPHQL_PATTERNS = {
+    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
+    
     PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "operation": QueryPattern(
+                pattern="""
+                [
+                    (operation_definition
+                        operation_type: (_)? @syntax.operation.type
+                        name: (name)? @syntax.operation.name
+                        variable_definitions: (variable_definitions)? @syntax.operation.vars
+                        selection_set: (selection_set) @syntax.operation.selections) @syntax.operation.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.operation.name", {}).get("text", ""),
+                    "type": node["captures"].get("syntax.operation.type", {}).get("text", "query"),
+                    "has_vars": bool(node["captures"].get("syntax.operation.vars", {}))
+                },
+                description="Matches GraphQL operation definitions",
+                examples=[
+                    "query GetUser { user { name } }",
+                    "mutation CreateUser($name: String!) { createUser(name: $name) { id } }"
+                ]
+            ),
+            
+            "fragment": QueryPattern(
+                pattern="""
+                [
+                    (fragment_definition
+                        name: (name) @syntax.fragment.name
+                        type_condition: (type_condition
+                            type: (named_type) @syntax.fragment.type)
+                        selection_set: (selection_set) @syntax.fragment.selections) @syntax.fragment.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.fragment.name", {}).get("text", ""),
+                    "type": node["captures"].get("syntax.fragment.type", {}).get("text", "")
+                },
+                description="Matches GraphQL fragment definitions",
+                examples=[
+                    "fragment UserFields on User { name email }"
+                ]
+            )
+        },
         "type_definition": QueryPattern(
             pattern=r'type\s+(\w+)\s*\{([^}]+)\}',
             extract=extract_type,
@@ -102,16 +148,23 @@ GRAPHQL_PATTERNS = {
     },
     
     PatternCategory.DOCUMENTATION: {
-        "description": QueryPattern(
-            pattern=r'"""([^"]+)"""',
-            extract=lambda m: {
-                "type": "description",
-                "content": m.group(1).strip(),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches GraphQL descriptions",
-            examples=["\"\"\"User type description\"\"\""]
-        ),
+        PatternPurpose.UNDERSTANDING: {
+            "description": QueryPattern(
+                pattern="""
+                [
+                    (description) @documentation.desc
+                ]
+                """,
+                extract=lambda node: {
+                    "text": node["text"].strip('"\' ')
+                },
+                description="Matches GraphQL descriptions",
+                examples=[
+                    '"""User type"""',
+                    '"User ID field"'
+                ]
+            )
+        },
         "comment": QueryPattern(
             pattern=r'#\s*(.+)$',
             extract=lambda m: {
@@ -135,6 +188,52 @@ GRAPHQL_PATTERNS = {
     },
     
     PatternCategory.SEMANTICS: {
+        PatternPurpose.UNDERSTANDING: {
+            "field": QueryPattern(
+                pattern="""
+                [
+                    (field
+                        alias: (name)? @semantics.field.alias
+                        name: (name) @semantics.field.name
+                        arguments: (arguments)? @semantics.field.args
+                        selection_set: (selection_set)? @semantics.field.selections) @semantics.field.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("semantics.field.name", {}).get("text", ""),
+                    "alias": node["captures"].get("semantics.field.alias", {}).get("text", ""),
+                    "has_args": bool(node["captures"].get("semantics.field.args", {})),
+                    "has_selections": bool(node["captures"].get("semantics.field.selections", {}))
+                },
+                description="Matches GraphQL field selections",
+                examples=[
+                    "user { name }",
+                    "userById(id: 123) { name email }"
+                ]
+            ),
+            
+            "type": QueryPattern(
+                pattern="""
+                [
+                    (type_definition
+                        description: (description)? @semantics.type.desc
+                        name: (name) @semantics.type.name
+                        implements: (implements_interfaces)? @semantics.type.interfaces
+                        fields: (field_definition)* @semantics.type.fields) @semantics.type.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("semantics.type.name", {}).get("text", ""),
+                    "has_desc": bool(node["captures"].get("semantics.type.desc", {})),
+                    "has_interfaces": bool(node["captures"].get("semantics.type.interfaces", {}))
+                },
+                description="Matches GraphQL type definitions",
+                examples=[
+                    "type User { id: ID! name: String! }",
+                    "type Query { user(id: ID!): User }"
+                ]
+            )
+        },
         "scalar": QueryPattern(
             pattern=r'scalar\s+(\w+)',
             extract=lambda m: {

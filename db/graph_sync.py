@@ -673,6 +673,82 @@ class GraphSyncCoordinator:
         finally:
             await session.close()
 
+    async def store_pattern_node(self, pattern_data: dict) -> None:
+        """Store pattern node with tree-sitter enhancements."""
+        session = await connection_manager.get_session()
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="store_pattern_node",
+                error_types=(Neo4jError, DatabaseError),
+                severity=ErrorSeverity.ERROR
+            ):
+                # Create pattern node with tree-sitter data
+                pattern_query = """
+                MERGE (p:Pattern {id: $id})
+                SET p += $properties,
+                    p.tree_sitter_type = $tree_sitter_type,
+                    p.tree_sitter_language = $tree_sitter_language,
+                    p.updated_at = timestamp()
+                """
+                pattern_props = {
+                    "id": pattern_data["pattern_id"],
+                    "type": pattern_data["pattern_type"],
+                    "language": pattern_data.get("language"),
+                    "confidence": pattern_data.get("confidence", 0.7),
+                    "ai_confidence": pattern_data.get("ai_confidence"),
+                    "complexity": pattern_data.get("complexity"),
+                    "embedding": pattern_data.get("embedding"),
+                    "tree_sitter_type": pattern_data.get("tree_sitter_type"),
+                    "tree_sitter_language": pattern_data.get("tree_sitter_language")
+                }
+                
+                await session.run(pattern_query, {
+                    "id": pattern_data["pattern_id"],
+                    "properties": pattern_props,
+                    "tree_sitter_type": pattern_data.get("tree_sitter_type"),
+                    "tree_sitter_language": pattern_data.get("tree_sitter_language")
+                })
+                
+                # Store AI insights if available
+                if pattern_data.get("ai_insights"):
+                    insights_query = """
+                    MATCH (p:Pattern {id: $pattern_id})
+                    MERGE (ai:AIInsight {id: $insight_id})
+                    SET ai += $properties
+                    MERGE (p)-[r:HAS_INSIGHT]->(ai)
+                    """
+                    
+                    for i, insight in enumerate(pattern_data["ai_insights"]):
+                        insight_id = f"{pattern_data['pattern_id']}_insight_{i}"
+                        await session.run(insights_query, {
+                            "pattern_id": pattern_data["pattern_id"],
+                            "insight_id": insight_id,
+                            "properties": insight
+                        })
+                
+                # Store tree-sitter specific metrics if available
+                if pattern_data.get("tree_sitter_metrics"):
+                    metrics_query = """
+                    MATCH (p:Pattern {id: $pattern_id})
+                    MERGE (m:TreeSitterMetric {id: $metric_id})
+                    SET m += $properties
+                    MERGE (p)-[r:HAS_TREE_SITTER_METRIC]->(m)
+                    """
+                    
+                    for metric_type, value in pattern_data["tree_sitter_metrics"].items():
+                        metric_id = f"{pattern_data['pattern_id']}_{metric_type}"
+                        await session.run(metrics_query, {
+                            "pattern_id": pattern_data["pattern_id"],
+                            "metric_id": metric_id,
+                            "properties": {
+                                "type": metric_type,
+                                "value": value,
+                                "updated_at": pattern_data.get("updated_at")
+                            }
+                        })
+        finally:
+            await session.close()
+
 # Create singleton instance of GraphSyncCoordinator
 _graph_sync = GraphSyncCoordinator()
 

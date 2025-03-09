@@ -1,90 +1,64 @@
-"""Common types and enums for parsers."""
+"""Type definitions for the parser system.
 
-from enum import Enum
-from typing import Dict, Any, List, Optional, Callable, Union, Set
+This module defines the core types used throughout the parser system, including
+enums, dataclasses, and type aliases.
+"""
+
+from typing import Dict, Any, List, Optional, Union, Set, Callable
+from enum import Enum, auto
 from dataclasses import dataclass, field
 import asyncio
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 
-class FileType(Enum):
-    """File classification types."""
+class FileType(str, Enum):
+    """File type enumeration."""
     CODE = "code"
-    DOC = "doc"
-    CONFIG = "config"
-    DATA = "data"
-    MARKUP = "markup"
-    STYLE = "style"
-    DOCUMENTATION = "documentation"
-    SCRIPT = "script"
-    QUERY = "query"
-    TEXT = "text"
     BINARY = "binary"
+    TEXT = "text"
+    CONFIG = "config"
+    DOCUMENTATION = "documentation"
     UNKNOWN = "unknown"
 
-class PatternCategory(Enum):
-    """Unified categories for code understanding and manipulation."""
-    SYNTAX = "syntax"               # Basic code structures (functions, classes, etc)
-    SEMANTICS = "semantics"         # Code meaning and relationships
-    DOCUMENTATION = "documentation"  # Comments, docs, examples
-    STRUCTURE = "structure"         # Project/file organization
-    CODE_PATTERNS = "code_patterns" # Common coding patterns and practices
-    LEARNING = "learning"           # Repository learning patterns
-    CONTEXT = "context"            # Contextual information about code
-    DEPENDENCIES = "dependencies"   # Project dependencies and imports
-    BEST_PRACTICES = "best_practices" # Language-specific best practices
-    COMMON_ISSUES = "common_issues"  # Frequently encountered problems
-    USER_PATTERNS = "user_patterns"  # User's coding style and preferences
-
-class PatternPurpose(Enum):
-    """The purpose/intent of a pattern."""
-    UNDERSTANDING = "understanding"   # For understanding code structure
-    MODIFICATION = "modification"     # For making code changes
-    VALIDATION = "validation"        # For validating code quality
-    LEARNING = "learning"            # For learning from code
-    GENERATION = "generation"        # For generating new code
-    EXPLANATION = "explanation"      # For explaining code to users
-    SUGGESTION = "suggestion"        # For making improvement suggestions
-    DEBUGGING = "debugging"          # For finding and fixing bugs
-    COMPLETION = "completion"        # For code completion suggestions
-    REFACTORING = "refactoring"     # For code restructuring
-    DOCUMENTATION = "documentation"  # For generating/updating docs
-
-class PatternType(Enum):
-    """Types of patterns used for code analysis."""
-    CODE_STRUCTURE = "code_structure"
-    CODE_NAMING = "code_naming"
-    ERROR_HANDLING = "error_handling"
-    DOCUMENTATION_STRUCTURE = "documentation_structure"
-    ARCHITECTURE = "architecture"
-
-class ParserType(Enum):
-    """Parser implementation types."""
-    TREE_SITTER = "tree_sitter"
+class ParserType(str, Enum):
+    """Parser type enumeration."""
+    TREE_SITTER = "tree-sitter"
     CUSTOM = "custom"
-    HYBRID = "hybrid"
     UNKNOWN = "unknown"
 
-class InteractionType(Enum):
-    """Types of AI-user interactions."""
-    QUESTION = "question"           # User asked a question
-    MODIFICATION = "modification"   # User wants to modify code
-    ERROR = "error"                # User has an error
-    COMPLETION = "completion"      # User wants code completion
-    EXPLANATION = "explanation"    # User wants explanation
-    SUGGESTION = "suggestion"      # User wants suggestions
-    DOCUMENTATION = "documentation" # User wants documentation
+class FeatureCategory(str, Enum):
+    """Feature category enumeration."""
+    SYNTAX = "syntax"
+    SEMANTICS = "semantics"
+    DOCUMENTATION = "documentation"
+    STRUCTURE = "structure"
+    DEPENDENCIES = "dependencies"
+    PATTERNS = "patterns"
+    METRICS = "metrics"
+    CUSTOM = "custom"
 
-class ConfidenceLevel(Enum):
-    """Confidence levels for AI decisions."""
-    HIGH = "high"         # AI is very confident (0.8-1.0)
-    MEDIUM = "medium"     # AI is moderately confident (0.5-0.8)
-    LOW = "low"          # AI is not very confident (0.2-0.5)
-    UNCERTAIN = "uncertain" # AI is uncertain (<0.2)
+class PatternCategory(str, Enum):
+    """Pattern category enumeration."""
+    SYNTAX = "syntax"
+    SEMANTICS = "semantics"
+    DOCUMENTATION = "documentation"
+    STRUCTURE = "structure"
+    DEPENDENCIES = "dependencies"
+    CODE_PATTERNS = "code_patterns"
+    BEST_PRACTICES = "best_practices"
+    USER_PATTERNS = "user_patterns"
 
-class AICapability(Enum):
-    """AI-specific capabilities."""
+class PatternPurpose(str, Enum):
+    """Pattern purpose enumeration."""
+    UNDERSTANDING = "understanding"
+    GENERATION = "generation"
+    MODIFICATION = "modification"
+    REVIEW = "review"
+    LEARNING = "learning"
+
+class AICapability(str, Enum):
+    """AI capability enumeration."""
     CODE_UNDERSTANDING = "code_understanding"
     CODE_GENERATION = "code_generation"
     CODE_MODIFICATION = "code_modification"
@@ -92,164 +66,192 @@ class AICapability(Enum):
     DOCUMENTATION = "documentation"
     LEARNING = "learning"
 
-class AIConfidenceMetrics(Enum):
-    """Metrics for AI confidence calculation."""
-    PATTERN_MATCH = "pattern_match"
-    CONTEXT_RELEVANCE = "context_relevance"
-    USER_HISTORY = "user_history"
-    PROJECT_RELEVANCE = "project_relevance"
-    LANGUAGE_SUPPORT = "language_support"
+class InteractionType(str, Enum):
+    """Interaction type enumeration."""
+    UNDERSTANDING = "understanding"
+    GENERATION = "generation"
+    MODIFICATION = "modification"
+    REVIEW = "review"
+    LEARNING = "learning"
 
-class DeepLearningCapability(Enum):
-    """Deep learning capabilities."""
-    PATTERN_LEARNING = "pattern_learning"
-    CROSS_REPO_ANALYSIS = "cross_repo_analysis"
-    PATTERN_RELATIONSHIPS = "pattern_relationships"
-    PATTERN_EVOLUTION = "pattern_evolution"
+class ConfidenceLevel(str, Enum):
+    """Confidence level enumeration."""
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    UNKNOWN = "unknown"
 
-class PatternRelationType(Enum):
-    """Types of pattern relationships."""
-    DEPENDENCY = "dependency"
-    SIMILARITY = "similarity"
-    CONFLICT = "conflict"
-    EVOLUTION = "evolution"
-
-class FeatureCategory(Enum):
-    """Categories of code features that can be extracted."""
-    SYNTAX = "syntax"
-    SEMANTICS = "semantics"
-    STRUCTURE = "structure"
-    DEPENDENCIES = "dependencies"
+class PatternType(str, Enum):
+    """Types of patterns that can be extracted from repositories."""
+    CODE_STRUCTURE = "code_structure"
+    CODE_NAMING = "code_naming"
+    ERROR_HANDLING = "error_handling"
     DOCUMENTATION = "documentation"
-    PATTERNS = "patterns"
-    METRICS = "metrics"
-    CUSTOM = "custom"
+    ARCHITECTURE = "architecture"
+    COMPONENT_DEPENDENCY = "component_dependency"
+
+class PatternRelationType(str, Enum):
+    """Types of relationships between patterns."""
+    DEPENDS_ON = "depends_on"
+    IMPLEMENTS = "implements"
+    EXTENDS = "extends"
+    USES = "uses"
+    REFERENCES = "references"
+    CONFLICTS_WITH = "conflicts_with"
+    COMPLEMENTS = "complements"
+    REPLACES = "replaces"
+    UNKNOWN = "unknown"
 
 @dataclass
-class ParserResult:
-    """Standardized parser result."""
-    success: bool
-    ast: Optional[Dict[str, Any]] = None
-    features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    documentation: Dict[str, Any] = field(default_factory=dict)
-    complexity: Dict[str, Any] = field(default_factory=dict)
-    statistics: Dict[str, Any] = field(default_factory=dict)
-    errors: List[Dict[str, Any]] = field(default_factory=list)
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
-
-    def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
-
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize parser result resources."""
-        if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("parser result initialization"):
-                    # No special initialization needed yet
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing parser result: {e}", level="error")
-                raise
-        return True
-
-    async def cleanup(self):
-        """Clean up parser result resources."""
-        try:
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
-        except Exception as e:
-            log(f"Error cleaning up parser result: {e}", level="error")
+class PatternDefinition:
+    """Definition of a code pattern."""
+    name: str
+    description: str
+    pattern: str
+    category: PatternCategory
+    purpose: PatternPurpose
+    language_id: str
+    confidence: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
-class ParserConfig:
-    """Parser configuration."""
-    max_file_size: int = 1024 * 1024  # 1MB
-    timeout_ms: int = 5000
-    cache_results: bool = True
-    include_comments: bool = True
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
-
+class QueryPattern:
+    """Pattern used for querying code."""
+    name: str
+    pattern: str
+    category: PatternCategory
+    purpose: PatternPurpose
+    language_id: str
+    confidence: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    extract: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+    is_tree_sitter: bool = field(default=False, init=False)
+    
     def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
-
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize configuration resources."""
-        if not self._initialized:
+        """Post-initialization validation and setup."""
+        # Determine if this is a tree-sitter pattern based on language support
+        from tree_sitter_language_pack import SupportedLanguage
+        from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+        
+        normalized_lang = self.language_id.lower().replace("-", "_").replace(" ", "_")
+        self.is_tree_sitter = normalized_lang in SupportedLanguage.__args__
+        
+        # Validate pattern based on type
+        if self.is_tree_sitter:
+            # Tree-sitter patterns should be valid queries
             try:
-                async with AsyncErrorBoundary("parser config initialization"):
-                    # No special initialization needed yet
-                    self._initialized = True
-                    return True
+                from tree_sitter_language_pack import get_language
+                language = get_language(normalized_lang)
+                if language:
+                    language.query(self.pattern)
             except Exception as e:
-                log(f"Error initializing parser config: {e}", level="error")
-                raise
-        return True
-
-    async def cleanup(self):
-        """Clean up configuration resources."""
+                raise ValueError(f"Invalid tree-sitter query for {self.language_id}: {e}")
+        else:
+            # Custom patterns should be valid regex
+            import re
+            try:
+                re.compile(self.pattern)
+            except Exception as e:
+                raise ValueError(f"Invalid regex pattern for {self.language_id}: {e}")
+    
+    def matches(self, source_code: str) -> List[Dict[str, Any]]:
+        """Get matches for this pattern in source code.
+        
+        Args:
+            source_code: Source code to match against
+            
+        Returns:
+            List of matches with metadata
+        """
+        if self.is_tree_sitter:
+            return self._tree_sitter_matches(source_code)
+        else:
+            return self._regex_matches(source_code)
+    
+    def _tree_sitter_matches(self, source_code: str) -> List[Dict[str, Any]]:
+        """Get matches using tree-sitter."""
         try:
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
+            from tree_sitter_language_pack import get_parser, get_language
+            
+            # Get tree-sitter components
+            parser = get_parser(self.language_id)
+            language = get_language(self.language_id)
+            
+            if not parser or not language:
+                raise ValueError(f"Failed to get tree-sitter components for {self.language_id}")
+            
+            # Parse and query
+            tree = parser.parse(bytes(source_code, "utf8"))
+            query = language.query(self.pattern)
+            matches = query.matches(tree.root_node)
+            
+            # Process matches
+            results = []
+            for match in matches:
+                match_data = {
+                    "node": match.pattern_node,
+                    "captures": {c.name: c.node for c in match.captures}
+                }
+                
+                # Apply extraction function if provided
+                if self.extract:
+                    try:
+                        extracted = self.extract(match_data)
+                        if extracted:
+                            match_data.update(extracted)
+                    except Exception:
+                        pass
+                
+                results.append(match_data)
+            
+            return results
+            
         except Exception as e:
-            log(f"Error cleaning up parser config: {e}", level="error")
+            raise ValueError(f"Error in tree-sitter matching: {e}")
+    
+    def _regex_matches(self, source_code: str) -> List[Dict[str, Any]]:
+        """Get matches using regex."""
+        try:
+            import re
+            results = []
+            
+            # Find all matches
+            for match in re.finditer(self.pattern, source_code, re.MULTILINE | re.DOTALL):
+                match_data = {
+                    "text": match.group(0),
+                    "start": match.start(),
+                    "end": match.end(),
+                    "groups": match.groups(),
+                    "named_groups": match.groupdict()
+                }
+                
+                # Apply extraction function if provided
+                if self.extract:
+                    try:
+                        extracted = self.extract(match_data)
+                        if extracted:
+                            match_data.update(extracted)
+                    except Exception:
+                        pass
+                
+                results.append(match_data)
+            
+            return results
+            
+        except Exception as e:
+            raise ValueError(f"Error in regex matching: {e}")
 
 @dataclass
-class ParsingStatistics:
-    """Parsing performance statistics."""
-    parse_time_ms: float = 0.0
-    feature_extraction_time_ms: float = 0.0
-    node_count: int = 0
-    error_count: int = 0
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
-
-    def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
-
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize statistics resources."""
-        if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("parsing statistics initialization"):
-                    # No special initialization needed yet
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing parsing statistics: {e}", level="error")
-                raise
-        return True
-
-    async def cleanup(self):
-        """Clean up statistics resources."""
-        try:
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
-        except Exception as e:
-            log(f"Error cleaning up parsing statistics: {e}", level="error")
+class AIConfidenceMetrics:
+    """Metrics for AI confidence in processing results."""
+    overall_confidence: float = 0.0
+    pattern_matches: Dict[str, float] = field(default_factory=dict)
+    context_relevance: float = 0.0
+    semantic_similarity: float = 0.0
+    code_quality: float = 0.0
+    documentation_quality: float = 0.0
+    learning_progress: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class Documentation:
@@ -257,314 +259,160 @@ class Documentation:
     docstrings: List[Dict[str, Any]] = field(default_factory=list)
     comments: List[Dict[str, Any]] = field(default_factory=list)
     todos: List[Dict[str, Any]] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, str] = field(default_factory=dict)
     content: str = ""
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
-
-    def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
-
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize documentation resources."""
-        if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("documentation initialization"):
-                    # No special initialization needed yet
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing documentation: {e}", level="error")
-                raise
-        return True
-
-    async def cleanup(self):
-        """Clean up documentation resources."""
-        try:
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
-        except Exception as e:
-            log(f"Error cleaning up documentation: {e}", level="error")
 
 @dataclass
 class ComplexityMetrics:
     """Code complexity metrics."""
-    cyclomatic: int = 0
+    lines_of_code: Dict[str, int] = field(default_factory=lambda: {
+        'total': 0,
+        'code': 0,
+        'comment': 0,
+        'blank': 0
+    })
+    cyclomatic: int = 1
     cognitive: int = 0
-    halstead: Dict[str, float] = field(default_factory=dict)
-    maintainability_index: float = 0.0
-    lines_of_code: Dict[str, int] = field(default_factory=dict)
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
-
-    def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
-
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize metrics resources."""
-        if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("complexity metrics initialization"):
-                    # No special initialization needed yet
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing complexity metrics: {e}", level="error")
-                raise
-        return True
-
-    async def cleanup(self):
-        """Clean up metrics resources."""
-        try:
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
-        except Exception as e:
-            log(f"Error cleaning up complexity metrics: {e}", level="error")
+    maintainability: float = 0.0
+    testability: float = 0.0
+    reusability: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class ExtractedFeatures:
-    """Extracted feature container."""
+    """Extracted code features."""
     features: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     documentation: Documentation = field(default_factory=Documentation)
     metrics: ComplexityMetrics = field(default_factory=ComplexityMetrics)
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
-
-    def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
-
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize features resources."""
-        if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("extracted features initialization"):
-                    # Initialize nested resources
-                    await self.documentation.initialize()
-                    await self.metrics.initialize()
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing extracted features: {e}", level="error")
-                raise
-        return True
-
-    async def cleanup(self):
-        """Clean up features resources."""
-        try:
-            # Clean up nested resources
-            await self.documentation.cleanup()
-            await self.metrics.cleanup()
-            
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
-        except Exception as e:
-            log(f"Error cleaning up extracted features: {e}", level="error")
-
-@dataclass
-class PatternDefinition:
-    """Definition of a pattern to be matched."""
-    pattern: str
-    extract: Optional[Callable] = None
-    description: Optional[str] = None
-    examples: List[str] = field(default_factory=list)
-    category: PatternCategory = PatternCategory.SYNTAX
-    purpose: PatternPurpose = PatternPurpose.UNDERSTANDING
-
-@dataclass
-class QueryPattern:
-    """Pattern for querying code."""
-    pattern: str
-    extract: Optional[Callable] = None
-    description: Optional[str] = None
-    examples: List[str] = field(default_factory=list)
-    category: PatternCategory = PatternCategory.SYNTAX
-    purpose: PatternPurpose = PatternPurpose.UNDERSTANDING
-    language_id: Optional[str] = None
-    name: Optional[str] = None
-    definition: Optional[PatternDefinition] = None
-
-@dataclass
-class PatternInfo:
-    """Additional metadata for query patterns."""
-    pattern: str
-    extract: Optional[Callable] = None
-    description: Optional[str] = None
-    examples: List[str] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
-
-@dataclass
-class InteractionContext:
-    """Context for a single interaction."""
-    interaction_type: InteractionType
-    cursor_position: Optional[int] = None
-    selected_text: Optional[str] = None
-    current_file: Optional[str] = None
-    visible_range: Optional[tuple[int, int]] = None
-    user_input: Optional[str] = None
-    confidence: float = 1.0
-
-@dataclass
-class UserContext:
-    """Context about the user's preferences and patterns."""
-    preferred_style: Dict[str, Any] = field(default_factory=dict)
-    common_patterns: List[str] = field(default_factory=list)
-    recent_interactions: List[Dict[str, Any]] = field(default_factory=list)
-    language_preferences: Dict[str, Any] = field(default_factory=dict)
-    skill_level: Dict[str, float] = field(default_factory=dict)
-
-@dataclass
-class ProjectContext:
-    """Context about the project."""
-    language_id: str
-    file_type: FileType
-    dependencies: Dict[str, Any] = field(default_factory=dict)
-    project_patterns: Dict[str, Any] = field(default_factory=dict)
-    style_guide: Dict[str, Any] = field(default_factory=dict)
-    known_issues: List[Dict[str, Any]] = field(default_factory=list)
 
 @dataclass
 class AIContext:
-    """Enhanced AI context with learning capabilities."""
-    interaction: InteractionContext
-    user: UserContext
-    project: ProjectContext
-    capabilities: Set[AICapability] = field(default_factory=set)
-    confidence_metrics: Dict[AIConfidenceMetrics, float] = field(default_factory=dict)
-    learned_patterns: Dict[str, Any] = field(default_factory=dict)
-    success_metrics: Dict[str, float] = field(default_factory=dict)
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
-
-    def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
-
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize AI context resources."""
-        if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("ai context initialization"):
-                    # Initialize nested resources
-                    await self.interaction.initialize()
-                    await self.user.initialize()
-                    await self.project.initialize()
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing AI context: {e}", level="error")
-                raise
-        return True
-
-    async def cleanup(self):
-        """Clean up AI context resources."""
-        try:
-            # Clean up nested resources
-            await self.interaction.cleanup()
-            await self.user.cleanup()
-            await self.project.cleanup()
-            
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
-        except Exception as e:
-            log(f"Error cleaning up AI context: {e}", level="error")
+    """Context for AI processing."""
+    language_id: str
+    file_type: FileType
+    interaction_type: InteractionType
+    repository_id: Optional[int] = None
+    file_path: Optional[str] = None
+    commit_hash: Optional[str] = None
+    branch_name: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class AIProcessingResult:
-    """Result of AI-assisted processing."""
-    success: bool
+    """Result of AI processing."""
+    success: bool = False
     response: Optional[str] = None
-    suggestions: List[str] = field(default_factory=list)
     context_info: Dict[str, Any] = field(default_factory=dict)
-    confidence: float = 0.0
-    learned_patterns: List[Dict[str, Any]] = field(default_factory=list)
+    suggestions: List[str] = field(default_factory=list)
     ai_insights: Dict[str, Any] = field(default_factory=dict)
-    _initialized: bool = False
-    _pending_tasks: Set[asyncio.Task] = field(default_factory=set)
+    learned_patterns: List[Dict[str, Any]] = field(default_factory=list)
+    confidence: ConfidenceLevel = ConfidenceLevel.UNKNOWN
+    execution_time: float = 0.0
+    confidence_metrics: AIConfidenceMetrics = field(default_factory=AIConfidenceMetrics)
 
-    def __post_init__(self):
-        """Post initialization setup."""
-        register_shutdown_handler(self.cleanup)
+@dataclass
+class ParserResult:
+    """Result of parsing a file."""
+    success: bool = False
+    file_type: FileType = FileType.UNKNOWN
+    parser_type: ParserType = ParserType.UNKNOWN
+    language: Optional[str] = None
+    features: ExtractedFeatures = field(default_factory=ExtractedFeatures)
+    ast: Optional[Dict[str, Any]] = None
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    metrics: ComplexityMetrics = field(default_factory=ComplexityMetrics)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-    @handle_async_errors(error_types=(Exception,))
-    async def initialize(self) -> bool:
-        """Initialize AI processing result resources."""
-        if not self._initialized:
-            try:
-                async with AsyncErrorBoundary("ai processing result initialization"):
-                    # No special initialization needed yet
-                    self._initialized = True
-                    return True
-            except Exception as e:
-                log(f"Error initializing AI processing result: {e}", level="error")
-                raise
-        return True
+@dataclass
+class PatternInfo:
+    """Information about a pattern."""
+    name: str
+    description: str
+    examples: List[str]
+    category: PatternCategory
+    purpose: PatternPurpose
+    language_id: str
+    confidence: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-    async def cleanup(self):
-        """Clean up AI processing result resources."""
-        try:
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            self._initialized = False
-        except Exception as e:
-            log(f"Error cleaning up AI processing result: {e}", level="error")
+@dataclass
+class PatternContext:
+    """Context information for pattern matching."""
+    code_structure: Dict[str, Any] = field(default_factory=dict)
+    language_stats: Dict[str, Any] = field(default_factory=dict)
+    project_patterns: List[Dict[str, Any]] = field(default_factory=list)
+    file_location: str = ""
+    dependencies: Set[str] = field(default_factory=set)
+    recent_changes: List[Dict[str, Any]] = field(default_factory=list)
+    scope_level: str = "global"
+    allows_nesting: bool = True
+    relevant_patterns: List[str] = field(default_factory=list)
 
-# Pattern purpose mappings
-INTERACTION_TO_PURPOSE_MAP = {
-    InteractionType.QUESTION: PatternPurpose.EXPLANATION,
-    InteractionType.MODIFICATION: PatternPurpose.MODIFICATION,
-    InteractionType.ERROR: PatternPurpose.DEBUGGING,
-    InteractionType.COMPLETION: PatternPurpose.COMPLETION,
-    InteractionType.EXPLANATION: PatternPurpose.EXPLANATION,
-    InteractionType.SUGGESTION: PatternPurpose.SUGGESTION,
-    InteractionType.DOCUMENTATION: PatternPurpose.DOCUMENTATION
-}
+@dataclass
+class PatternRelationship:
+    """Relationship between patterns."""
+    source_pattern: str
+    target_pattern: str
+    relationship_type: PatternRelationType
+    confidence: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-# Pattern category mappings
-INTERACTION_TO_CATEGORY_MAP = {
-    InteractionType.QUESTION: [PatternCategory.CONTEXT, PatternCategory.SEMANTICS],
-    InteractionType.MODIFICATION: [PatternCategory.SYNTAX, PatternCategory.CODE_PATTERNS],
-    InteractionType.ERROR: [PatternCategory.COMMON_ISSUES, PatternCategory.SYNTAX],
-    InteractionType.COMPLETION: [PatternCategory.USER_PATTERNS, PatternCategory.CODE_PATTERNS],
-    InteractionType.EXPLANATION: [PatternCategory.CONTEXT, PatternCategory.DOCUMENTATION],
-    InteractionType.SUGGESTION: [PatternCategory.BEST_PRACTICES, PatternCategory.USER_PATTERNS],
-    InteractionType.DOCUMENTATION: [PatternCategory.DOCUMENTATION, PatternCategory.CONTEXT]
-}
+@dataclass
+class PatternPerformanceMetrics:
+    """Performance metrics for pattern matching."""
+    execution_time: float = 0.0
+    memory_usage: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    error_count: int = 0
+    success_rate: float = 0.0
+    pattern_stats: Dict[str, Any] = field(default_factory=dict)
 
-def get_purpose_from_interaction(interaction_type: InteractionType) -> PatternPurpose:
-    """Get pattern purpose from interaction type."""
-    return INTERACTION_TO_PURPOSE_MAP.get(interaction_type, PatternPurpose.UNDERSTANDING)
+@dataclass
+class PatternValidationResult:
+    """Result of pattern validation."""
+    is_valid: bool = True
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    validation_time: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-def get_categories_from_interaction(interaction_type: InteractionType) -> List[PatternCategory]:
-    """Get pattern categories from interaction type."""
-    return INTERACTION_TO_CATEGORY_MAP.get(interaction_type, [])
+@dataclass
+class PatternMatchResult:
+    """Result of pattern matching."""
+    pattern_name: str
+    matches: List[Dict[str, Any]]
+    context: PatternContext
+    relationships: List[PatternRelationship] = field(default_factory=list)
+    performance: PatternPerformanceMetrics = field(default_factory=PatternPerformanceMetrics)
+    validation: PatternValidationResult = field(default_factory=PatternValidationResult)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+# Export public interfaces
+__all__ = [
+    'FileType',
+    'ParserType',
+    'FeatureCategory',
+    'PatternCategory',
+    'PatternPurpose',
+    'AICapability',
+    'InteractionType',
+    'ConfidenceLevel',
+    'PatternType',
+    'PatternRelationType',
+    'PatternDefinition',
+    'QueryPattern',
+    'Documentation',
+    'ComplexityMetrics',
+    'ExtractedFeatures',
+    'AIContext',
+    'AIProcessingResult',
+    'ParserResult',
+    'PatternInfo',
+    'PatternContext',
+    'PatternRelationship',
+    'PatternPerformanceMetrics',
+    'PatternValidationResult',
+    'PatternMatchResult'
+]

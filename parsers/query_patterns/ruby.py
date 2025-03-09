@@ -1,393 +1,374 @@
-"""Ruby-specific Tree-sitter patterns."""
+"""Query patterns for Ruby files.
 
-from parsers.types import FileType
-from .common import COMMON_PATTERNS
+This module provides Ruby-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
+"""
+
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose, 
-    QueryPattern, PatternDefinition
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
+
+# Language identifier
+LANGUAGE = "ruby"
+
+@dataclass
+class RubyPatternContext(PatternContext):
+    """Ruby-specific pattern context."""
+    class_names: Set[str] = field(default_factory=set)
+    module_names: Set[str] = field(default_factory=set)
+    method_names: Set[str] = field(default_factory=set)
+    gem_names: Set[str] = field(default_factory=set)
+    has_rails: bool = False
+    has_rspec: bool = False
+    has_modules: bool = False
+    has_mixins: bool = False
+    has_blocks: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.class_names)}:{self.has_rails}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "class": PatternPerformanceMetrics(),
+    "module": PatternPerformanceMetrics(),
+    "method": PatternPerformanceMetrics(),
+    "gem": PatternPerformanceMetrics(),
+    "block": PatternPerformanceMetrics()
+}
 
 RUBY_PATTERNS = {
-    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
-    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
-                pattern="""
-                [
-                    (method
-                        name: (identifier) @syntax.function.name
-                        parameters: (method_parameters
-                            [(identifier) @syntax.function.param.name
-                             (optional_parameter
-                                 name: (identifier) @syntax.function.param.optional.name
-                                 value: (_) @syntax.function.param.optional.default)
-                             (rest_parameter
-                                 name: (identifier) @syntax.function.param.rest.name)
-                             (keyword_parameter
-                                 name: (identifier) @syntax.function.param.keyword.name
-                                 value: (_)? @syntax.function.param.keyword.default)
-                             (hash_splat_parameter
-                                 name: (identifier) @syntax.function.param.kwargs.name)]*) @syntax.function.params
-                        body: (body_statement) @syntax.function.body) @syntax.function.def,
-                    
-                    (singleton_method
-                        object: (_) @syntax.function.singleton.object
-                        name: (identifier) @syntax.function.singleton.name
-                        parameters: (method_parameters)? @syntax.function.singleton.params
-                        body: (body_statement) @syntax.function.singleton.body) @syntax.function.singleton
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", "") or
-                           node["captures"].get("syntax.function.singleton.name", {}).get("text", ""),
-                    "params": [p.get("text", "") for p in node["captures"].get("syntax.function.param.name", [])]
-                },
-                description="Matches Ruby method definitions",
-                examples=[
-                    "def process(x, y = 1, *args, **kwargs)",
-                    "def self.class_method(param)"
-                ],
-                category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
-            ),
-            
-            "class": QueryPattern(
+            "class": ResilientPattern(
                 pattern="""
                 [
                     (class
                         name: (constant) @syntax.class.name
-                        superclass: (superclass
-                            name: (constant) @syntax.class.superclass)? @syntax.class.extends
-                        body: (body_statement
-                            [(method) @syntax.class.method
-                             (singleton_method) @syntax.class.singleton_method
-                             (class_variable) @syntax.class.class_var
-                             (instance_variable) @syntax.class.instance_var
-                             (constant) @syntax.class.constant]*) @syntax.class.body) @syntax.class.def,
-                    
+                        superclass: (constant)? @syntax.class.super
+                        body: (_)? @syntax.class.body) @syntax.class.def,
+                    (singleton_class
+                        value: (_) @syntax.singleton.value
+                        body: (_)? @syntax.singleton.body) @syntax.singleton.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "class",
+                    "name": node["captures"].get("syntax.class.name", {}).get("text", ""),
+                    "line_number": node["captures"].get("syntax.class.def", {}).get("start_point", [0])[0],
+                    "superclass": node["captures"].get("syntax.class.super", {}).get("text", ""),
+                    "is_singleton": "syntax.singleton.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["method", "constant", "include"],
+                        PatternRelationType.DEPENDS_ON: ["class", "module"]
+                    }
+                },
+                name="class",
+                description="Matches Ruby class declarations",
+                examples=["class MyClass < BaseClass", "class << self"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["class"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
+                }
+            ),
+            "module": ResilientPattern(
+                pattern="""
+                [
                     (module
                         name: (constant) @syntax.module.name
-                        body: (body_statement) @syntax.module.body) @syntax.module.def
+                        body: (_)? @syntax.module.body) @syntax.module.def,
+                    (include
+                        name: (constant) @syntax.include.name) @syntax.include.def,
+                    (extend
+                        name: (constant) @syntax.extend.name) @syntax.extend.def
                 ]
                 """,
                 extract=lambda node: {
-                    "name": node["captures"].get("syntax.class.name", {}).get("text", "") or
-                           node["captures"].get("syntax.module.name", {}).get("text", ""),
-                    "kind": "class" if "syntax.class.def" in node["captures"] else "module"
+                    "type": "module",
+                    "name": (
+                        node["captures"].get("syntax.module.name", {}).get("text", "") or
+                        node["captures"].get("syntax.include.name", {}).get("text", "") or
+                        node["captures"].get("syntax.extend.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.module.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.include.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.extend.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_include": "syntax.include.def" in node["captures"],
+                    "is_extend": "syntax.extend.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["method", "constant"],
+                        PatternRelationType.DEPENDS_ON: ["module"]
+                    }
                 },
-                description="Matches Ruby class and module definitions",
-                examples=[
-                    "class MyClass < BaseClass",
-                    "module MyModule"
-                ],
+                name="module",
+                description="Matches Ruby module declarations and inclusions",
+                examples=["module MyModule", "include Enumerable", "extend ActiveSupport::Concern"],
                 category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    },
-    
-    PatternCategory.SEMANTICS: {
-        PatternPurpose.UNDERSTANDING: {
-            "meta": QueryPattern(
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["module"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_:]*$'
+                    }
+                }
+            ),
+            "method": ResilientPattern(
                 pattern="""
                 [
                     (method
-                        name: (identifier) @semantics.meta.method_missing
-                        (#match? @semantics.meta.method_missing "^method_missing$")) @semantics.meta.method_missing.def,
-                    
-                    (call
-                        method: (identifier) @semantics.meta.define_method
-                        (#match? @semantics.meta.define_method "^define_method$")
-                        arguments: (argument_list
-                            name: (_) @semantics.meta.define_method.name
-                            block: (block) @semantics.meta.define_method.body)) @semantics.meta.define_method.call,
-                    
-                    (call
-                        method: [(identifier) (constant)]
-                        (#match? @method "^(attr_reader|attr_writer|attr_accessor)$")
-                        arguments: (argument_list
-                            (_)* @semantics.meta.attr.name)) @semantics.meta.attr
+                        name: (identifier) @syntax.method.name
+                        parameters: (method_parameters)? @syntax.method.params
+                        body: (_)? @syntax.method.body) @syntax.method.def,
+                    (singleton_method
+                        object: (_) @syntax.singleton.method.obj
+                        name: (identifier) @syntax.singleton.method.name
+                        parameters: (method_parameters)? @syntax.singleton.method.params
+                        body: (_)? @syntax.singleton.method.body) @syntax.singleton.method.def
                 ]
                 """,
                 extract=lambda node: {
-                    "type": ("method_missing" if "semantics.meta.method_missing" in node["captures"] else
-                            "define_method" if "semantics.meta.define_method" in node["captures"] else
-                            "attr")
+                    "type": "method",
+                    "name": (
+                        node["captures"].get("syntax.method.name", {}).get("text", "") or
+                        node["captures"].get("syntax.singleton.method.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.method.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.singleton.method.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_singleton": "syntax.singleton.method.def" in node["captures"],
+                    "has_params": (
+                        "syntax.method.params" in node["captures"] or
+                        "syntax.singleton.method.params" in node["captures"]
+                    ),
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["block", "call"],
+                        PatternRelationType.DEPENDS_ON: ["class", "module"]
+                    }
                 },
-                description="Matches Ruby metaprogramming patterns",
-                examples=[
-                    "def method_missing(name, *args)",
-                    "define_method(:name) { |arg| }",
-                    "attr_accessor :property"
-                ],
-                category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
-            ),
-            
-            "block": QueryPattern(
-                pattern="""
-                [
-                    (block
-                        parameters: (block_parameters
-                            [(identifier) @semantics.block.param.name
-                             (destructured_parameter
-                                 (identifier)+ @semantics.block.param.destructure)]*) @semantics.block.params
-                        body: (body_statement) @semantics.block.body) @semantics.block,
-                    
-                    (do_block
-                        parameters: (block_parameters)? @semantics.block.do.params
-                        body: (body_statement) @semantics.block.do.body) @semantics.block.do
-                ]
-                """,
-                extract=lambda node: {
-                    "params": [p.get("text", "") for p in node["captures"].get("semantics.block.param.name", [])]
-                },
-                description="Matches Ruby block patterns",
-                examples=[
-                    "{ |x, y| x + y }",
-                    "do |item| process(item) end"
-                ],
-                category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
+                name="method",
+                description="Matches Ruby method declarations",
+                examples=["def process(data)", "def self.create", "def my_method; end"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["method"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-z_][a-zA-Z0-9_]*[?!=]?$'
+                    }
+                }
             )
         }
     },
-    
-    PatternCategory.DOCUMENTATION: {
-        PatternPurpose.UNDERSTANDING: {
-            "comments": QueryPattern(
-                pattern="""
-                [
-                    (comment) @documentation.comment,
-                    
-                    (comment
-                        text: /^#\\s*@.*/) @documentation.rdoc.directive,
-                    
-                    (comment
-                        text: /^#\\s*@[a-zA-Z]+.*/) @documentation.yard.tag
-                ]
-                """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", ""),
-                    "type": ("rdoc" if "documentation.rdoc.directive" in node["captures"] else
-                            "yard" if "documentation.yard.tag" in node["captures"] else
-                            "comment")
-                },
-                description="Matches Ruby documentation patterns",
-                examples=[
-                    "# Regular comment",
-                    "# @param name [String] The name parameter",
-                    "# @return [void]"
-                ],
-                category=PatternCategory.DOCUMENTATION,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    },
-    
-    PatternCategory.STRUCTURE: {
-        PatternPurpose.UNDERSTANDING: {
-            "module": QueryPattern(
-                pattern="""
-                [
-                    (module
-                        name: (constant) @structure.module.name
-                        body: (body_statement
-                            [(include) @structure.module.include
-                             (extend) @structure.module.extend
-                             (prepend) @structure.module.prepend]*) @structure.module.body) @structure.module,
-                    
-                    (require
-                        name: (string) @structure.require.name) @structure.require,
-                    
-                    (require_relative
-                        name: (string) @structure.require.relative.name) @structure.require.relative
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("structure.module.name", {}).get("text", ""),
-                    "requires": [r.get("text", "") for r in node["captures"].get("structure.require.name", [])]
-                },
-                description="Matches Ruby module and require statements",
-                examples=[
-                    "module MyModule",
-                    "require 'json'",
-                    "require_relative '../lib/utils'"
-                ],
-                category=PatternCategory.STRUCTURE,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    }
-}
 
-# Repository learning patterns for Ruby
-RUBY_PATTERNS_FOR_LEARNING = {
     PatternCategory.LEARNING: {
-        PatternPurpose.LEARNING: {
-            "metaprogramming": QueryPattern(
+        PatternPurpose.DEPENDENCIES: {
+            "gem": AdaptivePattern(
                 pattern="""
                 [
                     (call
-                        method: (identifier) @meta.def_method.name
-                        (#match? @meta.def_method.name "^define_method$")
+                        method: (identifier) @gem.name
                         arguments: (argument_list
-                            (_) @meta.def_method.method_name
-                            (_)? @meta.def_method.block)) @meta.def_method,
-                            
+                            (string) @gem.version)? @gem.args) @gem.def
+                        (#match? @gem.name "^gem$"),
                     (call
-                        method: (identifier) @meta.attr.name
-                        (#match? @meta.attr.name "^(attr_reader|attr_writer|attr_accessor)$")
+                        method: (identifier) @gem.require.name
                         arguments: (argument_list
-                            (symbol)* @meta.attr.symbols)) @meta.attr,
-                            
-                    (method
-                        name: (identifier) @meta.method_missing.name
-                        (#match? @meta.method_missing.name "^method_missing$")
-                        parameters: (method_parameters
-                            [(identifier) (rest_parameter) (optional_parameter)]* @meta.method_missing.params)
-                        body: (body_statement) @meta.method_missing.body) @meta.method_missing,
-                        
-                    (call
-                        method: (identifier) @meta.send.name
-                        (#match? @meta.send.name "^send$|^public_send$|^__send__$")
-                        arguments: (argument_list) @meta.send.args) @meta.send
+                            (string) @gem.require.path) @gem.require.args) @gem.require.def
+                        (#match? @gem.require.name "^require$")
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "metaprogramming",
-                    "is_define_method": "meta.def_method" in node["captures"],
-                    "is_attr_definition": "meta.attr" in node["captures"],
-                    "is_method_missing": "meta.method_missing" in node["captures"],
-                    "is_dynamic_dispatch": "meta.send" in node["captures"],
-                    "method_name": node["captures"].get("meta.def_method.method_name", {}).get("text", "") or 
-                                 node["captures"].get("meta.method_missing.name", {}).get("text", ""),
-                    "attr_type": node["captures"].get("meta.attr.name", {}).get("text", ""),
-                    "attr_symbols": node["captures"].get("meta.attr.symbols", {}).get("text", ""),
-                    "metaprogramming_type": (
-                        "dynamic_method_definition" if "meta.def_method" in node["captures"] else
-                        "attribute_definition" if "meta.attr" in node["captures"] else
-                        "method_missing" if "meta.method_missing" in node["captures"] else
-                        "dynamic_dispatch" if "meta.send" in node["captures"] else
-                        "unknown"
-                    )
+                    "type": "gem",
+                    "line_number": (
+                        node["captures"].get("gem.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("gem.require.def", {}).get("start_point", [0])[0]
+                    ),
+                    "name": (
+                        node["captures"].get("gem.args", {}).get("text", "") or
+                        node["captures"].get("gem.require.path", {}).get("text", "")
+                    ),
+                    "version": node["captures"].get("gem.version", {}).get("text", ""),
+                    "is_require": "gem.require.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.PROVIDES: ["class", "module", "method"],
+                        PatternRelationType.DEPENDS_ON: ["gem"]
+                    }
                 },
-                description="Matches Ruby metaprogramming patterns",
-                examples=[
-                    "define_method(:name) { |arg| }",
-                    "attr_accessor :property",
-                    "def method_missing(name, *args)",
-                    "obj.send(:method, arg)"
-                ],
+                name="gem",
+                description="Matches Ruby gem declarations and requires",
+                examples=["gem 'rails', '~> 6.1.0'", "require 'json'"],
                 category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "ruby_idioms": QueryPattern(
+                purpose=PatternPurpose.DEPENDENCIES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["gem"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-z][a-z0-9_-]*$'
+                    }
+                }
+            )
+        },
+        PatternPurpose.BLOCKS: {
+            "block": AdaptivePattern(
                 pattern="""
                 [
                     (block
-                        call: (call
-                            method: (identifier) @idiom.block.method
-                            (#match? @idiom.block.method "^(each|map|select|reject|reduce|inject|times|tap)$"))
-                        parameters: (block_parameters
-                            [(identifier) (destructured_parameter)]* @idiom.block.params)
-                        body: (body_statement) @idiom.block.body) @idiom.block,
-                        
-                    (if_modifier
-                        condition: (_) @idiom.modifier.if.condition
-                        statement: (_) @idiom.modifier.if.statement) @idiom.modifier.if,
-                        
-                    (unless_modifier
-                        condition: (_) @idiom.modifier.unless.condition
-                        statement: (_) @idiom.modifier.unless.statement) @idiom.modifier.unless,
-                        
-                    (binary
-                        operator: (identifier) @idiom.op.name
-                        (#match? @idiom.op.name "^(\\|\\||&&|and|or)$")
-                        left: (_) @idiom.op.left
-                        right: (_) @idiom.op.right) @idiom.op
+                        call: (call) @block.call
+                        parameters: (block_parameters)? @block.params
+                        body: (_)? @block.body) @block.def,
+                    (do_block
+                        call: (call) @block.do.call
+                        parameters: (block_parameters)? @block.do.params
+                        body: (_)? @block.do.body) @block.do.def
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "ruby_idioms",
-                    "is_block_usage": "idiom.block" in node["captures"],
-                    "is_modifier_if": "idiom.modifier.if" in node["captures"],
-                    "is_modifier_unless": "idiom.modifier.unless" in node["captures"],
-                    "is_short_circuit": "idiom.op" in node["captures"],
-                    "block_method": node["captures"].get("idiom.block.method", {}).get("text", ""),
-                    "param_count": len((node["captures"].get("idiom.block.params", {}).get("text", "") or "").split(","))
-                                  if node["captures"].get("idiom.block.params", {}).get("text", "") else 0,
-                    "operator": node["captures"].get("idiom.op.name", {}).get("text", ""),
-                    "idiomatic_construct": (
-                        "block_iteration" if "idiom.block" in node["captures"] else
-                        "statement_modifier" if ("idiom.modifier.if" in node["captures"] or "idiom.modifier.unless" in node["captures"]) else
-                        "short_circuit_evaluation" if "idiom.op" in node["captures"] else
-                        "unknown"
-                    )
+                    "type": "block",
+                    "line_number": (
+                        node["captures"].get("block.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("block.do.def", {}).get("start_point", [0])[0]
+                    ),
+                    "has_params": (
+                        "block.params" in node["captures"] or
+                        "block.do.params" in node["captures"]
+                    ),
+                    "is_do": "block.do.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINED_BY: ["method", "class"],
+                        PatternRelationType.DEPENDS_ON: ["method"]
+                    }
                 },
-                description="Matches Ruby idiomatic patterns",
-                examples=[
-                    "[1,2,3].map { |x| x * 2 }",
-                    "return if condition",
-                    "a || b",
-                    "process and return"
-                ],
+                name="block",
+                description="Matches Ruby block expressions",
+                examples=["[1,2,3].each { |n| puts n }", "5.times do |i| end"],
                 category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "error_handling": QueryPattern(
-                pattern="""
-                [
-                    (begin
-                        body: (body_statement) @error.begin.body
-                        [(rescue) (ensure)]* @error.begin.handler) @error.begin,
-                        
-                    (rescue
-                        exceptions: (exceptions
-                            [(constant) (scope_resolution) (array)]* @error.rescue.exceptions)?
-                        exception_variable: (exception_variable
-                            name: (identifier) @error.rescue.variable)?
-                        body: (body_statement) @error.rescue.body) @error.rescue,
-                        
-                    (ensure
-                        body: (body_statement) @error.ensure.body) @error.ensure,
-                        
-                    (raise
-                        expression: (_)? @error.raise.expr) @error.raise
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "error_handling",
-                    "is_begin_block": "error.begin" in node["captures"],
-                    "is_rescue": "error.rescue" in node["captures"],
-                    "is_ensure": "error.ensure" in node["captures"],
-                    "is_raise": "error.raise" in node["captures"],
-                    "exception_types": node["captures"].get("error.rescue.exceptions", {}).get("text", ""),
-                    "exception_variable": node["captures"].get("error.rescue.variable", {}).get("text", ""),
-                    "raise_expression": node["captures"].get("error.raise.expr", {}).get("text", ""),
-                    "error_handling_pattern": (
-                        "begin_rescue_ensure" if "error.begin" in node["captures"] else
-                        "standalone_rescue" if "error.rescue" in node["captures"] else
-                        "standalone_ensure" if "error.ensure" in node["captures"] else
-                        "raise" if "error.raise" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches Ruby error handling patterns",
-                examples=[
-                    "begin\n  process\nrescue => e\n  handle(e)\nensure\n  cleanup\nend",
-                    "rescue StandardError => e",
-                    "raise 'Error occurred'"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
+                purpose=PatternPurpose.BLOCKS,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["block"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": None
+                    }
+                }
             )
         }
     }
 }
 
-# Add the repository learning patterns to the main patterns
-RUBY_PATTERNS.update(RUBY_PATTERNS_FOR_LEARNING) 
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
+
+async def extract_ruby_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Ruby content for repository learning."""
+    patterns = []
+    context = RubyPatternContext()
+    
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in RUBY_PATTERNS:
+                category_patterns = RUBY_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "class":
+                                        context.class_names.add(match["name"])
+                                    elif match["type"] == "module":
+                                        context.module_names.add(match["name"])
+                                        context.has_modules = True
+                                        if match["is_include"] or match["is_extend"]:
+                                            context.has_mixins = True
+                                    elif match["type"] == "method":
+                                        context.method_names.add(match["name"])
+                                    elif match["type"] == "gem":
+                                        context.gem_names.add(match["name"])
+                                        if match["name"] == "rails":
+                                            context.has_rails = True
+                                        elif match["name"] == "rspec":
+                                            context.has_rspec = True
+                                    elif match["type"] == "block":
+                                        context.has_blocks = True
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting Ruby patterns: {e}", level="error")
+    
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "class": {
+        PatternRelationType.CONTAINS: ["method", "constant", "include"],
+        PatternRelationType.DEPENDS_ON: ["class", "module"]
+    },
+    "module": {
+        PatternRelationType.CONTAINS: ["method", "constant"],
+        PatternRelationType.DEPENDS_ON: ["module"]
+    },
+    "method": {
+        PatternRelationType.CONTAINS: ["block", "call"],
+        PatternRelationType.DEPENDS_ON: ["class", "module"]
+    },
+    "gem": {
+        PatternRelationType.PROVIDES: ["class", "module", "method"],
+        PatternRelationType.DEPENDS_ON: ["gem"]
+    },
+    "block": {
+        PatternRelationType.CONTAINED_BY: ["method", "class"],
+        PatternRelationType.DEPENDS_ON: ["method"]
+    }
+}
+
+# Export public interfaces
+__all__ = [
+    'RUBY_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_ruby_patterns_for_learning',
+    'RubyPatternContext',
+    'pattern_learner'
+] 

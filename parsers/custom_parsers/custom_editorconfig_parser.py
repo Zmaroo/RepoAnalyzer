@@ -6,9 +6,73 @@ It extracts section headers (e.g. [*] or [*.py]) and
 key-value property lines beneath each section.
 """
 
-from .base_imports import *
+from .base_imports import (
+    # Base classes
+    BaseParser,
+    CustomParserMixin,
+    
+    # Types
+    FileType,
+    ParserType,
+    PatternType,
+    PatternCategory,
+    FeatureCategory,
+    
+    # AI related
+    AICapability,
+    AIContext,
+    AIProcessingResult,
+    AIConfidenceMetrics,
+    AIPatternProcessor,
+    
+    # Pattern related
+    PatternProcessor,
+    AdaptivePattern,
+    ResilientPattern,
+    
+    # Documentation
+    Documentation,
+    ComplexityMetrics,
+    
+    # Node types
+    EditorconfigNodeDict,
+    
+    # Utils
+    ComponentStatus,
+    monitor_operation,
+    handle_errors,
+    handle_async_errors,
+    AsyncErrorBoundary,
+    ProcessingError,
+    ParsingError,
+    ErrorSeverity,
+    global_health_monitor,
+    register_shutdown_handler,
+    log,
+    UnifiedCache,
+    cache_coordinator,
+    get_cache_analytics,
+    
+    # Python types
+    Dict,
+    List,
+    Any,
+    Optional,
+    Set,
+    
+    # Python modules
+    time,
+    asyncio
+)
 import configparser
 import re
+from parsers.query_patterns.editorconfig import (
+    ENHANCED_PATTERNS,
+    EditorconfigPatternContext,
+    pattern_learner,
+    initialize_caches,
+    PATTERN_METRICS
+)
 
 
 class EditorconfigParser(BaseParser, CustomParserMixin):
@@ -17,6 +81,8 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
     def __init__(self, language_id: str = "editorconfig", file_type: Optional[FileType] = None):
         BaseParser.__init__(self, language_id, file_type or FileType.CONFIG, parser_type=ParserType.CUSTOM)
         CustomParserMixin.__init__(self)
+        self._initialized = False
+        self._pending_tasks: Set[asyncio.Future] = set()
         self.capabilities = {
             AICapability.CODE_UNDERSTANDING,
             AICapability.CODE_GENERATION,
@@ -24,6 +90,8 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
             AICapability.CODE_REVIEW,
             AICapability.LEARNING
         }
+        self._pattern_metrics = PATTERN_METRICS
+        self._pattern_learner = pattern_learner
         register_shutdown_handler(self.cleanup)
         
         # Compile regex patterns for parsing
@@ -38,7 +106,7 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
             try:
                 async with AsyncErrorBoundary("EditorConfig parser initialization"):
                     await self._initialize_cache(self.language_id)
-                    await self._load_patterns()
+                    await initialize_caches()
                     
                     # Initialize AI processor
                     self._ai_processor = AIPatternProcessor(self)
@@ -46,6 +114,9 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
                     
                     # Initialize pattern processor
                     self._pattern_processor = await PatternProcessor.create()
+                    
+                    # Initialize pattern learner
+                    await self._pattern_learner.initialize()
                     
                     self._initialized = True
                     log("EditorConfig parser initialized", level="info")
@@ -55,226 +126,7 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
                 raise
         return True
 
-    async def process_with_ai(
-        self,
-        source_code: str,
-        context: AIContext
-    ) -> AIProcessingResult:
-        """Process EditorConfig with AI assistance."""
-        if not self._initialized:
-            await self.initialize()
-            
-        async with AsyncErrorBoundary("EditorConfig AI processing"):
-            try:
-                # Parse source first
-                ast = await self._parse_source(source_code)
-                if not ast:
-                    return AIProcessingResult(
-                        success=False,
-                        response="Failed to parse EditorConfig"
-                    )
-                
-                results = AIProcessingResult(success=True)
-                
-                # Process with understanding capability
-                if AICapability.CODE_UNDERSTANDING in self.capabilities:
-                    understanding = await self._process_with_understanding(ast, context)
-                    results.context_info.update(understanding)
-                
-                # Process with generation capability
-                if AICapability.CODE_GENERATION in self.capabilities:
-                    generation = await self._process_with_generation(ast, context)
-                    results.suggestions.extend(generation)
-                
-                # Process with modification capability
-                if AICapability.CODE_MODIFICATION in self.capabilities:
-                    modification = await self._process_with_modification(ast, context)
-                    results.ai_insights.update(modification)
-                
-                # Process with review capability
-                if AICapability.CODE_REVIEW in self.capabilities:
-                    review = await self._process_with_review(ast, context)
-                    results.ai_insights.update(review)
-                
-                # Process with learning capability
-                if AICapability.LEARNING in self.capabilities:
-                    learning = await self._process_with_learning(ast, context)
-                    results.learned_patterns.extend(learning)
-                
-                return results
-            except Exception as e:
-                log(f"Error in EditorConfig AI processing: {e}", level="error")
-                return AIProcessingResult(
-                    success=False,
-                    response=f"Error processing with AI: {str(e)}"
-                )
-
-    def _create_node(
-        self,
-        node_type: str,
-        start_point: List[int],
-        end_point: List[int],
-        **kwargs
-    ) -> EditorconfigNodeDict:
-        """Create a standardized EditorConfig AST node using the shared helper."""
-        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
-        return {
-            **node_dict,
-            "properties": kwargs.get("properties", []),
-            "sections": kwargs.get("sections", [])
-        }
-
-    @handle_errors(error_types=(ParsingError,))
-    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
-        """Parse EditorConfig content into AST structure."""
-        if not self._initialized:
-            await self.initialize()
-            
-        async with AsyncErrorBoundary(operation_name="EditorConfig parsing", error_types=(ParsingError,), severity=ErrorSeverity.ERROR):
-            try:
-                # Check cache first
-                cached_result = await self._check_parse_cache(source_code)
-                if cached_result:
-                    return cached_result
-                    
-                lines = source_code.splitlines()
-                ast = self._create_node(
-                    "document",
-                    [0, 0],
-                    [len(lines) - 1, len(lines[-1]) if lines else 0]
-                )
-                
-                # Process comments first
-                current_comment_block = []
-                for i, line in enumerate(lines):
-                    line_start = [i, 0]
-                    line_end = [i, len(line)]
-                    if comment_match := re.match(r'^\s*[;#]\s*(.*)$', line):
-                        current_comment_block.append(comment_match.group(1).strip())
-                        continue
-                    if line.strip() and current_comment_block:
-                        node = self._create_node(
-                            "comment_block",
-                            [i - len(current_comment_block), 0],
-                            [i - 1, len(current_comment_block[-1])],
-                            content="\n".join(current_comment_block)
-                        )
-                        ast.children.append(node)
-                        current_comment_block = []
-                
-                # Parse EditorConfig structure
-                try:
-                    config = configparser.ConfigParser(allow_no_value=True)
-                    task = asyncio.create_task(config.read_string(source_code))
-                    self._pending_tasks.add(task)
-                    try:
-                        await task
-                        root_node = self._process_config(config, [0, 0])
-                        ast.children.append(root_node)
-                    finally:
-                        self._pending_tasks.remove(task)
-                except configparser.Error as e:
-                    log(f"Error parsing EditorConfig structure: {e}", level="error")
-                    ast.metadata["parse_error"] = str(e)
-                
-                # Handle any remaining comments
-                if current_comment_block:
-                    ast.metadata["trailing_comments"] = current_comment_block
-                
-                # Store result in cache
-                await self._store_parse_result(source_code, ast.__dict__)
-                return ast.__dict__
-                
-            except (ValueError, KeyError, TypeError) as e:
-                log(f"Error parsing EditorConfig content: {e}", level="error")
-                return self._create_node(
-                    "document",
-                    [0, 0],
-                    [0, 0],
-                    error=str(e),
-                    children=[]
-                ).__dict__
-    
-    @handle_errors(error_types=(ParsingError, ProcessingError))
-    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
-        """Extract patterns from EditorConfig files for repository learning.
-        
-        Args:
-            source_code: The content of the EditorConfig file
-            
-        Returns:
-            List of extracted patterns with metadata
-        """
-        if not self._initialized:
-            await self.initialize()
-            
-        async with AsyncErrorBoundary(operation_name="EditorConfig pattern extraction", error_types=(ProcessingError,), severity=ErrorSeverity.ERROR):
-            try:
-                # Check features cache first
-                ast = await self._parse_source(source_code)
-                cached_features = await self._check_features_cache(ast, source_code)
-                if cached_features:
-                    return cached_features
-                
-                # Extract patterns
-                patterns = []
-                
-                # Extract section patterns
-                section_patterns = self._extract_section_patterns(ast)
-                for section in section_patterns:
-                    patterns.append({
-                        'name': f'editorconfig_section_{section["type"]}',
-                        'content': section["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.9,
-                        'metadata': {
-                            'type': 'section',
-                            'pattern': section["pattern"],
-                            'properties': section.get("properties", [])
-                        }
-                    })
-                
-                # Extract property patterns
-                property_patterns = self._extract_property_patterns(ast)
-                for prop in property_patterns:
-                    patterns.append({
-                        'name': f'editorconfig_property_{prop["type"]}',
-                        'content': prop["content"],
-                        'pattern_type': PatternType.CODE_STRUCTURE,
-                        'language': self.language_id,
-                        'confidence': 0.85,
-                        'metadata': {
-                            'type': 'property',
-                            'property_type': prop["type"],
-                            'examples': prop.get("examples", [])
-                        }
-                    })
-                
-                # Extract comment patterns
-                comment_patterns = self._extract_comment_patterns(ast)
-                for comment in comment_patterns:
-                    patterns.append({
-                        'name': f'editorconfig_comment_{comment["type"]}',
-                        'content': comment["content"],
-                        'pattern_type': PatternType.DOCUMENTATION,
-                        'language': self.language_id,
-                        'confidence': 0.8,
-                        'metadata': {
-                            'type': 'comment',
-                            'style': comment["type"]
-                        }
-                    })
-                
-                # Store features in cache
-                await self._store_features_in_cache(ast, source_code, patterns)
-                return patterns
-                
-            except (ValueError, KeyError, TypeError) as e:
-                log(f"Error extracting patterns from EditorConfig file: {str(e)}", level="error")
-                return []
-    
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Clean up parser resources."""
         try:
             # Clean up base resources
@@ -303,323 +155,442 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
         except Exception as e:
             log(f"Error cleaning up EditorConfig parser: {e}", level="error")
 
-    def _extract_section_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract section patterns from the AST."""
-        sections = []
-        
-        def process_node(node):
-            if isinstance(node, dict) and node.get('type') == 'section':
-                pattern = node.get('pattern', '')
-                if pattern:
-                    # Determine section type based on pattern
-                    if pattern == '*':
-                        section_type = 'global'
-                    elif pattern.startswith('*.'):
-                        section_type = 'extension'
-                    elif '/' in pattern:
-                        section_type = 'path'
-                    else:
-                        section_type = 'custom'
-                        
-                    sections.append({
-                        'type': section_type,
-                        'pattern': pattern,
-                        'content': f"[{pattern}]",
-                        'properties': node.get('properties', [])
-                    })
-            
-            # Process children recursively
-            if isinstance(node, dict):
-                for child in node.get('children', []):
-                    process_node(child)
-                
-        process_node(ast)
-        return sections
-        
-    def _extract_property_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract property patterns from the AST."""
-        properties = []
-        
-        def process_node(node):
-            if isinstance(node, dict) and node.get('type') == 'property':
-                key = node.get('key', '').lower()
-                value = node.get('value', '')
-                
-                # Categorize properties
-                if key in ['indent_style', 'indent_size', 'tab_width']:
-                    property_type = 'indentation'
-                elif key in ['end_of_line', 'insert_final_newline', 'trim_trailing_whitespace']:
-                    property_type = 'line_ending'
-                elif key in ['charset']:
-                    property_type = 'encoding'
-                elif key.startswith('max_line_length'):
-                    property_type = 'formatting'
-                else:
-                    property_type = 'other'
-                    
-                properties.append({
-                    'type': property_type,
-                    'content': f"{key} = {value}",
-                    'examples': [{'key': key, 'value': value}]
-                })
-            
-            # Process children recursively
-            if isinstance(node, dict):
-                for child in node.get('children', []):
-                    process_node(child)
-                
-        process_node(ast)
-        return properties
-        
-    def _extract_comment_patterns(self, ast: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract comment patterns from the AST."""
-        comments = []
-        
-        def process_node(node):
-            if isinstance(node, dict):
-                if node.get('type') == 'comment_block':
-                    comments.append({
-                        'type': 'block',
-                        'content': node.get('content', '')
-                    })
-                elif node.get('type') == 'comment':
-                    comments.append({
-                        'type': 'inline',
-                        'content': node.get('content', '')
-                    })
-                
-                # Process children recursively
-                for child in node.get('children', []):
-                    process_node(child)
-                    
-        process_node(ast)
-        return comments
-
-    async def _process_with_understanding(
+    def _create_node(
         self,
-        ast: Dict[str, Any],
-        context: AIContext
-    ) -> Dict[str, Any]:
-        """Process with configuration understanding capability."""
-        understanding = {}
-        
-        # Analyze configuration structure
-        understanding["structure"] = {
-            "sections": self._extract_section_patterns(ast),
-            "properties": self._extract_property_patterns(ast),
-            "comments": self._extract_comment_patterns(ast)
+        node_type: str,
+        start_point: List[int],
+        end_point: List[int],
+        **kwargs
+    ) -> EditorconfigNodeDict:
+        """Create a standardized EditorConfig AST node using the shared helper."""
+        node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        return {
+            **node_dict,
+            "properties": kwargs.get("properties", []),
+            "sections": kwargs.get("sections", []),
+            "metadata": kwargs.get("metadata", {}),
+            "relationships": kwargs.get("relationships", [])
         }
-        
-        # Analyze configuration patterns
-        understanding["patterns"] = await self._analyze_patterns(ast, context)
-        
-        # Analyze configuration style
-        understanding["style"] = await self._analyze_config_style(ast)
-        
-        return understanding
 
-    async def _process_with_generation(
-        self,
-        ast: Dict[str, Any],
-        context: AIContext
-    ) -> List[str]:
-        """Process with configuration generation capability."""
-        suggestions = []
-        
-        # Generate section suggestions
-        if section_suggestions := await self._generate_section_suggestions(ast):
-            suggestions.extend(section_suggestions)
-        
-        # Generate property suggestions
-        if property_suggestions := await self._generate_property_suggestions(ast):
-            suggestions.extend(property_suggestions)
-        
-        # Generate documentation suggestions
-        if doc_suggestions := await self._generate_documentation_suggestions(ast):
-            suggestions.extend(doc_suggestions)
-        
-        return suggestions
+    @handle_errors(error_types=(ParsingError,))
+    async def _parse_source(self, source_code: str) -> Dict[str, Any]:
+        """Parse EditorConfig content into AST structure."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary(
+            operation_name="EditorConfig parsing",
+            error_types=(ParsingError,),
+            severity=ErrorSeverity.ERROR
+        ):
+            try:
+                # Check cache first
+                cached_result = await self._check_parse_cache(source_code)
+                if cached_result:
+                    return cached_result
+                
+                # Create context for pattern matching
+                context = EditorconfigPatternContext()
+                
+                # Parse with enhanced patterns
+                ast = await self._parse_with_enhanced_patterns(source_code, context)
+                
+                # Store result in cache
+                await self._store_parse_result(source_code, ast)
+                
+                return ast
+                
+            except (ValueError, KeyError, TypeError) as e:
+                log(f"Error parsing EditorConfig content: {e}", level="error")
+                return self._create_node(
+                    "document",
+                    [0, 0],
+                    [0, 0],
+                    error=str(e),
+                    children=[]
+                ).__dict__
 
-    async def _process_with_modification(
+    async def _parse_with_enhanced_patterns(
         self,
-        ast: Dict[str, Any],
-        context: AIContext
+        source_code: str,
+        context: EditorconfigPatternContext
     ) -> Dict[str, Any]:
-        """Process with configuration modification capability."""
-        modifications = {}
-        
-        # Suggest configuration improvements
-        if improvements := await self._suggest_config_improvements(ast):
-            modifications["config_improvements"] = improvements
-        
-        # Suggest property optimizations
-        if optimizations := await self._suggest_property_optimizations(ast):
-            modifications["property_optimizations"] = optimizations
-        
-        # Suggest documentation improvements
-        if doc_improvements := await self._suggest_documentation_improvements(ast):
-            modifications["documentation_improvements"] = doc_improvements
-        
-        return modifications
+        """Parse content using enhanced patterns."""
+        lines = source_code.splitlines()
+        ast = self._create_node(
+            "document",
+            [0, 0],
+            [len(lines) - 1, len(lines[-1]) if lines else 0]
+        )
 
-    async def _process_with_review(
-        self,
-        ast: Dict[str, Any],
-        context: AIContext
-    ) -> Dict[str, Any]:
-        """Process with configuration review capability."""
-        review = {}
-        
-        # Review configuration structure
-        if structure_review := await self._review_structure(ast):
-            review["structure"] = structure_review
-        
-        # Review property usage
-        if property_review := await self._review_properties(ast):
-            review["properties"] = property_review
-        
-        # Review documentation
-        if doc_review := await self._review_documentation(ast):
-            review["documentation"] = doc_review
-        
-        return review
+        try:
+            # Process each pattern category
+            for category in PatternCategory:
+                if category in ENHANCED_PATTERNS:
+                    category_patterns = ENHANCED_PATTERNS[category]
+                    for pattern_name, pattern in category_patterns.items():
+                        try:
+                            matches = await pattern.matches(source_code, context)
+                            for match in matches:
+                                node = self._create_node(
+                                    match["type"],
+                                    [match.get("line_number", 0) - 1, 0],
+                                    [match.get("line_number", 0) - 1, len(match.get("content", ""))],
+                                    content=match.get("content", ""),
+                                    metadata=match,
+                                    relationships=match.get("relationships", [])
+                                )
+                                ast["children"].append(node)
+                                
+                                # Update context
+                                self._update_context(context, match)
+                                
+                        except Exception as e:
+                            log(f"Error processing pattern {pattern_name}: {e}", level="warning")
+                            continue
+            
+            return ast.__dict__
+            
+        except Exception as e:
+            log(f"Error in enhanced pattern parsing: {e}", level="error")
+            return ast.__dict__
 
-    async def _process_with_learning(
-        self,
-        ast: Dict[str, Any],
-        context: AIContext
-    ) -> List[Dict[str, Any]]:
-        """Process with learning capability."""
+    def _update_context(self, context: EditorconfigPatternContext, match: Dict[str, Any]) -> None:
+        """Update pattern context based on match."""
+        match_type = match.get("type", "")
+        
+        if match_type == "section":
+            context.section_names.add(match.get("glob", ""))
+            context.has_sections = True
+        elif match_type == "property":
+            context.property_names.add(match.get("key", ""))
+            context.has_properties = True
+        elif match_type == "glob_pattern":
+            context.glob_patterns.add(match.get("pattern", ""))
+        elif match_type == "root":
+            context.has_root = True
+        elif match_type == "comment":
+            context.has_comments = True
+
+    @handle_errors(error_types=(ProcessingError,))
+    async def extract_patterns(self, source_code: str) -> List[Dict[str, Any]]:
+        """Extract patterns from EditorConfig files for repository learning."""
+        if not self._initialized:
+            await self.initialize()
+
         patterns = []
+        context = EditorconfigPatternContext()
         
-        # Learn configuration structure patterns
-        if structure_patterns := await self._learn_structure_patterns(ast):
-            patterns.extend(structure_patterns)
-        
-        # Learn property patterns
-        if property_patterns := await self._learn_property_patterns(ast):
-            patterns.extend(property_patterns)
-        
-        # Learn documentation patterns
-        if doc_patterns := await self._learn_documentation_patterns(ast):
-            patterns.extend(doc_patterns)
-        
+        async with AsyncErrorBoundary(
+            operation_name="EditorConfig pattern extraction",
+            error_types=(ProcessingError,),
+            severity=ErrorSeverity.ERROR
+        ):
+            try:
+                # Update health status
+                await global_health_monitor.update_component_status(
+                    "editorconfig_pattern_processor",
+                    ComponentStatus.PROCESSING,
+                    details={"operation": "pattern_extraction"}
+                )
+                
+                # Process with enhanced patterns
+                with monitor_operation("extract_patterns", "editorconfig_processor"):
+                    for category in PatternCategory:
+                        if category in ENHANCED_PATTERNS:
+                            category_patterns = ENHANCED_PATTERNS[category]
+                            for pattern_name, pattern in category_patterns.items():
+                                try:
+                                    matches = await pattern.matches(source_code, context)
+                                    for match in matches:
+                                        patterns.append({
+                                            "name": pattern_name,
+                                            "category": category.value,
+                                            "content": match.get("text", ""),
+                                            "metadata": match,
+                                            "confidence": pattern.confidence,
+                                            "relationships": match.get("relationships", {})
+                                        })
+                                        
+                                        # Update metrics
+                                        if pattern_name in self._pattern_metrics:
+                                            self._pattern_metrics[pattern_name].update(
+                                                True,
+                                                time.time(),
+                                                context.get_context_key(),
+                                                self.parser_type
+                                            )
+                                        
+                                        # Update context
+                                        self._update_context(context, match)
+                                        
+                                except Exception as e:
+                                    log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                    if pattern_name in self._pattern_metrics:
+                                        self._pattern_metrics[pattern_name].update(
+                                            False,
+                                            time.time(),
+                                            context.get_context_key(),
+                                            self.parser_type
+                                        )
+                                    continue
+                
+                # Update final status
+                await global_health_monitor.update_component_status(
+                    "editorconfig_pattern_processor",
+                    ComponentStatus.HEALTHY,
+                    details={
+                        "operation": "pattern_extraction_complete",
+                        "patterns_found": len(patterns),
+                        "context": context.__dict__
+                    }
+                )
+                    
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                log(f"Error extracting EditorConfig patterns: {e}", level="error")
+                await global_health_monitor.update_component_status(
+                    "editorconfig_pattern_processor",
+                    ComponentStatus.UNHEALTHY,
+                    error=True,
+                    details={"error": str(e)}
+                )
+                
         return patterns
 
-    async def _analyze_patterns(
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process EditorConfig with AI assistance."""
+        if not self._initialized:
+            await self.initialize()
+            
+        async with AsyncErrorBoundary("EditorConfig AI processing"):
+            try:
+                # Parse source first
+                ast = await self._parse_source(source_code)
+                if not ast:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse EditorConfig"
+                    )
+                
+                results = AIProcessingResult(success=True)
+                
+                # Create pattern context
+                pattern_context = EditorconfigPatternContext()
+                
+                # Process with enhanced patterns first
+                enhanced_matches = await self._process_with_enhanced_patterns(
+                    source_code,
+                    pattern_context
+                )
+                if enhanced_matches:
+                    results.matches = enhanced_matches
+                
+                # Process with AI pattern processor
+                if self._ai_processor:
+                    ai_results = await self._ai_processor.process_with_ai(source_code, context)
+                    if ai_results.success:
+                        results.ai_insights.update(ai_results.ai_insights)
+                        results.learned_patterns.extend(ai_results.learned_patterns)
+                
+                # Extract features with AI assistance
+                features = await self._extract_features_with_ai(ast, source_code, context)
+                results.context_info.update(features)
+                
+                # Calculate confidence metrics
+                results.confidence_metrics = await self._calculate_confidence_metrics(
+                    ast,
+                    features,
+                    enhanced_matches,
+                    context
+                )
+                
+                return results
+            except Exception as e:
+                log(f"Error in EditorConfig AI processing: {e}", level="error")
+                return AIProcessingResult(
+                    success=False,
+                    response=f"Error processing with AI: {str(e)}"
+                )
+
+    async def _process_with_enhanced_patterns(
+        self,
+        source_code: str,
+        context: EditorconfigPatternContext
+    ) -> List[Dict[str, Any]]:
+        """Process source code with enhanced patterns."""
+        matches = []
+        
+        for category in PatternCategory:
+            if category in ENHANCED_PATTERNS:
+                category_patterns = ENHANCED_PATTERNS[category]
+                for pattern_name, pattern in category_patterns.items():
+                    try:
+                        pattern_matches = await pattern.matches(source_code, context)
+                        matches.extend(pattern_matches)
+                    except Exception as e:
+                        log(f"Error in enhanced pattern processing: {e}", level="error")
+                        continue
+        
+        return matches
+
+    async def _extract_features_with_ai(
+        self,
+        ast: Dict[str, Any],
+        source_code: str,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Extract features with AI assistance."""
+        features = {}
+        
+        # Process each feature category
+        for category in FeatureCategory:
+            category_features = await self._extract_category_features(
+                category,
+                ast,
+                source_code
+            )
+            if category_features:
+                features[category] = category_features
+                
+                # Apply AI enhancement if available
+                if self._ai_processor:
+                    enhanced = await self._ai_processor.enhance_features(
+                        category_features,
+                        category,
+                        context
+                    )
+                    features[f"{category}_enhanced"] = enhanced
+        
+        return features
+
+    async def _calculate_confidence_metrics(
+        self,
+        ast: Dict[str, Any],
+        features: Dict[str, Any],
+        pattern_matches: List[Dict[str, Any]],
+        context: AIContext
+    ) -> AIConfidenceMetrics:
+        """Calculate confidence metrics for AI processing."""
+        metrics = AIConfidenceMetrics()
+        
+        # Calculate pattern match confidence
+        if pattern_matches:
+            pattern_confidences = {}
+            for match in pattern_matches:
+                pattern_name = match.get('pattern_name', 'unknown')
+                confidence = match.get('confidence', 0.5)
+                pattern_confidences[pattern_name] = confidence
+            metrics.pattern_matches = pattern_confidences
+            metrics.overall_confidence = sum(pattern_confidences.values()) / len(pattern_confidences)
+        
+        # Calculate context relevance
+        if context.metadata:
+            metrics.context_relevance = self._calculate_context_relevance(
+                ast,
+                context
+            )
+        
+        # Calculate semantic similarity
+        metrics.semantic_similarity = self._calculate_semantic_similarity(
+            features
+        )
+        
+        # Calculate configuration quality
+        if 'syntax' in features:
+            metrics.code_quality = self._calculate_config_quality(
+                features['syntax']
+            )
+        
+        # Calculate learning progress
+        if self._pattern_learner:
+            metrics.learning_progress = await self._pattern_learner.get_learning_progress()
+        
+        return metrics
+
+    def _calculate_context_relevance(
         self,
         ast: Dict[str, Any],
         context: AIContext
-    ) -> Dict[str, Any]:
-        """Analyze patterns in the configuration."""
-        patterns = {}
+    ) -> float:
+        """Calculate relevance of context to the configuration."""
+        relevance = 0.0
+        total_weights = 0
         
-        # Analyze section patterns
-        patterns["section_patterns"] = await self._pattern_processor.analyze_patterns(
-            ast,
-            PatternCategory.STRUCTURE,
-            context
-        )
+        # Check file type relevance
+        if context.file_type == FileType.CONFIG:
+            relevance += 1.0
+            total_weights += 1
         
-        # Analyze property patterns
-        patterns["property_patterns"] = await self._pattern_processor.analyze_patterns(
-            ast,
-            PatternCategory.SYNTAX,
-            context
-        )
+        # Check language relevance
+        if context.language_id == "editorconfig":
+            relevance += 1.0
+            total_weights += 1
         
-        # Analyze documentation patterns
-        patterns["documentation_patterns"] = await self._pattern_processor.analyze_patterns(
-            ast,
-            PatternCategory.DOCUMENTATION,
-            context
-        )
+        # Check content relevance
+        if ast.get('metadata'):
+            metadata_match = len(set(ast['metadata'].keys()) & 
+                               set(context.metadata.keys()))
+            if metadata_match:
+                relevance += metadata_match / len(context.metadata)
+                total_weights += 1
         
-        return patterns
+        return relevance / total_weights if total_weights > 0 else 0.0
 
-    async def _analyze_config_style(
+    def _calculate_semantic_similarity(
         self,
-        ast: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Analyze configuration style."""
-        style = {}
+        features: Dict[str, Any]
+    ) -> float:
+        """Calculate semantic similarity of configuration features."""
+        similarity = 0.0
+        total_weights = 0
         
-        # Analyze section naming style
-        style["section_naming"] = self._analyze_section_naming(ast)
+        # Check structure similarity
+        if 'structure' in features:
+            structure = features['structure']
+            if structure.get('sections'):
+                similarity += len(structure['sections']) / 10  # Normalize to 0-1
+                total_weights += 1
+            if structure.get('properties'):
+                similarity += len(structure['properties']) / 20  # Normalize to 0-1
+                total_weights += 1
         
-        # Analyze property naming style
-        style["property_naming"] = self._analyze_property_naming(ast)
+        # Check semantic features
+        if 'semantics' in features:
+            semantics = features['semantics']
+            if semantics.get('glob_patterns'):
+                similarity += len(semantics['glob_patterns']) / 5  # Normalize to 0-1
+                total_weights += 1
         
-        # Analyze documentation style
-        style["documentation"] = self._analyze_documentation_style(ast)
-        
-        return style
+        return similarity / total_weights if total_weights > 0 else 0.0
 
-    async def _generate_section_suggestions(
+    def _calculate_config_quality(
         self,
-        ast: Dict[str, Any]
-    ) -> List[str]:
-        """Generate section suggestions."""
-        suggestions = []
+        syntax: Dict[str, Any]
+    ) -> float:
+        """Calculate configuration quality score."""
+        quality = 0.0
+        total_weights = 0
         
-        # Analyze existing sections
-        sections = self._extract_section_patterns(ast)
+        # Check section organization
+        if syntax.get('sections'):
+            section_quality = len(syntax['sections']) / 10  # Normalize
+            quality += min(1.0, section_quality)
+            total_weights += 1
         
-        # Suggest common missing sections
-        common_sections = {
-            "*": "Global settings",
-            "*.{js,jsx,ts,tsx}": "JavaScript/TypeScript settings",
-            "*.{py,pyi}": "Python settings",
-            "*.{md,rst,txt}": "Documentation settings"
-        }
+        # Check property organization
+        if syntax.get('properties'):
+            prop_quality = len(syntax['properties']) / 20  # Normalize
+            quality += min(1.0, prop_quality)
+            total_weights += 1
         
-        for pattern, description in common_sections.items():
-            if not any(s["pattern"] == pattern for s in sections):
-                suggestions.append(f"Add section [{pattern}] for {description}")
+        # Check glob pattern quality
+        if syntax.get('glob_patterns'):
+            glob_quality = len(syntax['glob_patterns']) / 5  # Normalize
+            quality += min(1.0, glob_quality)
+            total_weights += 1
         
-        return suggestions
-
-    async def _generate_property_suggestions(
-        self,
-        ast: Dict[str, Any]
-    ) -> List[str]:
-        """Generate property suggestions."""
-        suggestions = []
-        
-        # Analyze existing properties
-        properties = self._extract_property_patterns(ast)
-        
-        # Suggest common missing properties
-        common_properties = {
-            "indent_style": "Set indentation style (space/tab)",
-            "indent_size": "Set indentation size",
-            "end_of_line": "Set line ending style",
-            "charset": "Set file encoding",
-            "trim_trailing_whitespace": "Configure trailing whitespace handling",
-            "insert_final_newline": "Configure final newline"
-        }
-        
-        for prop, description in common_properties.items():
-            if not any(p["key"] == prop for p in properties):
-                suggestions.append(f"Add property {prop} to {description}")
-        
-        return suggestions
-
-    async def _generate_documentation_suggestions(
-        self,
-        ast: Dict[str, Any]
-    ) -> List[str]:
-        """Generate documentation suggestions."""
-        suggestions = []
-        
-        # Analyze existing documentation
-        comments = self._extract_comment_patterns(ast)
-        
-        # Suggest documentation improvements
-        if not any(c["type"] == "header" for c in comments):
-            suggestions.append("Add a header comment describing the EditorConfig file")
-            
-        if not any(c["type"] == "section" for c in comments):
-            suggestions.append("Add section comments explaining configuration choices")
-            
-        return suggestions
+        return quality / total_weights if total_weights > 0 else 0.0

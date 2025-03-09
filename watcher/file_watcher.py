@@ -7,8 +7,11 @@ from utils.logger import log
 from indexer.unified_indexer import ProcessingCoordinator
 from indexer.clone_and_index import get_or_create_repo
 from indexer.file_utils import is_binary_file, is_processable_file, get_relative_path
-from parsers.models import FileType, FileClassification
-from parsers.language_support import language_registry
+from parsers.types import FileType
+from parsers.models import FileClassification
+from parsers.language_mapping import normalize_language_name
+from parsers.file_classification import classify_file
+from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
 from db.upsert_ops import UpsertCoordinator
 from db.neo4j_ops import get_graph_sync
 from utils.error_handling import (
@@ -101,6 +104,20 @@ class AsyncFileHandler(FileSystemEventHandler):
             
         async with AsyncErrorBoundary("handle_file_change"):
             try:
+                # Check if file is processable
+                if not is_processable_file(file_path):
+                    return
+                    
+                # Get normalized language
+                _, ext = os.path.splitext(file_path)
+                if not ext:
+                    return
+                    
+                language = normalize_language_name(ext[1:].lower())
+                if language not in SupportedLanguage.__args__:
+                    return
+                    
+                # Process file change
                 await self.on_change(file_path)
             except Exception as e:
                 await log(f"Error handling file change: {e}", level="error")
@@ -278,76 +295,73 @@ async def get_directory_watcher() -> DirectoryWatcher:
     return _directory_watcher
 
 def is_pattern_relevant_file(file_path: str) -> bool:
-    """
-    Determine if a file is relevant for pattern extraction.
-    
-    Args:
-        file_path: Path to the file
-        
-    Returns:
-        bool: True if the file is relevant for pattern extraction
-    """
+    """Check if a file is relevant for pattern processing."""
     # Get file extension
     _, ext = os.path.splitext(file_path)
+    if not ext:
+        return False
+        
+    # Remove leading dot
+    ext = ext[1:].lower()
     
-    # Code files are relevant for pattern extraction
-    code_extensions = {'.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.go', '.rb', '.php'}
-    return ext.lower() in code_extensions
+    # Check if language is supported by tree-sitter
+    try:
+        language = normalize_language_name(ext)
+        return language in SupportedLanguage.__args__
+    except:
+        return False
 
 @handle_async_errors(error_types=(Exception,))
 async def handle_file_change(file_path: str, repo_id: int):
-    """Handle file changes by reprocessing the file and updating patterns."""
-    async with AsyncErrorBoundary(f"handling file change for {file_path}"):
-        log(f"File changed: {file_path}", level="info")
-        
-        # Process the changed file
-        from indexer.unified_indexer import process_repository_indexing
-        task = asyncio.create_task(process_repository_indexing(file_path, repo_id, single_file=True))
-        try:
-            await task
-        except Exception as e:
-            log(f"Error processing file {file_path}: {e}", level="error")
+    """Handle a file change event."""
+    try:
+        # Get normalized language
+        _, ext = os.path.splitext(file_path)
+        if not ext:
             return
+            
+        language = normalize_language_name(ext[1:].lower())
+        if language not in SupportedLanguage.__args__:
+            return
+            
+        # Get parser for language
+        parser = get_parser(language)
+        if not parser:
+            return
+            
+        # Read file content
+        content = await async_read_file(file_path)
+        if not content:
+            return
+            
+        # Parse content
+        tree = parser.parse(bytes(content, "utf8"))
+        if not tree:
+            return
+            
+        # Get unified parser
+        unified = await get_unified_parser()
         
-        # Update repository patterns if the file is relevant
-        if is_pattern_relevant_file(file_path):
-            try:
-                from ai_tools.reference_repository_learning import ReferenceRepositoryLearning
-                from db.psql import query
-                
-                # Get the repository type
-                task = asyncio.create_task(query("SELECT repo_type FROM repositories WHERE id = %s", (repo_id,)))
-                try:
-                    repo_result = await task
-                except Exception as e:
-                    log(f"Error getting repository type: {e}", level="error")
-                    return
-                
-                # Only update patterns for reference repositories
-                if repo_result and repo_result[0]['repo_type'] == 'reference':
-                    ref_repo_learning = ReferenceRepositoryLearning()
-                    log(f"Updating patterns for file: {file_path}", level="info")
-                    
-                    base_path = os.path.dirname(os.path.dirname(file_path))
-                    rel_path = get_relative_path(file_path, base_path)
-                    
-                    # Update patterns
-                    task = asyncio.create_task(ref_repo_learning.update_patterns_for_file(repo_id, rel_path))
-                    try:
-                        await task
-                    except Exception as e:
-                        log(f"Error updating patterns: {e}", level="error")
-            except Exception as e:
-                log(f"Error updating patterns for file {file_path}: {e}", level="error")
+        # Process file
+        result = await unified.process_file(
+            file_path,
+            content,
+            language,
+            tree
+        )
         
-        # Update graph analysis using graph sync
-        try:
-            graph_sync = await get_or_init_graph_sync()
-            await graph_sync.invalidate_projection(repo_id)
-            await graph_sync.ensure_projection(repo_id)
-            log(f"Updated graph projection for repository {repo_id}", level="info")
-        except Exception as e:
-            log(f"Error updating graph projection: {e}", level="error")
+        if result:
+            # Update database
+            coordinator = UpsertCoordinator()
+            await coordinator.upsert_file_data(repo_id, file_path, result)
+            
+            # Update graph
+            graph_sync = await get_graph_sync()
+            await graph_sync.update_file(repo_id, file_path, result)
+            
+            await log(f"Processed changed file: {file_path}", level="info")
+    except Exception as e:
+        await log(f"Error handling file change: {e}", level="error")
 
 async def start_file_watcher(path: str = ".") -> None:
     """Start the file watcher in the current directory."""

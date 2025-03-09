@@ -1,478 +1,330 @@
 """
 Query patterns for R files.
+
+This module provides R-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
 """
 
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
-from .common import COMMON_PATTERNS
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
+
+# Language identifier
+LANGUAGE = "r"
+
+@dataclass
+class RPatternContext(PatternContext):
+    """R-specific pattern context."""
+    function_names: Set[str] = field(default_factory=set)
+    package_names: Set[str] = field(default_factory=set)
+    class_names: Set[str] = field(default_factory=set)
+    has_s3_classes: bool = False
+    has_s4_classes: bool = False
+    has_r6_classes: bool = False
+    has_tidyverse: bool = False
+    has_data_table: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.function_names)}:{self.has_tidyverse}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "function": PatternPerformanceMetrics(),
+    "class": PatternPerformanceMetrics(),
+    "package": PatternPerformanceMetrics(),
+    "pipe": PatternPerformanceMetrics(),
+    "data": PatternPerformanceMetrics()
+}
 
 R_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
+            "function": ResilientPattern(
                 pattern="""
                 [
                     (function_definition
-                        name: (identifier) @syntax.function.name
-                        parameters: (formal_parameters
-                            (parameter
-                                name: (identifier) @syntax.function.param.name
-                                default: (_)? @syntax.function.param.default)*)? @syntax.function.params
-                        body: (_) @syntax.function.body) @syntax.function.def
+                        name: (identifier) @syntax.func.name
+                        parameters: (formal_parameters) @syntax.func.params
+                        body: (brace_list) @syntax.func.body) @syntax.func.def,
+                    (left_assignment
+                        name: (identifier) @syntax.func.assign.name
+                        value: (function_definition
+                            parameters: (formal_parameters) @syntax.func.assign.params
+                            body: (brace_list) @syntax.func.assign.body)) @syntax.func.assign.def
                 ]
                 """,
                 extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
                     "type": "function",
-                    "has_params": "syntax.function.params" in node["captures"],
-                    "param_names": [
-                        param["text"] for param in node["captures"].get("syntax.function.param.name", [])
-                    ] if "syntax.function.param.name" in node["captures"] else []
+                    "name": (
+                        node["captures"].get("syntax.func.name", {}).get("text", "") or
+                        node["captures"].get("syntax.func.assign.name", {}).get("text", "")
+                    ),
+                    "line_number": node["captures"].get("syntax.func.def", {}).get("start_point", [0])[0],
+                    "is_assigned": "syntax.func.assign.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["parameter", "block"],
+                        PatternRelationType.DEPENDS_ON: ["package", "function"]
+                    }
+                },
+                name="function",
+                description="Matches R function declarations",
+                examples=["function(x) { x * 2 }", "my_func <- function(data) { }"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["function"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z_.][a-zA-Z0-9_.]*$'
+                    }
                 }
             ),
-            "control": QueryPattern(
+            "class": ResilientPattern(
                 pattern="""
                 [
-                    (if_statement
-                        condition: (_) @syntax.control.if.condition
-                        consequence: (_) @syntax.control.if.consequence
-                        alternative: (_)? @syntax.control.if.alternative) @syntax.control.if,
-                    (for_statement
-                        sequence: (_) @syntax.control.for.sequence
-                        body: (_) @syntax.control.for.body) @syntax.control.for,
-                    (while_statement
-                        condition: (_) @syntax.control.while.condition
-                        body: (_) @syntax.control.while.body) @syntax.control.while,
-                    (repeat_statement
-                        body: (_) @syntax.control.repeat.body) @syntax.control.repeat
+                    (function_call
+                        function: (identifier) @syntax.class.s3.name
+                        arguments: (arguments
+                            (identifier) @syntax.class.s3.class) @syntax.class.s3.args) @syntax.class.s3.def
+                        (#match? @syntax.class.s3.name "^class$"),
+                    (function_call
+                        function: (identifier) @syntax.class.s4.name
+                        arguments: (arguments) @syntax.class.s4.args) @syntax.class.s4.def
+                        (#match? @syntax.class.s4.name "^setClass$"),
+                    (function_call
+                        function: (identifier) @syntax.class.r6.name
+                        arguments: (arguments) @syntax.class.r6.args) @syntax.class.r6.def
+                        (#match? @syntax.class.r6.name "^R6Class$")
                 ]
                 """,
                 extract=lambda node: {
-                    "type": (
-                        "if" if "syntax.control.if" in node["captures"] else
-                        "for" if "syntax.control.for" in node["captures"] else
-                        "while" if "syntax.control.while" in node["captures"] else
-                        "repeat" if "syntax.control.repeat" in node["captures"] else
-                        "other"
+                    "type": "class",
+                    "line_number": (
+                        node["captures"].get("syntax.class.s3.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.class.s4.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.class.r6.def", {}).get("start_point", [0])[0]
                     ),
-                    "has_condition": any(
-                        key in node["captures"] for key in 
-                        ["syntax.control.if.condition", "syntax.control.while.condition"]
+                    "class_type": (
+                        "s3" if "syntax.class.s3.def" in node["captures"] else
+                        "s4" if "syntax.class.s4.def" in node["captures"] else
+                        "r6" if "syntax.class.r6.def" in node["captures"] else
+                        "unknown"
                     ),
-                    "has_alternative": "syntax.control.if.alternative" in node["captures"]
-                }
-            )
-        }
-    },
-
-    PatternCategory.DOCUMENTATION: {
-        PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
-                pattern="""
-                [
-                    (comment) @documentation.comment,
-                    (roxygen_comment) @documentation.docstring
-                ]
-                """,
-                extract=lambda node: {
-                    "text": (
-                        node["captures"].get("documentation.comment", {}).get("text", "") or
-                        node["captures"].get("documentation.docstring", {}).get("text", "")
+                    "name": (
+                        node["captures"].get("syntax.class.s3.class", {}).get("text", "") or
+                        node["captures"].get("syntax.class.s4.args", {}).get("text", "") or
+                        node["captures"].get("syntax.class.r6.args", {}).get("text", "")
                     ),
-                    "type": "comment",
-                    "is_roxygen": "documentation.docstring" in node["captures"]
-                }
-            )
-        }
-    },
-
-    PatternCategory.STRUCTURE: {
-        PatternPurpose.UNDERSTANDING: {
-            "namespace": QueryPattern(
-                pattern="""
-                [
-                    (namespace_operator
-                        lhs: (identifier) @structure.namespace.package
-                        operator: "::" @structure.namespace.operator
-                        rhs: (identifier) @structure.namespace.symbol) @structure.namespace.def,
-                    (library_call
-                        package: (identifier) @structure.namespace.package) @structure.namespace.import
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "namespace",
-                    "package": node["captures"].get("structure.namespace.package", {}).get("text", ""),
-                    "is_import": "structure.namespace.import" in node["captures"],
-                    "symbol": node["captures"].get("structure.namespace.symbol", {}).get("text", "") if "structure.namespace.def" in node["captures"] else None
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["method", "field"],
+                        PatternRelationType.DEPENDS_ON: ["package", "class"]
+                    }
+                },
+                name="class",
+                description="Matches R class declarations (S3, S4, R6)",
+                examples=[
+                    "class(obj) <- 'MyClass'",
+                    "setClass('Person', slots = c(name = 'character'))",
+                    "MyClass <- R6Class('MyClass')"
+                ],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["class"],
+                    "validation": {
+                        "required_fields": ["name", "class_type"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
                 }
             )
         }
     },
 
     PatternCategory.LEARNING: {
+        PatternPurpose.PACKAGES: {
+            "package": AdaptivePattern(
+                pattern="""
+                [
+                    (function_call
+                        function: (identifier) @pkg.lib.name
+                        arguments: (arguments
+                            (string) @pkg.lib.arg) @pkg.lib.args) @pkg.lib.def
+                        (#match? @pkg.lib.name "^library|require$"),
+                    (namespace_get
+                        namespace: (identifier) @pkg.ns.name
+                        function: (identifier) @pkg.ns.func) @pkg.ns.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "package",
+                    "line_number": (
+                        node["captures"].get("pkg.lib.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("pkg.ns.def", {}).get("start_point", [0])[0]
+                    ),
+                    "name": (
+                        node["captures"].get("pkg.lib.arg", {}).get("text", "") or
+                        node["captures"].get("pkg.ns.name", {}).get("text", "")
+                    ),
+                    "is_namespace": "pkg.ns.def" in node["captures"],
+                    "function": node["captures"].get("pkg.ns.func", {}).get("text", ""),
+                    "relationships": {
+                        PatternRelationType.PROVIDES: ["function", "class", "data"],
+                        PatternRelationType.DEPENDS_ON: ["package"]
+                    }
+                },
+                name="package",
+                description="Matches R package imports and namespace usage",
+                examples=["library(dplyr)", "require('data.table')", "dplyr::filter"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.PACKAGES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["package"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z][a-zA-Z0-9.]*$'
+                    }
+                }
+            )
+        },
         PatternPurpose.DATA_MANIPULATION: {
-            "data_manipulation": QueryPattern(
+            "pipe": AdaptivePattern(
                 pattern="""
                 [
-                    (call
-                        function: (identifier) @learning.data.func {
-                            match: "^(dplyr|tibble|readr|data\\.table|ggplot2|tidyr).*"
-                        }
-                        arguments: (arguments)? @learning.data.args) @learning.data.call,
-                    (binary_operator
-                        operator: ["%>%" "|>"] @learning.data.pipe.op
-                        lhs: (_) @learning.data.pipe.lhs
-                        rhs: (_) @learning.data.pipe.rhs) @learning.data.pipe,
-                    (binary_operator
-                        operator: "~" @learning.data.formula.op
-                        lhs: (_) @learning.data.formula.lhs
-                        rhs: (_) @learning.data.formula.rhs) @learning.data.formula,
-                    (call
-                        function: (identifier) @learning.data.subset.func {
-                            match: "^(subset|filter|select|slice)$"
-                        }
-                        arguments: (arguments)? @learning.data.subset.args) @learning.data.subset
+                    (pipe
+                        left: (_) @pipe.left
+                        right: (_) @pipe.right) @pipe.def,
+                    (native_pipe
+                        left: (_) @pipe.native.left
+                        right: (_) @pipe.native.right) @pipe.native.def
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "data_manipulation",
-                    "is_data_function": "learning.data.call" in node["captures"],
-                    "is_pipe": "learning.data.pipe" in node["captures"],
-                    "is_formula": "learning.data.formula" in node["captures"],
-                    "is_subset": "learning.data.subset" in node["captures"],
-                    "function_name": node["captures"].get("learning.data.func", {}).get("text", "") or node["captures"].get("learning.data.subset.func", {}).get("text", ""),
-                    "pipe_operator": node["captures"].get("learning.data.pipe.op", {}).get("text", ""),
-                    "data_pattern": (
-                        "tidyverse" if "learning.data.func" in node["captures"] and 
-                            any(pkg in (node["captures"].get("learning.data.func", {}).get("text", "") or "") 
-                                for pkg in ["dplyr", "tibble", "readr", "tidyr", "ggplot2"]) else
-                        "data.table" if "learning.data.func" in node["captures"] and "data.table" in (node["captures"].get("learning.data.func", {}).get("text", "") or "") else
-                        "pipe_chain" if "learning.data.pipe" in node["captures"] else
-                        "formula" if "learning.data.formula" in node["captures"] else
-                        "base_r_subset" if "learning.data.subset" in node["captures"] else
-                        "unknown"
-                    )
-                }
-            )
-        },
-        PatternPurpose.STATISTICAL_ANALYSIS: {
-            "statistical_analysis": QueryPattern(
-                pattern="""
-                [
-                    (call
-                        function: (identifier) @learning.stats.func {
-                            match: "^(lm|glm|t\\.test|aov|cor|wilcox\\.test|chisq\\.test|anova|kmeans|prcomp|summary|mean|median|var|sd)$"
-                        }
-                        arguments: (arguments)? @learning.stats.args) @learning.stats.call,
-                    (call
-                        function: (namespace_operator
-                            lhs: (identifier) @learning.stats.ns {
-                                match: "^(stats|MASS|nlme|lme4|mgcv|survival|cluster)$"
-                            }
-                            rhs: (identifier) @learning.stats.ns.func)
-                        arguments: (arguments)? @learning.stats.ns.args) @learning.stats.ns.call
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "statistical_analysis",
-                    "is_stats_call": "learning.stats.call" in node["captures"],
-                    "is_stats_package_call": "learning.stats.ns.call" in node["captures"],
-                    "function_name": node["captures"].get("learning.stats.func", {}).get("text", "") or node["captures"].get("learning.stats.ns.func", {}).get("text", ""),
-                    "package_name": node["captures"].get("learning.stats.ns", {}).get("text", ""),
-                    "stats_type": (
-                        "regression" if any(func in (node["captures"].get("learning.stats.func", {}).get("text", "") or node["captures"].get("learning.stats.ns.func", {}).get("text", "") or "")
-                                     for func in ["lm", "glm", "aov", "nlme", "lme4", "mgcv"]) else
-                        "test" if any(func in (node["captures"].get("learning.stats.func", {}).get("text", "") or node["captures"].get("learning.stats.ns.func", {}).get("text", "") or "")
-                                for func in ["t.test", "wilcox.test", "chisq.test", "anova"]) else
-                        "multivariate" if any(func in (node["captures"].get("learning.stats.func", {}).get("text", "") or node["captures"].get("learning.stats.ns.func", {}).get("text", "") or "")
-                                      for func in ["kmeans", "prcomp", "cluster"]) else
-                        "descriptive" if any(func in (node["captures"].get("learning.stats.func", {}).get("text", "") or node["captures"].get("learning.stats.ns.func", {}).get("text", "") or "")
-                                      for func in ["summary", "mean", "median", "var", "sd"]) else
-                        "unknown"
-                    )
-                }
-            )
-        },
-        PatternPurpose.VISUALIZATION: {
-            "visualization": QueryPattern(
-                pattern="""
-                [
-                    (call
-                        function: (identifier) @learning.viz.base {
-                            match: "^(plot|barplot|hist|boxplot|pairs|image)$"
-                        }
-                        arguments: (arguments)? @learning.viz.base.args) @learning.viz.base.call,
-                    (call
-                        function: (namespace_operator
-                            lhs: (identifier) @learning.viz.pkg {
-                                match: "^(ggplot2|lattice|plotly|grid)$"
-                            }
-                            rhs: (identifier) @learning.viz.pkg.func)
-                        arguments: (arguments)? @learning.viz.pkg.args) @learning.viz.pkg.call,
-                    (call
-                        function: (identifier) @learning.viz.gg {
-                            match: "^(ggplot|geom_\\w+|scale_\\w+|theme|facet_\\w+|coord_\\w+|aes)$"
-                        }
-                        arguments: (arguments)? @learning.viz.gg.args) @learning.viz.gg.call,
-                    (binary_operator
-                        operator: "+" @learning.viz.gg.add.op
-                        lhs: (_) @learning.viz.gg.add.lhs
-                        rhs: (_) @learning.viz.gg.add.rhs) @learning.viz.gg.add
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "visualization",
-                    "is_base_plot": "learning.viz.base.call" in node["captures"],
-                    "is_package_plot": "learning.viz.pkg.call" in node["captures"],
-                    "is_ggplot_call": "learning.viz.gg.call" in node["captures"],
-                    "is_ggplot_add": "learning.viz.gg.add" in node["captures"],
-                    "plot_function": node["captures"].get("learning.viz.base", {}).get("text", "") or node["captures"].get("learning.viz.pkg.func", {}).get("text", "") or node["captures"].get("learning.viz.gg", {}).get("text", ""),
-                    "package_name": node["captures"].get("learning.viz.pkg", {}).get("text", ""),
-                    "plot_type": (
-                        "base_graphics" if "learning.viz.base.call" in node["captures"] else
-                        "lattice" if "learning.viz.pkg.call" in node["captures"] and "lattice" == node["captures"].get("learning.viz.pkg", {}).get("text", "") else
-                        "ggplot2" if (
-                            "learning.viz.gg.call" in node["captures"] or 
-                            "learning.viz.gg.add" in node["captures"] or 
-                            ("learning.viz.pkg.call" in node["captures"] and "ggplot2" == node["captures"].get("learning.viz.pkg", {}).get("text", ""))
-                        ) else
-                        "other_package" if "learning.viz.pkg.call" in node["captures"] else
-                        "unknown"
-                    )
-                }
-            )
-        },
-        PatternPurpose.FUNCTIONAL: {
-            "functional_programming": QueryPattern(
-                pattern="""
-                [
-                    (call
-                        function: (identifier) @learning.func.apply {
-                            match: "^(apply|lapply|sapply|vapply|mapply|tapply|replicate|Map|Reduce)$"
-                        }
-                        arguments: (arguments)? @learning.func.apply.args) @learning.func.apply.call,
-                    (function_definition
-                        parameters: (formal_parameters)? @learning.func.def.params
-                        body: (_) @learning.func.def.body) @learning.func.def,
-                    (binary_operator
-                        operator: ["<<-" "<-" "="] @learning.func.anon.op
-                        lhs: (identifier) @learning.func.anon.name
-                        rhs: (function_definition
-                            parameters: (formal_parameters)? @learning.func.anon.params
-                            body: (_) @learning.func.anon.body)) @learning.func.anon
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "functional_programming",
-                    "is_apply_family": "learning.func.apply.call" in node["captures"],
-                    "is_function_definition": "learning.func.def" in node["captures"],
-                    "is_anonymous_function": "learning.func.anon" in node["captures"],
-                    "apply_function": node["captures"].get("learning.func.apply", {}).get("text", ""),
-                    "function_name": node["captures"].get("learning.func.anon.name", {}).get("text", ""),
-                    "param_count": len((
-                        node["captures"].get("learning.func.def.params", {}).get("text", "") or 
-                        node["captures"].get("learning.func.anon.params", {}).get("text", "") or ""
-                    ).split(",")) if (
-                        node["captures"].get("learning.func.def.params", {}).get("text", "") or 
-                        node["captures"].get("learning.func.anon.params", {}).get("text", "")
-                    ) else 0,
-                    "functional_style": (
-                        "apply_family" if "learning.func.apply.call" in node["captures"] else
-                        "named_function" if "learning.func.def" in node["captures"] else
-                        "anonymous_function" if "learning.func.anon" in node["captures"] else
-                        "unknown"
-                    )
+                    "type": "pipe",
+                    "line_number": (
+                        node["captures"].get("pipe.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("pipe.native.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_native": "pipe.native.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONNECTS: ["function", "data"],
+                        PatternRelationType.DEPENDS_ON: ["package"]
+                    }
+                },
+                name="pipe",
+                description="Matches R pipe operators",
+                examples=["data %>% filter()", "data |> select()"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.DATA_MANIPULATION,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["pipe"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": None
+                    }
                 }
             )
         }
     }
 }
 
-R_PATTERNS_FOR_LEARNING = {
-    "data_manipulation": {
-        "pattern": """
-        [
-            (call
-                function: (identifier) @data.func {
-                    match: "^(dplyr|tibble|readr|data\\.table|ggplot2|tidyr).*"
-                }
-                arguments: (arguments)? @data.args) @data.call,
-                
-            (binary_operator
-                operator: ["%>%" "|>"] @data.pipe.op
-                lhs: (_) @data.pipe.lhs
-                rhs: (_) @data.pipe.rhs) @data.pipe,
-                
-            (binary_operator
-                operator: "~" @data.formula.op
-                lhs: (_) @data.formula.lhs
-                rhs: (_) @data.formula.rhs) @data.formula,
-                
-            (call
-                function: (identifier) @data.subset.func {
-                    match: "^(subset|filter|select|slice)$"
-                }
-                arguments: (arguments)? @data.subset.args) @data.subset
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "data_manipulation",
-            "is_data_function": "data.call" in node["captures"],
-            "is_pipe": "data.pipe" in node["captures"],
-            "is_formula": "data.formula" in node["captures"],
-            "is_subset": "data.subset" in node["captures"],
-            "function_name": node["captures"].get("data.func", {}).get("text", "") or node["captures"].get("data.subset.func", {}).get("text", ""),
-            "pipe_operator": node["captures"].get("data.pipe.op", {}).get("text", ""),
-            "data_pattern": (
-                "tidyverse" if "data.func" in node["captures"] and 
-                    any(pkg in (node["captures"].get("data.func", {}).get("text", "") or "") 
-                        for pkg in ["dplyr", "tibble", "readr", "tidyr", "ggplot2"]) else
-                "data.table" if "data.func" in node["captures"] and "data.table" in (node["captures"].get("data.func", {}).get("text", "") or "") else
-                "pipe_chain" if "data.pipe" in node["captures"] else
-                "formula" if "data.formula" in node["captures"] else
-                "base_r_subset" if "data.subset" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
+
+async def extract_r_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from R content for repository learning."""
+    patterns = []
+    context = RPatternContext()
     
-    "statistical_analysis": {
-        "pattern": """
-        [
-            (call
-                function: (identifier) @stats.func {
-                    match: "^(lm|glm|t\\.test|aov|cor|wilcox\\.test|chisq\\.test|anova|kmeans|prcomp|summary|mean|median|var|sd)$"
-                }
-                arguments: (arguments)? @stats.args) @stats.call,
-                
-            (call
-                function: (namespace_operator
-                    lhs: (identifier) @stats.ns {
-                        match: "^(stats|MASS|nlme|lme4|mgcv|survival|cluster)$"
-                    }
-                    rhs: (identifier) @stats.ns.func)
-                arguments: (arguments)? @stats.ns.args) @stats.ns.call
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "statistical_analysis",
-            "is_stats_call": "stats.call" in node["captures"],
-            "is_stats_package_call": "stats.ns.call" in node["captures"],
-            "function_name": node["captures"].get("stats.func", {}).get("text", "") or node["captures"].get("stats.ns.func", {}).get("text", ""),
-            "package_name": node["captures"].get("stats.ns", {}).get("text", ""),
-            "stats_type": (
-                "regression" if any(func in (node["captures"].get("stats.func", {}).get("text", "") or node["captures"].get("stats.ns.func", {}).get("text", "") or "")
-                                 for func in ["lm", "glm", "aov", "nlme", "lme4", "mgcv"]) else
-                "test" if any(func in (node["captures"].get("stats.func", {}).get("text", "") or node["captures"].get("stats.ns.func", {}).get("text", "") or "")
-                            for func in ["t.test", "wilcox.test", "chisq.test", "anova"]) else
-                "multivariate" if any(func in (node["captures"].get("stats.func", {}).get("text", "") or node["captures"].get("stats.ns.func", {}).get("text", "") or "")
-                                  for func in ["kmeans", "prcomp", "cluster"]) else
-                "descriptive" if any(func in (node["captures"].get("stats.func", {}).get("text", "") or node["captures"].get("stats.ns.func", {}).get("text", "") or "")
-                                  for func in ["summary", "mean", "median", "var", "sd"]) else
-                "unknown"
-            )
-        }
-    },
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in R_PATTERNS:
+                category_patterns = R_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "function":
+                                        context.function_names.add(match["name"])
+                                    elif match["type"] == "class":
+                                        context.class_names.add(match["name"])
+                                        if match["class_type"] == "s3":
+                                            context.has_s3_classes = True
+                                        elif match["class_type"] == "s4":
+                                            context.has_s4_classes = True
+                                        elif match["class_type"] == "r6":
+                                            context.has_r6_classes = True
+                                    elif match["type"] == "package":
+                                        context.package_names.add(match["name"])
+                                        if match["name"] in ["dplyr", "tidyr", "purrr", "ggplot2"]:
+                                            context.has_tidyverse = True
+                                        elif match["name"] == "data.table":
+                                            context.has_data_table = True
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
     
-    "visualization": {
-        "pattern": """
-        [
-            (call
-                function: (identifier) @viz.base {
-                    match: "^(plot|barplot|hist|boxplot|pairs|image)$"
-                }
-                arguments: (arguments)? @viz.base.args) @viz.base.call,
-                
-            (call
-                function: (namespace_operator
-                    lhs: (identifier) @viz.pkg {
-                        match: "^(ggplot2|lattice|plotly|grid)$"
-                    }
-                    rhs: (identifier) @viz.pkg.func)
-                arguments: (arguments)? @viz.pkg.args) @viz.pkg.call,
-                
-            (call
-                function: (identifier) @viz.gg {
-                    match: "^(ggplot|geom_\\w+|scale_\\w+|theme|facet_\\w+|coord_\\w+|aes)$"
-                }
-                arguments: (arguments)? @viz.gg.args) @viz.gg.call,
-                
-            (binary_operator
-                operator: "+" @viz.gg.add.op
-                lhs: (_) @viz.gg.add.lhs
-                rhs: (_) @viz.gg.add.rhs) @viz.gg.add
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "visualization",
-            "is_base_plot": "viz.base.call" in node["captures"],
-            "is_package_plot": "viz.pkg.call" in node["captures"],
-            "is_ggplot_call": "viz.gg.call" in node["captures"],
-            "is_ggplot_add": "viz.gg.add" in node["captures"],
-            "plot_function": node["captures"].get("viz.base", {}).get("text", "") or node["captures"].get("viz.pkg.func", {}).get("text", "") or node["captures"].get("viz.gg", {}).get("text", ""),
-            "package_name": node["captures"].get("viz.pkg", {}).get("text", ""),
-            "plot_type": (
-                "base_graphics" if "viz.base.call" in node["captures"] else
-                "lattice" if "viz.pkg.call" in node["captures"] and "lattice" == node["captures"].get("viz.pkg", {}).get("text", "") else
-                "ggplot2" if (
-                    "viz.gg.call" in node["captures"] or 
-                    "viz.gg.add" in node["captures"] or 
-                    ("viz.pkg.call" in node["captures"] and "ggplot2" == node["captures"].get("viz.pkg", {}).get("text", ""))
-                ) else
-                "other_package" if "viz.pkg.call" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
+    except Exception as e:
+        await log(f"Error extracting R patterns: {e}", level="error")
     
-    "functional_programming": {
-        "pattern": """
-        [
-            (call
-                function: (identifier) @func.apply {
-                    match: "^(apply|lapply|sapply|vapply|mapply|tapply|replicate|Map|Reduce)$"
-                }
-                arguments: (arguments)? @func.apply.args) @func.apply.call,
-                
-            (function_definition
-                parameters: (formal_parameters)? @func.def.params
-                body: (_) @func.def.body) @func.def,
-                
-            (binary_operator
-                operator: ["<<-" "<-" "="] @func.anon.op
-                lhs: (identifier) @func.anon.name
-                rhs: (function_definition
-                    parameters: (formal_parameters)? @func.anon.params
-                    body: (_) @func.anon.body)) @func.anon
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "functional_programming",
-            "is_apply_family": "func.apply.call" in node["captures"],
-            "is_function_definition": "func.def" in node["captures"],
-            "is_anonymous_function": "func.anon" in node["captures"],
-            "apply_function": node["captures"].get("func.apply", {}).get("text", ""),
-            "function_name": node["captures"].get("func.anon.name", {}).get("text", ""),
-            "param_count": len((
-                node["captures"].get("func.def.params", {}).get("text", "") or 
-                node["captures"].get("func.anon.params", {}).get("text", "") or ""
-            ).split(",")) if (
-                node["captures"].get("func.def.params", {}).get("text", "") or 
-                node["captures"].get("func.anon.params", {}).get("text", "")
-            ) else 0,
-            "functional_style": (
-                "apply_family" if "func.apply.call" in node["captures"] else
-                "named_function" if "func.def" in node["captures"] else
-                "anonymous_function" if "func.anon" in node["captures"] else
-                "unknown"
-            )
-        }
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "function": {
+        PatternRelationType.CONTAINS: ["parameter", "block"],
+        PatternRelationType.DEPENDS_ON: ["package", "function"]
+    },
+    "class": {
+        PatternRelationType.CONTAINS: ["method", "field"],
+        PatternRelationType.DEPENDS_ON: ["package", "class"]
+    },
+    "package": {
+        PatternRelationType.PROVIDES: ["function", "class", "data"],
+        PatternRelationType.DEPENDS_ON: ["package"]
+    },
+    "pipe": {
+        PatternRelationType.CONNECTS: ["function", "data"],
+        PatternRelationType.DEPENDS_ON: ["package"]
     }
 }
 
-R_PATTERNS = {
-    **COMMON_PATTERNS,
-    "REPOSITORY_LEARNING": R_PATTERNS_FOR_LEARNING
-} 
+# Export public interfaces
+__all__ = [
+    'R_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_r_patterns_for_learning',
+    'RPatternContext',
+    'pattern_learner'
+] 

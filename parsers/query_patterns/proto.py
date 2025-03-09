@@ -1,11 +1,210 @@
 """
 Query patterns for Protocol Buffers files.
+
+This module provides Protocol Buffer-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
 """
 
-from parsers.types import FileType
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
+)
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import (
+    handle_async_errors, AsyncErrorBoundary, ProcessingError, ErrorSeverity
+)
+from utils.logger import log
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.cache_analytics import get_cache_analytics
+from utils.health_monitor import ComponentStatus, global_health_monitor, monitor_operation
+from utils.request_cache import cached_in_request, request_cache_context
 from .common import COMMON_PATTERNS
 
-PROTO_PATTERNS_FOR_LEARNING = {
+# Language identifier
+LANGUAGE = "proto"
+
+@dataclass
+class ProtoPatternContext(PatternContext):
+    """Protocol Buffer-specific pattern context."""
+    message_names: Set[str] = field(default_factory=set)
+    service_names: Set[str] = field(default_factory=set)
+    enum_names: Set[str] = field(default_factory=set)
+    has_services: bool = False
+    has_streams: bool = False
+    has_options: bool = False
+    has_imports: bool = False
+    has_packages: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.message_names)}:{self.has_services}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "message": PatternPerformanceMetrics(),
+    "service": PatternPerformanceMetrics(),
+    "field": PatternPerformanceMetrics(),
+    "option": PatternPerformanceMetrics()
+}
+
+# Initialize caches - using the same cache coordinator as other modules
+_pattern_cache = UnifiedCache("proto_patterns")
+_context_cache = UnifiedCache("proto_contexts")
+
+async def initialize_caches():
+    """Initialize pattern caches."""
+    await cache_coordinator.register_cache("proto_patterns", _pattern_cache)
+    await cache_coordinator.register_cache("proto_contexts", _context_cache)
+    
+    # Register warmup functions
+    analytics = await get_cache_analytics()
+    analytics.register_warmup_function(
+        "proto_patterns",
+        _warmup_pattern_cache
+    )
+    analytics.register_warmup_function(
+        "proto_contexts",
+        _warmup_context_cache
+    )
+
+async def _warmup_pattern_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for pattern cache."""
+    results = {}
+    for key in keys:
+        try:
+            # Get common patterns for warmup
+            patterns = PROTO_PATTERNS.get(PatternCategory.SYNTAX, {})
+            if patterns:
+                results[key] = patterns
+        except Exception as e:
+            await log(f"Error warming up pattern cache for {key}: {e}", level="warning")
+    return results
+
+async def _warmup_context_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for context cache."""
+    results = {}
+    for key in keys:
+        try:
+            # Create empty context for warmup
+            context = ProtoPatternContext()
+            results[key] = context.__dict__
+        except Exception as e:
+            await log(f"Error warming up context cache for {key}: {e}", level="warning")
+    return results
+
+# Convert existing patterns to enhanced patterns
+PROTO_PATTERNS = {
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "message": ResilientPattern(
+                pattern="""
+                [
+                    (message
+                        name: (message_name) @syntax.msg.name
+                        body: (message_body
+                            (field
+                                type: (type) @syntax.msg.field.type
+                                name: (identifier) @syntax.msg.field.name)*)) @syntax.msg.def,
+                    (message
+                        body: (message_body
+                            (oneof
+                                name: (identifier) @syntax.msg.oneof.name
+                                fields: (oneof_field)* @syntax.msg.oneof.fields))) @syntax.msg.with.oneof,
+                    (message
+                        body: (message_body
+                            (map_field
+                                key_type: (key_type) @syntax.msg.map.key_type
+                                type: (type) @syntax.msg.map.value_type
+                                name: (identifier) @syntax.msg.map.name))) @syntax.msg.with.map,
+                    (message
+                        body: (message_body
+                            (message
+                                name: (message_name) @syntax.msg.nested.name))) @syntax.msg.with.nested
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.msg.name", {}).get("text", ""),
+                    "type": "message",
+                    "has_oneof": "syntax.msg.with.oneof" in node["captures"],
+                    "has_map": "syntax.msg.with.map" in node["captures"],
+                    "has_nested": "syntax.msg.with.nested" in node["captures"],
+                    "line_number": node["captures"].get("syntax.msg.def", {}).get("start_point", [0])[0],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["field", "oneof", "map", "message"],
+                        PatternRelationType.DEPENDS_ON: ["message"]
+                    }
+                },
+                name="message",
+                description="Matches Protocol Buffer message declarations",
+                examples=["message User { string name = 1; }", "message Status { enum Code { OK = 0; } }"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["message"],
+                    "validation": {
+                        "required_fields": ["name", "type"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9]*$'
+                    }
+                }
+            ),
+            "service": ResilientPattern(
+                pattern="""
+                [
+                    (service
+                        name: (service_name) @syntax.svc.name
+                        body: (service_body
+                            (rpc
+                                name: (rpc_name) @syntax.svc.rpc.name
+                                input_type: (message_or_enum_type) @syntax.svc.rpc.req
+                                output_type: (message_or_enum_type) @syntax.svc.rpc.resp))) @syntax.svc.def,
+                    (rpc
+                        name: (rpc_name) @syntax.rpc.name
+                        input_type: (message_or_enum_type
+                            stream: (stream)? @syntax.rpc.req.stream
+                            message_name: (_) @syntax.rpc.req.type)
+                        output_type: (message_or_enum_type
+                            stream: (stream)? @syntax.rpc.resp.stream
+                            message_name: (_) @syntax.rpc.resp.type)) @syntax.rpc.def
+                ]
+                """,
+                extract=lambda node: {
+                    "name": node["captures"].get("syntax.svc.name", {}).get("text", ""),
+                    "type": "service",
+                    "rpc_name": node["captures"].get("syntax.rpc.name", {}).get("text", ""),
+                    "has_streaming": (
+                        "syntax.rpc.req.stream" in node["captures"] or
+                        "syntax.rpc.resp.stream" in node["captures"]
+                    ),
+                    "line_number": node["captures"].get("syntax.svc.def", {}).get("start_point", [0])[0],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["rpc"],
+                        PatternRelationType.DEPENDS_ON: ["message"]
+                    }
+                },
+                name="service",
+                description="Matches Protocol Buffer service declarations",
+                examples=["service UserService { rpc GetUser (GetUserRequest) returns (User); }"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["service"],
+                    "validation": {
+                        "required_fields": ["name", "type"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9]*Service$'
+                    }
+                }
+            )
+        }
+    },
+    
     "message_definitions": {
         "pattern": """
         [
@@ -200,104 +399,113 @@ PROTO_PATTERNS_FOR_LEARNING = {
     }
 }
 
-PROTO_PATTERNS = {
-    **COMMON_PATTERNS,
-    "syntax": {
-        "class": {
-            "pattern": """
-            [
-                (message
-                    name: (message_name) @syntax.class.name
-                    body: (message_body) @syntax.class.body) @syntax.class.def,
-                (enum
-                    name: (enum_name) @syntax.enum.name
-                    body: (enum_body) @syntax.enum.body) @syntax.enum.def,
-                (service
-                    name: (service_name) @syntax.service.name
-                    body: (_) @syntax.service.body) @syntax.service.def
-            ]
-            """
-        },
-        "function": {
-            "pattern": """
-            [
-                (rpc
-                    name: (rpc_name) @syntax.function.name
-                    input_type: (message_or_enum_type) @syntax.function.input
-                    output_type: (message_or_enum_type) @syntax.function.output
-                    options: (option)* @syntax.function.options) @syntax.function.def
-            ]
-            """
-        },
-        "field": {
-            "pattern": """
-            [
-                (field
-                    type: (type) @syntax.field.type
-                    name: (identifier) @syntax.field.name
-                    number: (field_number) @syntax.field.number
-                    options: (field_options)? @syntax.field.options) @syntax.field.def,
-                (map_field
-                    key_type: (key_type) @syntax.field.map.key_type
-                    type: (type) @syntax.field.map.value_type
-                    name: (identifier) @syntax.field.map.name
-                    number: (field_number) @syntax.field.map.number) @syntax.field.map.def,
-                (oneof
-                    name: (identifier) @syntax.field.oneof.name
-                    fields: (oneof_field)* @syntax.field.oneof.fields) @syntax.field.oneof.def
-            ]
-            """
-        }
-    },
-    "structure": {
-        "namespace": {
-            "pattern": """
-            [
-                (package
-                    name: (full_ident) @structure.namespace.name) @structure.namespace.def,
-                (source_file
-                    syntax: (syntax) @structure.file.syntax
-                    edition: (edition)? @structure.file.edition) @structure.file
-            ]
-            """
-        },
-        "import": {
-            "pattern": """
-            (import
-                path: (string) @structure.import.path) @structure.import.def
-            """
-        },
-        "option": {
-            "pattern": """
-            (option
-                name: [(full_ident) (identifier)] @structure.option.name
-                value: (constant) @structure.option.value) @structure.option.def
-            """
-        }
-    },
-    "semantics": {
-        "variable": [
-            """
-            (field
-                name: (identifier) @name
-                type: (_) @type
-                number: (_) @number) @variable
-            """
-        ],
-        "type": [
-            """
-            (message_type
-                name: (identifier) @name) @type
-            """
-        ]
-    },
-    "documentation": {
-        "comment": {
-            "pattern": """
-            (comment) @documentation.comment
-            """
-        }
-    },
+# Initialize pattern learner with error handling
+pattern_learner = CrossProjectPatternLearner()
+
+@handle_async_errors(error_types=ProcessingError)
+@cached_in_request
+async def extract_proto_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Protocol Buffer content for repository learning."""
+    patterns = []
+    context = ProtoPatternContext()
     
-    "REPOSITORY_LEARNING": PROTO_PATTERNS_FOR_LEARNING
-} 
+    try:
+        async with AsyncErrorBoundary(
+            "proto_pattern_extraction",
+            error_types=(ProcessingError,),
+            severity=ErrorSeverity.ERROR
+        ):
+            # Update health status
+            await global_health_monitor.update_component_status(
+                "proto_pattern_processor",
+                ComponentStatus.PROCESSING,
+                details={"operation": "pattern_extraction"}
+            )
+            
+            # Process patterns with monitoring
+            with monitor_operation("extract_patterns", "proto_processor"):
+                # Process each pattern category
+                for category in PatternCategory:
+                    if category in PROTO_PATTERNS:
+                        category_patterns = PROTO_PATTERNS[category]
+                        for purpose in category_patterns:
+                            for pattern_name, pattern in category_patterns[purpose].items():
+                                if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                                    try:
+                                        matches = await pattern.matches(content, context)
+                                        for match in matches:
+                                            patterns.append({
+                                                "name": pattern_name,
+                                                "category": category.value,
+                                                "purpose": purpose.value,
+                                                "content": match.get("text", ""),
+                                                "metadata": match,
+                                                "confidence": pattern.confidence,
+                                                "relationships": match.get("relationships", {})
+                                            })
+                                            
+                                            # Update context
+                                            if match["type"] == "message":
+                                                context.message_names.add(match["name"])
+                                            elif match["type"] == "service":
+                                                context.service_names.add(match["name"])
+                                                context.has_services = True
+                                                if match.get("has_streaming"):
+                                                    context.has_streams = True
+                                            elif match["type"] == "option":
+                                                context.has_options = True
+                                            
+                                    except Exception as e:
+                                        await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                        continue
+            
+            # Update final status
+            await global_health_monitor.update_component_status(
+                "proto_pattern_processor",
+                ComponentStatus.HEALTHY,
+                details={
+                    "operation": "pattern_extraction_complete",
+                    "patterns_found": len(patterns)
+                }
+            )
+    
+    except Exception as e:
+        await log(f"Error extracting Proto patterns: {e}", level="error")
+        await global_health_monitor.update_component_status(
+            "proto_pattern_processor",
+            ComponentStatus.UNHEALTHY,
+            error=True,
+            details={"error": str(e)}
+        )
+    
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "message": {
+        PatternRelationType.CONTAINS: ["field", "oneof", "map", "message"],
+        PatternRelationType.DEPENDS_ON: ["message"]
+    },
+    "service": {
+        PatternRelationType.CONTAINS: ["rpc"],
+        PatternRelationType.DEPENDS_ON: ["message"]
+    },
+    "rpc": {
+        PatternRelationType.CONTAINED_BY: ["service"],
+        PatternRelationType.DEPENDS_ON: ["message"]
+    },
+    "field": {
+        PatternRelationType.CONTAINED_BY: ["message", "oneof"],
+        PatternRelationType.DEPENDS_ON: ["type"]
+    }
+}
+
+# Export public interfaces
+__all__ = [
+    'PROTO_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_proto_patterns_for_learning',
+    'ProtoPatternContext',
+    'pattern_learner',
+    'initialize_caches'
+] 

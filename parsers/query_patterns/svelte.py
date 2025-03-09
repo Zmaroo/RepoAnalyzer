@@ -1,331 +1,298 @@
-"""Query patterns for Svelte files."""
+"""Query patterns for Svelte files.
 
+This module provides Svelte-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
+"""
+
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
-from .common import COMMON_PATTERNS
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
 
-SVELTE_PATTERNS_FOR_LEARNING = {
-    "component_structure": {
-        "pattern": """
-        [
-            (script_element
-                attribute: (attribute)* @component.script.attrs
-                content: [(javascript_program) (typescript_program)]? @component.script.content) @component.script,
-                
-            (style_element
-                attribute: (attribute)* @component.style.attrs
-                content: (_)? @component.style.content) @component.style,
-                
-            (element
-                name: (tag_name) @component.custom.name {
-                    match: "^[A-Z].*"
-                }
-                attribute: (attribute)* @component.custom.attrs
-                body: (_)* @component.custom.body) @component.custom,
-                
-            (element
-                name: (tag_name) @component.slot.name {
-                    match: "^slot$"
-                }
-                attribute: (attribute
-                    name: (attribute_name) @component.slot.attr.name
-                    value: (attribute_value) @component.slot.attr.value)* @component.slot.attrs
-                body: (_)* @component.slot.body) @component.slot
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "component_structure",
-            "is_script": "component.script" in node["captures"],
-            "is_style": "component.style" in node["captures"],
-            "is_custom_component": "component.custom" in node["captures"],
-            "is_slot": "component.slot" in node["captures"],
-            "has_typescript": "component.script" in node["captures"] and "typescript_program" in node["captures"].get("component.script.content", {}).get("type", ""),
-            "script_attrs": [attr.get("text", "") for attr in node["captures"].get("component.script.attrs", [])],
-            "style_attrs": [attr.get("text", "") for attr in node["captures"].get("component.style.attrs", [])],
-            "component_name": node["captures"].get("component.custom.name", {}).get("text", ""),
-            "slot_name": node["captures"].get("component.slot.attr.value", {}).get("text", "default"),
-            "component_type": (
-                "script" if "component.script" in node["captures"] else
-                "style" if "component.style" in node["captures"] else
-                "custom_component" if "component.custom" in node["captures"] else
-                "slot" if "component.slot" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
+# Language identifier
+LANGUAGE = "svelte"
+
+@dataclass
+class SveltePatternContext(PatternContext):
+    """Svelte-specific pattern context."""
+    component_names: Set[str] = field(default_factory=set)
+    store_names: Set[str] = field(default_factory=set)
+    action_names: Set[str] = field(default_factory=set)
+    event_names: Set[str] = field(default_factory=set)
+    has_typescript: bool = False
+    has_stores: bool = False
+    has_actions: bool = False
+    has_transitions: bool = False
+    has_animations: bool = False
     
-    "state_management": {
-        "pattern": """
-        [
-            (lexical_declaration
-                declarator: (variable_declarator
-                    name: (identifier) @state.var.name
-                    value: (call_expression
-                        function: (identifier) @state.var.func {
-                            match: "^(writable|readable|derived)$"
-                        }
-                        arguments: (arguments) @state.var.args) @state.var.init) @state.var.decl) @state.var,
-                
-            (assignment_expression
-                left: (member_expression
-                    object: (_) @state.update.obj
-                    property: (property_identifier) @state.update.prop {
-                        match: "^(set|update)$"
-                    }) @state.update.target
-                right: (_) @state.update.value) @state.update,
-                
-            (call_expression
-                function: (member_expression
-                    object: (identifier) @state.call.obj
-                    property: (property_identifier) @state.call.method {
-                        match: "^(set|update|subscribe|invalidate)$"
-                    }) @state.call.func
-                arguments: (arguments) @state.call.args) @state.call
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "state_management",
-            "is_store_declaration": "state.var" in node["captures"],
-            "is_store_update": "state.update" in node["captures"],
-            "is_store_method_call": "state.call" in node["captures"],
-            "store_name": node["captures"].get("state.var.name", {}).get("text", ""),
-            "store_type": node["captures"].get("state.var.func", {}).get("text", ""),
-            "update_target": node["captures"].get("state.update.obj", {}).get("text", ""),
-            "update_method": node["captures"].get("state.update.prop", {}).get("text", ""),
-            "call_target": node["captures"].get("state.call.obj", {}).get("text", ""),
-            "call_method": node["captures"].get("state.call.method", {}).get("text", ""),
-            "state_operation": (
-                "store_declaration" if "state.var" in node["captures"] else
-                "store_update" if "state.update" in node["captures"] else
-                "store_method_call" if "state.call" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
-    
-    "event_handling": {
-        "pattern": """
-        [
-            (attribute
-                name: (attribute_name) @event.attr.name {
-                    match: "^(on:[a-zA-Z]+)$"
-                }
-                value: (attribute_value) @event.attr.value) @event.attr,
-                
-            (attribute
-                name: (attribute_name) @event.action.name {
-                    match: "^(use:[a-zA-Z]+)$"
-                }
-                value: (attribute_value) @event.action.value) @event.action,
-                
-            (lexical_declaration
-                declarator: (variable_declarator
-                    name: (identifier) @event.dispatcher.name
-                    value: (call_expression
-                        function: (identifier) @event.dispatcher.func {
-                            match: "^(createEventDispatcher)$"
-                        }) @event.dispatcher.init) @event.dispatcher.decl) @event.dispatcher,
-                
-            (call_expression
-                function: (identifier) @event.dispatch.func {
-                    match: "^(dispatch)$"
-                }
-                arguments: (arguments
-                    (string) @event.dispatch.name) @event.dispatch.args) @event.dispatch
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "event_handling",
-            "is_event_handler": "event.attr" in node["captures"],
-            "is_action_directive": "event.action" in node["captures"],
-            "is_dispatcher_creation": "event.dispatcher" in node["captures"],
-            "is_event_dispatch": "event.dispatch" in node["captures"],
-            "event_name": node["captures"].get("event.attr.name", {}).get("text", ""),
-            "action_name": node["captures"].get("event.action.name", {}).get("text", ""),
-            "dispatcher_name": node["captures"].get("event.dispatcher.name", {}).get("text", ""),
-            "dispatched_event": node["captures"].get("event.dispatch.name", {}).get("text", ""),
-            "event_type": (
-                "event_handler" if "event.attr" in node["captures"] else
-                "action_directive" if "event.action" in node["captures"] else
-                "dispatcher_creation" if "event.dispatcher" in node["captures"] else
-                "event_dispatch" if "event.dispatch" in node["captures"] else
-                "unknown"
-            )
-        }
-    }
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.component_names)}:{self.has_stores}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "component": PatternPerformanceMetrics(),
+    "script": PatternPerformanceMetrics(),
+    "style": PatternPerformanceMetrics(),
+    "store": PatternPerformanceMetrics(),
+    "action": PatternPerformanceMetrics()
 }
 
 SVELTE_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "script": QueryPattern(
+            "component": ResilientPattern(
                 pattern="""
-                (script_element
-                    attribute: (attribute
-                        name: (attribute_name) @syntax.script.attribute.name
-                        value: (attribute_value) @syntax.script.attribute.value)* @syntax.script.attributes
-                    content: (_)? @syntax.script.content) @syntax.script
+                [
+                    (script_element
+                        attribute: (attribute)* @syntax.script.attrs
+                        content: [(javascript_program) (typescript_program)]? @syntax.script.content) @syntax.script,
+                    (style_element
+                        attribute: (attribute)* @syntax.style.attrs
+                        content: (_)? @syntax.style.content) @syntax.style,
+                    (element
+                        name: (tag_name) @syntax.custom.name {
+                            match: "^[A-Z].*"
+                        }
+                        attribute: (attribute)* @syntax.custom.attrs
+                        body: (_)* @syntax.custom.body) @syntax.custom
+                ]
                 """,
                 extract=lambda node: {
-                    "attributes": {
-                        attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
-                        for attr in node["captures"].get("syntax.script.attributes", [])
-                    },
-                    "has_content": "syntax.script.content" in node["captures"] and node["captures"].get("syntax.script.content", {}).get("text", "") != ""
+                    "type": "component",
+                    "line_number": (
+                        node["captures"].get("syntax.script", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.style", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.custom", {}).get("start_point", [0])[0]
+                    ),
+                    "name": node["captures"].get("syntax.custom.name", {}).get("text", ""),
+                    "has_script": "syntax.script" in node["captures"],
+                    "has_style": "syntax.style" in node["captures"],
+                    "has_typescript": "typescript_program" in (node["captures"].get("syntax.script.content", {}).get("type", "") or ""),
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["script", "style", "element"],
+                        PatternRelationType.DEPENDS_ON: ["component"]
+                    }
+                },
+                name="component",
+                description="Matches Svelte component declarations",
+                examples=["<script>...</script>", "<style>...</style>", "<CustomComponent/>"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["component"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": None
+                    }
                 }
             ),
-            "style": QueryPattern(
+            "store": ResilientPattern(
                 pattern="""
-                (style_element
-                    attribute: (attribute
-                        name: (attribute_name) @syntax.style.attribute.name
-                        value: (attribute_value) @syntax.style.attribute.value)* @syntax.style.attributes
-                    content: (_)? @syntax.style.content) @syntax.style
+                [
+                    (lexical_declaration
+                        declarator: (variable_declarator
+                            name: (identifier) @syntax.store.name
+                            value: (call_expression
+                                function: (identifier) @syntax.store.func {
+                                    match: "^(writable|readable|derived)$"
+                                }
+                                arguments: (arguments) @syntax.store.args) @syntax.store.init) @syntax.store.decl) @syntax.store,
+                    (assignment_expression
+                        left: (member_expression
+                            object: (_) @syntax.update.obj
+                            property: (property_identifier) @syntax.update.prop {
+                                match: "^(set|update)$"
+                            }) @syntax.update.target
+                        right: (_) @syntax.update.value) @syntax.update
+                ]
                 """,
                 extract=lambda node: {
-                    "attributes": {
-                        attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
-                        for attr in node["captures"].get("syntax.style.attributes", [])
-                    },
-                    "has_content": "syntax.style.content" in node["captures"] and node["captures"].get("syntax.style.content", {}).get("text", "") != ""
-                }
-            )
-        }
-    },
-
-    PatternCategory.SEMANTICS: {
-        PatternPurpose.UNDERSTANDING: {
-            "component": QueryPattern(
-                pattern="""
-                (element
-                    name: (tag_name) @semantics.component.name
-                    attribute: (attribute
-                        name: (attribute_name) @semantics.component.attribute.name
-                        value: (attribute_value) @semantics.component.attribute.value)* @semantics.component.attributes
-                    body: (_)* @semantics.component.body) @semantics.component
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.component.name", {}).get("text", ""),
-                    "attributes": {
-                        attr.get("name", {}).get("text", ""): attr.get("value", {}).get("text", "")
-                        for attr in node["captures"].get("semantics.component.attributes", [])
+                    "type": "store",
+                    "line_number": (
+                        node["captures"].get("syntax.store", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.update", {}).get("start_point", [0])[0]
+                    ),
+                    "name": node["captures"].get("syntax.store.name", {}).get("text", ""),
+                    "store_type": node["captures"].get("syntax.store.func", {}).get("text", ""),
+                    "is_update": "syntax.update" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.REFERENCED_BY: ["component", "script"],
+                        PatternRelationType.DEPENDS_ON: ["store"]
+                    }
+                },
+                name="store",
+                description="Matches Svelte store declarations",
+                examples=["const count = writable(0)", "count.set(1)"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["store"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z_$][a-zA-Z0-9_$]*$'
                     }
                 }
             )
         }
     },
 
-    PatternCategory.STRUCTURE: {
-        PatternPurpose.UNDERSTANDING: {
-            "directive": QueryPattern(
-                pattern="""
-                [
-                    (if_block
-                        expression: (_) @structure.if.expression
-                        consequence: (_) @structure.if.consequence
-                        alternative: (_)? @structure.if.alternative) @structure.if,
-                    
-                    (each_block
-                        expression: (_) @structure.each.expression
-                        context: (each_block_context
-                            name: (_) @structure.each.context.name
-                            index: (_)? @structure.each.context.index) @structure.each.context
-                        body: (_) @structure.each.body
-                        else_clause: (_)? @structure.each.else) @structure.each,
-                    
-                    (await_block
-                        expression: (_) @structure.await.expression
-                        pending: (_)? @structure.await.pending
-                        fulfilled: (_)? @structure.await.fulfilled
-                        rejected: (_)? @structure.await.rejected) @structure.await
-                ]
-                """,
-                extract=lambda node: {
-                    "type": (
-                        "if" if "structure.if" in node["captures"] else
-                        "each" if "structure.each" in node["captures"] else
-                        "await" if "structure.await" in node["captures"] else
-                        "unknown"
-                    ),
-                    "expression": (
-                        node["captures"].get("structure.if.expression", {}).get("text", "") or
-                        node["captures"].get("structure.each.expression", {}).get("text", "") or
-                        node["captures"].get("structure.await.expression", {}).get("text", "")
-                    )
-                }
-            )
-        }
-    },
-
-    PatternCategory.DOCUMENTATION: {
-        PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
-                pattern="""
-                [
-                    (comment) @documentation.comment
-                ]
-                """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", "")
-                }
-            )
-        }
-    },
-
     PatternCategory.LEARNING: {
-        PatternPurpose.REACTIVITY: {
-            "reactivity": QueryPattern(
+        PatternPurpose.EVENTS: {
+            "event_handling": AdaptivePattern(
                 pattern="""
                 [
-                    (raw_text_expr) @reactivity.expr,
-                    
-                    (if_block
-                        expression: (_) @reactivity.if.cond
-                        consequence: (_) @reactivity.if.then
-                        alternative: (_)? @reactivity.if.else) @reactivity.if,
-                    
-                    (each_block
-                        expression: (_) @reactivity.each.expr
-                        context: (each_block_context
-                            name: (_) @reactivity.each.item
-                            index: (_)? @reactivity.each.index)? @reactivity.each.ctx
-                        body: (_) @reactivity.each.body
-                        else_clause: (_)? @reactivity.each.empty) @reactivity.each,
-                    
-                    (await_block
-                        expression: (_) @reactivity.await.expr
-                        pending: (_)? @reactivity.await.pending
-                        fulfilled: (_)? @reactivity.await.then
-                        rejected: (_)? @reactivity.await.catch) @reactivity.await
+                    (attribute
+                        name: (attribute_name) @event.attr.name {
+                            match: "^(on:[a-zA-Z]+)$"
+                        }
+                        value: (attribute_value) @event.attr.value) @event.attr,
+                    (attribute
+                        name: (attribute_name) @event.action.name {
+                            match: "^(use:[a-zA-Z]+)$"
+                        }
+                        value: (attribute_value) @event.action.value) @event.action,
+                    (lexical_declaration
+                        declarator: (variable_declarator
+                            name: (identifier) @event.dispatcher.name
+                            value: (call_expression
+                                function: (identifier) @event.dispatcher.func {
+                                    match: "^(createEventDispatcher)$"
+                                }) @event.dispatcher.init) @event.dispatcher.decl) @event.dispatcher,
+                    (call_expression
+                        function: (identifier) @event.dispatch.func {
+                            match: "^(dispatch)$"
+                        }
+                        arguments: (arguments
+                            (string) @event.dispatch.name) @event.dispatch.args) @event.dispatch
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "reactivity",
-                    "is_expression": "reactivity.expr" in node["captures"],
-                    "is_if_block": "reactivity.if" in node["captures"],
-                    "is_each_block": "reactivity.each" in node["captures"],
-                    "is_await_block": "reactivity.await" in node["captures"],
-                    "expression": node["captures"].get("reactivity.expr", {}).get("text", ""),
-                    "condition": node["captures"].get("reactivity.if.cond", {}).get("text", ""),
-                    "iteration_expr": node["captures"].get("reactivity.each.expr", {}).get("text", ""),
-                    "item_name": node["captures"].get("reactivity.each.item", {}).get("text", ""),
-                    "has_else": (
-                        ("reactivity.if" in node["captures"] and "reactivity.if.else" in node["captures"] and node["captures"].get("reactivity.if.else", {}).get("text", "") != "") or
-                        ("reactivity.each" in node["captures"] and "reactivity.each.empty" in node["captures"] and node["captures"].get("reactivity.each.empty", {}).get("text", "") != "")
+                    "type": "event_handling",
+                    "line_number": (
+                        node["captures"].get("event.attr", {}).get("start_point", [0])[0] or
+                        node["captures"].get("event.action", {}).get("start_point", [0])[0] or
+                        node["captures"].get("event.dispatcher", {}).get("start_point", [0])[0] or
+                        node["captures"].get("event.dispatch", {}).get("start_point", [0])[0]
                     ),
-                    "reactivity_type": (
-                        "expression" if "reactivity.expr" in node["captures"] else
-                        "if_block" if "reactivity.if" in node["captures"] else
-                        "each_block" if "reactivity.each" in node["captures"] else
-                        "await_block" if "reactivity.await" in node["captures"] else
-                        "unknown"
-                    )
+                    "name": (
+                        node["captures"].get("event.attr.name", {}).get("text", "") or
+                        node["captures"].get("event.action.name", {}).get("text", "") or
+                        node["captures"].get("event.dispatcher.name", {}).get("text", "") or
+                        node["captures"].get("event.dispatch.name", {}).get("text", "")
+                    ),
+                    "is_action": "event.action" in node["captures"],
+                    "is_dispatcher": "event.dispatcher" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINED_BY: ["component", "element"],
+                        PatternRelationType.DEPENDS_ON: ["script"]
+                    }
+                },
+                name="event_handling",
+                description="Matches Svelte event handling patterns",
+                examples=["on:click={handleClick}", "use:action", "dispatch('event')"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.EVENTS,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["action"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z_$][a-zA-Z0-9_$]*$'
+                    }
                 }
             )
         }
-    },
+    }
+}
 
-    "REPOSITORY_LEARNING": SVELTE_PATTERNS_FOR_LEARNING
-} 
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
+
+async def extract_svelte_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Svelte content for repository learning."""
+    patterns = []
+    context = SveltePatternContext()
+    
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in SVELTE_PATTERNS:
+                category_patterns = SVELTE_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "component":
+                                        if match["name"]:
+                                            context.component_names.add(match["name"])
+                                        if match["has_typescript"]:
+                                            context.has_typescript = True
+                                    elif match["type"] == "store":
+                                        context.has_stores = True
+                                        context.store_names.add(match["name"])
+                                    elif match["type"] == "event_handling":
+                                        if match["is_action"]:
+                                            context.has_actions = True
+                                            context.action_names.add(match["name"])
+                                        else:
+                                            context.event_names.add(match["name"])
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting Svelte patterns: {e}", level="error")
+    
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "component": {
+        PatternRelationType.CONTAINS: ["script", "style", "element"],
+        PatternRelationType.DEPENDS_ON: ["component"]
+    },
+    "store": {
+        PatternRelationType.REFERENCED_BY: ["component", "script"],
+        PatternRelationType.DEPENDS_ON: ["store"]
+    },
+    "event_handling": {
+        PatternRelationType.CONTAINED_BY: ["component", "element"],
+        PatternRelationType.DEPENDS_ON: ["script"]
+    }
+}
+
+# Export public interfaces
+__all__ = [
+    'SVELTE_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_svelte_patterns_for_learning',
+    'SveltePatternContext',
+    'pattern_learner'
+] 

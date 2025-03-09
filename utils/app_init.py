@@ -4,119 +4,177 @@ import asyncio
 import atexit
 import os
 import sys
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Dict, Any
+from dataclasses import dataclass
+from enum import Enum, auto
 
-from utils.logger import log
+from utils.logger import log, logger
 from utils.async_runner import cleanup_tasks, submit_async_task, get_loop
 from utils.cache import cache_coordinator
 from utils.cache_analytics import start_cache_analytics
 from utils.shutdown import execute_shutdown_handlers
+from utils.error_handling import AsyncErrorBoundary, ProcessingError, ErrorSeverity, ErrorAudit
+from utils.health_monitor import global_health_monitor, ComponentStatus
 from db.connection import connection_manager
 from db.neo4j_ops import create_schema_indexes_and_constraints, get_neo4j_tools
 from db.transaction import get_transaction_coordinator
 
+class InitStage(Enum):
+    """Initialization stages in order of dependency."""
+    LOGGING = auto()
+    ERROR_HANDLING = auto()
+    CACHE = auto()
+    DATABASE = auto()
+    PARSERS = auto()
+    INDEXER = auto()
+    AI_TOOLS = auto()
+    WATCHER = auto()
+
+@dataclass
+class ComponentDependencies:
+    """Component initialization dependencies."""
+    stage: InitStage
+    requires: List[InitStage]
+    initialize: Callable
+    initialized: bool = False
+
 async def _initialize_components():
-    """Initialize all application components asynchronously."""
+    """Initialize all application components asynchronously with dependency management."""
     try:
-        # Initialize logging first
-        from utils.logger import logger
-        logger._initialize_logger()
-        log("Logging system initialized", level="info")
-        
-        # Initialize error handling
-        from utils.error_handling import ErrorAudit
-        log("Initializing error handling...")
-        await ErrorAudit.analyze_codebase(os.getcwd())
-        log("Error handling initialized")
-        
-        # Initialize connection manager first
-        await connection_manager.initialize()
-        log("Connection manager initialized", level="info")
-        
-        # Initialize transaction coordinator
-        await get_transaction_coordinator()
-        log("Transaction coordinator initialized", level="info")
-        
-        # Initialize PostgreSQL operations
-        from db.psql import initialize as init_psql
-        await init_psql()
-        log("PostgreSQL operations initialized", level="info")
-        
-        # Initialize Neo4j tools
-        neo4j_tools = await get_neo4j_tools()
-        log("Neo4j tools initialized", level="info")
-        
-        # Then create Neo4j schema
-        await create_schema_indexes_and_constraints()
-        log("Neo4j schema initialized", level="info")
-        
-        # Initialize caching system in proper order
-        from utils.cache import initialize_caches, cleanup_caches, cache_coordinator
-        from utils.cache_analytics import initialize_cache_analytics, cache_analytics
-        
-        # Initialize base caching first
-        initialize_caches()
-        log("Base cache system initialized", level="info")
-        
-        # Initialize cache analytics with the coordinator
-        await initialize_cache_analytics(cache_coordinator)
-        log("Cache analytics initialized", level="info")
-        
-        # Initialize embedders
-        from embedding.embedding_models import init_embedders
-        await init_embedders()
-        log("Embedders initialized", level="info")
-        
-        # Initialize health monitoring
-        from utils.health_monitor import global_health_monitor
-        global_health_monitor.start_monitoring()
-        log("Health monitoring started", level="info")
-        
-        # Register cleanup handlers in reverse initialization order
-        from utils.shutdown import register_shutdown_handler
-        from db.psql import cleanup_psql
-        from db.transaction import transaction_coordinator
-        
-        # Health monitoring cleanup
-        register_shutdown_handler(global_health_monitor.cleanup)
-        
-        # Cache system cleanup (should be after components that might use cache)
-        register_shutdown_handler(cache_analytics.cleanup)
-        register_shutdown_handler(cleanup_caches)
-        
-        # Database cleanup (should be last as other cleanups might need DB)
-        register_shutdown_handler(cleanup_psql)
-        register_shutdown_handler(transaction_coordinator.cleanup)
-        
-        # Create an async cleanup function for Neo4j
-        async def async_neo4j_close():
+        # Define component dependencies and initialization order
+        dependencies: Dict[str, ComponentDependencies] = {
+            "logging": ComponentDependencies(
+                stage=InitStage.LOGGING,
+                requires=[],
+                initialize=lambda: logger._initialize_logger()
+            ),
+            "error_handling": ComponentDependencies(
+                stage=InitStage.ERROR_HANDLING,
+                requires=[InitStage.LOGGING],
+                initialize=lambda: ErrorAudit.analyze_codebase(os.getcwd())
+            ),
+            "cache": ComponentDependencies(
+                stage=InitStage.CACHE,
+                requires=[InitStage.LOGGING, InitStage.ERROR_HANDLING],
+                initialize=lambda: cache_coordinator.initialize()
+            ),
+            "database": ComponentDependencies(
+                stage=InitStage.DATABASE,
+                requires=[InitStage.CACHE],
+                initialize=_initialize_database_components
+            ),
+            "parsers": ComponentDependencies(
+                stage=InitStage.PARSERS,
+                requires=[InitStage.DATABASE],
+                initialize=_initialize_parser_components
+            ),
+            "indexer": ComponentDependencies(
+                stage=InitStage.INDEXER,
+                requires=[InitStage.PARSERS],
+                initialize=_initialize_indexer_components
+            ),
+            "ai_tools": ComponentDependencies(
+                stage=InitStage.AI_TOOLS,
+                requires=[InitStage.PARSERS, InitStage.INDEXER],
+                initialize=_initialize_ai_components
+            ),
+            "watcher": ComponentDependencies(
+                stage=InitStage.WATCHER,
+                requires=[InitStage.INDEXER],
+                initialize=_initialize_watcher_components
+            )
+        }
+
+        # Initialize components in dependency order
+        for component_name, component in dependencies.items():
             try:
-                await neo4j_tools.cleanup()  # Use the instance we created
-                await connection_manager.cleanup()
-                log("Neo4j resources closed successfully", level="info")
+                # Check if all required components are initialized
+                for required_stage in component.requires:
+                    required_components = [c for c in dependencies.values() if c.stage == required_stage]
+                    if not all(c.initialized for c in required_components):
+                        raise ProcessingError(f"Required stage {required_stage} not initialized for {component_name}")
+
+                # Initialize component
+                await global_health_monitor.update_component_status(
+                    component_name,
+                    ComponentStatus.INITIALIZING,
+                    details={"stage": "starting"}
+                )
+
+                async with AsyncErrorBoundary(
+                    operation_name=f"{component_name}_initialization",
+                    error_types=ProcessingError,
+                    severity=ErrorSeverity.CRITICAL
+                ):
+                    await component.initialize()
+                    component.initialized = True
+                    await log(f"{component_name} initialized", level="info")
+
+                await global_health_monitor.update_component_status(
+                    component_name,
+                    ComponentStatus.HEALTHY,
+                    details={"stage": "complete"}
+                )
+
             except Exception as e:
-                log(f"Error closing Neo4j resources: {e}", level="error")
-        
-        # Register the async cleanup function by wrapping it in a sync function
-        def sync_neo4j_close():
-            loop = get_loop()
-            try:
-                loop.run_until_complete(async_neo4j_close())
-            except RuntimeError:
-                # If the loop is already running, use submit_async_task
-                future = submit_async_task(async_neo4j_close())
-                loop.run_until_complete(asyncio.wrap_future(future))
-        
-        # Register the sync wrapper function
-        register_shutdown_handler(sync_neo4j_close)
-        
-        # Async tasks cleanup should be very last
-        register_shutdown_handler(cleanup_tasks)
-        
-        log("Application components initialized successfully", level="info")
+                await log(f"Error initializing {component_name}: {e}", level="error")
+                await global_health_monitor.update_component_status(
+                    component_name,
+                    ComponentStatus.UNHEALTHY,
+                    error=True,
+                    details={"initialization_error": str(e)}
+                )
+                raise ProcessingError(f"Failed to initialize {component_name}: {e}")
+
+        # Start cache analytics after all components are initialized
+        await start_cache_analytics()
+        return True
+
     except Exception as e:
-        log(f"Error initializing application components: {e}", level="error")
-        raise
+        await log(f"Error during component initialization: {e}", level="error")
+        await global_health_monitor.update_component_status(
+            "app_initialization",
+            ComponentStatus.UNHEALTHY,
+            error=True,
+            details={"initialization_error": str(e)}
+        )
+        return False
+
+async def _initialize_database_components():
+    """Initialize database components in proper order."""
+    # Initialize connection manager first
+    await connection_manager.initialize()
+    
+    # Initialize transaction coordinator
+    await get_transaction_coordinator()
+    
+    # Initialize PostgreSQL operations
+    from db.psql import initialize as init_psql
+    await init_psql()
+    
+    # Initialize Neo4j tools and schema
+    neo4j_tools = await get_neo4j_tools()
+    await create_schema_indexes_and_constraints()
+
+async def _initialize_parser_components():
+    """Initialize parser components."""
+    from parsers import initialize_parser_system
+    await initialize_parser_system()
+
+async def _initialize_indexer_components():
+    """Initialize indexer components."""
+    from indexer.unified_indexer import UnifiedIndexer
+    await UnifiedIndexer.create()
+
+async def _initialize_ai_components():
+    """Initialize AI components."""
+    from ai_tools.ai_interface import AIAssistant
+    await AIAssistant.create()
+
+async def _initialize_watcher_components():
+    """Initialize file watcher components."""
+    from watcher.file_watcher import DirectoryWatcher
+    await DirectoryWatcher.create()
 
 async def initialize_application():
     """Initialize the application and all its components."""

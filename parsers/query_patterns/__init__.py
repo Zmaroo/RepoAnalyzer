@@ -1,17 +1,31 @@
 """
 Query patterns initialization module.
 Provides lazy loading mechanism for pattern modules to avoid circular imports.
+Integrates with cache analytics, error handling, and logging systems.
 """
 
 import os
 import importlib
 import logging
-from typing import Dict, Any, Optional, Set, List, Union, cast
+from typing import Dict, Any, Optional, Set, List, Union, cast, Callable, Tuple
 import asyncio
 from utils.logger import log
-from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
+from utils.error_handling import (
+    handle_async_errors, 
+    AsyncErrorBoundary, 
+    ErrorSeverity,
+    ErrorAudit
+)
 from utils.shutdown import register_shutdown_handler
 from utils.async_runner import get_loop
+from collections import OrderedDict
+import time
+from tree_sitter_language_pack import SupportedLanguage
+from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.cache_analytics import get_cache_analytics
+from utils.request_cache import request_cache_context, get_current_request_cache
+from utils.health_monitor import ComponentStatus, global_health_monitor, monitor_operation
 
 # Import types needed for type annotations
 from parsers.types import (
@@ -31,13 +45,66 @@ _pattern_registries: Dict[str, Dict[PatternCategory, Dict[PatternPurpose, Dict[s
 # Flag to track initialization
 _initialized = False
 _pending_tasks: Set[asyncio.Task] = set()
-_pattern_cache: Dict[str, Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]] = {}
+
+# Maximum number of patterns to cache
+MAX_CACHE_SIZE = 1000
+
+# Initialize caches
+_pattern_cache = UnifiedCache("pattern_cache")
+_validation_cache = UnifiedCache("validation_cache")
+
+class LRUCache:
+    """LRU cache implementation for patterns."""
+    
+    def __init__(self, max_size: int = MAX_CACHE_SIZE):
+        self._cache = OrderedDict()
+        self._max_size = max_size
+        self._lock = asyncio.Lock()
+        self._metrics = {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0
+        }
+    
+    async def get(self, key: str) -> Optional[Any]:
+        """Get item from cache."""
+        async with self._lock:
+            if key in self._cache:
+                # Move to end (most recently used)
+                value = self._cache.pop(key)
+                self._cache[key] = value
+                self._metrics["hits"] += 1
+                return value
+            self._metrics["misses"] += 1
+            return None
+    
+    async def set(self, key: str, value: Any) -> None:
+        """Set item in cache."""
+        async with self._lock:
+            if key in self._cache:
+                # Update existing entry
+                self._cache.pop(key)
+            elif len(self._cache) >= self._max_size:
+                # Remove least recently used item
+                self._cache.popitem(last=False)
+                self._metrics["evictions"] += 1
+            self._cache[key] = value
+    
+    async def clear(self) -> None:
+        """Clear the cache."""
+        async with self._lock:
+            self._cache.clear()
+            self._metrics = {
+                "hits": 0,
+                "misses": 0,
+                "evictions": 0
+            }
+
+# Replace global pattern cache with LRU cache
+_pattern_cache = LRUCache()
 
 # Initialize logger
 logger = logging.getLogger(__name__)
-
-# Import core pattern validation functionality
-from parsers.pattern_processor import validate_all_patterns, report_validation_results
 
 # Import all language pattern modules
 from . import (
@@ -117,9 +184,106 @@ def _ensure_pattern_category_keys(patterns_dict: Dict[str, Any]) -> Dict[Pattern
     
     return result
 
+def create_pattern(
+    name: str,
+    pattern: str,
+    category: PatternCategory,
+    purpose: PatternPurpose,
+    language_id: str,
+    extract: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    confidence: float = 0.0,
+    metadata: Optional[Dict[str, Any]] = None
+) -> QueryPattern:
+    """Create a QueryPattern instance with validation.
+    
+    Args:
+        name: Pattern name
+        pattern: Pattern definition (tree-sitter query or regex)
+        category: Pattern category
+        purpose: Pattern purpose
+        language_id: Target language ID
+        extract: Optional extraction function
+        confidence: Pattern confidence score
+        metadata: Optional metadata dictionary
+        
+    Returns:
+        Validated QueryPattern instance
+    """
+    pattern_obj = QueryPattern(
+        name=name,
+        pattern=pattern,
+        category=category,
+        purpose=purpose,
+        language_id=language_id,
+        extract=extract,
+        confidence=confidence,
+        metadata=metadata or {}
+    )
+    
+    if not validate_pattern(pattern_obj):
+        raise ValueError(f"Invalid pattern configuration for {name}")
+        
+    return pattern_obj
+
+def validate_pattern(pattern: QueryPattern) -> bool:
+    """Validate a QueryPattern instance.
+    
+    Args:
+        pattern: Pattern to validate
+        
+    Returns:
+        True if pattern is valid
+    """
+    # Check required fields
+    required_fields = ["name", "pattern", "category", "purpose", "language_id"]
+    if not all(hasattr(pattern, field) for field in required_fields):
+        return False
+        
+    # Validate field values
+    if not pattern.name or not isinstance(pattern.name, str):
+        return False
+    if not pattern.pattern or not isinstance(pattern.pattern, str):
+        return False
+    if not isinstance(pattern.category, PatternCategory):
+        return False
+    if not isinstance(pattern.purpose, PatternPurpose):
+        return False
+    if not pattern.language_id or not isinstance(pattern.language_id, str):
+        return False
+        
+    return True
+
+def is_language_supported(language_id: str) -> bool:
+    """Check if a language is supported by tree-sitter or custom parsers.
+    
+    Args:
+        language_id: Language identifier
+        
+    Returns:
+        True if language is supported
+    """
+    normalized = normalize_language_name(language_id)
+    return normalized in SupportedLanguage.__args__ or normalized in CUSTOM_PARSER_CLASSES
+
+def get_parser_type_for_language(language_id: str) -> str:
+    """Get parser type for a language.
+    
+    Args:
+        language_id: Language identifier
+        
+    Returns:
+        'tree-sitter', 'custom', or 'unknown'
+    """
+    normalized = normalize_language_name(language_id)
+    if normalized in CUSTOM_PARSER_CLASSES:
+        return 'custom'
+    elif normalized in SupportedLanguage.__args__:
+        return 'tree-sitter'
+    return 'unknown'
+
 def get_patterns_for_language(language: str) -> Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]:
     """
-    Get tree-sitter query patterns for the specified language.
+    Get query patterns for the specified language.
     
     Args:
         language: The language to get patterns for
@@ -138,6 +302,15 @@ def get_patterns_for_language(language: str) -> Dict[PatternCategory, Dict[Patte
     
     if pattern_module and hasattr(pattern_module, "PATTERNS"):
         patterns = _ensure_pattern_category_keys(pattern_module.PATTERNS)
+        
+        # Validate all patterns
+        for category in patterns:
+            for purpose in patterns[category]:
+                for name, pattern in patterns[category][purpose].items():
+                    if not validate_pattern(pattern):
+                        log(f"Invalid pattern {name} for {language_id}", level="warning")
+                        del patterns[category][purpose][name]
+        
         _pattern_registry[language_id] = patterns
         return patterns
     
@@ -196,142 +369,299 @@ def list_available_languages() -> Set[str]:
 
 async def initialize_pattern_system() -> None:
     """Initialize the pattern system by preloading common patterns."""
-    register_common_patterns()
-    await initialize_patterns()
-
-def get_all_available_patterns() -> Dict[str, Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]]:
-    """
-    Get all available patterns for all languages.
-    
-    Returns:
-        Dictionary of patterns by language
-    """
-    patterns = {}
-    for language in list_available_languages():
-        language_patterns = get_patterns_for_language(language)
-        if language_patterns:
-            patterns[language] = language_patterns
-    
-    return patterns
-
-def clear_pattern_cache() -> None:
-    """Clear the pattern registry cache."""
-    global _pattern_registry
-    _pattern_registry = {}
-
-def validate_loaded_patterns() -> str:
-    """
-    Validate all currently loaded patterns.
-    
-    Returns:
-        Summary of validation results
-    """
-    patterns_by_language = get_all_available_patterns()
-    validation_results = validate_all_patterns(patterns_by_language)
-    return report_validation_results(validation_results)
-
-@handle_async_errors(error_types=(Exception,))
-async def initialize_patterns():
-    """Initialize all pattern resources."""
     global _initialized
     
-    if _initialized:
-        return
-    
     try:
-        async with AsyncErrorBoundary("pattern initialization"):
-            # Initialize commonly used language patterns first
-            common_languages = {'python', 'javascript', 'typescript', 'java', 'cpp'}
-            tasks = []
-            for language in common_languages:
-                module = globals().get(language)
-                if module and hasattr(module, 'initialize'):
-                    tasks.append(module.initialize())
-            
-            if tasks:
-                await asyncio.gather(*tasks)
-            
-            _initialized = True
-            log("Query patterns initialized", level="info")
+        # Update health status
+        await global_health_monitor.update_component_status(
+            "pattern_system",
+            ComponentStatus.INITIALIZING,
+            details={"stage": "starting"}
+        )
+        
+        # Register caches with coordinator
+        await cache_coordinator.register_cache("pattern_cache", _pattern_cache)
+        await cache_coordinator.register_cache("validation_cache", _validation_cache)
+        
+        # Initialize cache analytics
+        analytics = await get_cache_analytics()
+        analytics.register_warmup_function(
+            "pattern_cache",
+            _warmup_pattern_cache
+        )
+        
+        # Register common patterns
+        patterns = register_common_patterns()
+        
+        # Initialize error audit
+        await ErrorAudit.analyze_codebase("parsers/query_patterns")
+        
+        _initialized = True
+        await log("Pattern system initialized", level="info")
+        
+        # Update final status
+        await global_health_monitor.update_component_status(
+            "pattern_system",
+            ComponentStatus.HEALTHY,
+            details={
+                "stage": "complete",
+                "common_patterns": len(patterns)
+            }
+        )
+        
     except Exception as e:
-        log(f"Error initializing query patterns: {e}", level="error")
+        await log(f"Error initializing pattern system: {e}", level="error")
+        await global_health_monitor.update_component_status(
+            "pattern_system",
+            ComponentStatus.UNHEALTHY,
+            error=True,
+            details={"initialization_error": str(e)}
+        )
         raise
 
-async def get_patterns_for_language(language_id: str) -> Optional[Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]]:
-    """
-    Get all patterns for a specific language.
-    
-    Args:
-        language_id: The language identifier
-        
-    Returns:
-        Dictionary of patterns or None if language not supported
-    """
-    if not _initialized:
-        await initialize_patterns()
-    
-    # Check cache first
-    if language_id in _pattern_cache:
-        return _pattern_cache[language_id]
-    
-    # Try to get patterns from the language module
-    module = globals().get(language_id)
-    if module:
-        if hasattr(module, 'get_patterns'):
-            task = asyncio.create_task(module.get_patterns())
-            _pending_tasks.add(task)
-            try:
-                patterns = await task
-                _pattern_cache[language_id] = patterns
-                return patterns
-            finally:
-                _pending_tasks.remove(task)
-        elif hasattr(module, 'PATTERNS'):
-            _pattern_cache[language_id] = _ensure_pattern_category_keys(module.PATTERNS)
-            return _pattern_cache[language_id]
-    
-    return None
+async def _warmup_pattern_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for pattern cache."""
+    results = {}
+    for key in keys:
+        try:
+            # Load common patterns for warmup
+            patterns = register_common_patterns()
+            if patterns:
+                results[key] = patterns
+        except Exception as e:
+            await log(f"Error warming up pattern cache for {key}: {e}", level="warning")
+    return results
 
-async def cleanup_patterns():
-    """Clean up all pattern resources."""
-    global _initialized
-    
+async def cleanup_pattern_system() -> None:
+    """Clean up pattern system resources."""
     try:
-        # Clean up all language modules that have cleanup functions
-        cleanup_tasks = []
+        # Update status
+        await global_health_monitor.update_component_status(
+            "pattern_system",
+            ComponentStatus.SHUTTING_DOWN,
+            details={"stage": "starting"}
+        )
         
-        for module_name, module in globals().items():
-            if isinstance(module, type(asyncio)) and hasattr(module, 'cleanup'):
-                task = asyncio.create_task(module.cleanup())
-                cleanup_tasks.append(task)
+        # Clean up caches
+        await cache_coordinator.unregister_cache("pattern_cache")
+        await cache_coordinator.unregister_cache("validation_cache")
         
-        # Wait for all cleanup tasks
-        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        # Save error audit report
+        await ErrorAudit.save_report()
         
-        # Clean up any remaining pending tasks
+        # Clean up pending tasks
         if _pending_tasks:
             for task in _pending_tasks:
                 task.cancel()
             await asyncio.gather(*_pending_tasks, return_exceptions=True)
             _pending_tasks.clear()
         
-        # Clear pattern cache
-        _pattern_cache.clear()
+        await log("Pattern system cleaned up", level="info")
         
-        _initialized = False
-        log("Query patterns cleaned up", level="info")
+        # Update final status
+        await global_health_monitor.update_component_status(
+            "pattern_system",
+            ComponentStatus.SHUTDOWN,
+            details={"cleanup": "successful"}
+        )
+        
     except Exception as e:
-        log(f"Error cleaning up query patterns: {e}", level="error")
+        await log(f"Error cleaning up pattern system: {e}", level="error")
+        await global_health_monitor.update_component_status(
+            "pattern_system",
+            ComponentStatus.UNHEALTHY,
+            error=True,
+            details={"cleanup_error": str(e)}
+        )
 
-# Register cleanup handler
-register_shutdown_handler(cleanup_patterns)
+@handle_async_errors
+async def get_patterns_for_language(language_id: str) -> Optional[Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]]:
+    """Get patterns for a specific language with caching and error handling."""
+    if not _initialized:
+        await initialize_pattern_system()
+    
+    async with request_cache_context() as cache:
+        # Check request cache first
+        cache_key = f"patterns:{language_id}"
+        cached_patterns = await cache.get(cache_key)
+        if cached_patterns:
+            return cached_patterns
+        
+        # Check pattern cache
+        cached_patterns = await _pattern_cache.get_async(cache_key)
+        if cached_patterns:
+            await cache.set(cache_key, cached_patterns)
+            return cached_patterns
+        
+        # Load patterns
+        with monitor_operation("load_patterns", "pattern_system"):
+            patterns = None
+            module = globals().get(language_id)
+            if module:
+                if hasattr(module, 'get_patterns'):
+                    task = asyncio.create_task(module.get_patterns())
+                    _pending_tasks.add(task)
+                    try:
+                        patterns = await task
+                    finally:
+                        _pending_tasks.remove(task)
+                elif hasattr(module, 'PATTERNS'):
+                    patterns = _ensure_pattern_category_keys(module.PATTERNS)
+            
+            if patterns:
+                # Cache patterns
+                await _pattern_cache.set_async(cache_key, patterns)
+                await cache.set(cache_key, patterns)
+            
+            return patterns
 
-# Expose key functions
+@handle_async_errors
+async def validate_pattern(pattern: QueryPattern, context: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Validate a pattern with caching and error handling."""
+    cache_key = f"validation:{pattern.name}:{hash(pattern.pattern)}"
+    
+    # Check validation cache
+    cached_result = await _validation_cache.get_async(cache_key)
+    if cached_result:
+        return cached_result["is_valid"], cached_result["errors"]
+    
+    errors = []
+    is_valid = True
+    
+    try:
+        # Validate pattern
+        if not pattern.name or not isinstance(pattern.name, str):
+            errors.append("Invalid pattern name")
+            is_valid = False
+        if not pattern.pattern or not isinstance(pattern.pattern, str):
+            errors.append("Invalid pattern definition")
+            is_valid = False
+        if not isinstance(pattern.category, PatternCategory):
+            errors.append("Invalid pattern category")
+            is_valid = False
+        if not isinstance(pattern.purpose, PatternPurpose):
+            errors.append("Invalid pattern purpose")
+            is_valid = False
+        if not pattern.language_id or not isinstance(pattern.language_id, str):
+            errors.append("Invalid language ID")
+            is_valid = False
+            
+        # Cache validation result
+        result = {
+            "is_valid": is_valid,
+            "errors": errors
+        }
+        await _validation_cache.set_async(cache_key, result)
+        
+        return is_valid, errors
+        
+    except Exception as e:
+        await log(f"Error validating pattern: {e}", level="error")
+        return False, [str(e)]
+
+# Export key functions
 __all__ = [
-    'get_pattern_module',
+    'initialize_pattern_system',
+    'cleanup_pattern_system',
     'get_patterns_for_language',
-    'get_typed_patterns_for_language',
-    'list_available_languages',
-    'initialize_patterns',
-    'cleanup_patterns'
+    'validate_pattern'
 ]
+
+async def validate_all_patterns(patterns: List[Dict[str, Any]], language_id: Optional[str] = None) -> Dict[str, Any]:
+    """Validate all patterns for all languages or a specific language.
+    
+    Args:
+        patterns: List of patterns to validate
+        language_id: Optional language ID to filter patterns
+        
+    Returns:
+        Dictionary containing validation results and statistics
+    """
+    from parsers.pattern_processor import pattern_processor  # Import here to avoid circular import
+    
+    validation_results = {
+        "valid_patterns": [],
+        "invalid_patterns": [],
+        "validation_time": 0,
+        "stats": {
+            "total": 0,
+            "valid": 0,
+            "invalid": 0
+        }
+    }
+    
+    start_time = time.time()
+    
+    for pattern in patterns:
+        # Skip if language_id is specified and doesn't match
+        if language_id and pattern.get("language_id") != language_id:
+            continue
+        
+        validation_results["stats"]["total"] += 1
+        
+        # Create ProcessedPattern instance
+        from parsers.models import ProcessedPattern  # Import here to avoid circular import
+        processed_pattern = ProcessedPattern(
+            pattern_name=pattern["name"],
+            category=pattern.get("category"),
+            purpose=pattern.get("purpose"),
+            content=pattern.get("pattern"),
+            metadata=pattern.get("metadata", {})
+        )
+        
+        # Validate pattern
+        is_valid, errors = await pattern_processor.validate_pattern(
+            processed_pattern,
+            {"language": pattern.get("language_id", "unknown")}
+        )
+        
+        if is_valid:
+            validation_results["valid_patterns"].append({
+                "pattern": pattern["name"],
+                "language": pattern.get("language_id", "unknown")
+            })
+            validation_results["stats"]["valid"] += 1
+        else:
+            validation_results["invalid_patterns"].append({
+                "pattern": pattern["name"],
+                "language": pattern.get("language_id", "unknown"),
+                "errors": errors
+            })
+            validation_results["stats"]["invalid"] += 1
+    
+    validation_results["validation_time"] = time.time() - start_time
+    
+    return validation_results
+
+async def report_validation_results(results: Dict[str, Any]) -> str:
+    """Generate a human-readable report of pattern validation results.
+    
+    Args:
+        results: Validation results from validate_all_patterns
+        
+    Returns:
+        Formatted string containing the validation report
+    """
+    report = []
+    report.append("Pattern Validation Report")
+    report.append("=" * 25)
+    report.append("")
+    
+    # Add statistics
+    report.append("Statistics:")
+    report.append(f"- Total patterns: {results['stats']['total']}")
+    report.append(f"- Valid patterns: {results['stats']['valid']}")
+    report.append(f"- Invalid patterns: {results['stats']['invalid']}")
+    report.append(f"- Validation time: {results['validation_time']:.2f}s")
+    report.append("")
+    
+    # Add invalid patterns if any
+    if results["invalid_patterns"]:
+        report.append("Invalid Patterns:")
+        for pattern in results["invalid_patterns"]:
+            report.append(f"- {pattern['pattern']} ({pattern['language']}):")
+            for error in pattern["errors"]:
+                report.append(f"  - {error}")
+        report.append("")
+    
+    return "\n".join(report)

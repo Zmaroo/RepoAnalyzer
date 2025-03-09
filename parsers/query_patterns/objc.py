@@ -1,46 +1,53 @@
-"""Query patterns for Objective-C files."""
+"""Query patterns for Objective-C files.
 
-from parsers.types import FileType
-from .common import COMMON_PATTERNS
+This module provides Objective-C-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
+"""
+
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose, 
-    QueryPattern, PatternDefinition
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
 
-OBJECTIVEC_PATTERNS = {
-    **COMMON_PATTERNS,
+# Language identifier
+LANGUAGE = "objc"
+
+@dataclass
+class ObjCPatternContext(PatternContext):
+    """Objective-C-specific pattern context."""
+    class_names: Set[str] = field(default_factory=set)
+    method_names: Set[str] = field(default_factory=set)
+    property_names: Set[str] = field(default_factory=set)
+    protocol_names: Set[str] = field(default_factory=set)
+    has_arc: bool = False
+    has_categories: bool = False
+    has_blocks: bool = False
+    has_extensions: bool = False
     
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.class_names)}:{self.has_arc}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "class": PatternPerformanceMetrics(),
+    "method": PatternPerformanceMetrics(),
+    "property": PatternPerformanceMetrics(),
+    "protocol": PatternPerformanceMetrics(),
+    "category": PatternPerformanceMetrics()
+}
+
+OBJC_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
-                pattern="""
-                [
-                    (function_definition
-                        declarator: (function_declarator
-                            declarator: (identifier) @syntax.function.name
-                            parameters: (parameter_list) @syntax.function.params)
-                        body: (compound_statement) @syntax.function.body) @syntax.function.def,
-                    (method_definition
-                        selector: (selector) @syntax.method.name
-                        parameters: (parameter_list)? @syntax.method.params
-                        body: (compound_statement) @syntax.method.body) @syntax.method.def
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", "") or
-                           node["captures"].get("syntax.method.name", {}).get("text", ""),
-                    "type": "function" if "syntax.function.def" in node["captures"] else "method"
-                },
-                description="Matches Objective-C function and method definitions",
-                examples=[
-                    "void processData(int value) { }",
-                    "- (void)viewDidLoad { }"
-                ],
-                category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
-            ),
-            
-            "class": QueryPattern(
+            "class": ResilientPattern(
                 pattern="""
                 [
                     (class_interface
@@ -56,194 +63,77 @@ OBJECTIVEC_PATTERNS = {
                 ]
                 """,
                 extract=lambda node: {
-                    "name": node["captures"].get("syntax.class.name", {}).get("text", "") or
-                           node["captures"].get("syntax.class.impl.name", {}).get("text", ""),
-                    "type": "interface" if "syntax.class.interface" in node["captures"] else "implementation"
+                    "type": "class",
+                    "name": (
+                        node["captures"].get("syntax.class.name", {}).get("text", "") or
+                        node["captures"].get("syntax.class.impl.name", {}).get("text", "")
+                    ),
+                    "line_number": node["captures"].get("syntax.class.interface", {}).get("start_point", [0])[0],
+                    "is_implementation": "syntax.class.implementation" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["property", "method", "ivar"],
+                        PatternRelationType.DEPENDS_ON: ["protocol", "class"]
+                    }
                 },
-                description="Matches Objective-C class interface and implementation",
-                examples=[
-                    "@interface MyClass : NSObject",
-                    "@implementation MyClass"
-                ],
+                name="class",
+                description="Matches Objective-C class declarations",
+                examples=["@interface MyClass : NSObject", "@implementation MyClass"],
                 category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["class"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
+                }
             ),
-            
-            "protocol": QueryPattern(
+            "method": ResilientPattern(
                 pattern="""
-                (protocol_declaration
-                    name: (identifier) @syntax.protocol.name
-                    protocols: (protocol_reference_list)? @syntax.protocol.protocols
-                    methods: (method_declaration)* @syntax.protocol.methods) @syntax.protocol.def
+                [
+                    (method_declaration
+                        type: (method_type) @syntax.method.type
+                        selector: (selector) @syntax.method.selector
+                        parameters: (parameter_list)? @syntax.method.params
+                        body: (compound_statement)? @syntax.method.body) @syntax.method.def
+                ]
                 """,
                 extract=lambda node: {
-                    "name": node["captures"].get("syntax.protocol.name", {}).get("text", ""),
-                    "has_protocols": bool(node["captures"].get("syntax.protocol.protocols", None))
+                    "type": "method",
+                    "selector": node["captures"].get("syntax.method.selector", {}).get("text", ""),
+                    "method_type": node["captures"].get("syntax.method.type", {}).get("text", ""),
+                    "line_number": node["captures"].get("syntax.method.def", {}).get("start_point", [0])[0],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["parameter", "block"],
+                        PatternRelationType.DEPENDS_ON: ["class", "protocol"]
+                    }
                 },
-                description="Matches Objective-C protocol declarations",
-                examples=[
-                    "@protocol MyProtocol <NSObject>",
-                    "@protocol DataSource"
-                ],
+                name="method",
+                description="Matches Objective-C method declarations",
+                examples=["- (void)viewDidLoad", "+ (instancetype)sharedInstance"],
                 category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["method"],
+                    "validation": {
+                        "required_fields": ["selector"],
+                        "method_type_format": r'^[-+]$'
+                    }
+                }
             )
         }
     },
 
-    PatternCategory.SEMANTICS: {
-        PatternPurpose.UNDERSTANDING: {
-            "variable": QueryPattern(
-                pattern="""
-                [
-                    (declaration
-                        type: (_) @semantics.variable.type
-                        declarator: (identifier) @semantics.variable.name) @semantics.variable.def,
-                    (property_declaration
-                        attributes: (property_attributes)? @semantics.property.attrs
-                        type: (_) @semantics.property.type
-                        name: (identifier) @semantics.property.name) @semantics.property.def
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.variable.name", {}).get("text", "") or
-                           node["captures"].get("semantics.property.name", {}).get("text", ""),
-                    "type": node["captures"].get("semantics.variable.type", {}).get("text", "") or
-                           node["captures"].get("semantics.property.type", {}).get("text", "")
-                },
-                description="Matches Objective-C variable and property declarations",
-                examples=[
-                    "NSString *name;",
-                    "@property (nonatomic, strong) NSArray *items;"
-                ],
-                category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
-            ),
-            
-            "type": QueryPattern(
-                pattern="""
-                [
-                    (type_identifier) @semantics.type.name,
-                    (protocol_qualifier) @semantics.type.protocol,
-                    (type_qualifier) @semantics.type.qualifier
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.type.name", {}).get("text", ""),
-                    "protocol": node["captures"].get("semantics.type.protocol", {}).get("text", ""),
-                    "qualifier": node["captures"].get("semantics.type.qualifier", {}).get("text", "")
-                },
-                description="Matches Objective-C type declarations",
-                examples=[
-                    "NSString",
-                    "id<NSCoding>",
-                    "const NSInteger"
-                ],
-                category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    },
-
-    PatternCategory.DOCUMENTATION: {
-        PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
-                pattern="""
-                [
-                    (comment) @documentation.comment,
-                    (documentation_comment) @documentation.doc
-                ]
-                """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", "") or
-                           node["captures"].get("documentation.doc", {}).get("text", "")
-                },
-                description="Matches Objective-C comments and documentation",
-                examples=[
-                    "// Single line comment",
-                    "/* Block comment */",
-                    "/** Documentation comment */"
-                ],
-                category=PatternCategory.DOCUMENTATION,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    },
-
-    PatternCategory.STRUCTURE: {
-        PatternPurpose.UNDERSTANDING: {
-            "import": QueryPattern(
-                pattern="""
-                [
-                    (preproc_include
-                        path: (system_lib_string) @structure.import.system.path) @structure.import.system,
-                    (preproc_include
-                        path: (string_literal) @structure.import.local.path) @structure.import.local,
-                    (import_declaration
-                        path: (_) @structure.import.framework.path) @structure.import.framework
-                ]
-                """,
-                extract=lambda node: {
-                    "path": node["captures"].get("structure.import.system.path", {}).get("text", "") or
-                           node["captures"].get("structure.import.local.path", {}).get("text", "") or
-                           node["captures"].get("structure.import.framework.path", {}).get("text", ""),
-                    "type": ("system" if "structure.import.system" in node["captures"] else
-                            "local" if "structure.import.local" in node["captures"] else
-                            "framework")
-                },
-                description="Matches Objective-C import statements",
-                examples=[
-                    "#import <Foundation/Foundation.h>",
-                    "#import \"MyClass.h\"",
-                    "@import UIKit;"
-                ],
-                category=PatternCategory.STRUCTURE,
-                purpose=PatternPurpose.UNDERSTANDING
-            ),
-            
-            "category": QueryPattern(
-                pattern="""
-                [
-                    (category_interface
-                        name: (identifier) @structure.category.class
-                        category: (identifier) @structure.category.name) @structure.category.interface,
-                    (category_implementation
-                        name: (identifier) @structure.category.impl.class
-                        category: (identifier) @structure.category.impl.name) @structure.category.implementation
-                ]
-                """,
-                extract=lambda node: {
-                    "class_name": node["captures"].get("structure.category.class", {}).get("text", "") or
-                                 node["captures"].get("structure.category.impl.class", {}).get("text", ""),
-                    "category_name": node["captures"].get("structure.category.name", {}).get("text", "") or
-                                   node["captures"].get("structure.category.impl.name", {}).get("text", ""),
-                    "type": "interface" if "structure.category.interface" in node["captures"] else "implementation"
-                },
-                description="Matches Objective-C category declarations",
-                examples=[
-                    "@interface NSString (MyAdditions)",
-                    "@implementation NSArray (Utilities)"
-                ],
-                category=PatternCategory.STRUCTURE,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    }
-}
-
-# Repository learning patterns for Objective-C
-OBJECTIVEC_PATTERNS_FOR_LEARNING = {
     PatternCategory.LEARNING: {
-        PatternPurpose.LEARNING: {
-            "memory_management": QueryPattern(
+        PatternPurpose.MEMORY_MANAGEMENT: {
+            "memory_management": AdaptivePattern(
                 pattern="""
                 [
-                    (call_expression
-                        function: (identifier) @mem.func.name
-                        (#match? @mem.func.name "^(alloc|retain|release|autorelease)$")
-                        arguments: (_)? @mem.func.args) @mem.func.call,
-                        
-                    (objc_message_expr
+                    (message_expression
                         receiver: (_) @mem.msg.receiver
                         selector: (selector) @mem.msg.selector
                         (#match? @mem.msg.selector "alloc|retain|release|autorelease|dealloc")) @mem.msg,
@@ -253,74 +143,33 @@ OBJECTIVEC_PATTERNS_FOR_LEARNING = {
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "memory_management",
-                    "is_alloc_call": "mem.func.call" in node["captures"] and node["captures"].get("mem.func.name", {}).get("text", "") == "alloc",
-                    "is_release_call": "mem.func.call" in node["captures"] and node["captures"].get("mem.func.name", {}).get("text", "") == "release", 
+                    "type": "memory_management",
+                    "line_number": node["captures"].get("mem.msg", {}).get("start_point", [0])[0],
                     "is_memory_message": "mem.msg" in node["captures"],
                     "uses_arc_attributes": "mem.prop" in node["captures"] and "strong" in (node["captures"].get("mem.prop.attrs", {}).get("text", "") or ""),
                     "memory_selector": node["captures"].get("mem.msg.selector", {}).get("text", ""),
-                    "management_style": (
-                        "manual_reference_counting" if (
-                            "mem.msg" in node["captures"] and
-                            any(x in node["captures"].get("mem.msg.selector", {}).get("text", "") 
-                                for x in ["retain", "release", "autorelease"])
-                        ) else
-                        "arc" if (
-                            "mem.prop" in node["captures"] and 
-                            any(x in (node["captures"].get("mem.prop.attrs", {}).get("text", "") or "")
-                                for x in ["strong", "weak", "copy"])
-                        ) else
-                        "unknown"
-                    )
+                    "relationships": {
+                        PatternRelationType.DEPENDS_ON: ["class"],
+                        PatternRelationType.REFERENCES: ["property"]
+                    }
                 },
-                description="Matches Objective-C memory management patterns",
-                examples=[
-                    "[object retain]",
-                    "@property (nonatomic, strong) NSString *name;",
-                    "[[NSObject alloc] init]"
-                ],
+                name="memory_management",
+                description="Matches memory management patterns",
+                examples=["[object retain]", "@property (nonatomic, strong) NSString *name"],
                 category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "message_passing": QueryPattern(
-                pattern="""
-                [
-                    (objc_message_expr
-                        receiver: (_) @msg.receiver
-                        selector: (selector) @msg.selector
-                        arguments: (_)* @msg.args) @msg.expr,
-                        
-                    (objc_selector_expr
-                        selector: (selector) @sel.name) @sel.expr
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "message_passing",
-                    "is_message_expression": "msg.expr" in node["captures"],
-                    "is_selector_expression": "sel.expr" in node["captures"],
-                    "selector_name": (
-                        node["captures"].get("msg.selector", {}).get("text", "") or
-                        node["captures"].get("sel.name", {}).get("text", "")
-                    ),
-                    "argument_count": (
-                        len((node["captures"].get("msg.args", {}).get("text", "") or "").split(",")) 
-                        if "msg.args" in node["captures"] else 0
-                    ),
-                    "uses_self_receiver": "self" in (node["captures"].get("msg.receiver", {}).get("text", "") or ""),
-                    "uses_super_receiver": "super" in (node["captures"].get("msg.receiver", {}).get("text", "") or "")
-                },
-                description="Matches Objective-C message passing patterns",
-                examples=[
-                    "[self doSomething]",
-                    "[object methodWithArg:value]",
-                    "@selector(method:)"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "category_patterns": QueryPattern(
+                purpose=PatternPurpose.MEMORY_MANAGEMENT,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["memory"],
+                    "validation": {
+                        "required_fields": []
+                    }
+                }
+            )
+        },
+        PatternPurpose.CATEGORIES: {
+            "category": AdaptivePattern(
                 pattern="""
                 [
                     (category_interface
@@ -333,10 +182,8 @@ OBJECTIVEC_PATTERNS_FOR_LEARNING = {
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "category",
-                    "is_category_interface": "cat.interface" in node["captures"],
-                    "is_category_implementation": "cat.implementation" in node["captures"],
-                    "extended_class": (
+                    "type": "category",
+                    "class_name": (
                         node["captures"].get("cat.class", {}).get("text", "") or
                         node["captures"].get("cat.impl.class", {}).get("text", "")
                     ),
@@ -344,69 +191,107 @@ OBJECTIVEC_PATTERNS_FOR_LEARNING = {
                         node["captures"].get("cat.name", {}).get("text", "") or
                         node["captures"].get("cat.impl.name", {}).get("text", "")
                     ),
-                    "is_anonymous_category": (
-                        not node["captures"].get("cat.name", {}).get("text", "") or
-                        not node["captures"].get("cat.impl.name", {}).get("text", "")
-                    )
+                    "line_number": node["captures"].get("cat.interface", {}).get("start_point", [0])[0],
+                    "is_implementation": "cat.implementation" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.DEPENDS_ON: ["class"],
+                        PatternRelationType.CONTAINS: ["method", "property"]
+                    }
                 },
-                description="Matches Objective-C category patterns",
-                examples=[
-                    "@interface NSString (MyAdditions)",
-                    "@implementation UIView (Animations)"
-                ],
+                name="category",
+                description="Matches Objective-C categories",
+                examples=["@interface NSString (MyAdditions)", "@implementation UIView (Animations)"],
                 category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "ui_patterns": QueryPattern(
-                pattern="""
-                [
-                    (objc_message_expr
-                        receiver: (_) @ui.msg.receiver
-                        selector: (selector) @ui.msg.selector
-                        (#match? @ui.msg.selector "init.*WithFrame|addSubview|setDelegate|setDataSource")) @ui.msg,
-                        
-                    (class_interface
-                        name: (identifier) @ui.class.name
-                        (#match? @ui.class.name ".*View$|.*ViewController$|.*Cell$")
-                        superclass: (superclass_reference) @ui.class.super) @ui.class
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "ui_patterns",
-                    "is_ui_method_call": "ui.msg" in node["captures"],
-                    "is_ui_class": "ui.class" in node["captures"],
-                    "class_name": node["captures"].get("ui.class.name", {}).get("text", ""),
-                    "superclass_name": node["captures"].get("ui.class.super", {}).get("text", ""),
-                    "ui_selector": node["captures"].get("ui.msg.selector", {}).get("text", ""),
-                    "ui_component_type": (
-                        "view" if (
-                            "ui.class" in node["captures"] and
-                            "View" in node["captures"].get("ui.class.name", {}).get("text", "")
-                        ) else
-                        "view_controller" if (
-                            "ui.class" in node["captures"] and
-                            "ViewController" in node["captures"].get("ui.class.name", {}).get("text", "")
-                        ) else
-                        "cell" if (
-                            "ui.class" in node["captures"] and
-                            "Cell" in node["captures"].get("ui.class.name", {}).get("text", "")
-                        ) else
-                        "unknown"
-                    )
-                },
-                description="Matches Objective-C UI patterns",
-                examples=[
-                    "@interface MyViewController : UIViewController",
-                    "[view addSubview:subview]",
-                    "[[UIView alloc] initWithFrame:frame]"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
+                purpose=PatternPurpose.CATEGORIES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["category"],
+                    "validation": {
+                        "required_fields": ["class_name", "category_name"],
+                        "class_name_format": r'^[A-Z][a-zA-Z0-9_]*$',
+                        "category_name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
+                }
             )
         }
     }
 }
 
-# Add the repository learning patterns to the main patterns
-OBJECTIVEC_PATTERNS.update(OBJECTIVEC_PATTERNS_FOR_LEARNING) 
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
+
+async def extract_objc_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Objective-C content for repository learning."""
+    patterns = []
+    context = ObjCPatternContext()
+    
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in OBJC_PATTERNS:
+                category_patterns = OBJC_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "class":
+                                        context.class_names.add(match["name"])
+                                    elif match["type"] == "method":
+                                        context.method_names.add(match["selector"])
+                                    elif match["type"] == "memory_management":
+                                        if match["uses_arc_attributes"]:
+                                            context.has_arc = True
+                                    elif match["type"] == "category":
+                                        context.has_categories = True
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting Objective-C patterns: {e}", level="error")
+    
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "class": {
+        PatternRelationType.CONTAINS: ["property", "method", "ivar"],
+        PatternRelationType.DEPENDS_ON: ["protocol", "class"]
+    },
+    "method": {
+        PatternRelationType.CONTAINS: ["parameter", "block"],
+        PatternRelationType.DEPENDS_ON: ["class", "protocol"]
+    },
+    "property": {
+        PatternRelationType.DEPENDS_ON: ["class"],
+        PatternRelationType.REFERENCES: ["class"]
+    },
+    "category": {
+        PatternRelationType.DEPENDS_ON: ["class"],
+        PatternRelationType.CONTAINS: ["method", "property"]
+    }
+}
+
+# Export public interfaces
+__all__ = [
+    'OBJC_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_objc_patterns_for_learning',
+    'ObjCPatternContext',
+    'pattern_learner'
+] 

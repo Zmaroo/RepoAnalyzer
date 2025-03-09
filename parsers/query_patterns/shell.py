@@ -1,319 +1,301 @@
-"""Shell-specific Tree-sitter patterns."""
+"""Query patterns for Shell files.
 
+This module provides Shell-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
+"""
+
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
-from .common import COMMON_PATTERNS
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
 
-SHELL_PATTERNS_FOR_LEARNING = {
-    "command_structures": {
-        "pattern": """
-        [
-            (pipeline
-                (command
-                    name: (command_name) @cmd.pipe.name) @cmd.pipe.command
-                (command
-                    name: (command_name) @cmd.pipe.next_name) @cmd.pipe.next_command) @cmd.pipe,
-                
-            (command
-                name: (command_name) @cmd.redirect.name
-                (_)*
-                (redirections) @cmd.redirect.redirs) @cmd.redirect,
-                
-            (subshell
-                (command_substitution) @cmd.subshell.command_sub) @cmd.subshell,
-                
-            (if_statement
-                condition: (_) @cmd.if.condition
-                consequence: (_) @cmd.if.then
-                alternative: (_)? @cmd.if.else) @cmd.if
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "command_structures",
-            "is_pipeline": "cmd.pipe" in node["captures"],
-            "is_redirection": "cmd.redirect" in node["captures"],
-            "is_subshell": "cmd.subshell" in node["captures"],
-            "is_conditional": "cmd.if" in node["captures"],
-            "command_name": (
-                node["captures"].get("cmd.pipe.name", {}).get("text", "") or
-                node["captures"].get("cmd.redirect.name", {}).get("text", "")
-            ),
-            "command_structure": (
-                "pipeline" if "cmd.pipe" in node["captures"] else
-                "redirection" if "cmd.redirect" in node["captures"] else
-                "subshell" if "cmd.subshell" in node["captures"] else
-                "conditional" if "cmd.if" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
+# Language identifier
+LANGUAGE = "shell"
+
+@dataclass
+class ShellPatternContext(PatternContext):
+    """Shell-specific pattern context."""
+    function_names: Set[str] = field(default_factory=set)
+    variable_names: Set[str] = field(default_factory=set)
+    alias_names: Set[str] = field(default_factory=set)
+    has_functions: bool = False
+    has_arrays: bool = False
+    has_pipes: bool = False
+    has_redirects: bool = False
+    has_subshells: bool = False
     
-    "scripting_patterns": {
-        "pattern": """
-        [
-            (function_definition
-                name: (word) @script.func.name
-                body: (compound_statement) @script.func.body) @script.func,
-                
-            (for_statement
-                variable: (variable_name) @script.for.var
-                value: (_) @script.for.values
-                body: (do_group) @script.for.body) @script.for,
-                
-            (while_statement
-                condition: (_) @script.while.cond
-                body: (do_group) @script.while.body) @script.while,
-                
-            (case_statement
-                value: (_) @script.case.value
-                cases: (case_item
-                    pattern: (_) @script.case.pattern
-                    body: (_) @script.case.body)*) @script.case
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "scripting_patterns",
-            "is_function_def": "script.func" in node["captures"],
-            "is_for_loop": "script.for" in node["captures"],
-            "is_while_loop": "script.while" in node["captures"],
-            "is_case_statement": "script.case" in node["captures"],
-            "function_name": node["captures"].get("script.func.name", {}).get("text", ""),
-            "loop_variable": node["captures"].get("script.for.var", {}).get("text", ""),
-            "script_structure": (
-                "function_definition" if "script.func" in node["captures"] else
-                "for_loop" if "script.for" in node["captures"] else
-                "while_loop" if "script.while" in node["captures"] else
-                "case_statement" if "script.case" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
-    
-    "variable_usage": {
-        "pattern": """
-        [
-            (variable_assignment
-                name: (variable_name) @var.assign.name
-                value: (_) @var.assign.value) @var.assign,
-                
-            (expansion
-                [
-                    (variable_name) @var.expand.name
-                    (subscript
-                        name: (variable_name) @var.expand.array_name
-                        index: (_) @var.expand.index)
-                ]) @var.expand,
-                
-            (command_substitution
-                (command
-                    name: (command_name) @var.cmd_sub.command) @var.cmd_sub.full_command) @var.cmd_sub,
-                
-            (arithmetic_expansion
-                (_) @var.arith.expression) @var.arith
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "variable_usage",
-            "is_assignment": "var.assign" in node["captures"],
-            "is_expansion": "var.expand" in node["captures"],
-            "is_cmd_substitution": "var.cmd_sub" in node["captures"],
-            "is_arithmetic": "var.arith" in node["captures"],
-            "variable_name": (
-                node["captures"].get("var.assign.name", {}).get("text", "") or
-                node["captures"].get("var.expand.name", {}).get("text", "") or
-                node["captures"].get("var.expand.array_name", {}).get("text", "")
-            ),
-            "command_name": node["captures"].get("var.cmd_sub.command", {}).get("text", ""),
-            "variable_pattern": (
-                "assignment" if "var.assign" in node["captures"] else
-                "expansion" if "var.expand" in node["captures"] else
-                "command_substitution" if "var.cmd_sub" in node["captures"] else
-                "arithmetic_expansion" if "var.arith" in node["captures"] else
-                "unknown"
-            )
-        }
-    },
-    
-    "error_handling": {
-        "pattern": """
-        [
-            (command
-                name: (command_name) @error.trap.name
-                (#match? @error.trap.name "^trap$")
-                argument: (_) @error.trap.action) @error.trap,
-                
-            (binary_expression
-                left: (command
-                    name: (command_name) @error.check.cmd) @error.check.left
-                operator: (_) @error.check.op
-                right: (_) @error.check.right
-                (#match? @error.check.op "^(\\|\\||&&)$")) @error.check,
-                
-            (command
-                name: (command_name) @error.exit.name
-                (#match? @error.exit.name "^exit$")
-                argument: (_) @error.exit.code) @error.exit,
-                
-            (command 
-                name: (command_name) @error.test.name
-                (#match? @error.test.name "^(test|\\[)$")
-                argument: (_) @error.test.condition) @error.test
-        ]
-        """,
-        "extract": lambda node: {
-            "pattern_type": "error_handling",
-            "is_trap": "error.trap" in node["captures"],
-            "is_condition_check": "error.check" in node["captures"],
-            "is_exit": "error.exit" in node["captures"],
-            "is_test": "error.test" in node["captures"],
-            "command_name": (
-                node["captures"].get("error.trap.name", {}).get("text", "") or
-                node["captures"].get("error.check.cmd", {}).get("text", "") or
-                node["captures"].get("error.exit.name", {}).get("text", "") or
-                node["captures"].get("error.test.name", {}).get("text", "")
-            ),
-            "operator": node["captures"].get("error.check.op", {}).get("text", ""),
-            "error_pattern": (
-                "trap" if "error.trap" in node["captures"] else
-                "conditional_execution" if "error.check" in node["captures"] else
-                "exit_code" if "error.exit" in node["captures"] else
-                "test_condition" if "error.test" in node["captures"] else
-                "unknown"
-            )
-        }
-    }
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.function_names)}:{self.has_functions}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "function": PatternPerformanceMetrics(),
+    "variable": PatternPerformanceMetrics(),
+    "command": PatternPerformanceMetrics(),
+    "pipeline": PatternPerformanceMetrics(),
+    "redirect": PatternPerformanceMetrics()
 }
 
 SHELL_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
+            "function": ResilientPattern(
                 pattern="""
                 [
                     (function_definition
-                        name: (word) @syntax.function.name
-                        body: (compound_statement) @syntax.function.body) @syntax.function.def,
-                    
-                    (command
-                        name: (command_name) @syntax.command.name
-                        argument: (word) @syntax.command.arg)* @syntax.command
+                        name: (word) @syntax.func.name
+                        body: (compound_statement) @syntax.func.body) @syntax.func.def,
+                    (function_definition
+                        name: (word) @syntax.func.name
+                        body: (group) @syntax.func.group) @syntax.func.group.def
                 ]
                 """,
                 extract=lambda node: {
-                    "name": (
-                        node["captures"].get("syntax.function.name", {}).get("text", "") or
-                        node["captures"].get("syntax.command.name", {}).get("text", "")
-                    ),
-                    "is_command": "syntax.command" in node["captures"]
+                    "type": "function",
+                    "name": node["captures"].get("syntax.func.name", {}).get("text", ""),
+                    "line_number": node["captures"].get("syntax.func.def", {}).get("start_point", [0])[0],
+                    "is_grouped": "syntax.func.group.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["command", "variable", "pipeline"],
+                        PatternRelationType.DEPENDS_ON: ["function"]
+                    }
+                },
+                name="function",
+                description="Matches Shell function declarations",
+                examples=["function process() { echo 'done'; }", "backup() ( tar -czf backup.tar.gz . )"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["function"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z_][a-zA-Z0-9_]*$'
+                    }
                 }
             ),
-            "variable": QueryPattern(
+            "variable": ResilientPattern(
                 pattern="""
                 [
                     (variable_assignment
-                        name: (variable_name) @syntax.variable.name
-                        value: (_) @syntax.variable.value) @syntax.variable.assignment,
-                    
-                    (expansion
-                        [
-                            (variable_name) @syntax.variable.reference
-                            (subscript
-                                name: (variable_name) @syntax.variable.array_name
-                                index: (_) @syntax.variable.index) @syntax.variable.array_ref
-                        ]) @syntax.variable.expansion
+                        name: (variable_name) @syntax.var.name
+                        value: (_) @syntax.var.value) @syntax.var.def,
+                    (array_assignment
+                        name: (variable_name) @syntax.array.name
+                        elements: (array) @syntax.array.elements) @syntax.array.def
                 ]
                 """,
                 extract=lambda node: {
+                    "type": "variable",
                     "name": (
-                        node["captures"].get("syntax.variable.name", {}).get("text", "") or
-                        node["captures"].get("syntax.variable.reference", {}).get("text", "") or
-                        node["captures"].get("syntax.variable.array_name", {}).get("text", "")
+                        node["captures"].get("syntax.var.name", {}).get("text", "") or
+                        node["captures"].get("syntax.array.name", {}).get("text", "")
                     ),
-                    "is_assignment": "syntax.variable.assignment" in node["captures"],
-                    "is_array": "syntax.variable.array_ref" in node["captures"]
-                }
-            )
-        }
-    },
-
-    PatternCategory.STRUCTURE: {
-        PatternPurpose.UNDERSTANDING: {
-            "script": QueryPattern(
-                pattern="""
-                [
-                    (shebang) @structure.shebang,
-                    
-                    (comment) @structure.comment
-                ]
-                """,
-                extract=lambda node: {
-                    "shebang": node["captures"].get("structure.shebang", {}).get("text", ""),
-                    "comment": node["captures"].get("structure.comment", {}).get("text", "")
-                }
-            )
-        }
-    },
-
-    PatternCategory.DOCUMENTATION: {
-        PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
-                pattern="""
-                (comment) @documentation.comment
-                """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", ""),
-                    "type": "comment"
+                    "line_number": (
+                        node["captures"].get("syntax.var.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.array.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_array": "syntax.array.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.REFERENCED_BY: ["command", "pipeline"],
+                        PatternRelationType.DEPENDS_ON: ["variable"]
+                    }
+                },
+                name="variable",
+                description="Matches Shell variable assignments",
+                examples=["NAME='value'", "ARRAY=(one two three)"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["variable"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z_][A-Z0-9_]*$'
+                    }
                 }
             )
         }
     },
 
     PatternCategory.LEARNING: {
-        PatternPurpose.SCRIPTING: {
-            "scripting_patterns": QueryPattern(
+        PatternPurpose.COMMANDS: {
+            "command": AdaptivePattern(
                 pattern="""
                 [
-                    (function_definition
-                        name: (word) @script.func.name
-                        body: (compound_statement) @script.func.body) @script.func,
-                        
-                    (for_statement
-                        variable: (variable_name) @script.for.var
-                        value: (_) @script.for.values
-                        body: (do_group) @script.for.body) @script.for,
-                        
-                    (while_statement
-                        condition: (_) @script.while.cond
-                        body: (do_group) @script.while.body) @script.while,
-                        
-                    (case_statement
-                        value: (_) @script.case.value
-                        cases: (case_item
-                            pattern: (_) @script.case.pattern
-                            body: (_) @script.case.body)*) @script.case
+                    (command
+                        name: (command_name) @cmd.name
+                        argument: (_)* @cmd.args) @cmd.def,
+                    (pipeline
+                        command: (command)+ @cmd.pipe.command) @cmd.pipe.def,
+                    (subshell
+                        command: (_) @cmd.sub.command) @cmd.sub.def
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "scripting",
-                    "is_function_def": "script.func" in node["captures"],
-                    "is_for_loop": "script.for" in node["captures"],
-                    "is_while_loop": "script.while" in node["captures"],
-                    "is_case_statement": "script.case" in node["captures"],
-                    "function_name": node["captures"].get("script.func.name", {}).get("text", ""),
-                    "loop_variable": node["captures"].get("script.for.var", {}).get("text", ""),
-                    "script_structure": (
-                        "function_definition" if "script.func" in node["captures"] else
-                        "for_loop" if "script.for" in node["captures"] else
-                        "while_loop" if "script.while" in node["captures"] else
-                        "case_statement" if "script.case" in node["captures"] else
-                        "unknown"
-                    )
+                    "type": "command",
+                    "name": node["captures"].get("cmd.name", {}).get("text", ""),
+                    "line_number": node["captures"].get("cmd.def", {}).get("start_point", [0])[0],
+                    "is_pipeline": "cmd.pipe.def" in node["captures"],
+                    "is_subshell": "cmd.sub.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.USES: ["variable", "function"],
+                        PatternRelationType.DEPENDS_ON: ["command"]
+                    }
+                },
+                name="command",
+                description="Matches Shell command executions",
+                examples=["ls -la", "echo $PATH | grep bin", "( cd /tmp && ls )"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.COMMANDS,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["command"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z0-9_.-]+$'
+                    }
+                }
+            )
+        },
+        PatternPurpose.REDIRECTS: {
+            "redirect": AdaptivePattern(
+                pattern="""
+                [
+                    (redirected_statement
+                        command: (_) @redir.command
+                        redirect: (file_redirect
+                            descriptor: (_)? @redir.fd
+                            operator: (_) @redir.op
+                            file: (_) @redir.file)) @redir.def,
+                    (heredoc_redirect
+                        start: (_) @redir.heredoc.start
+                        content: (_) @redir.heredoc.content
+                        end: (_) @redir.heredoc.end) @redir.heredoc.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "redirect",
+                    "line_number": (
+                        node["captures"].get("redir.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("redir.heredoc.def", {}).get("start_point", [0])[0]
+                    ),
+                    "operator": node["captures"].get("redir.op", {}).get("text", ""),
+                    "is_heredoc": "redir.heredoc.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.MODIFIES: ["command", "pipeline"],
+                        PatternRelationType.DEPENDS_ON: ["file"]
+                    }
+                },
+                name="redirect",
+                description="Matches Shell redirections",
+                examples=["command > output.txt", "cat << EOF", "2>&1"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.REDIRECTS,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["redirect"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": None
+                    }
                 }
             )
         }
-    },
+    }
+}
 
-    "REPOSITORY_LEARNING": SHELL_PATTERNS_FOR_LEARNING
-} 
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
+
+async def extract_shell_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Shell content for repository learning."""
+    patterns = []
+    context = ShellPatternContext()
+    
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in SHELL_PATTERNS:
+                category_patterns = SHELL_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "function":
+                                        context.function_names.add(match["name"])
+                                        context.has_functions = True
+                                    elif match["type"] == "variable":
+                                        context.variable_names.add(match["name"])
+                                        if match["is_array"]:
+                                            context.has_arrays = True
+                                    elif match["type"] == "command":
+                                        if match["is_pipeline"]:
+                                            context.has_pipes = True
+                                        if match["is_subshell"]:
+                                            context.has_subshells = True
+                                    elif match["type"] == "redirect":
+                                        context.has_redirects = True
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting Shell patterns: {e}", level="error")
+    
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "function": {
+        PatternRelationType.CONTAINS: ["command", "variable", "pipeline"],
+        PatternRelationType.DEPENDS_ON: ["function"]
+    },
+    "variable": {
+        PatternRelationType.REFERENCED_BY: ["command", "pipeline"],
+        PatternRelationType.DEPENDS_ON: ["variable"]
+    },
+    "command": {
+        PatternRelationType.USES: ["variable", "function"],
+        PatternRelationType.DEPENDS_ON: ["command"]
+    },
+    "redirect": {
+        PatternRelationType.MODIFIES: ["command", "pipeline"],
+        PatternRelationType.DEPENDS_ON: ["file"]
+    }
+}
+
+# Export public interfaces
+__all__ = [
+    'SHELL_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_shell_patterns_for_learning',
+    'ShellPatternContext',
+    'pattern_learner'
+] 

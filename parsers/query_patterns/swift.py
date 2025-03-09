@@ -1,422 +1,348 @@
-"""Query patterns for Swift files."""
+"""Query patterns for Swift files.
 
-from parsers.types import FileType
-from .common import COMMON_PATTERNS
+This module provides Swift-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
+"""
+
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose, 
-    QueryPattern, PatternDefinition
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
+
+# Language identifier
+LANGUAGE = "swift"
+
+@dataclass
+class SwiftPatternContext(PatternContext):
+    """Swift-specific pattern context."""
+    class_names: Set[str] = field(default_factory=set)
+    struct_names: Set[str] = field(default_factory=set)
+    protocol_names: Set[str] = field(default_factory=set)
+    function_names: Set[str] = field(default_factory=set)
+    extension_names: Set[str] = field(default_factory=set)
+    has_generics: bool = False
+    has_protocols: bool = False
+    has_extensions: bool = False
+    has_async: bool = False
+    has_throws: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.class_names)}:{self.has_generics}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "class": PatternPerformanceMetrics(),
+    "struct": PatternPerformanceMetrics(),
+    "protocol": PatternPerformanceMetrics(),
+    "function": PatternPerformanceMetrics(),
+    "extension": PatternPerformanceMetrics()
+}
 
 SWIFT_PATTERNS = {
-    **COMMON_PATTERNS,  # Keep as fallback for basic patterns
-    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": QueryPattern(
-                pattern="""
-                [
-                    (function_declaration
-                        name: (simple_identifier) @syntax.function.name
-                        parameters: (parameter_clause) @syntax.function.params
-                        result: (return_type
-                            type: (_) @syntax.function.return)? @syntax.function.result
-                        body: (statement_block) @syntax.function.body) @syntax.function.def
-                ]
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.function.name", {}).get("text", ""),
-                    "return_type": node["captures"].get("syntax.function.return", {}).get("text", "")
-                },
-                description="Matches Swift function declarations",
-                examples=[
-                    "func greet(name: String) -> String { }",
-                    "func process() { }"
-                ],
-                category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
-            ),
-            
-            "class": QueryPattern(
+            "class": ResilientPattern(
                 pattern="""
                 [
                     (class_declaration
                         name: (type_identifier) @syntax.class.name
-                        inheritance_clause: (inheritance_clause)? @syntax.class.inheritance
-                        body: (declaration_block) @syntax.class.body) @syntax.class.def,
-                           
+                        type_parameters: (generic_parameter_clause)? @syntax.class.generics
+                        inheritance_clause: (type_inheritance_clause)? @syntax.class.inheritance
+                        body: (class_body) @syntax.class.body) @syntax.class.def,
                     (struct_declaration
                         name: (type_identifier) @syntax.struct.name
-                        inheritance_clause: (inheritance_clause)? @syntax.struct.inheritance
-                        body: (declaration_block)? @syntax.struct.body) @syntax.struct.def
+                        type_parameters: (generic_parameter_clause)? @syntax.struct.generics
+                        inheritance_clause: (type_inheritance_clause)? @syntax.struct.inheritance
+                        body: (struct_body) @syntax.struct.body) @syntax.struct.def
                 ]
                 """,
                 extract=lambda node: {
-                    "name": node["captures"].get("syntax.class.name", {}).get("text", "") or
-                           node["captures"].get("syntax.struct.name", {}).get("text", ""),
-                    "type": "class" if "syntax.class.name" in node["captures"] else "struct"
+                    "type": "class",
+                    "name": (
+                        node["captures"].get("syntax.class.name", {}).get("text", "") or
+                        node["captures"].get("syntax.struct.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.class.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.struct.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_struct": "syntax.struct.def" in node["captures"],
+                    "has_generics": (
+                        "syntax.class.generics" in node["captures"] or
+                        "syntax.struct.generics" in node["captures"]
+                    ),
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["method", "property", "initializer"],
+                        PatternRelationType.DEPENDS_ON: ["protocol", "class"]
+                    }
                 },
+                name="class",
                 description="Matches Swift class and struct declarations",
-                examples=[
-                    "class MyClass: BaseClass { }",
-                    "struct Point: Codable { }"
-                ],
+                examples=["class MyClass<T>: BaseClass", "struct Point: Codable"],
                 category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    },
-    
-    PatternCategory.SEMANTICS: {
-        PatternPurpose.UNDERSTANDING: {
-            "type": QueryPattern(
-                pattern="""
-                [
-                    (optional_type
-                        type: (_) @semantics.type.optional.inner) @semantics.type.optional,
-                        
-                    (if_statement
-                        condition: (optional_binding_condition
-                            name: (identifier) @semantics.type.binding.name
-                            value: (_) @semantics.type.binding.value) @semantics.type.binding
-                        body: (statement_block) @semantics.type.binding.body) @semantics.type.binding.if,
-                        
-                    (guard_statement
-                        condition: (optional_binding_condition
-                            name: (identifier) @semantics.type.guard.name
-                            value: (_) @semantics.type.guard.value) @semantics.type.guard
-                        body: (statement_block) @semantics.type.guard.body) @semantics.type.guard.stmt,
-                        
-                    (force_unwrap_expression
-                        expression: (_) @semantics.type.force.expr) @semantics.type.force,
-                        
-                    (optional_chaining_expression
-                        expression: (_) @semantics.type.chain.expr) @semantics.type.chain,
-                        
-                    (as_expression
-                        expression: (_) @semantics.type.cast.expr
-                        type: (_) @semantics.type.cast.type) @semantics.type.cast {
-                        filter: { @semantics.type.cast.text =~ "as\\?" }
-                    },
-                        
-                    (switch_statement
-                        expression: (_) @semantics.type.switch.expr
-                        body: (switch_body
-                            (case) @semantics.type.switch.case+) @semantics.type.switch.cases) @semantics.type.switch
-                ]
-                """,
-                extract=lambda node: {
-                    "has_optional": "semantics.type.optional" in node["captures"],
-                    "has_binding": "semantics.type.binding" in node["captures"],
-                    "has_guard": "semantics.type.guard" in node["captures"],
-                    "has_force_unwrap": "semantics.type.force" in node["captures"],
-                    "has_optional_chaining": "semantics.type.chain" in node["captures"]
-                },
-                description="Matches Swift type system features",
-                examples=[
-                    "let x: String?",
-                    "if let value = optional { }",
-                    "guard let value = optional else { }"
-                ],
-                category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    },
-    
-    PatternCategory.DOCUMENTATION: {
-        PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
-                pattern="""
-                [
-                    (line_comment) @documentation.line,
-                    (multiline_comment) @documentation.block,
-                    (documentation_comment) @documentation.doc
-                ]
-                """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.line", {}).get("text", "") or
-                           node["captures"].get("documentation.block", {}).get("text", "") or
-                           node["captures"].get("documentation.doc", {}).get("text", "")
-                },
-                description="Matches Swift comments and documentation",
-                examples=[
-                    "// Line comment",
-                    "/* Block comment */",
-                    "/// Documentation comment"
-                ],
-                category=PatternCategory.DOCUMENTATION,
-                purpose=PatternPurpose.UNDERSTANDING
-            )
-        }
-    }
-}
-
-# Repository learning patterns for Swift
-SWIFT_PATTERNS_FOR_LEARNING = {
-    PatternCategory.LEARNING: {
-        PatternPurpose.LEARNING: {
-            "protocol_oriented": QueryPattern(
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["class"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
+                }
+            ),
+            "protocol": ResilientPattern(
                 pattern="""
                 [
                     (protocol_declaration
-                        name: (type_identifier) @protocol.name
-                        inheritance_clause: (inheritance_clause
-                            (type_identifier)+ @protocol.parent)? @protocol.inheritance
-                        body: (declaration_block
-                            [(function_declaration) (variable_declaration) (property_declaration) (typealias_declaration)]+ @protocol.requirements) @protocol.body) @protocol.def,
-                        
+                        name: (type_identifier) @syntax.protocol.name
+                        type_parameters: (generic_parameter_clause)? @syntax.protocol.generics
+                        inheritance_clause: (type_inheritance_clause)? @syntax.protocol.inheritance
+                        body: (protocol_body) @syntax.protocol.body) @syntax.protocol.def,
                     (extension_declaration
-                        name: (type_identifier) @extension.type
-                        inheritance_clause: (inheritance_clause
-                            (type_identifier)+ @extension.protocols)? @extension.inheritance
-                        body: (declaration_block) @extension.body) @extension.def {
-                        filter: { @extension.protocols is not null }
-                    },
-                        
-                    (struct_declaration
-                        name: (type_identifier) @struct.name
-                        inheritance_clause: (inheritance_clause
-                            (type_identifier)+ @struct.protocols)? @struct.inheritance
-                        body: (declaration_block)? @struct.body) @struct.def {
-                        filter: { @struct.protocols is not null }
-                    },
-                        
-                    (class_declaration
-                        name: (type_identifier) @class.name
-                        inheritance_clause: (inheritance_clause
-                            (type_identifier)+ @class.protocols)? @class.inheritance
-                        body: (declaration_block)? @class.body) @class.def {
-                        filter: { @class.protocols is not null }
-                    }
+                        name: (type_identifier) @syntax.extension.name
+                        type_parameters: (generic_parameter_clause)? @syntax.extension.generics
+                        inheritance_clause: (type_inheritance_clause)? @syntax.extension.inheritance
+                        body: (extension_body) @syntax.extension.body) @syntax.extension.def
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "protocol_oriented",
-                    "is_protocol": "protocol.def" in node["captures"],
-                    "is_extension": "extension.def" in node["captures"],
-                    "is_struct": "struct.def" in node["captures"],
-                    "is_class": "class.def" in node["captures"],
+                    "type": "protocol",
                     "name": (
-                        node["captures"].get("protocol.name", {}).get("text", "") or
-                        node["captures"].get("extension.type", {}).get("text", "") or
-                        node["captures"].get("struct.name", {}).get("text", "") or
-                        node["captures"].get("class.name", {}).get("text", "")
+                        node["captures"].get("syntax.protocol.name", {}).get("text", "") or
+                        node["captures"].get("syntax.extension.name", {}).get("text", "")
                     ),
-                    "conforms_to": [p.get("text", "") for p in (
-                        node["captures"].get("protocol.parent", []) or
-                        node["captures"].get("extension.protocols", []) or
-                        node["captures"].get("struct.protocols", []) or
-                        node["captures"].get("class.protocols", [])
-                    )],
-                    "pattern_kind": (
-                        "protocol_definition" if "protocol.def" in node["captures"] else
-                        "protocol_extension" if "extension.def" in node["captures"] else
-                        "protocol_conforming_struct" if "struct.def" in node["captures"] else
-                        "protocol_conforming_class" if "class.def" in node["captures"] else
-                        "unknown"
-                    )
+                    "line_number": (
+                        node["captures"].get("syntax.protocol.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.extension.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_extension": "syntax.extension.def" in node["captures"],
+                    "has_generics": (
+                        "syntax.protocol.generics" in node["captures"] or
+                        "syntax.extension.generics" in node["captures"]
+                    ),
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["method", "property", "associatedtype"],
+                        PatternRelationType.DEPENDS_ON: ["protocol"]
+                    }
                 },
-                description="Matches Swift protocol-oriented programming patterns",
-                examples=[
-                    "protocol MyProtocol { }",
-                    "extension MyType: MyProtocol { }",
-                    "struct MyStruct: MyProtocol { }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
+                name="protocol",
+                description="Matches Swift protocol declarations and extensions",
+                examples=["protocol Drawable", "extension Array: CustomStringConvertible"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["protocol"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
+                }
             ),
-            
-            "functional_patterns": QueryPattern(
-                pattern="""
-                [
-                    (closure_expression
-                        parameters: (closure_parameter_clause
-                            (closure_parameter
-                                name: (identifier) @func.closure.param.name
-                                type: (type_annotation)? @func.closure.param.type)* @func.closure.params)? @func.closure.param_clause
-                        throws: (_)? @func.closure.throws
-                        result: (return_type)? @func.closure.return
-                        body: (statement_block) @func.closure.body) @func.closure,
-                        
-                    (function_call
-                        function: [(identifier) @func.call.name (member_expression)]
-                        trailing_closure: (closure_expression)? @func.call.trailing
-                        arguments: (tuple_expression
-                            (argument
-                                label: (_)? @func.call.arg.label
-                                value: (_) @func.call.arg.value)* @func.call.args)? @func.call.tuple) @func.call,
-                        
-                    (variable_declaration
-                        pattern: (identifier_pattern) @func.var.name
-                        type: (type_annotation)? @func.var.type
-                        value: (lambda_literal
-                            body: (statement_block) @func.lambda.body)? @func.lambda
-                        ) @func.var.decl {
-                        filter: { @func.lambda is not null }
-                    },
-                        
-                    (for_in_statement
-                        pattern: (identifier_pattern) @func.iter.item
-                        expression: [(array_literal) (range_expression) (function_call) (member_expression)] @func.iter.collection
-                        body: (statement_block) @func.iter.body) @func.iter
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "functional_patterns",
-                    "is_closure": "func.closure" in node["captures"],
-                    "is_function_call": "func.call" in node["captures"],
-                    "is_lambda": "func.lambda" in node["captures"],
-                    "is_iteration": "func.iter" in node["captures"],
-                    "function_name": node["captures"].get("func.call.name", {}).get("text", ""),
-                    "has_trailing_closure": "func.call.trailing" in node["captures"] and node["captures"].get("func.call.trailing", {}).get("text", "") != "",
-                    "arg_count": len([arg for arg in node["captures"].get("func.call.args", [])]) if "func.call.args" in node["captures"] else 0,
-                    "iteration_item": node["captures"].get("func.iter.item", {}).get("text", ""),
-                    "pattern_kind": (
-                        "closure" if "func.closure" in node["captures"] else
-                        "function_call" if "func.call" in node["captures"] else
-                        "lambda" if "func.lambda" in node["captures"] else
-                        "iteration" if "func.iter" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches Swift functional programming patterns",
-                examples=[
-                    "{ (x: Int) -> Int in return x * 2 }",
-                    "array.map { $0 * 2 }",
-                    "for item in collection { }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "type_safety": QueryPattern(
-                pattern="""
-                [
-                    (optional_type
-                        type: (_) @type.optional.inner) @type.optional,
-                        
-                    (if_statement
-                        condition: (optional_binding_condition
-                            name: (identifier) @type.binding.name
-                            value: (_) @type.binding.value) @type.binding
-                        body: (statement_block) @type.binding.body) @type.binding.if,
-                        
-                    (guard_statement
-                        condition: (optional_binding_condition
-                            name: (identifier) @type.guard.name
-                            value: (_) @type.guard.value) @type.guard
-                        body: (statement_block) @type.guard.body) @type.guard.stmt,
-                        
-                    (force_unwrap_expression
-                        expression: (_) @type.force.expr) @type.force,
-                        
-                    (optional_chaining_expression
-                        expression: (_) @type.chain.expr) @type.chain,
-                        
-                    (as_expression
-                        expression: (_) @type.cast.expr
-                        type: (_) @type.cast.type) @type.cast {
-                        filter: { @type.cast.text =~ "as\\?" }
-                    },
-                        
-                    (switch_statement
-                        expression: (_) @type.switch.expr
-                        body: (switch_body
-                            (case) @type.switch.case+) @type.switch.cases) @type.switch
-                ]
-                """,
-                extract=lambda node: {
-                    "pattern_type": "type_safety",
-                    "is_optional_type": "type.optional" in node["captures"],
-                    "is_optional_binding": "type.binding" in node["captures"],
-                    "is_guard": "type.guard" in node["captures"],
-                    "is_force_unwrap": "type.force" in node["captures"],
-                    "is_optional_chaining": "type.chain" in node["captures"],
-                    "is_type_cast": "type.cast" in node["captures"],
-                    "is_switch": "type.switch" in node["captures"],
-                    "bound_name": node["captures"].get("type.binding.name", {}).get("text", "") or node["captures"].get("type.guard.name", {}).get("text", ""),
-                    "inner_type": node["captures"].get("type.optional.inner", {}).get("text", ""),
-                    "cast_type": node["captures"].get("type.cast.type", {}).get("text", ""),
-                    "num_cases": len([case for case in node["captures"].get("type.switch.case", [])]) if "type.switch.cases" in node["captures"] else 0,
-                    "pattern_kind": (
-                        "optional_type" if "type.optional" in node["captures"] else
-                        "optional_binding" if "type.binding" in node["captures"] else
-                        "guard_let" if "type.guard" in node["captures"] else
-                        "force_unwrap" if "type.force" in node["captures"] else
-                        "optional_chaining" if "type.chain" in node["captures"] else
-                        "type_cast" if "type.cast" in node["captures"] else
-                        "switch_pattern" if "type.switch" in node["captures"] else
-                        "unknown"
-                    )
-                },
-                description="Matches Swift type safety patterns",
-                examples=[
-                    "let x: String?",
-                    "if let value = optional { }",
-                    "value as? String"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "concurrency": QueryPattern(
+            "function": ResilientPattern(
                 pattern="""
                 [
                     (function_declaration
-                        modifier: [(attribute) (simple_identifier)] @concurrency.func.modifier {
-                            match: "^(async|@MainActor)$"
-                        }
-                        name: (simple_identifier) @concurrency.func.name
-                        parameters: (parameter_clause) @concurrency.func.params
-                        result: (return_type
-                            type: (_) @concurrency.func.return)? @concurrency.func.result
-                        body: (statement_block) @concurrency.func.body) @concurrency.func,
-                        
-                    (await_expression
-                        expression: (_) @concurrency.await.expr) @concurrency.await,
-                        
-                    (function_call
-                        function: (simple_identifier) @concurrency.task.func {
-                            match: "^(Task|detach)$"
-                        }
-                        trailing_closure: (closure_expression) @concurrency.task.closure) @concurrency.task,
-                        
-                    (actor_declaration
-                        name: (type_identifier) @concurrency.actor.name
-                        body: (declaration_block) @concurrency.actor.body) @concurrency.actor
+                        modifiers: [(async) (throws)]* @syntax.func.modifier
+                        name: (identifier) @syntax.func.name
+                        type_parameters: (generic_parameter_clause)? @syntax.func.generics
+                        parameters: (parameter_clause) @syntax.func.params
+                        return_type: (type_annotation)? @syntax.func.return
+                        body: (code_block) @syntax.func.body) @syntax.func.def,
+                    (initializer_declaration
+                        modifiers: [(convenience) (required)]* @syntax.init.modifier
+                        parameters: (parameter_clause) @syntax.init.params
+                        body: (code_block) @syntax.init.body) @syntax.init.def
                 ]
                 """,
                 extract=lambda node: {
-                    "pattern_type": "concurrency",
-                    "is_async_function": "concurrency.func" in node["captures"] and "async" in node["captures"].get("concurrency.func.modifier", {}).get("text", ""),
-                    "is_main_actor": "concurrency.func" in node["captures"] and "@MainActor" in node["captures"].get("concurrency.func.modifier", {}).get("text", ""),
-                    "is_await": "concurrency.await" in node["captures"],
-                    "is_task": "concurrency.task" in node["captures"],
-                    "is_actor": "concurrency.actor" in node["captures"],
-                    "function_name": node["captures"].get("concurrency.func.name", {}).get("text", ""),
-                    "task_type": node["captures"].get("concurrency.task.func", {}).get("text", ""),
-                    "actor_name": node["captures"].get("concurrency.actor.name", {}).get("text", ""),
-                    "pattern_kind": (
-                        "async_function" if "concurrency.func" in node["captures"] and "async" in node["captures"].get("concurrency.func.modifier", {}).get("text", "") else
-                        "main_actor_function" if "concurrency.func" in node["captures"] and "@MainActor" in node["captures"].get("concurrency.func.modifier", {}).get("text", "") else
-                        "await_expression" if "concurrency.await" in node["captures"] else
-                        "task_creation" if "concurrency.task" in node["captures"] else
-                        "actor_definition" if "concurrency.actor" in node["captures"] else
-                        "unknown"
-                    )
+                    "type": "function",
+                    "name": node["captures"].get("syntax.func.name", {}).get("text", ""),
+                    "line_number": (
+                        node["captures"].get("syntax.func.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.init.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_init": "syntax.init.def" in node["captures"],
+                    "is_async": "async" in (node["captures"].get("syntax.func.modifier", {}).get("text", "") or ""),
+                    "is_throws": "throws" in (node["captures"].get("syntax.func.modifier", {}).get("text", "") or ""),
+                    "has_generics": "syntax.func.generics" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["statement", "expression"],
+                        PatternRelationType.DEPENDS_ON: ["type", "protocol"]
+                    }
                 },
-                description="Matches Swift concurrency patterns",
-                examples=[
-                    "async func fetchData() -> Data { }",
-                    "await getData()",
-                    "actor BankAccount { }"
-                ],
+                name="function",
+                description="Matches Swift function declarations",
+                examples=["func process<T>(_ data: T) async throws -> Result<T, Error>", "init(name: String)"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["function"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-z][a-zA-Z0-9_]*$'
+                    }
+                }
+            )
+        }
+    },
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.EXTENSIONS: {
+            "extension": AdaptivePattern(
+                pattern="""
+                [
+                    (extension_declaration
+                        name: (type_identifier) @ext.name
+                        type_parameters: (generic_parameter_clause)? @ext.generics
+                        inheritance_clause: (type_inheritance_clause)? @ext.inheritance
+                        body: (extension_body) @ext.body) @ext.def,
+                    (protocol_extension_declaration
+                        name: (type_identifier) @ext.protocol.name
+                        type_parameters: (generic_parameter_clause)? @ext.protocol.generics
+                        inheritance_clause: (type_inheritance_clause)? @ext.protocol.inheritance
+                        body: (extension_body) @ext.protocol.body) @ext.protocol.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "extension",
+                    "name": (
+                        node["captures"].get("ext.name", {}).get("text", "") or
+                        node["captures"].get("ext.protocol.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("ext.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("ext.protocol.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_protocol": "ext.protocol.def" in node["captures"],
+                    "has_generics": (
+                        "ext.generics" in node["captures"] or
+                        "ext.protocol.generics" in node["captures"]
+                    ),
+                    "relationships": {
+                        PatternRelationType.EXTENDS: ["class", "struct", "protocol"],
+                        PatternRelationType.CONTAINS: ["method", "property"]
+                    }
+                },
+                name="extension",
+                description="Matches Swift extension declarations",
+                examples=["extension Array where Element: Equatable", "extension Collection"],
                 category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
+                purpose=PatternPurpose.EXTENSIONS,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["extension"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9_]*$'
+                    }
+                }
             )
         }
     }
 }
 
-# Add the repository learning patterns to the main patterns
-SWIFT_PATTERNS.update(SWIFT_PATTERNS_FOR_LEARNING) 
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
+
+async def extract_swift_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Swift content for repository learning."""
+    patterns = []
+    context = SwiftPatternContext()
+    
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in SWIFT_PATTERNS:
+                category_patterns = SWIFT_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "class":
+                                        if match["is_struct"]:
+                                            context.struct_names.add(match["name"])
+                                        else:
+                                            context.class_names.add(match["name"])
+                                        if match["has_generics"]:
+                                            context.has_generics = True
+                                    elif match["type"] == "protocol":
+                                        if match["is_extension"]:
+                                            context.extension_names.add(match["name"])
+                                            context.has_extensions = True
+                                        else:
+                                            context.protocol_names.add(match["name"])
+                                            context.has_protocols = True
+                                    elif match["type"] == "function":
+                                        context.function_names.add(match["name"])
+                                        if match["is_async"]:
+                                            context.has_async = True
+                                        if match["is_throws"]:
+                                            context.has_throws = True
+                                    elif match["type"] == "extension":
+                                        context.extension_names.add(match["name"])
+                                        context.has_extensions = True
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting Swift patterns: {e}", level="error")
+    
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "class": {
+        PatternRelationType.CONTAINS: ["method", "property", "initializer"],
+        PatternRelationType.DEPENDS_ON: ["protocol", "class"]
+    },
+    "protocol": {
+        PatternRelationType.CONTAINS: ["method", "property", "associatedtype"],
+        PatternRelationType.DEPENDS_ON: ["protocol"]
+    },
+    "function": {
+        PatternRelationType.CONTAINS: ["statement", "expression"],
+        PatternRelationType.DEPENDS_ON: ["type", "protocol"]
+    },
+    "extension": {
+        PatternRelationType.EXTENDS: ["class", "struct", "protocol"],
+        PatternRelationType.CONTAINS: ["method", "property"]
+    }
+}
+
+# Export public interfaces
+__all__ = [
+    'SWIFT_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_swift_patterns_for_learning',
+    'SwiftPatternContext',
+    'pattern_learner'
+] 

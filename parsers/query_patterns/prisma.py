@@ -1,17 +1,105 @@
 """
 Query patterns for Prisma schema files.
+
+This module provides Prisma-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
 """
 
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose,
-    QueryPattern, PatternDefinition
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import (
+    handle_async_errors, AsyncErrorBoundary, ProcessingError, ErrorSeverity
+)
+from utils.logger import log
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.cache_analytics import get_cache_analytics
+from utils.health_monitor import ComponentStatus, global_health_monitor, monitor_operation
+from utils.request_cache import cached_in_request, request_cache_context
 from .common import COMMON_PATTERNS
+
+# Language identifier
+LANGUAGE = "prisma"
+
+@dataclass
+class PrismaPatternContext(PatternContext):
+    """Prisma-specific pattern context."""
+    model_names: Set[str] = field(default_factory=set)
+    enum_names: Set[str] = field(default_factory=set)
+    field_names: Set[str] = field(default_factory=set)
+    has_relations: bool = False
+    has_indexes: bool = False
+    has_enums: bool = False
+    has_types: bool = False
+    has_datasources: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.model_names)}:{self.has_relations}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "model": PatternPerformanceMetrics(),
+    "field": PatternPerformanceMetrics(),
+    "relation": PatternPerformanceMetrics(),
+    "index": PatternPerformanceMetrics()
+}
+
+# Initialize caches
+_pattern_cache = UnifiedCache("prisma_patterns")
+_context_cache = UnifiedCache("prisma_contexts")
+
+async def initialize_caches():
+    """Initialize pattern caches."""
+    await cache_coordinator.register_cache("prisma_patterns", _pattern_cache)
+    await cache_coordinator.register_cache("prisma_contexts", _context_cache)
+    
+    # Register warmup functions
+    analytics = await get_cache_analytics()
+    analytics.register_warmup_function(
+        "prisma_patterns",
+        _warmup_pattern_cache
+    )
+    analytics.register_warmup_function(
+        "prisma_contexts",
+        _warmup_context_cache
+    )
+
+async def _warmup_pattern_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for pattern cache."""
+    results = {}
+    for key in keys:
+        try:
+            # Get common patterns for warmup
+            patterns = PRISMA_PATTERNS.get(PatternCategory.SYNTAX, {})
+            if patterns:
+                results[key] = patterns
+        except Exception as e:
+            await log(f"Error warming up pattern cache for {key}: {e}", level="warning")
+    return results
+
+async def _warmup_context_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for context cache."""
+    results = {}
+    for key in keys:
+        try:
+            # Create empty context for warmup
+            context = PrismaPatternContext()
+            results[key] = context.__dict__
+        except Exception as e:
+            await log(f"Error warming up context cache for {key}: {e}", level="warning")
+    return results
 
 PRISMA_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "model": QueryPattern(
+            "model": ResilientPattern(
                 pattern="""
                 [
                     (model_declaration
@@ -36,7 +124,26 @@ PRISMA_PATTERNS = {
                         "enum" if "syntax.enum" in node["captures"] else
                         "type" if "syntax.type" in node["captures"] else
                         "other"
-                    )
+                    ),
+                    "line_number": node["captures"].get("syntax.model", {}).get("start_point", [0])[0],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["field", "index"],
+                        PatternRelationType.DEPENDS_ON: ["model"]
+                    }
+                },
+                name="model",
+                description="Matches Prisma model declarations",
+                examples=["model User { id Int @id }", "enum Role { USER ADMIN }"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["model"],
+                    "validation": {
+                        "required_fields": ["name", "type"],
+                        "name_format": r'^[A-Z][a-zA-Z0-9]*$'
+                    }
                 }
             ),
             "field": QueryPattern(
@@ -520,4 +627,115 @@ PRISMA_PATTERNS = {
     },
     
     "REPOSITORY_LEARNING": PRISMA_PATTERNS_FOR_LEARNING
-} 
+}
+
+# Initialize pattern learner with error handling
+pattern_learner = CrossProjectPatternLearner()
+
+@handle_async_errors(error_types=ProcessingError)
+@cached_in_request
+async def extract_prisma_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+    """Extract patterns from Prisma content for repository learning."""
+    patterns = []
+    context = PrismaPatternContext()
+    
+    try:
+        async with AsyncErrorBoundary(
+            "prisma_pattern_extraction",
+            error_types=(ProcessingError,),
+            severity=ErrorSeverity.ERROR
+        ):
+            # Update health status
+            await global_health_monitor.update_component_status(
+                "prisma_pattern_processor",
+                ComponentStatus.PROCESSING,
+                details={"operation": "pattern_extraction"}
+            )
+            
+            # Process patterns with monitoring
+            with monitor_operation("extract_patterns", "prisma_processor"):
+                # Process each pattern category
+                for category in PatternCategory:
+                    if category in PRISMA_PATTERNS:
+                        category_patterns = PRISMA_PATTERNS[category]
+                        for purpose in category_patterns:
+                            for pattern_name, pattern in category_patterns[purpose].items():
+                                if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                                    try:
+                                        matches = await pattern.matches(content, context)
+                                        for match in matches:
+                                            patterns.append({
+                                                "name": pattern_name,
+                                                "category": category.value,
+                                                "purpose": purpose.value,
+                                                "content": match.get("text", ""),
+                                                "metadata": match,
+                                                "confidence": pattern.confidence,
+                                                "relationships": match.get("relationships", {})
+                                            })
+                                            
+                                            # Update context
+                                            if match["type"] == "model":
+                                                context.model_names.add(match["name"])
+                                            elif match["type"] == "enum":
+                                                context.enum_names.add(match["name"])
+                                                context.has_enums = True
+                                            elif match["type"] == "field":
+                                                context.field_names.add(match["name"])
+                                            elif match["type"] == "relation":
+                                                context.has_relations = True
+                                            
+                                    except Exception as e:
+                                        await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                        continue
+            
+            # Update final status
+            await global_health_monitor.update_component_status(
+                "prisma_pattern_processor",
+                ComponentStatus.HEALTHY,
+                details={
+                    "operation": "pattern_extraction_complete",
+                    "patterns_found": len(patterns)
+                }
+            )
+    
+    except Exception as e:
+        await log(f"Error extracting Prisma patterns: {e}", level="error")
+        await global_health_monitor.update_component_status(
+            "prisma_pattern_processor",
+            ComponentStatus.UNHEALTHY,
+            error=True,
+            details={"error": str(e)}
+        )
+    
+    return patterns
+
+# Metadata for pattern relationships
+PATTERN_RELATIONSHIPS = {
+    "model": {
+        PatternRelationType.CONTAINS: ["field", "index"],
+        PatternRelationType.DEPENDS_ON: ["model"]
+    },
+    "field": {
+        PatternRelationType.CONTAINED_BY: ["model"],
+        PatternRelationType.DEPENDS_ON: ["type"]
+    },
+    "relation": {
+        PatternRelationType.CONTAINED_BY: ["model"],
+        PatternRelationType.DEPENDS_ON: ["model", "field"]
+    },
+    "index": {
+        PatternRelationType.CONTAINED_BY: ["model"],
+        PatternRelationType.DEPENDS_ON: ["field"]
+    }
+}
+
+# Export public interfaces
+__all__ = [
+    'PRISMA_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_prisma_patterns_for_learning',
+    'PrismaPatternContext',
+    'pattern_learner',
+    'initialize_caches'
+] 

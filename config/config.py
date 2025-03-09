@@ -24,6 +24,7 @@ class PostgresConfig:
     min_pool_size: int = int(os.getenv('PG_MIN_POOL_SIZE', '5'))
     max_pool_size: int = int(os.getenv('PG_MAX_POOL_SIZE', '20'))
     connection_timeout: float = float(os.getenv('PG_CONNECTION_TIMEOUT', '30.0'))
+    command_timeout: float = float(os.getenv('PG_COMMAND_TIMEOUT', '60.0'))  # Timeout for individual commands
     max_retries: int = int(os.getenv('PG_MAX_RETRIES', '3'))
     retry_delay: float = float(os.getenv('PG_RETRY_DELAY', '1.0'))
 
@@ -53,6 +54,13 @@ class ParserConfig:
     ])
     parse_timeout: float = float(os.getenv("PARSE_TIMEOUT", "30.0"))
     batch_size: int = int(os.getenv("PARSER_BATCH_SIZE", "100"))
+    tree_sitter_lib_path: str = os.getenv("TREE_SITTER_LIB_PATH", "./tree-sitter-libs")
+    tree_sitter_language_path: str = os.getenv("TREE_SITTER_LANGUAGE_PATH", "./tree-sitter-languages")
+    tree_sitter_timeout: float = float(os.getenv("TREE_SITTER_TIMEOUT", "10.0"))
+    tree_sitter_max_file_size: int = int(os.getenv("TREE_SITTER_MAX_FILE_SIZE", "5242880"))  # 5MB default
+    tree_sitter_batch_size: int = int(os.getenv("TREE_SITTER_BATCH_SIZE", "50"))
+    tree_sitter_cache_size: int = int(os.getenv("TREE_SITTER_CACHE_SIZE", "1000"))
+    tree_sitter_parallel_jobs: int = int(os.getenv("TREE_SITTER_PARALLEL_JOBS", "4"))
 
 @dataclass
 class RedisConfig:
@@ -135,14 +143,21 @@ class Config:
                 "max_patterns_per_type": 100,
                 "cache_ttl": 1800,  # 30 minutes
                 "apply_automatically": False,
-                "require_approval": True
+                "require_approval": True,
+                "tree_sitter_enabled": True,
+                "tree_sitter_min_confidence": 0.7,
+                "tree_sitter_max_patterns": 200,
+                "tree_sitter_cache_ttl": 3600
             },
             "pattern_processing": {
                 "enabled": True,
                 "max_concurrent_tasks": 5,
                 "timeout_seconds": 300,
                 "retry_attempts": 3,
-                "retry_delay": 5
+                "retry_delay": 5,
+                "tree_sitter_timeout": 60,
+                "tree_sitter_max_tasks": 3,
+                "tree_sitter_batch_size": 50
             },
             "model_selection": {
                 "default_model": "gpt-4",
@@ -155,21 +170,30 @@ class Config:
                 "use_neo4j": True,
                 "use_postgres": True,
                 "max_pattern_size": 1000000,  # 1MB
-                "compression_enabled": True
+                "compression_enabled": True,
+                "tree_sitter_storage": True,
+                "tree_sitter_metrics": True,
+                "tree_sitter_relationships": True
             },
             "pattern_validation": {
                 "enabled": True,
                 "validate_syntax": True,
                 "validate_dependencies": True,
                 "validate_compatibility": True,
-                "max_validation_time": 60  # seconds
+                "max_validation_time": 60,  # seconds
+                "tree_sitter_validation": True,
+                "tree_sitter_syntax_check": True,
+                "tree_sitter_type_check": True
             },
             "pattern_metrics": {
                 "track_complexity": True,
                 "track_maintainability": True,
                 "track_reusability": True,
                 "track_usage": True,
-                "metrics_update_interval": 3600  # 1 hour
+                "metrics_update_interval": 3600,  # 1 hour
+                "tree_sitter_metrics": True,
+                "tree_sitter_complexity": True,
+                "tree_sitter_quality": True
             }
         }
         self._load_config()

@@ -1,73 +1,142 @@
-"""Query patterns for CSS files."""
+"""CSS-specific patterns with enhanced type system and relationships.
 
-from .common import COMMON_PATTERNS
+This module provides CSS-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
+"""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, PatternCategory, PatternPurpose, 
-    QueryPattern, PatternDefinition
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
 )
+from parsers.models import PATTERN_CATEGORIES
+from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
+# Pattern relationships for CSS
+CSS_PATTERN_RELATIONSHIPS = {
+    "class_definition": [
+        PatternRelationship(
+            source_pattern="class_definition",
+            target_pattern="property",
+            relationship_type=PatternRelationType.CONTAINS,
+            confidence=0.95,
+            metadata={"styles": True}
+        ),
+        PatternRelationship(
+            source_pattern="class_definition",
+            target_pattern="comment",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"best_practice": True}
+        )
+    ],
+    "property": [
+        PatternRelationship(
+            source_pattern="property",
+            target_pattern="variable",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.9,
+            metadata={"custom_properties": True}
+        )
+    ],
+    "media_query": [
+        PatternRelationship(
+            source_pattern="media_query",
+            target_pattern="class_definition",
+            relationship_type=PatternRelationType.CONTAINS,
+            confidence=0.95,
+            metadata={"responsive": True}
+        )
+    ]
+}
+
+# Performance metrics tracking for CSS patterns
+CSS_PATTERN_METRICS = {
+    "class_definition": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "property": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "media_query": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
+
+# Enhanced CSS patterns with proper typing and relationships
 CSS_PATTERNS = {
-    **COMMON_PATTERNS,
+    **COMMON_PATTERNS,  # Inherit common patterns
     
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "class": QueryPattern(
+            "class_definition": ResilientPattern(
+                name="class_definition",
                 pattern="""
                 (class_selector
                     name: (class_name) @syntax.class.name) @syntax.class.def
                 """,
-                extract=lambda node: {
-                    "name": node["captures"].get("syntax.class.name", {}).get("text", ""),
-                    "type": "class"
-                },
-                description="Matches CSS class selectors",
-                examples=[
-                    ".container { }",
-                    ".btn-primary { }"
-                ],
                 category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="css",
+                confidence=0.95,
+                metadata={
+                    "relationships": CSS_PATTERN_RELATIONSHIPS["class_definition"],
+                    "metrics": CSS_PATTERN_METRICS["class_definition"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             ),
-            "module": QueryPattern(
+            
+            "property": ResilientPattern(
+                name="property",
                 pattern="""
-                (stylesheet
-                    (rule_set) @syntax.module.rules) @syntax.module.def
+                (declaration
+                    name: (property_name) @syntax.property.name
+                    value: (property_value) @syntax.property.value) @syntax.property.def
                 """,
-                extract=lambda node: {
-                    "rules": [r.text.decode('utf8') for r in node["captures"].get("syntax.module.rules", [])]
-                },
-                description="Matches CSS rule sets",
-                examples=[
-                    "body { color: black; }",
-                    "div { margin: 0; padding: 0; }"
-                ],
                 category=PatternCategory.SYNTAX,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="css",
+                confidence=0.95,
+                metadata={
+                    "relationships": CSS_PATTERN_RELATIONSHIPS["property"],
+                    "metrics": CSS_PATTERN_METRICS["property"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     },
-
+    
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": QueryPattern(
-                pattern="""
-                (declaration
-                    name: (property_name) @semantics.variable.name
-                    value: (property_value) @semantics.variable.value) @semantics.variable.def
-                """,
-                extract=lambda node: {
-                    "name": node["captures"].get("semantics.variable.name", {}).get("text", ""),
-                    "type": "variable"
-                },
-                description="Matches CSS property declarations",
-                examples=[
-                    "color: blue;",
-                    "margin: 10px;"
-                ],
-                category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
-            ),
-            "type": QueryPattern(
+            "type": AdaptivePattern(
+                name="type",
                 pattern="""
                 [
                     (id_selector) @semantics.type.id,
@@ -75,27 +144,45 @@ CSS_PATTERNS = {
                     (universal_selector) @semantics.type.universal
                 ]
                 """,
-                extract=lambda node: {
-                    "selector_type": ("id" if "semantics.type.id" in node["captures"] else
-                                    "element" if "semantics.type.element" in node["captures"] else
-                                    "universal"),
-                    "value": node["node"].text.decode('utf8')
-                },
-                description="Matches CSS selector types",
-                examples=[
-                    "#main { }",
-                    "div { }",
-                    "* { }"
-                ],
                 category=PatternCategory.SEMANTICS,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="css",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
+            ),
+            
+            "variable": AdaptivePattern(
+                name="variable",
+                pattern="""
+                (custom_property_name) @semantics.variable.name
+                """,
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="css",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     },
-
+    
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
-            "import": QueryPattern(
+            "import": ResilientPattern(
+                name="import",
                 pattern="""
                 [
                     (import_statement
@@ -104,214 +191,131 @@ CSS_PATTERNS = {
                         query: (media_query) @structure.import.query) @structure.import.def
                 ]
                 """,
-                extract=lambda node: {
-                    "path": node["captures"].get("structure.import.path", {}).get("text", ""),
-                    "type": "import"
-                },
-                description="Matches CSS import and media statements",
-                examples=[
-                    "@import 'styles.css';",
-                    "@media screen and (min-width: 768px) { }"
-                ],
                 category=PatternCategory.STRUCTURE,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="css",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             ),
-            "namespace": QueryPattern(
+            
+            "media_query": ResilientPattern(
+                name="media_query",
                 pattern="""
-                (namespace_statement
-                    prefix: (namespace_name)? @structure.namespace.prefix
-                    uri: (string_value) @structure.namespace.uri) @structure.namespace.def
+                (media_statement
+                    query: (media_query) @structure.media.query
+                    body: (block) @structure.media.body) @structure.media.def
                 """,
-                extract=lambda node: {
-                    "prefix": node["captures"].get("structure.namespace.prefix", {}).get("text", ""),
-                    "uri": node["captures"].get("structure.namespace.uri", {}).get("text", "")
-                },
-                description="Matches CSS namespace declarations",
-                examples=[
-                    "@namespace url(http://www.w3.org/1999/xhtml);",
-                    "@namespace svg url(http://www.w3.org/2000/svg);"
-                ],
                 category=PatternCategory.STRUCTURE,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="css",
+                confidence=0.95,
+                metadata={
+                    "relationships": CSS_PATTERN_RELATIONSHIPS["media_query"],
+                    "metrics": CSS_PATTERN_METRICS["media_query"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     },
-
+    
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
+            "comment": AdaptivePattern(
+                name="comment",
                 pattern="""
                 [
                     (comment) @documentation.comment
                 ]
                 """,
-                extract=lambda node: {
-                    "text": node["captures"].get("documentation.comment", {}).get("text", "")
-                },
-                description="Matches CSS comments",
-                examples=[
-                    "/* Basic comment */",
-                    "/* Multi-line\n   comment */"
-                ],
                 category=PatternCategory.DOCUMENTATION,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="css",
+                confidence=0.9,
+                metadata={
+                    "relationships": [
+                        PatternRelationship(
+                            source_pattern="comment",
+                            target_pattern="class_definition",
+                            relationship_type=PatternRelationType.COMPLEMENTS,
+                            confidence=0.8
+                        )
+                    ],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     }
 }
 
-# Repository learning patterns for CSS
-CSS_PATTERNS_FOR_LEARNING = {
-    PatternCategory.LEARNING: {
-        PatternPurpose.LEARNING: {
-            "naming_conventions": QueryPattern(
-                pattern="""
-                [
-                    (class_selector
-                        name: (class_name) @naming.class.name) @naming.class,
-                        
-                    (id_selector
-                        name: (id_name) @naming.id.name) @naming.id,
-                        
-                    (keyframes_statement
-                        name: (id_name) @naming.keyframes.name) @naming.keyframes,
-                        
-                    (custom_property_name) @naming.custom_property
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "naming_convention_pattern",
-                    "entity_type": ("class" if "naming.class.name" in node["captures"] else
-                                  "id" if "naming.id.name" in node["captures"] else
-                                  "keyframes" if "naming.keyframes.name" in node["captures"] else
-                                  "custom_property"),
-                    "name": (node["captures"].get("naming.class.name", {}).get("text", "") or
-                           node["captures"].get("naming.id.name", {}).get("text", "") or
-                           node["captures"].get("naming.keyframes.name", {}).get("text", "") or
-                           node["captures"].get("naming.custom_property", {}).get("text", "")),
-                    "is_kebab_case": "-" in (node["captures"].get("naming.class.name", {}).get("text", "") or
-                                          node["captures"].get("naming.id.name", {}).get("text", "") or
-                                          node["captures"].get("naming.keyframes.name", {}).get("text", "")),
-                    "is_bem_style": "__" in (node["captures"].get("naming.class.name", {}).get("text", "") or "") or
-                                 "--" in (node["captures"].get("naming.class.name", {}).get("text", "") or ""),
-                    "is_camel_case": not "-" in (node["captures"].get("naming.class.name", {}).get("text", "") or
-                                              node["captures"].get("naming.id.name", {}).get("text", "") or
-                                              node["captures"].get("naming.keyframes.name", {}).get("text", "")) and
-                                   any(c.isupper() for c in (node["captures"].get("naming.class.name", {}).get("text", "") or
-                                                         node["captures"].get("naming.id.name", {}).get("text", "") or
-                                                         node["captures"].get("naming.keyframes.name", {}).get("text", "")))
-                },
-                description="Matches CSS naming conventions",
-                examples=[
-                    ".button-primary { }",
-                    ".block__element--modifier { }",
-                    "#mainContent { }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "selector_complexity": QueryPattern(
-                pattern="""
-                [
-                    (descendant_selector) @complexity.descendant,
-                    
-                    (child_selector) @complexity.child,
-                    
-                    (adjacent_sibling_selector) @complexity.adjacent_sibling,
-                    
-                    (general_sibling_selector) @complexity.general_sibling,
-                    
-                    (attribute_selector) @complexity.attribute,
-                    
-                    (pseudo_class_selector) @complexity.pseudo_class,
-                    
-                    (pseudo_element_selector) @complexity.pseudo_element,
-                    
-                    (class_selector) @complexity.class,
-                    
-                    (id_selector) @complexity.id
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "selector_complexity_pattern",
-                    "uses_descendant": "complexity.descendant" in node["captures"],
-                    "uses_child": "complexity.child" in node["captures"],
-                    "uses_adjacent_sibling": "complexity.adjacent_sibling" in node["captures"],
-                    "uses_general_sibling": "complexity.general_sibling" in node["captures"],
-                    "uses_attribute": "complexity.attribute" in node["captures"],
-                    "uses_pseudo_class": "complexity.pseudo_class" in node["captures"],
-                    "uses_pseudo_element": "complexity.pseudo_element" in node["captures"],
-                    "selector_type": ("id" if "complexity.id" in node["captures"] else
-                                     "class" if "complexity.class" in node["captures"] else
-                                     "complex")
-                },
-                description="Matches CSS selector complexity patterns",
-                examples=[
-                    "div > p { }",
-                    "input[type='text'] { }",
-                    ".class:hover::before { }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "media_queries": QueryPattern(
-                pattern="""
-                [
-                    (media_statement
-                        query: (media_query
-                            [(feature_name) (value) (plain_value) (feature)]+ @media.query.features) @media.query) @media.statement
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "media_query_pattern",
-                    "query_text": node["captures"].get("media.query", {}).get("text", ""),
-                    "is_responsive": any(keyword in node["captures"].get("media.query.features", {}).get("text", "").lower() for keyword in ["max-width", "min-width", "width", "device-width"]),
-                    "is_print": "print" in node["captures"].get("media.query", {}).get("text", "").lower(),
-                    "is_feature_query": "supports" in node["captures"].get("media.query", {}).get("text", "").lower() or "@supports" in node["captures"].get("media.query", {}).get("text", "").lower()
-                },
-                description="Matches CSS media query patterns",
-                examples=[
-                    "@media (max-width: 768px) { }",
-                    "@media print { }",
-                    "@supports (display: grid) { }"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            ),
-            
-            "property_usage": QueryPattern(
-                pattern="""
-                [
-                    (declaration
-                        name: (property_name) @property.name
-                        value: (property_value) @property.value) @property.declaration
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "property_usage_pattern",
-                    "property_name": node["captures"].get("property.name", {}).get("text", ""),
-                    "uses_flexbox": node["captures"].get("property.name", {}).get("text", "") in ["display"] and
-                                  "flex" in node["captures"].get("property.value", {}).get("text", ""),
-                    "uses_grid": node["captures"].get("property.name", {}).get("text", "") in ["display"] and
-                               "grid" in node["captures"].get("property.value", {}).get("text", ""),
-                    "uses_var": "var(" in node["captures"].get("property.value", {}).get("text", ""),
-                    "uses_calc": "calc(" in node["captures"].get("property.value", {}).get("text", ""),
-                    "uses_custom_property": node["captures"].get("property.name", {}).get("text", "").startswith("--")
-                },
-                description="Matches CSS property usage patterns",
-                examples=[
-                    "display: flex;",
-                    "width: calc(100% - 20px);",
-                    "--custom-color: blue;"
-                ],
-                category=PatternCategory.LEARNING,
-                purpose=PatternPurpose.LEARNING
-            )
-        }
-    }
-}
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for CSS files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "css", "version": "3"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(CSS_PATTERNS.keys())
+    )
 
-# Add the repository learning patterns to the main patterns
-CSS_PATTERNS.update(CSS_PATTERNS_FOR_LEARNING) 
+def get_css_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return CSS_PATTERN_RELATIONSHIPS.get(pattern_name, [])
+
+def update_css_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in CSS_PATTERN_METRICS:
+        pattern_metrics = CSS_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
+
+def get_css_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_css_pattern_relationships(pattern_name),
+        performance=CSS_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "css"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'CSS_PATTERNS',
+    'CSS_PATTERN_RELATIONSHIPS',
+    'CSS_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_css_pattern_relationships',
+    'update_css_pattern_metrics',
+    'get_css_pattern_match_result'
+] 

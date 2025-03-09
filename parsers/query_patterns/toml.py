@@ -1,391 +1,304 @@
-"""Query patterns for TOML files with enhanced pattern support."""
+"""Query patterns for TOML files.
 
-from typing import Dict, Any, List, Match
-from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory
-import re
+This module provides TOML-specific patterns with enhanced type system and relationships.
+Integrates with cache analytics, error handling, and logging systems.
+"""
 
-def extract_table(match: Match) -> Dict[str, Any]:
-    """Extract table information."""
-    return {
-        "type": "table",
-        "path": match.group(1),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+from typing import Dict, Any, List, Optional, Set
+from dataclasses import dataclass, field
+from parsers.types import (
+    FileType, PatternCategory, PatternPurpose, PatternType,
+    PatternRelationType, PatternContext, PatternPerformanceMetrics
+)
+from parsers.query_patterns.enhanced_patterns import (
+    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+)
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.logger import log
 
-def extract_key_value(match: Match) -> Dict[str, Any]:
-    """Extract key-value information."""
-    return {
-        "type": "key_value",
-        "key": match.group(1),
-        "value": match.group(2),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+# Language identifier
+LANGUAGE = "toml"
+
+@dataclass
+class TOMLPatternContext(PatternContext):
+    """TOML-specific pattern context."""
+    table_names: Set[str] = field(default_factory=set)
+    key_names: Set[str] = field(default_factory=set)
+    array_names: Set[str] = field(default_factory=set)
+    has_arrays: bool = False
+    has_inline_tables: bool = False
+    has_dotted_keys: bool = False
+    has_multiline_strings: bool = False
+    has_dates: bool = False
+    
+    def get_context_key(self) -> str:
+        """Generate unique context key."""
+        return f"{super().get_context_key()}:{len(self.table_names)}:{self.has_arrays}"
+
+# Initialize pattern metrics
+PATTERN_METRICS = {
+    "table": PatternPerformanceMetrics(),
+    "key_value": PatternPerformanceMetrics(),
+    "array": PatternPerformanceMetrics(),
+    "inline_table": PatternPerformanceMetrics(),
+    "string": PatternPerformanceMetrics()
+}
 
 TOML_PATTERNS = {
     PatternCategory.SYNTAX: {
-        "table": QueryPattern(
-            pattern=r'^\s*\[(.*?)\]\s*$',
-            extract=extract_table,
-            description="Matches TOML tables",
-            examples=["[table]", "[database]"]
-        ),
-        "array_table": QueryPattern(
-            pattern=r'^\s*\[\[(.*?)\]\]\s*$',
-            extract=lambda m: {
-                "type": "array_table",
-                "path": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches TOML array tables",
-            examples=["[[products]]"]
-        ),
-        "key_value": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*(.+)$',
-            extract=extract_key_value,
-            description="Matches key-value pairs",
-            examples=["name = \"value\"", "port = 8080"]
-        ),
-        "array": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*\[(.*)\]$',
-            extract=lambda m: {
-                "type": "array",
-                "key": m.group(1),
-                "values": [v.strip() for v in m.group(2).split(',') if v.strip()],
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches arrays",
-            examples=["tags = [\"web\", \"api\"]"]
-        )
+        PatternPurpose.UNDERSTANDING: {
+            "table": ResilientPattern(
+                pattern="""
+                [
+                    (table
+                        name: (_) @syntax.table.name
+                        body: (_)* @syntax.table.body) @syntax.table.def,
+                    (array_table
+                        name: (_) @syntax.array.table.name
+                        body: (_)* @syntax.array.table.body) @syntax.array.table.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "table",
+                    "name": (
+                        node["captures"].get("syntax.table.name", {}).get("text", "") or
+                        node["captures"].get("syntax.array.table.name", {}).get("text", "")
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.table.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.array.table.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_array": "syntax.array.table.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["key_value", "array", "inline_table"],
+                        PatternRelationType.DEPENDS_ON: ["table"]
+                    }
+                },
+                name="table",
+                description="Matches TOML table declarations",
+                examples=["[table]", "[[array_table]]"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["table"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z0-9_.-]+$'
+                    }
+                }
+            ),
+            "key_value": ResilientPattern(
+                pattern="""
+                [
+                    (pair
+                        name: (_) @syntax.pair.name
+                        value: (_) @syntax.pair.value) @syntax.pair.def,
+                    (dotted_key
+                        parts: (_)+ @syntax.dotted.parts
+                        value: (_) @syntax.dotted.value) @syntax.dotted.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "key_value",
+                    "name": (
+                        node["captures"].get("syntax.pair.name", {}).get("text", "") or
+                        ".".join(part.get("text", "") for part in node["captures"].get("syntax.dotted.parts", []))
+                    ),
+                    "line_number": (
+                        node["captures"].get("syntax.pair.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("syntax.dotted.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_dotted": "syntax.dotted.def" in node["captures"],
+                    "relationships": {
+                        PatternRelationType.CONTAINED_BY: ["table"],
+                        PatternRelationType.DEPENDS_ON: ["value"]
+                    }
+                },
+                name="key_value",
+                description="Matches TOML key-value pairs",
+                examples=["key = value", "server.host = 'localhost'"],
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                metadata={
+                    "metrics": PATTERN_METRICS["key_value"],
+                    "validation": {
+                        "required_fields": ["name"],
+                        "name_format": r'^[a-zA-Z0-9_.-]+$'
+                    }
+                }
+            )
+        }
     },
-    
-    PatternCategory.STRUCTURE: {
-        "section": QueryPattern(
-            pattern=r'^\s*\[(.*?)\]\s*$',
-            extract=lambda m: {
-                "type": "section",
-                "name": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches sections",
-            examples=["[section]"]
-        ),
-        "subsection": QueryPattern(
-            pattern=r'^\s*\[(.*?)\.(.*?)\]\s*$',
-            extract=lambda m: {
-                "type": "subsection",
-                "parent": m.group(1),
-                "name": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches subsections",
-            examples=["[server.http]"]
-        ),
-        "inline_table": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*\{([^}]+)\}$',
-            extract=lambda m: {
-                "type": "inline_table",
-                "key": m.group(1),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches inline tables",
-            examples=["point = { x = 1, y = 2 }"]
-        )
-    },
-    
-    PatternCategory.DOCUMENTATION: {
-        "doc_comment": QueryPattern(
-            pattern=r'#\s*@(\w+)\s*(.+)$',
-            extract=lambda m: {
-                "type": "doc_comment",
-                "tag": m.group(1),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches documentation comments",
-            examples=["# @param value"]
-        ),
-        "comment": QueryPattern(
-            pattern=r'#\s*(.+)$',
-            extract=lambda m: {
-                "type": "comment",
-                "content": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches comments",
-            examples=["# Comment"]
-        ),
-        "section_comment": QueryPattern(
-            pattern=r'#\s*(.+)\n\s*\[(.*?)\]',
-            extract=lambda m: {
-                "type": "section_comment",
-                "comment": m.group(1),
-                "section": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches section comments",
-            examples=["# Server configuration\n[server]"]
-        )
-    },
-    
-    PatternCategory.SEMANTICS: {
-        "type": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*(\w+)\s*$',
-            extract=lambda m: {
-                "type": "type",
-                "name": m.group(1),
-                "value_type": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches type definitions",
-            examples=["format = string"]
-        ),
-        "reference": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*\$\{(.*?)\}\s*$',
-            extract=lambda m: {
-                "type": "reference",
-                "name": m.group(1),
-                "target": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches references",
-            examples=["path = ${base_path}"]
-        ),
-        "datetime": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s*$',
-            extract=lambda m: {
-                "type": "datetime",
-                "key": m.group(1),
-                "value": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches datetime values",
-            examples=["date = 2024-03-14T15:09:26Z"]
-        )
-    },
-    
-    PatternCategory.CODE_PATTERNS: {
-        "multiline_string": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*"""\n(.*?)\n\s*"""$',
-            extract=lambda m: {
-                "type": "multiline_string",
-                "key": m.group(1),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches multiline strings",
-            examples=["content = \"\"\"\nMultiline\ncontent\n\"\"\""]
-        ),
-        "literal_string": QueryPattern(
-            pattern=r"^\s*([\w.-]+)\s*=\s*'([^'\\]*(\\.[^'\\]*)*)'$",
-            extract=lambda m: {
-                "type": "literal_string",
-                "key": m.group(1),
-                "content": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches literal strings",
-            examples=["path = 'C:\\Program Files\\App'"]
-        )
-    },
-    
-    PatternCategory.DEPENDENCIES: {
-        "import": QueryPattern(
-            pattern=r'^\s*@import\s+"([^"]+)"\s*$',
-            extract=lambda m: {
-                "type": "import",
-                "path": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches import statements",
-            examples=["@import \"config.toml\""]
-        ),
-        "env_var": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*\$\{([^:}]+)(?::([^}]+))?\}$',
-            extract=lambda m: {
-                "type": "env_var",
-                "key": m.group(1),
-                "var_name": m.group(2),
-                "default": m.group(3) if m.group(3) else None,
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches environment variable references",
-            examples=["api_key = ${API_KEY:default_key}"]
-        )
-    },
-    
-    PatternCategory.BEST_PRACTICES: {
-        "key_naming": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=',
-            extract=lambda m: {
-                "type": "key_naming",
-                "key": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "follows_convention": bool(re.match(r'^[a-z][a-z0-9_.-]*$', m.group(1)))
-            },
-            description="Checks key naming conventions",
-            examples=["good_key = value", "BadKey = value"]
-        ),
-        "table_hierarchy": QueryPattern(
-            pattern=r'^\s*\[(.*?)\]\s*$\n(?:[^[]*\n)*\s*\[(.*?)\]\s*$',
-            extract=lambda m: {
-                "type": "table_hierarchy",
-                "parent": m.group(1),
-                "child": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "follows_hierarchy": m.group(2).startswith(m.group(1) + ".")
-            },
-            description="Checks table hierarchy",
-            examples=["[parent]\n[parent.child]"]
-        )
-    },
-    
-    PatternCategory.COMMON_ISSUES: {
-        "duplicate_key": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=.*\n(?:.*\n)*?\s*\1\s*=',
-            extract=lambda m: {
-                "type": "duplicate_key",
-                "key": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "is_duplicate": True
-            },
-            description="Detects duplicate keys",
-            examples=["key = 1\nkey = 2"]
-        ),
-        "invalid_value": QueryPattern(
-            pattern=r'^\s*([\w.-]+)\s*=\s*([^"\[\{][^\s,\]]*)',
-            extract=lambda m: {
-                "type": "invalid_value",
-                "key": m.group(1),
-                "value": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "needs_quotes": not re.match(r'^-?\d+(?:\.\d+)?$', m.group(2))
-            },
-            description="Detects potentially invalid values",
-            examples=["key = invalid value"]
-        )
-    },
-    
-    PatternCategory.USER_PATTERNS: {
-        "custom_table": QueryPattern(
-            pattern=r'^\s*\[x\.(.*?)\]\s*$',
-            extract=lambda m: {
-                "type": "custom_table",
-                "name": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches custom table definitions",
-            examples=["[x.custom]"]
-        ),
-        "custom_format": QueryPattern(
-            pattern=r'^\s*format\s*=\s*"([^"]+)".*?pattern\s*=\s*"([^"]+)"',
-            extract=lambda m: {
-                "type": "custom_format",
-                "format": m.group(1),
-                "pattern": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1
-            },
-            description="Matches custom format definitions",
-            examples=["format = \"custom\"\npattern = \".*\""]
-        )
+
+    PatternCategory.LEARNING: {
+        PatternPurpose.VALUES: {
+            "array": AdaptivePattern(
+                pattern="""
+                [
+                    (array
+                        values: (_)* @value.array.items) @value.array.def,
+                    (array_table
+                        name: (_) @value.array.table.name
+                        body: (_)* @value.array.table.body) @value.array.table.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "array",
+                    "line_number": (
+                        node["captures"].get("value.array.def", {}).get("start_point", [0])[0] or
+                        node["captures"].get("value.array.table.def", {}).get("start_point", [0])[0]
+                    ),
+                    "is_table": "value.array.table.def" in node["captures"],
+                    "table_name": node["captures"].get("value.array.table.name", {}).get("text", ""),
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["value"],
+                        PatternRelationType.DEPENDS_ON: ["table"]
+                    }
+                },
+                name="array",
+                description="Matches TOML array values",
+                examples=["values = [1, 2, 3]", "[[products]]"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.VALUES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["array"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": None
+                    }
+                }
+            ),
+            "inline_table": AdaptivePattern(
+                pattern="""
+                [
+                    (inline_table
+                        pairs: (pair
+                            name: (_) @value.table.pair.name
+                            value: (_) @value.table.pair.value)* @value.table.pairs) @value.table.def
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "inline_table",
+                    "line_number": node["captures"].get("value.table.def", {}).get("start_point", [0])[0],
+                    "pairs": [
+                        {
+                            "name": name.get("text", ""),
+                            "value": value.get("text", "")
+                        }
+                        for name, value in zip(
+                            node["captures"].get("value.table.pair.name", []),
+                            node["captures"].get("value.table.pair.value", [])
+                        )
+                    ],
+                    "relationships": {
+                        PatternRelationType.CONTAINS: ["key_value"],
+                        PatternRelationType.DEPENDS_ON: ["value"]
+                    }
+                },
+                name="inline_table",
+                description="Matches TOML inline tables",
+                examples=["point = { x = 1, y = 2 }"],
+                category=PatternCategory.LEARNING,
+                purpose=PatternPurpose.VALUES,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                metadata={
+                    "metrics": PATTERN_METRICS["inline_table"],
+                    "validation": {
+                        "required_fields": [],
+                        "name_format": None
+                    }
+                }
+            )
+        }
     }
 }
 
-# Add the repository learning patterns
-TOML_PATTERNS[PatternCategory.LEARNING] = {
-    "document_structure": QueryPattern(
-        pattern=r'(?s)^\s*\[(.*?)\]\s*\n(.*?)(?=\n\s*\[|$)',
-        extract=lambda m: {
-            "type": "document_structure",
-            "section": m.group(1),
-            "content": m.group(2),
-            "line_number": m.string.count('\n', 0, m.start()) + 1
-        },
-        description="Matches document structure patterns",
-        examples=["[section]\nkey = value"]
-    ),
-    "value_patterns": QueryPattern(
-        pattern=r'^\s*([\w.-]+)\s*=\s*(.+)$',
-        extract=lambda m: {
-            "type": "value_pattern",
-            "key": m.group(1),
-            "value": m.group(2),
-            "line_number": m.string.count('\n', 0, m.start()) + 1,
-            "value_type": "string" if m.group(2).startswith('"') else "number" if m.group(2).replace(".", "").isdigit() else "other"
-        },
-        description="Learns value patterns",
-        examples=["key = \"value\"", "number = 42"]
-    )
-}
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
 
-# Function to extract patterns for repository learning
-def extract_toml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
+async def extract_toml_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
     """Extract patterns from TOML content for repository learning."""
     patterns = []
+    context = TOMLPatternContext()
     
-    # Process each pattern category
-    for category in PatternCategory:
-        if category in TOML_PATTERNS:
-            category_patterns = TOML_PATTERNS[category]
-            for pattern_name, pattern in category_patterns.items():
-                if isinstance(pattern, QueryPattern):
-                    if isinstance(pattern.pattern, str):
-                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-                            pattern_data = pattern.extract(match)
-                            patterns.append({
-                                "name": pattern_name,
-                                "category": category.value,
-                                "content": match.group(0),
-                                "metadata": pattern_data,
-                                "confidence": 0.85
-                            })
+    try:
+        # Process each pattern category
+        for category in PatternCategory:
+            if category in TOML_PATTERNS:
+                category_patterns = TOML_PATTERNS[category]
+                for purpose in category_patterns:
+                    for pattern_name, pattern in category_patterns[purpose].items():
+                        if isinstance(pattern, (ResilientPattern, AdaptivePattern)):
+                            try:
+                                matches = await pattern.matches(content, context)
+                                for match in matches:
+                                    patterns.append({
+                                        "name": pattern_name,
+                                        "category": category.value,
+                                        "purpose": purpose.value,
+                                        "content": match.get("text", ""),
+                                        "metadata": match,
+                                        "confidence": pattern.confidence,
+                                        "relationships": match.get("relationships", {})
+                                    })
+                                    
+                                    # Update context
+                                    if match["type"] == "table":
+                                        context.table_names.add(match["name"])
+                                        if match["is_array"]:
+                                            context.has_arrays = True
+                                    elif match["type"] == "key_value":
+                                        context.key_names.add(match["name"])
+                                        if match["is_dotted"]:
+                                            context.has_dotted_keys = True
+                                    elif match["type"] == "array":
+                                        context.has_arrays = True
+                                        if match["is_table"]:
+                                            context.array_names.add(match["table_name"])
+                                    elif match["type"] == "inline_table":
+                                        context.has_inline_tables = True
+                                    
+                            except Exception as e:
+                                await log(f"Error processing pattern {pattern_name}: {e}", level="error")
+                                continue
+    
+    except Exception as e:
+        await log(f"Error extracting TOML patterns: {e}", level="error")
     
     return patterns
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
-    "document": {
-        "can_contain": ["table", "key_value", "comment"],
-        "can_be_contained_by": []
-    },
     "table": {
-        "can_contain": ["key_value", "array", "inline_table"],
-        "can_be_contained_by": ["document", "table"]
+        PatternRelationType.CONTAINS: ["key_value", "array", "inline_table"],
+        PatternRelationType.DEPENDS_ON: ["table"]
     },
-    "array_table": {
-        "can_contain": ["key_value", "array", "inline_table"],
-        "can_be_contained_by": ["document"]
+    "key_value": {
+        PatternRelationType.CONTAINED_BY: ["table"],
+        PatternRelationType.DEPENDS_ON: ["value"]
+    },
+    "array": {
+        PatternRelationType.CONTAINS: ["value"],
+        PatternRelationType.DEPENDS_ON: ["table"]
     },
     "inline_table": {
-        "can_contain": ["key_value"],
-        "can_be_contained_by": ["table", "array_table", "key_value"]
+        PatternRelationType.CONTAINS: ["key_value"],
+        PatternRelationType.DEPENDS_ON: ["value"]
     }
 }
 
-def extract_toml_features(ast: dict) -> dict:
-    """Extract features that align with pattern categories."""
-    features = {
-        "syntax": {
-            "tables": [],
-            "array_tables": [],
-            "key_values": [],
-            "arrays": []
-        },
-        "structure": {
-            "sections": [],
-            "subsections": [],
-            "inline_tables": []
-        },
-        "semantics": {
-            "types": [],
-            "references": [],
-            "datetimes": []
-        },
-        "documentation": {
-            "doc_comments": [],
-            "comments": [],
-            "section_comments": []
-        }
-    }
-    return features 
+# Export public interfaces
+__all__ = [
+    'TOML_PATTERNS',
+    'PATTERN_RELATIONSHIPS',
+    'extract_toml_patterns_for_learning',
+    'TOMLPatternContext',
+    'pattern_learner'
+] 

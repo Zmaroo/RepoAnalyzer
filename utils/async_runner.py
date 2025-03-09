@@ -81,9 +81,17 @@ def submit_async_task(coro: Awaitable[T]) -> concurrent.futures.Future:
             _pending_tasks.remove(t)
             exc = t.exception()
             if exc:
-                log(f"Task failed with error: {exc}", level="error")
+                # Create a new task for logging and add it to pending tasks
+                loop = asyncio.get_event_loop()
+                log_task = loop.create_task(log(f"Task failed with error: {exc}", level="error"))
+                _pending_tasks.add(log_task)
+                log_task.add_done_callback(lambda lt: _pending_tasks.remove(lt) if lt in _pending_tasks else None)
         except (asyncio.CancelledError, Exception) as e:
-            log(f"Error in task cleanup: {e}", level="error")
+            # Create a new task for error logging
+            loop = asyncio.get_event_loop()
+            log_task = loop.create_task(log(f"Error in task cleanup: {e}", level="error"))
+            _pending_tasks.add(log_task)
+            log_task.add_done_callback(lambda lt: _pending_tasks.remove(lt) if lt in _pending_tasks else None)
     
     task.add_done_callback(_on_task_done)
     

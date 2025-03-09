@@ -1,6 +1,63 @@
 """Custom parser for AsciiDoc files."""
 
-from .base_imports import *
+from .base_imports import (
+    # Base classes
+    BaseParser,
+    CustomParserMixin,
+    
+    # Types
+    FileType,
+    ParserType,
+    PatternType,
+    PatternCategory,
+    FeatureCategory,
+    
+    # AI related
+    AICapability,
+    AIContext,
+    AIProcessingResult,
+    AIConfidenceMetrics,
+    AIPatternProcessor,
+    
+    # Pattern related
+    PatternProcessor,
+    AdaptivePattern,
+    ResilientPattern,
+    
+    # Documentation
+    Documentation,
+    ComplexityMetrics,
+    
+    # Node types
+    AsciidocNodeDict,
+    
+    # Utils
+    ComponentStatus,
+    monitor_operation,
+    handle_errors,
+    handle_async_errors,
+    AsyncErrorBoundary,
+    ProcessingError,
+    ParsingError,
+    ErrorSeverity,
+    global_health_monitor,
+    register_shutdown_handler,
+    log,
+    UnifiedCache,
+    cache_coordinator,
+    get_cache_analytics,
+    
+    # Python types
+    Dict,
+    List,
+    Any,
+    Optional,
+    Set,
+    
+    # Python modules
+    time,
+    asyncio
+)
 import re
 
 class AsciidocParser(BaseParser, CustomParserMixin):
@@ -33,6 +90,9 @@ class AsciidocParser(BaseParser, CustomParserMixin):
                     # Initialize pattern processor
                     self._pattern_processor = await PatternProcessor.create()
                     
+                    # Initialize enhanced patterns
+                    await self._initialize_enhanced_patterns()
+                    
                     self._initialized = True
                     log("AsciiDoc parser initialized", level="info")
                     return True
@@ -40,6 +100,36 @@ class AsciidocParser(BaseParser, CustomParserMixin):
                 log(f"Error initializing AsciiDoc parser: {e}", level="error")
                 raise
         return True
+
+    async def _initialize_enhanced_patterns(self):
+        """Initialize enhanced pattern support."""
+        # Import patterns from asciidoc.py
+        from parsers.query_patterns.asciidoc import ASCIIDOC_PATTERNS
+        
+        # Convert patterns to adaptive and resilient patterns
+        for category, patterns in ASCIIDOC_PATTERNS.items():
+            for name, pattern in patterns.items():
+                # Create adaptive pattern
+                adaptive_pattern = AdaptivePattern(
+                    name=f"{name}_adaptive",
+                    pattern=pattern.pattern,
+                    category=category,
+                    purpose=pattern.purpose,
+                    language_id=self.language_id,
+                    extract=pattern.extract
+                )
+                self._enhanced_patterns._adaptive_patterns[name] = adaptive_pattern
+                
+                # Create resilient pattern
+                resilient_pattern = ResilientPattern(
+                    name=f"{name}_resilient",
+                    pattern=pattern.pattern,
+                    category=category,
+                    purpose=pattern.purpose,
+                    language_id=self.language_id,
+                    extract=pattern.extract
+                )
+                self._enhanced_patterns._resilient_patterns[name] = resilient_pattern
 
     async def process_with_ai(
         self,
@@ -62,25 +152,32 @@ class AsciidocParser(BaseParser, CustomParserMixin):
                 
                 results = AIProcessingResult(success=True)
                 
-                # Process with understanding capability
-                if AICapability.CODE_UNDERSTANDING in self.capabilities:
-                    understanding = await self._process_with_understanding(ast, context)
-                    results.context_info.update(understanding)
+                # Process with enhanced patterns first
+                enhanced_matches = await self._enhanced_patterns._process_with_enhanced_patterns(
+                    source_code,
+                    context
+                )
+                if enhanced_matches:
+                    results.matches = enhanced_matches
                 
-                # Process with documentation capability
-                if AICapability.DOCUMENTATION in self.capabilities:
-                    documentation = await self._process_with_documentation(ast, context)
-                    results.ai_insights.update(documentation)
+                # Process with AI pattern processor
+                if self._ai_processor:
+                    ai_results = await self._ai_processor.process_with_ai(source_code, context)
+                    if ai_results.success:
+                        results.ai_insights.update(ai_results.ai_insights)
+                        results.learned_patterns.extend(ai_results.learned_patterns)
                 
-                # Process with review capability
-                if AICapability.CODE_REVIEW in self.capabilities:
-                    review = await self._process_with_review(ast, context)
-                    results.ai_insights.update(review)
+                # Extract features with AI assistance
+                features = await self._extract_features_with_ai(ast, source_code, context)
+                results.context_info.update(features)
                 
-                # Process with learning capability
-                if AICapability.LEARNING in self.capabilities:
-                    learning = await self._process_with_learning(ast, context)
-                    results.learned_patterns.extend(learning)
+                # Calculate confidence metrics
+                results.confidence_metrics = await self._calculate_confidence_metrics(
+                    ast,
+                    features,
+                    enhanced_matches,
+                    context
+                )
                 
                 return results
             except Exception as e:
@@ -661,4 +758,285 @@ class AsciidocParser(BaseParser, CustomParserMixin):
             return 'unknown'
         except Exception as e:
             log(f"Error detecting language: {e}", level="error")
-            return 'unknown' 
+            return 'unknown'
+
+    async def _extract_documentation(self, features: Dict[str, Any]) -> Documentation:
+        """Extract documentation features."""
+        doc = Documentation()
+        
+        # Extract docstrings (AsciiDoc doesn't have traditional docstrings)
+        # but we can use document title and preamble
+        if 'header' in features:
+            doc.docstrings.append({
+                'type': 'title',
+                'text': features['header'].get('content', ''),
+                'line': features['header'].get('line_number', 1)
+            })
+        
+        # Extract comments
+        if 'comments' in features:
+            doc.comments = features['comments']
+        
+        # Extract TODOs from comments
+        for comment in doc.comments:
+            if any(marker in comment['text'].upper() for marker in ['TODO', 'FIXME', 'NOTE']):
+                doc.todos.append(comment)
+        
+        # Extract metadata from attributes
+        if 'attributes' in features:
+            doc.metadata = {
+                attr['name']: attr['value']
+                for attr in features['attributes']
+            }
+        
+        # Combine all content
+        doc.content = '\n'.join([
+            d.get('text', '') for d in doc.docstrings
+        ])
+        
+        return doc
+
+    async def _calculate_metrics(self, features: Dict[str, Any], source_code: str) -> ComplexityMetrics:
+        """Calculate code complexity metrics."""
+        metrics = ComplexityMetrics()
+        
+        # Count lines
+        lines = source_code.splitlines()
+        metrics.lines_of_code['total'] = len(lines)
+        metrics.lines_of_code['blank'] = len([l for l in lines if not l.strip()])
+        
+        # Count code and comment lines
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('#'):
+                metrics.lines_of_code['comment'] += 1
+            elif stripped:
+                metrics.lines_of_code['code'] += 1
+        
+        # Calculate cyclomatic complexity based on sections
+        if 'sections' in features:
+            metrics.cyclomatic = len(features['sections']) + 1
+        
+        # Calculate cognitive complexity based on nesting
+        if 'sections' in features:
+            metrics.cognitive = sum(
+                section.get('level', 1) 
+                for section in features['sections']
+            )
+        
+        # Calculate maintainability index
+        # Simple calculation based on documentation ratio
+        doc_ratio = metrics.lines_of_code['comment'] / metrics.lines_of_code['total']
+        metrics.maintainability = min(100, doc_ratio * 100)
+        
+        # Calculate testability
+        # Based on section organization and documentation
+        metrics.testability = min(100, (
+            (doc_ratio * 50) +  # Documentation weight
+            (50 / (metrics.cyclomatic or 1))  # Complexity weight
+        ))
+        
+        # Calculate reusability
+        # Based on modular organization and documentation
+        metrics.reusability = min(100, (
+            (doc_ratio * 40) +  # Documentation weight
+            (30 / (metrics.cognitive or 1)) +  # Cognitive load weight
+            (30 * (len(features.get('blocks', [])) / (metrics.lines_of_code['total'] or 1)))  # Block organization weight
+        ))
+        
+        return metrics
+
+    async def _extract_features_with_ai(
+        self,
+        ast: Dict[str, Any],
+        source_code: str,
+        context: AIContext
+    ) -> Dict[str, Any]:
+        """Extract features with AI assistance."""
+        features = {}
+        
+        # Get pattern processor instance
+        from parsers.pattern_processor import pattern_processor
+        
+        # Process each feature category
+        for category in FeatureCategory:
+            category_features = await self._extract_category_features(
+                category,
+                ast,
+                source_code
+            )
+            if category_features:
+                features[category] = category_features
+                
+                # Apply AI enhancement if available
+                if self._ai_processor:
+                    enhanced = await self._ai_processor.enhance_features(
+                        category_features,
+                        category,
+                        context
+                    )
+                    features[f"{category}_enhanced"] = enhanced
+        
+        return features
+
+    async def _calculate_confidence_metrics(
+        self,
+        ast: Dict[str, Any],
+        features: Dict[str, Any],
+        pattern_matches: List[Dict[str, Any]],
+        context: AIContext
+    ) -> AIConfidenceMetrics:
+        """Calculate confidence metrics for AI processing."""
+        metrics = AIConfidenceMetrics()
+        
+        # Calculate pattern match confidence
+        if pattern_matches:
+            pattern_confidences = {}
+            for match in pattern_matches:
+                pattern_name = match.get('pattern_name', 'unknown')
+                confidence = match.get('confidence', 0.5)
+                pattern_confidences[pattern_name] = confidence
+            metrics.pattern_matches = pattern_confidences
+            metrics.overall_confidence = sum(pattern_confidences.values()) / len(pattern_confidences)
+        
+        # Calculate context relevance
+        if context.metadata:
+            metrics.context_relevance = self._calculate_context_relevance(
+                ast,
+                context
+            )
+        
+        # Calculate semantic similarity
+        metrics.semantic_similarity = self._calculate_semantic_similarity(
+            features
+        )
+        
+        # Calculate documentation quality
+        if 'documentation' in features:
+            metrics.documentation_quality = self._calculate_documentation_quality(
+                features['documentation']
+            )
+        
+        # Calculate code quality
+        if 'syntax' in features:
+            metrics.code_quality = self._calculate_code_quality(
+                features['syntax']
+            )
+        
+        # Calculate learning progress
+        if self._pattern_learner:
+            metrics.learning_progress = await self._pattern_learner.get_learning_progress()
+        
+        return metrics
+
+    def _calculate_context_relevance(
+        self,
+        ast: Dict[str, Any],
+        context: AIContext
+    ) -> float:
+        """Calculate relevance of context to the document."""
+        relevance = 0.0
+        total_weights = 0
+        
+        # Check file type relevance
+        if context.file_type == FileType.DOCUMENTATION:
+            relevance += 1.0
+            total_weights += 1
+        
+        # Check language relevance
+        if context.language_id == "asciidoc":
+            relevance += 1.0
+            total_weights += 1
+        
+        # Check content relevance
+        if ast.get('metadata'):
+            metadata_match = len(set(ast['metadata'].keys()) & 
+                               set(context.metadata.keys()))
+            if metadata_match:
+                relevance += metadata_match / len(context.metadata)
+                total_weights += 1
+        
+        return relevance / total_weights if total_weights > 0 else 0.0
+
+    def _calculate_semantic_similarity(
+        self,
+        features: Dict[str, Any]
+    ) -> float:
+        """Calculate semantic similarity of document features."""
+        similarity = 0.0
+        total_weights = 0
+        
+        # Check structure similarity
+        if 'structure' in features:
+            structure = features['structure']
+            if structure.get('sections'):
+                similarity += len(structure['sections']) / 10  # Normalize to 0-1
+                total_weights += 1
+        
+        # Check semantic features
+        if 'semantics' in features:
+            semantics = features['semantics']
+            if semantics.get('macros'):
+                similarity += len(semantics['macros']) / 20  # Normalize to 0-1
+                total_weights += 1
+        
+        return similarity / total_weights if total_weights > 0 else 0.0
+
+    def _calculate_documentation_quality(
+        self,
+        documentation: Dict[str, Any]
+    ) -> float:
+        """Calculate documentation quality score."""
+        quality = 0.0
+        total_weights = 0
+        
+        # Check docstring presence and quality
+        if documentation.get('docstrings'):
+            docstring_quality = sum(
+                len(d.get('text', '').split()) / 100  # Normalize by word count
+                for d in documentation['docstrings']
+            )
+            quality += min(1.0, docstring_quality)
+            total_weights += 1
+        
+        # Check comments quality
+        if documentation.get('comments'):
+            comment_quality = len(documentation['comments']) / 50  # Normalize
+            quality += min(1.0, comment_quality)
+            total_weights += 1
+        
+        # Check metadata completeness
+        if documentation.get('metadata'):
+            metadata_quality = len(documentation['metadata']) / 10  # Normalize
+            quality += min(1.0, metadata_quality)
+            total_weights += 1
+        
+        return quality / total_weights if total_weights > 0 else 0.0
+
+    def _calculate_code_quality(
+        self,
+        syntax: Dict[str, Any]
+    ) -> float:
+        """Calculate code quality score."""
+        quality = 0.0
+        total_weights = 0
+        
+        # Check block organization
+        if syntax.get('blocks'):
+            block_quality = len(syntax['blocks']) / 20  # Normalize
+            quality += min(1.0, block_quality)
+            total_weights += 1
+        
+        # Check section organization
+        if syntax.get('sections'):
+            section_quality = len(syntax['sections']) / 10  # Normalize
+            quality += min(1.0, section_quality)
+            total_weights += 1
+        
+        # Check attribute usage
+        if syntax.get('attributes'):
+            attr_quality = len(syntax['attributes']) / 15  # Normalize
+            quality += min(1.0, attr_quality)
+            total_weights += 1
+        
+        return quality / total_weights if total_weights > 0 else 0.0 

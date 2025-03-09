@@ -1,472 +1,351 @@
+"""Environment file patterns with enhanced type system and relationships.
+
+This module provides environment file-specific patterns that integrate with the enhanced
+pattern processing system, including proper typing, relationships, and context.
 """
-Query patterns for .env files with enhanced pattern support.
 
-The parser produces an AST with a root node 'env_file' and children of type 'env_var'.
-"""
+from typing import Dict, Any, List, Optional, Match
+from dataclasses import dataclass, field
+from parsers.types import (
+    PatternCategory, PatternPurpose, PatternType, PatternRelationType,
+    PatternContext, PatternRelationship, PatternPerformanceMetrics,
+    PatternValidationResult, PatternMatchResult, QueryPattern
+)
+from parsers.models import PATTERN_CATEGORIES
+from .common import COMMON_PATTERNS
+from .enhanced_patterns import AdaptivePattern, ResilientPattern
 
-from typing import Dict, Any, List, Match
-from dataclasses import dataclass
-from parsers.types import FileType, QueryPattern, PatternCategory, PatternPurpose
-import re
-
-ENVIRONMENT_PATTERNS = {
-    "syntax": {
-        "export": {
-            "pattern": r'^export\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$',
-            "extract": lambda match: {
-                "type": "export",
-                "name": match.group(1),
-                "value": match.group(2)
-            }
-        },
-        "variable": {
-            "pattern": r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$',
-            "extract": lambda match: {
-                "type": "variable",
-                "name": match.group(1),
-                "value": match.group(2)
-            }
-        }
-    },
-    "structure": {
-        "quoted_value": {
-            "pattern": r'^[A-Za-z_][A-Za-z0-9_]*\s*=\s*([\'"](.*)[\'"])$',
-            "extract": lambda match: {
-                "type": "quoted_value",
-                "value": match.group(2),
-                "quote_type": match.group(1)[0]
-            }
-        },
-        "multiline": {
-            "pattern": r'^[A-Za-z_][A-Za-z0-9_]*\s*=\s*`(.*)`$',
-            "extract": lambda match: {
-                "type": "multiline",
-                "value": match.group(1)
-            }
-        }
-    },
-    "documentation": {
-        "comment": {
-            "pattern": r'^#\s*(.*)$',
-            "extract": lambda match: {
-                "type": "comment",
-                "content": match.group(1).strip()
-            }
-        }
-    },
-    "semantics": {
-        "url": {
-            "pattern": r'=\s*(https?://\S+)',
-            "extract": lambda match: {
-                "type": "url",
-                "value": match.group(1)
-            }
-        },
-        "path": {
-            "pattern": r'=\s*([/~][\w/.-]+)',
-            "extract": lambda match: {
-                "type": "path",
-                "value": match.group(1)
-            }
-        }
-    }
+# Pattern relationships for environment files
+ENV_PATTERN_RELATIONSHIPS = {
+    "variable": [
+        PatternRelationship(
+            source_pattern="variable",
+            target_pattern="comment",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"documentation": True}
+        ),
+        PatternRelationship(
+            source_pattern="variable",
+            target_pattern="reference",
+            relationship_type=PatternRelationType.USES,
+            confidence=0.9,
+            metadata={"variable_references": True}
+        )
+    ],
+    "group": [
+        PatternRelationship(
+            source_pattern="group",
+            target_pattern="variable",
+            relationship_type=PatternRelationType.CONTAINS,
+            confidence=0.95,
+            metadata={"group_variables": True}
+        ),
+        PatternRelationship(
+            source_pattern="group",
+            target_pattern="comment",
+            relationship_type=PatternRelationType.COMPLEMENTS,
+            confidence=0.8,
+            metadata={"documentation": True}
+        )
+    ]
 }
 
-def extract_comment(match: Match) -> Dict[str, Any]:
-    """Extract comment information."""
-    return {
-        "content": match.group(1).strip(),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
+# Performance metrics tracking for environment file patterns
+ENV_PATTERN_METRICS = {
+    "variable": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    ),
+    "group": PatternPerformanceMetrics(
+        execution_time=0.0,
+        memory_usage=0,
+        cache_hits=0,
+        cache_misses=0,
+        error_count=0,
+        success_rate=0.0,
+        pattern_stats={"matches": 0, "failures": 0}
+    )
+}
 
-def extract_variable(match: Match) -> Dict[str, Any]:
-    """Extract variable information."""
-    return {
-        "type": "variable",
-        "name": match.group(1),
-        "value": match.group(2),
-        "line_number": match.string.count('\n', 0, match.start()) + 1
-    }
-
+# Enhanced environment file patterns with proper typing and relationships
 ENV_PATTERNS = {
+    **COMMON_PATTERNS,  # Inherit common patterns
+    
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": QueryPattern(
+            "variable": ResilientPattern(
+                name="variable",
                 pattern=r'^([A-Za-z0-9_]+)=(.*)$',
-                extract=lambda match: {
-                    "type": "variable",
-                    "name": match.group(1),
-                    "value": match.group(2),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1,
-                    "naming_style": "uppercase" if match.group(1).isupper() else "mixed"
-                },
-                description="Matches environment variables",
-                examples=["DATABASE_URL=postgres://localhost:5432/db"]
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.95,
+                metadata={
+                    "relationships": ENV_PATTERN_RELATIONSHIPS["variable"],
+                    "metrics": ENV_PATTERN_METRICS["variable"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             ),
-            "export": QueryPattern(
+            
+            "export": ResilientPattern(
+                name="export",
                 pattern=r'^export\s+([A-Za-z0-9_]+)=(.*)$',
-                extract=lambda match: {
-                    "type": "export",
-                    "name": match.group(1),
-                    "value": match.group(2),
-                    "is_export": True,
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches export statements",
-                examples=["export API_KEY=abcdef12345"]
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.95,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             ),
-            "unset": QueryPattern(
+            
+            "unset": ResilientPattern(
+                name="unset",
                 pattern=r'^unset\s+([A-Za-z0-9_]+)\s*$',
-                extract=lambda match: {
-                    "type": "unset",
-                    "name": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches unset statements",
-                examples=["unset DEBUG"]
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.95,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     },
     
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
-            "quoted_value": QueryPattern(
-                pattern=r'^[A-Za-z_][A-Za-z0-9_]*\s*=\s*([\'"](.*)[\'"])$',
-                extract=lambda match: {
-                    "type": "quoted_value",
-                    "value": match.group(2),
-                    "quote_type": match.group(1)[0],
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches quoted values",
-                examples=['SECRET="my-secret"', "KEY='value'"]
-            ),
-            "multiline": QueryPattern(
-                pattern=r'^[A-Za-z_][A-Za-z0-9_]*\s*=\s*`(.*)`$',
-                extract=lambda match: {
-                    "type": "multiline",
-                    "value": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches multiline values",
-                examples=["CERT=`-----BEGIN CERTIFICATE-----\n...`"]
-            ),
-            "group": QueryPattern(
+            "group": ResilientPattern(
+                name="group",
                 pattern=r'^#\s*\[(.*?)\]\s*$',
-                extract=lambda match: {
-                    "type": "group",
-                    "name": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches variable groups",
-                examples=["# [Database]"]
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.95,
+                metadata={
+                    "relationships": ENV_PATTERN_RELATIONSHIPS["group"],
+                    "metrics": ENV_PATTERN_METRICS["group"],
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
+            ),
+            
+            "quoted_value": AdaptivePattern(
+                name="quoted_value",
+                pattern=r'^[A-Za-z_][A-Za-z0-9_]*\s*=\s*([\'"](.*)[\'"])$',
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
+            ),
+            
+            "multiline": AdaptivePattern(
+                name="multiline",
+                pattern=r'^[A-Za-z_][A-Za-z0-9_]*\s*=\s*`(.*)`$',
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     },
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comment": QueryPattern(
+            "comments": AdaptivePattern(
+                name="comments",
                 pattern=r'^#\s*(.*)$',
-                extract=lambda match: {
-                    "type": "comment",
-                    "content": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches comments",
-                examples=["# Database configuration"]
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.9,
+                metadata={
+                    "relationships": [
+                        PatternRelationship(
+                            source_pattern="comments",
+                            target_pattern="variable",
+                            relationship_type=PatternRelationType.COMPLEMENTS,
+                            confidence=0.8
+                        )
+                    ],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             ),
-            "doc_comment": QueryPattern(
-                pattern=r'^#\s*@(\w+)\s+(.*)$',
-                extract=lambda match: {
-                    "type": "doc_comment",
-                    "tag": match.group(1),
-                    "content": match.group(2),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches documentation comments",
-                examples=["# @description API configuration"]
-            ),
-            "section_comment": QueryPattern(
+            
+            "section_comment": AdaptivePattern(
+                name="section_comment",
                 pattern=r'^#\s*={3,}\s*([^=]+?)\s*={3,}\s*$',
-                extract=lambda match: {
-                    "type": "section_comment",
-                    "title": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches section comments",
-                examples=["# ===== Database Settings ====="]
+                category=PatternCategory.DOCUMENTATION,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     },
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "url": QueryPattern(
+            "url": AdaptivePattern(
+                name="url",
                 pattern=r'^([A-Za-z_][A-Za-z0-9_]*_URL)\s*=\s*([^#\n]+)',
-                extract=lambda match: {
-                    "type": "url",
-                    "name": match.group(1),
-                    "value": match.group(2),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches URL variables",
-                examples=["DATABASE_URL=postgres://localhost:5432/db"]
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             ),
-            "path": QueryPattern(
+            
+            "path": AdaptivePattern(
+                name="path",
                 pattern=r'^([A-Za-z_][A-Za-z0-9_]*_PATH)\s*=\s*([^#\n]+)',
-                extract=lambda match: {
-                    "type": "path",
-                    "name": match.group(1),
-                    "value": match.group(2),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches path variables",
-                examples=["LOG_PATH=/var/log/app"]
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             ),
-            "reference": QueryPattern(
+            
+            "reference": AdaptivePattern(
+                name="reference",
                 pattern=r'\$\{([^}]+)\}',
-                extract=lambda match: {
-                    "type": "reference",
-                    "name": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches variable references",
-                examples=["BASE_URL=${HOST}:${PORT}"]
-            )
-        }
-    },
-    
-    PatternCategory.CODE_PATTERNS: {
-        PatternPurpose.UNDERSTANDING: {
-            "conditional": QueryPattern(
-                pattern=r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$\{([^:-]+):-([^}]+)\}$',
-                extract=lambda match: {
-                    "type": "conditional",
-                    "name": match.group(1),
-                    "variable": match.group(2),
-                    "default": match.group(3),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches conditional assignments",
-                examples=["PORT=${PORT:-3000}"]
-            ),
-            "command_substitution": QueryPattern(
-                pattern=r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$\((.*?)\)$',
-                extract=lambda match: {
-                    "type": "command_substitution",
-                    "name": match.group(1),
-                    "command": match.group(2),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches command substitutions",
-                examples=["TIMESTAMP=$(date +%s)"]
-            )
-        }
-    },
-    
-    PatternCategory.DEPENDENCIES: {
-        PatternPurpose.UNDERSTANDING: {
-            "import": QueryPattern(
-                pattern=r'^source\s+([^#\n]+)',
-                extract=lambda match: {
-                    "type": "import",
-                    "path": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches source statements",
-                examples=["source .env.local"]
-            ),
-            "dependency_var": QueryPattern(
-                pattern=r'^([A-Za-z_][A-Za-z0-9_]*_VERSION)\s*=\s*([^#\n]+)',
-                extract=lambda match: {
-                    "type": "dependency_var",
-                    "name": match.group(1),
-                    "version": match.group(2),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches dependency version variables",
-                examples=["NODE_VERSION=18.15.0"]
-            )
-        }
-    },
-    
-    PatternCategory.BEST_PRACTICES: {
-        PatternPurpose.VALIDATION: {
-            "naming_convention": QueryPattern(
-                pattern=r'^([A-Za-z][A-Za-z0-9_]*)\s*=',
-                extract=lambda match: {
-                    "type": "naming_convention",
-                    "name": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1,
-                    "follows_convention": match.group(1).isupper() and '_' in match.group(1)
-                },
-                description="Checks variable naming conventions",
-                examples=["GOOD_NAME=value", "badName=value"]
-            ),
-            "sensitive_value": QueryPattern(
-                pattern=r'^([A-Za-z_][A-Za-z0-9_]*(?:PASSWORD|SECRET|KEY|TOKEN))\s*=\s*([^#\n]+)',
-                extract=lambda match: {
-                    "type": "sensitive_value",
-                    "name": match.group(1),
-                    "is_protected": bool(re.match(r'^[\'"`].*[\'"`]$', match.group(2))),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Checks sensitive value handling",
-                examples=["API_KEY=\"secret\"", "PASSWORD=exposed"]
-            )
-        }
-    },
-    
-    PatternCategory.COMMON_ISSUES: {
-        PatternPurpose.VALIDATION: {
-            "duplicate_variable": QueryPattern(
-                pattern=r'^([A-Za-z0-9_]+)\s*=.*\n(?:.*\n)*?\1\s*=',
-                extract=lambda match: {
-                    "type": "duplicate_variable",
-                    "name": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1,
-                    "is_duplicate": True
-                },
-                description="Detects duplicate variables",
-                examples=["DEBUG=true\nDEBUG=false"]
-            ),
-            "invalid_reference": QueryPattern(
-                pattern=r'\$\{([^}]+)\}',
-                extract=lambda match: {
-                    "type": "invalid_reference",
-                    "name": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1,
-                    "needs_verification": True
-                },
-                description="Detects potentially invalid references",
-                examples=["URL=${MISSING_VAR}"]
-            )
-        }
-    },
-    
-    PatternCategory.USER_PATTERNS: {
-        PatternPurpose.LEARNING: {
-            "custom_prefix": QueryPattern(
-                pattern=r'^([A-Z]+)_[A-Z0-9_]+=',
-                extract=lambda match: {
-                    "type": "custom_prefix",
-                    "prefix": match.group(1),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches custom variable prefixes",
-                examples=["APP_NAME=myapp", "DB_HOST=localhost"]
-            ),
-            "custom_format": QueryPattern(
-                pattern=r'^format\s*=\s*"([^"]+)".*?pattern\s*=\s*"([^"]+)"',
-                extract=lambda match: {
-                    "type": "custom_format",
-                    "format": match.group(1),
-                    "pattern": match.group(2),
-                    "line_number": match.string.count('\n', 0, match.start()) + 1
-                },
-                description="Matches custom format definitions",
-                examples=["format=\"env\"\npattern=\"KEY=VALUE\""]
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="env",
+                confidence=0.9,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": PatternValidationResult(
+                        is_valid=True,
+                        validation_time=0.0
+                    )
+                }
             )
         }
     }
 }
 
-# Add the repository learning patterns
-ENV_PATTERNS[PatternCategory.LEARNING] = {
-    PatternPurpose.LEARNING: {
-        "variable_patterns": QueryPattern(
-            pattern=r'^([A-Za-z0-9_]+)=(.*)$',
-            extract=lambda match: {
-                "type": "variable_pattern",
-                "name": match.group(1),
-                "value": match.group(2),
-                "line_number": match.string.count('\n', 0, match.start()) + 1,
-                "naming_style": "uppercase" if match.group(1).isupper() else "mixed"
-            },
-            description="Learns variable naming patterns",
-            examples=["APP_NAME=myapp", "apiKey=abc123"]
-        ),
-        "group_patterns": QueryPattern(
-            pattern=r'(?s)^#\s*\[(.*?)\]\s*\n(.*?)(?=\n#\s*\[|$)',
-            extract=lambda match: {
-                "type": "group_pattern",
-                "name": match.group(1),
-                "content": match.group(2),
-                "line_number": match.string.count('\n', 0, match.start()) + 1
-            },
-            description="Learns variable grouping patterns",
-            examples=["# [Database]\nDB_HOST=localhost"]
-        )
-    }
-}
+def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
+    """Create pattern context for environment files."""
+    return PatternContext(
+        code_structure=code_structure,
+        language_stats={"language": "env"},
+        project_patterns=[],
+        file_location=file_path,
+        dependencies=set(),
+        recent_changes=[],
+        scope_level="global",
+        allows_nesting=True,
+        relevant_patterns=list(ENV_PATTERNS.keys())
+    )
 
-# Function to extract patterns for repository learning
-def extract_env_patterns_for_learning(content: str) -> List[Dict[str, Any]]:
-    """Extract patterns from ENV content for repository learning."""
-    patterns = []
-    
-    # Process each pattern category
-    for category in PatternCategory:
-        if category in ENV_PATTERNS:
-            category_patterns = ENV_PATTERNS[category]
-            for pattern_name, pattern in category_patterns.items():
-                if isinstance(pattern, QueryPattern):
-                    if isinstance(pattern.pattern, str):
-                        for match in re.finditer(pattern.pattern, content, re.MULTILINE | re.DOTALL):
-                            pattern_data = pattern.extract(match)
-                            patterns.append({
-                                "name": pattern_name,
-                                "category": category.value,
-                                "content": match.group(0),
-                                "metadata": pattern_data,
-                                "confidence": 0.85
-                            })
-    
-    return patterns
+def get_env_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
+    """Get relationships for a specific pattern."""
+    return ENV_PATTERN_RELATIONSHIPS.get(pattern_name, [])
 
-# Metadata for pattern relationships
-PATTERN_RELATIONSHIPS = {
-    "document": {
-        "can_contain": ["variable", "export", "comment", "group"],
-        "can_be_contained_by": []
-    },
-    "group": {
-        "can_contain": ["variable", "export", "comment"],
-        "can_be_contained_by": ["document"]
-    },
-    "variable": {
-        "can_contain": ["reference"],
-        "can_be_contained_by": ["document", "group"]
-    },
-    "export": {
-        "can_contain": ["variable"],
-        "can_be_contained_by": ["document", "group"]
-    }
-}
+def update_env_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update performance metrics for a pattern."""
+    if pattern_name in ENV_PATTERN_METRICS:
+        pattern_metrics = ENV_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", 0.0)
+        pattern_metrics.memory_usage = metrics.get("memory_usage", 0)
+        pattern_metrics.cache_hits = metrics.get("cache_hits", 0)
+        pattern_metrics.cache_misses = metrics.get("cache_misses", 0)
+        pattern_metrics.error_count = metrics.get("error_count", 0)
+        
+        total = pattern_metrics.cache_hits + pattern_metrics.cache_misses
+        if total > 0:
+            pattern_metrics.success_rate = pattern_metrics.cache_hits / total
 
-def extract_env_features(ast: dict) -> dict:
-    """Extract features that align with pattern categories."""
-    features = {
-        "syntax": {
-            "variables": [],
-            "exports": [],
-            "unsets": []
-        },
-        "structure": {
-            "quoted_values": [],
-            "multilines": [],
-            "groups": []
-        },
-        "semantics": {
-            "urls": [],
-            "paths": [],
-            "references": []
-        },
-        "documentation": {
-            "comments": [],
-            "doc_comments": [],
-            "section_comments": []
-        }
-    }
-    return features 
+def get_env_pattern_match_result(
+    pattern_name: str,
+    matches: List[Dict[str, Any]],
+    context: PatternContext
+) -> PatternMatchResult:
+    """Create a pattern match result with relationships and metrics."""
+    return PatternMatchResult(
+        pattern_name=pattern_name,
+        matches=matches,
+        context=context,
+        relationships=get_env_pattern_relationships(pattern_name),
+        performance=ENV_PATTERN_METRICS.get(pattern_name, PatternPerformanceMetrics()),
+        validation=PatternValidationResult(is_valid=True),
+        metadata={"language": "env"}
+    )
+
+# Export public interfaces
+__all__ = [
+    'ENV_PATTERNS',
+    'ENV_PATTERN_RELATIONSHIPS',
+    'ENV_PATTERN_METRICS',
+    'create_pattern_context',
+    'get_env_pattern_relationships',
+    'update_env_pattern_metrics',
+    'get_env_pattern_match_result'
+]
+
+# Module identification
+LANGUAGE = "env" 
