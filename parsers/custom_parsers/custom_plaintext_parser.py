@@ -151,11 +151,37 @@ class PlaintextParser(BaseParser, CustomParserMixin):
     ) -> PlaintextNodeDict:
         """Create a standardized plaintext AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        
+        # Determine pattern category based on node type
+        category = PatternCategory.DOCUMENTATION
+        if node_type == "code_block":
+            category = PatternCategory.CODE_PATTERNS
+        elif node_type in ["link", "reference"]:
+            category = PatternCategory.DEPENDENCIES
+        
+        # Determine pattern type
+        pattern_type = PatternType.DOCUMENTATION
+        if node_type == "code_block":
+            pattern_type = PatternType.CODE_STRUCTURE
+        
         return {
             **node_dict,
+            "category": category,
+            "pattern_type": pattern_type,
             "content": kwargs.get("content", ""),
-            "metadata": kwargs.get("metadata", {}),
-            "relationships": kwargs.get("relationships", [])
+            "heading_level": kwargs.get("heading_level"),
+            "list_type": kwargs.get("list_type"),
+            "list_level": kwargs.get("list_level", 0),
+            "is_heading": node_type == "heading",
+            "is_paragraph": node_type == "paragraph",
+            "is_list_item": node_type == "list_item",
+            "is_code_block": node_type == "code_block",
+            "code_language": kwargs.get("code_language"),
+            "metadata_tags": kwargs.get("metadata_tags", {}),
+            "links": kwargs.get("links", []),
+            "references": kwargs.get("references", []),
+            "feature_category": FeatureCategory.DOCUMENTATION,
+            "pattern_relationships": kwargs.get("pattern_relationships", [])
         }
 
     @handle_errors(error_types=(ParsingError,))

@@ -18,8 +18,9 @@ from parsers.base_parser import BaseParser
 from parsers.block_extractor import BlockExtractor, ExtractedBlock
 from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
 from utils.logger import log
-from utils.cache import LRUCache
+from utils.cache import UnifiedCache, cache_coordinator
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
+from utils.shutdown import register_shutdown_handler
 from db.transaction import transaction_scope
 
 @dataclass
@@ -110,9 +111,10 @@ class AdaptivePattern(QueryPattern):
         super().__init__(*args, **kwargs)
         self.metrics = PatternPerformanceMetrics()
         self.adaptations: List[Dict[str, Any]] = []
-        self._pattern_cache = LRUCache(1000)
+        self._pattern_cache = UnifiedCache("adaptive_pattern_cache", eviction_policy="lru", max_size=1000)
         self._block_extractor = None
         self._base_parser = None
+        register_shutdown_handler(self.cleanup)
     
     async def initialize(self):
         """Initialize required components."""
@@ -126,6 +128,17 @@ class AdaptivePattern(QueryPattern):
                 FileType.CODE,
                 ParserType.TREE_SITTER if self.is_tree_sitter else ParserType.CUSTOM
             )
+            
+        # Register cache with coordinator
+        await cache_coordinator.register_cache("adaptive_pattern_cache", self._pattern_cache)
+    
+    async def cleanup(self):
+        """Clean up resources."""
+        try:
+            # Unregister cache
+            await cache_coordinator.unregister_cache("adaptive_pattern_cache")
+        except Exception as e:
+            await log(f"Error cleaning up adaptive pattern: {e}", level="error")
     
     async def matches(
         self,
@@ -540,7 +553,7 @@ class CrossProjectPatternLearner:
         self.pattern_database: Dict[str, Dict[str, Any]] = {}
         self.project_stats: Dict[str, Dict[str, Any]] = {}
         self.similarity_threshold = 0.8
-        self._cache = LRUCache(1000)
+        self._cache = UnifiedCache(1000)
         self._block_extractor = None
         self._base_parser = None
     

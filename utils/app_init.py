@@ -17,7 +17,7 @@ from utils.error_handling import AsyncErrorBoundary, ProcessingError, ErrorSever
 from utils.health_monitor import global_health_monitor, ComponentStatus
 from db.connection import connection_manager
 from db.neo4j_ops import create_schema_indexes_and_constraints, get_neo4j_tools
-from db.transaction import get_transaction_coordinator
+from db.transaction import get_transaction_coordinator, initialize_transaction_coordinator
 
 class InitStage(Enum):
     """Initialization stages in order of dependency."""
@@ -146,7 +146,7 @@ async def _initialize_database_components():
     await connection_manager.initialize()
     
     # Initialize transaction coordinator
-    await get_transaction_coordinator()
+    await initialize_transaction_coordinator()
     
     # Initialize PostgreSQL operations
     from db.psql import initialize as init_psql

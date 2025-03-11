@@ -257,6 +257,83 @@ JSON_PATTERNS = {
                 }
             }
         )
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        # ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "invalid_json": QueryPattern(
+            name="invalid_json",
+            pattern=r'[^,{\[}\]]\s*[}\]]|[{\[]\s*[^,{\[}\]]',
+            extract=lambda m: {
+                "type": "invalid_json",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid JSON structure", "examples": ["{ key }}", "[value],"]}
+        ),
+        "duplicate_key": QueryPattern(
+            name="duplicate_key",
+            pattern=r'"([^"]+)"\s*:\s*[^,}\n]+(?:[,\n].*?)?"?\1"?\s*:',
+            extract=lambda m: {
+                "type": "duplicate_key",
+                "key": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects duplicate keys", "examples": ["{ \"key\": 1, \"key\": 2 }"]}
+        ),
+        "trailing_comma": QueryPattern(
+            name="trailing_comma",
+            pattern=r',\s*[}\]]',
+            extract=lambda m: {
+                "type": "trailing_comma",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects trailing commas", "examples": ["[1, 2, ]", "{ \"key\": \"value\", }"]}
+        ),
+        "missing_quotes": QueryPattern(
+            name="missing_quotes",
+            pattern=r'{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:',
+            extract=lambda m: {
+                "type": "missing_quotes",
+                "key": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unquoted keys", "examples": ["{ key: \"value\" }"]}
+        ),
+        "invalid_value": QueryPattern(
+            name="invalid_value",
+            pattern=r':\s*(undefined|NaN|Infinity|-Infinity)',
+            extract=lambda m: {
+                "type": "invalid_value",
+                "value": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid JSON values", "examples": ["{ \"key\": undefined }", "{ \"key\": NaN }"]}
+        )
     }
 }
 

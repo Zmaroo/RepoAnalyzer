@@ -4,7 +4,7 @@ This module defines the core data models used throughout the parser system,
 including file classification, query results, and pattern matching.
 """
 
-from typing import Dict, Any, List, Optional, Union, Set, TypedDict, Tuple
+from typing import Dict, Any, List, Optional, Union, Set, TypedDict, Tuple, ForwardRef
 from dataclasses import dataclass, field
 from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
 from parsers.types import (
@@ -12,6 +12,29 @@ from parsers.types import (
     ExtractedFeatures, PatternCategory, PatternPurpose, PatternType, PatternRelationType,
     AICapability, AIContext, AIProcessingResult, InteractionType, ConfidenceLevel
 )
+import time
+import re
+import logging
+
+log = logging.getLogger(__name__)
+
+@dataclass
+class PatternRelationship:
+    """Represents a relationship between patterns."""
+    source_id: str
+    target_id: str
+    type: PatternRelationType
+    confidence: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_valid(self) -> bool:
+        """Check if the relationship is valid."""
+        return bool(self.source_id and self.target_id and self.type)
+
+    def __hash__(self) -> int:
+        """Hash based on source, target, and type."""
+        return hash((self.source_id, self.target_id, self.type))
 
 class BaseNodeDict(TypedDict):
     """Base type for AST nodes."""
@@ -20,6 +43,9 @@ class BaseNodeDict(TypedDict):
     end_point: List[int]
     children: List['BaseNodeDict']
     metadata: Dict[str, Any]
+    category: PatternCategory
+    pattern_type: PatternType
+    relationships: List[PatternRelationship]
 
 class AsciidocNodeDict(BaseNodeDict):
     """AST node type for AsciiDoc files."""
@@ -36,26 +62,108 @@ class AsciidocNodeDict(BaseNodeDict):
     list_type: Optional[str] = None
     list_level: int = 0
     parent_section: Optional[str] = None
+    feature_category: FeatureCategory = field(default=FeatureCategory.DOCUMENTATION)
 
 class CobaltNodeDict(BaseNodeDict):
-    """AST node type for Cobalt files."""
-    pass
+    """AST node type for Cobalt files.
+    
+    Represents nodes in the Cobalt programming language AST, including
+    functions, classes, namespaces, and type definitions.
+    """
+    name: Optional[str] = None
+    parameters: List[Dict[str, Any]] = field(default_factory=list)
+    return_type: Optional[str] = None
+    parent_class: Optional[str] = None
+    namespace: Optional[str] = None
+    type_parameters: List[str] = field(default_factory=list)
+    is_function: bool = False
+    is_class: bool = False
+    is_namespace: bool = False
+    is_type_def: bool = False
+    is_enum: bool = False
+    visibility: Optional[str] = None
+    decorators: List[str] = field(default_factory=list)
+    doc_comments: List[str] = field(default_factory=list)
+    feature_category: FeatureCategory = field(default=FeatureCategory.SYNTAX)
+    pattern_relationships: List[PatternRelationship] = field(default_factory=list)
 
 class EditorconfigNodeDict(BaseNodeDict):
-    """AST node type for EditorConfig files."""
-    pass
+    """AST node type for EditorConfig files.
+    
+    Represents nodes in EditorConfig files, including sections,
+    properties, and glob patterns.
+    """
+    glob_pattern: Optional[str] = None
+    properties: Dict[str, str] = field(default_factory=dict)
+    sections: List[Dict[str, Any]] = field(default_factory=list)
+    is_root: bool = False
+    is_section: bool = False
+    is_property: bool = False
+    comments: List[str] = field(default_factory=list)
+    indent_style: Optional[str] = None
+    indent_size: Optional[int] = None
+    charset: Optional[str] = None
+    end_of_line: Optional[str] = None
+    feature_category: FeatureCategory = field(default=FeatureCategory.STRUCTURE)
+    pattern_relationships: List[PatternRelationship] = field(default_factory=list)
 
 class EnvNodeDict(BaseNodeDict):
-    """AST node type for ENV files."""
-    pass
+    """AST node type for ENV files.
+    
+    Represents nodes in environment configuration files,
+    including variable definitions and exports.
+    """
+    key: Optional[str] = None
+    value: Optional[str] = None
+    is_export: bool = False
+    is_comment: bool = False
+    is_multiline: bool = False
+    is_reference: bool = False
+    referenced_vars: List[str] = field(default_factory=list)
+    comments: List[str] = field(default_factory=list)
+    line_continuation: bool = False
+    quotes: Optional[str] = None
+    feature_category: FeatureCategory = field(default=FeatureCategory.STRUCTURE)
+    pattern_relationships: List[PatternRelationship] = field(default_factory=list)
 
 class IniNodeDict(BaseNodeDict):
-    """AST node type for INI files."""
-    pass
+    """AST node type for INI files.
+    
+    Represents nodes in INI configuration files, including
+    sections, properties, and includes.
+    """
+    section_name: Optional[str] = None
+    properties: Dict[str, str] = field(default_factory=dict)
+    includes: List[str] = field(default_factory=list)
+    is_section: bool = False
+    is_property: bool = False
+    is_include: bool = False
+    is_comment: bool = False
+    comments: List[str] = field(default_factory=list)
+    references: List[str] = field(default_factory=list)
+    feature_category: FeatureCategory = field(default=FeatureCategory.STRUCTURE)
+    pattern_relationships: List[PatternRelationship] = field(default_factory=list)
 
 class PlaintextNodeDict(BaseNodeDict):
-    """AST node type for plaintext files."""
-    pass
+    """AST node type for plaintext files.
+    
+    Represents nodes in plaintext files, including sections,
+    paragraphs, lists, and code blocks.
+    """
+    content: str = ""
+    heading_level: Optional[int] = None
+    list_type: Optional[str] = None
+    list_level: int = 0
+    is_heading: bool = False
+    is_paragraph: bool = False
+    is_list_item: bool = False
+    is_code_block: bool = False
+    code_language: Optional[str] = None
+    metadata_tags: Dict[str, str] = field(default_factory=dict)
+    links: List[Dict[str, str]] = field(default_factory=list)
+    references: List[Dict[str, str]] = field(default_factory=list)
+    feature_category: FeatureCategory = field(default=FeatureCategory.DOCUMENTATION)
+    pattern_relationships: List[PatternRelationship] = field(default_factory=list)
 
 @dataclass
 class FileClassification:
@@ -103,22 +211,104 @@ class PatternMatch:
         )
 
 @dataclass
-class PatternRelationship:
-    """Represents a relationship between patterns."""
-    source_id: str
-    target_id: str
-    type: PatternRelationType
+class Pattern:
+    """Represents a code or documentation pattern."""
+    name: str
+    content: str
+    pattern_type: PatternType
+    category: PatternCategory
+    purpose: PatternPurpose
+    language_id: str
     confidence: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    _compiled_pattern: Optional[Any] = field(default=None, init=False)
+
+    def __post_init__(self):
+        """Post-initialization setup."""
+        self.metadata.setdefault('created_at', time.time())
+        self.metadata.setdefault('last_used', time.time())
+        self.metadata.setdefault('use_count', 0)
+        self.metadata.setdefault('success_rate', 1.0)
 
     @property
-    def is_valid(self) -> bool:
-        """Check if the relationship is valid."""
-        return bool(self.source_id and self.target_id and self.type)
+    def compiled_pattern(self) -> Any:
+        """Get or compile the pattern."""
+        if not self._compiled_pattern:
+            try:
+                if self.pattern_type == PatternType.TREE_SITTER:
+                    language = get_language(self.language_id)
+                    self._compiled_pattern = language.query(self.content) if language else None
+                else:
+                    self._compiled_pattern = re.compile(self.content)
+            except Exception as e:
+                log.error(f"Failed to compile pattern {self.name}: {e}")
+                self._compiled_pattern = None
+        return self._compiled_pattern
 
-    def __hash__(self) -> int:
-        """Hash based on source, target, and type."""
-        return hash((self.source_id, self.target_id, self.type))
+    async def match(self, content: str, context: AIContext) -> List[PatternMatch]:
+        """Match this pattern against content with improved error handling and metrics."""
+        matches = []
+        start_time = time.time()
+        
+        try:
+            if not self.compiled_pattern:
+                raise ValueError(f"Pattern {self.name} failed to compile")
+
+            self.metadata['use_count'] += 1
+            self.metadata['last_used'] = start_time
+
+            if self.pattern_type == PatternType.TREE_SITTER:
+                matches = await self._tree_sitter_match(content)
+            else:
+                matches = await self._regex_match(content)
+
+            # Update success metrics
+            match_count = len(matches)
+            self.metadata['success_rate'] = (
+                self.metadata['success_rate'] * 0.9 + 
+                (1.0 if match_count > 0 else 0.0) * 0.1
+            )
+
+        except Exception as e:
+            log.error(f"Error matching pattern {self.name}: {e}")
+            self.metadata['success_rate'] *= 0.9  # Decrease success rate on error
+
+        finally:
+            self.metadata['last_duration'] = time.time() - start_time
+            
+        return matches
+
+    async def _tree_sitter_match(self, content: str) -> List[PatternMatch]:
+        """Match using tree-sitter."""
+        matches = []
+        parser = get_parser(self.language_id)
+        if parser and self.compiled_pattern:
+            tree = parser.parse(bytes(content, "utf8"))
+            for match in self.compiled_pattern.matches(tree.root_node):
+                matches.append(self._create_match(match))
+        return matches
+
+    async def _regex_match(self, content: str) -> List[PatternMatch]:
+        """Match using regex."""
+        matches = []
+        if self.compiled_pattern:
+            for match in self.compiled_pattern.finditer(content):
+                matches.append(self._create_match(match))
+        return matches
+
+    def _create_match(self, match: Any) -> PatternMatch:
+        """Create a PatternMatch from a raw match."""
+        return PatternMatch(
+            pattern_name=self.name,
+            start_line=getattr(match, 'start_point', (0, 0))[0],
+            end_line=getattr(match, 'end_point', (0, 0))[0],
+            start_col=getattr(match, 'start_point', (0, 0))[1],
+            end_col=getattr(match, 'end_point', (0, 0))[1],
+            matched_text=str(match.group(0) if hasattr(match, 'group') else match),
+            category=self.category,
+            purpose=self.purpose,
+            confidence=self.confidence * self.metadata['success_rate']
+        )
 
 @dataclass
 class ProcessedPattern:
@@ -286,6 +476,7 @@ __all__ = [
     'PatternMatch',
     'ProcessedPattern',
     'PatternRelationship',
+    'Pattern',
     'PATTERN_CATEGORIES',
     'BaseNodeDict',
     'AsciidocNodeDict',

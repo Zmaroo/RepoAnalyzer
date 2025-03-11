@@ -7,6 +7,7 @@ Integrates with cache analytics, error handling, and logging systems.
 
 from typing import Dict, Any, List, Match, Optional, Set, Union
 from dataclasses import dataclass, field
+import time
 from parsers.types import (
     FileType, QueryPattern, PatternCategory, PatternPurpose, PatternType,
     PatternRelationType, PatternContext, PatternPerformanceMetrics
@@ -116,6 +117,131 @@ def extract_header(match: Match) -> Dict[str, Any]:
         "line_number": match.string.count('\n', 0, match.start()) + 1,
         "confidence": 0.95
     }
+
+# Define base patterns
+PLAINTEXT_PATTERNS = {
+    PatternCategory.SYNTAX: {
+        "header": QueryPattern(
+            name="header",
+            pattern=r'^(=+)\s+(.+?)\s*=*$',
+            extract=lambda m: {
+                "type": "header",
+                "level": len(m.group(1)),
+                "title": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches plaintext headers", "examples": ["= Title =", "== Section =="]}
+        ),
+        "list_item": QueryPattern(
+            name="list_item",
+            pattern=r'^(\s*)(?:[*+-]|\d+\.)\s+(.+)$',
+            extract=lambda m: {
+                "type": "list_item",
+                "indent": len(m.group(1)),
+                "content": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches list items", "examples": ["* Item", "1. Item"]}
+        )
+    },
+    
+    PatternCategory.DOCUMENTATION: {
+        "metadata": QueryPattern(
+            name="metadata",
+            pattern=r'^@([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)$',
+            extract=lambda m: {
+                "type": "metadata",
+                "key": m.group(1),
+                "value": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches metadata tags", "examples": ["@author: John Doe", "@version: 1.0"]}
+        ),
+        "comment": QueryPattern(
+            name="comment",
+            pattern=r'^//\s*(.*)$',
+            extract=lambda m: {
+                "type": "comment",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches comments", "examples": ["// Comment"]}
+        )
+    },
+    
+    PatternCategory.CODE_PATTERNS: {
+        "code_block": QueryPattern(
+            name="code_block",
+            pattern=r'```([a-zA-Z0-9_]*)\n(.*?)\n```',
+            extract=lambda m: {
+                "type": "code_block",
+                "language": m.group(1),
+                "content": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.CODE_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches code blocks", "examples": ["```python\nprint('hello')\n```"]}
+        ),
+        "inline_code": QueryPattern(
+            name="inline_code",
+            pattern=r'`([^`]+)`',
+            extract=lambda m: {
+                "type": "inline_code",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.CODE_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches inline code", "examples": ["`code`"]}
+        )
+    },
+    
+    PatternCategory.DEPENDENCIES: {
+        "link": QueryPattern(
+            name="link",
+            pattern=r'\[([^\]]+)\]\(([^)]+)\)',
+            extract=lambda m: {
+                "type": "link",
+                "text": m.group(1),
+                "url": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches links", "examples": ["[text](url)"]}
+        ),
+        "reference": QueryPattern(
+            name="reference",
+            pattern=r'\[([^\]]+)\]\[([^\]]*)\]',
+            extract=lambda m: {
+                "type": "reference",
+                "text": m.group(1),
+                "id": m.group(2) or m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches reference-style links", "examples": ["[text][id]", "[text][]"]}
+        )
+    }
+}
 
 # Convert existing patterns to enhanced types
 def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, ResilientPattern]:

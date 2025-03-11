@@ -81,6 +81,85 @@ JS_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        # ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "undefined_variable": QueryPattern(
+            name="undefined_variable",
+            pattern=r'\b(?:let|const|var)?\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*([^=;\n]+)',
+            extract=lambda m: {
+                "type": "undefined_variable",
+                "variable": m.group(1),
+                "value": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential undefined variable usage", "examples": ["x = y + 1  // y might be undefined"]}
+        ),
+        "type_error": QueryPattern(
+            name="type_error",
+            pattern=r'\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\.\s*([a-zA-Z_$][a-zA-Z0-9_$]*)',
+            extract=lambda m: {
+                "type": "type_error",
+                "object": m.group(1),
+                "property": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential type errors", "examples": ["obj.nonexistentMethod()"]}
+        ),
+        "memory_leak": QueryPattern(
+            name="memory_leak",
+            pattern=r'setInterval\s*\(\s*function\s*\([^)]*\)\s*{\s*([^}]+)\s*}\s*,',
+            extract=lambda m: {
+                "type": "memory_leak",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.8
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential memory leaks in intervals", "examples": ["setInterval(function() { /* no clearInterval */ }, 1000)"]}
+        ),
+        "promise_error": QueryPattern(
+            name="promise_error",
+            pattern=r'new\s+Promise\s*\(\s*(?:function\s*\([^)]*\)|[^)]+)\s*\)\s*(?!\.catch)',
+            extract=lambda m: {
+                "type": "promise_error",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects uncaught promise errors", "examples": ["new Promise((resolve, reject) => { /* no catch */ })"]}
+        ),
+        "null_reference": QueryPattern(
+            name="null_reference",
+            pattern=r'(?:null|undefined)\s*\.\s*[a-zA-Z_$][a-zA-Z0-9_$]*',
+            extract=lambda m: {
+                "type": "null_reference",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects null/undefined references", "examples": ["null.toString()", "undefined.method()"]}
+        )
     }
 }
 

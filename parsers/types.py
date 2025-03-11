@@ -7,10 +7,12 @@ enums, dataclasses, and type aliases.
 from typing import Dict, Any, List, Optional, Union, Set, Callable
 from enum import Enum, auto
 from dataclasses import dataclass, field
+from parsers.language_mapping import normalize_language_name
 import asyncio
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ErrorSeverity
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
+from tree_sitter_language_pack import SupportedLanguage
 
 class FileType(str, Enum):
     """File type enumeration."""
@@ -22,10 +24,45 @@ class FileType(str, Enum):
     UNKNOWN = "unknown"
 
 class ParserType(str, Enum):
-    """Parser type enumeration."""
+    """Parser type enumeration with enhanced functionality."""
     TREE_SITTER = "tree-sitter"
     CUSTOM = "custom"
     UNKNOWN = "unknown"
+
+    @classmethod
+    def from_language(cls, language_id: str) -> 'ParserType':
+        """Get parser type for a language.
+        
+        Args:
+            language_id: Language identifier
+            
+        Returns:
+            ParserType: The appropriate parser type
+        """
+        normalized = normalize_language_name(language_id)
+        if normalized in SupportedLanguage.__args__:
+            return cls.TREE_SITTER
+        elif normalized in CUSTOM_PARSER_CLASSES:
+            return cls.CUSTOM
+        return cls.UNKNOWN
+
+    @property
+    def supports_caching(self) -> bool:
+        """Whether this parser type supports caching."""
+        return self in {self.CUSTOM, self.TREE_SITTER}
+
+    @property
+    def supports_ai(self) -> bool:
+        """Whether this parser type supports AI capabilities."""
+        return self in {self.CUSTOM, self.TREE_SITTER}
+
+class SupportLevel(str, Enum):
+    """Language support level enumeration."""
+    STABLE = "stable"
+    BETA = "beta"
+    EXPERIMENTAL = "experimental"
+    DEPRECATED = "deprecated"
+    UNSUPPORTED = "unsupported"
 
 class FeatureCategory(str, Enum):
     """Feature category enumeration."""
@@ -47,6 +84,7 @@ class PatternCategory(str, Enum):
     DEPENDENCIES = "dependencies"
     CODE_PATTERNS = "code_patterns"
     BEST_PRACTICES = "best_practices"
+    COMMON_ISSUES = "common_issues"
     USER_PATTERNS = "user_patterns"
 
 class PatternPurpose(str, Enum):
@@ -113,6 +151,32 @@ class PatternDefinition:
     language_id: str
     confidence: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class PatternRelationship:
+    """Relationship between patterns."""
+    source_pattern: str
+    target_pattern: str
+    relationship_type: PatternRelationType
+    confidence: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class Pattern:
+    """Base class for all pattern types."""
+    name: str
+    pattern: str
+    language_id: str
+    category: PatternCategory = PatternCategory.CODE_PATTERNS
+    purpose: PatternPurpose = PatternPurpose.UNDERSTANDING
+    description: str = ""
+    examples: List[str] = field(default_factory=list)
+    confidence: float = 0.0
+    is_active: bool = True
+    is_system: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    validation_rules: List[str] = field(default_factory=list)
+    relationships: List[PatternRelationship] = field(default_factory=list)
 
 @dataclass
 class QueryPattern:
@@ -242,6 +306,52 @@ class QueryPattern:
             raise ValueError(f"Error in regex matching: {e}")
 
 @dataclass
+class LanguageConfig:
+    """Language configuration."""
+    language_id: str
+    name: str
+    file_extensions: Set[str] = field(default_factory=set)
+    file_patterns: List[str] = field(default_factory=list)
+    parser_type: ParserType = ParserType.UNKNOWN
+    features: Dict[str, Any] = field(default_factory=dict)
+    support_level: str = "experimental"
+    capabilities: Set[AICapability] = field(default_factory=set)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class LanguageFeatures:
+    """Language features."""
+    syntax: Dict[str, Any] = field(default_factory=dict)
+    semantics: Dict[str, Any] = field(default_factory=dict)
+    documentation: Dict[str, Any] = field(default_factory=dict)
+    structure: Dict[str, Any] = field(default_factory=dict)
+    dependencies: Dict[str, Any] = field(default_factory=dict)
+    patterns: Dict[str, Any] = field(default_factory=dict)
+    metrics: Dict[str, Any] = field(default_factory=dict)
+    custom: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class LanguageSupport:
+    """Language support configuration."""
+    level: str = "experimental"
+    supports_tree_sitter: bool = False
+    supports_custom_parser: bool = False
+    supports_ai: bool = False
+    capabilities: Set[AICapability] = field(default_factory=set)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class LanguageMapping:
+    """Language mapping configuration."""
+    language_id: str
+    extensions: Set[str] = field(default_factory=set)
+    patterns: List[str] = field(default_factory=list)
+    shebang_patterns: List[str] = field(default_factory=list)
+    filenames: Set[str] = field(default_factory=set)
+    directories: Set[str] = field(default_factory=set)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
 class AIConfidenceMetrics:
     """Metrics for AI confidence in processing results."""
     overall_confidence: float = 0.0
@@ -350,15 +460,6 @@ class PatternContext:
     relevant_patterns: List[str] = field(default_factory=list)
 
 @dataclass
-class PatternRelationship:
-    """Relationship between patterns."""
-    source_pattern: str
-    target_pattern: str
-    relationship_type: PatternRelationType
-    confidence: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-@dataclass
 class PatternPerformanceMetrics:
     """Performance metrics for pattern matching."""
     execution_time: float = 0.0
@@ -389,10 +490,70 @@ class PatternMatchResult:
     validation: PatternValidationResult = field(default_factory=PatternValidationResult)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+@dataclass
+class BaseFeatureExtractor:
+    """Base class for feature extraction."""
+    language_id: str
+    features: ExtractedFeatures = field(default_factory=ExtractedFeatures)
+    documentation: Documentation = field(default_factory=Documentation)
+    metrics: ComplexityMetrics = field(default_factory=ComplexityMetrics)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    async def extract_features(self, ast: Dict[str, Any], source_code: str) -> ExtractedFeatures:
+        """Extract features from AST.
+        
+        Args:
+            ast: The AST to extract features from
+            source_code: The original source code
+            
+        Returns:
+            ExtractedFeatures: The extracted features
+        """
+        raise NotImplementedError("Subclasses must implement extract_features")
+
+@dataclass
+class ExtractedBlock:
+    """Extracted code block."""
+    content: str
+    start_line: int
+    end_line: int
+    block_type: str
+    name: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+class BlockType(str, Enum):
+    """Types of code blocks that can be extracted."""
+    FUNCTION = "function"
+    CLASS = "class"
+    METHOD = "method"
+    VARIABLE = "variable"
+    IMPORT = "import"
+    COMMENT = "comment"
+    DOCSTRING = "docstring"
+    DECORATOR = "decorator"
+    CONDITIONAL = "conditional"
+    LOOP = "loop"
+    ERROR_HANDLING = "error_handling"
+    UNKNOWN = "unknown"
+
+@dataclass
+class BlockValidationResult:
+    """Result of validating an extracted code block."""
+    is_valid: bool = True
+    block_type: BlockType = BlockType.UNKNOWN
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    validation_time: float = 0.0
+    syntax_valid: bool = True
+    semantic_valid: bool = True
+    context_valid: bool = True
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
 # Export public interfaces
 __all__ = [
     'FileType',
     'ParserType',
+    'SupportLevel',
     'FeatureCategory',
     'PatternCategory',
     'PatternPurpose',
@@ -402,7 +563,12 @@ __all__ = [
     'PatternType',
     'PatternRelationType',
     'PatternDefinition',
+    'Pattern',
     'QueryPattern',
+    'LanguageConfig',
+    'LanguageFeatures',
+    'LanguageSupport',
+    'LanguageMapping',
     'Documentation',
     'ComplexityMetrics',
     'ExtractedFeatures',
@@ -414,5 +580,9 @@ __all__ = [
     'PatternRelationship',
     'PatternPerformanceMetrics',
     'PatternValidationResult',
-    'PatternMatchResult'
+    'PatternMatchResult',
+    'BlockType',
+    'BlockValidationResult',
+    'ExtractedBlock',
+    'BaseFeatureExtractor'
 ]

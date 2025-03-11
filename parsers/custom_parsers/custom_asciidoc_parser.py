@@ -314,10 +314,39 @@ class AsciidocParser(BaseParser, CustomParserMixin):
     ) -> AsciidocNodeDict:
         """Create a standardized AsciiDoc AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        
+        # Determine pattern category based on node type
+        category = PatternCategory.DOCUMENTATION
+        if node_type == "code_block":
+            category = PatternCategory.CODE_PATTERNS
+        elif node_type in ["link", "reference"]:
+            category = PatternCategory.DEPENDENCIES
+        
+        # Determine pattern type
+        pattern_type = PatternType.DOCUMENTATION
+        if node_type == "code_block":
+            pattern_type = PatternType.CODE_STRUCTURE
+        elif node_type == "section":
+            pattern_type = PatternType.ARCHITECTURE
+        
         return {
             **node_dict,
+            "category": category,
+            "pattern_type": pattern_type,
             "sections": kwargs.get("sections", []),
-            "blocks": kwargs.get("blocks", [])
+            "blocks": kwargs.get("blocks", []),
+            "attributes": kwargs.get("attributes", {}),
+            "content": kwargs.get("content", ""),
+            "level": kwargs.get("level"),
+            "title": kwargs.get("title"),
+            "is_section": node_type == "section",
+            "is_block": node_type == "block",
+            "is_list": node_type == "list",
+            "list_type": kwargs.get("list_type"),
+            "list_level": kwargs.get("list_level", 0),
+            "parent_section": kwargs.get("parent_section"),
+            "feature_category": FeatureCategory.DOCUMENTATION,
+            "pattern_relationships": kwargs.get("pattern_relationships", [])
         }
 
     @handle_errors(error_types=(ParsingError,))

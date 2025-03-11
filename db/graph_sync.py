@@ -79,9 +79,10 @@ from utils.error_handling import (
 from utils.async_runner import submit_async_task
 from utils.shutdown import register_shutdown_handler
 from utils.health_monitor import global_health_monitor
+from db.transaction import transaction_scope
 
 # Create cache instance for graph state
-graph_cache = UnifiedCache("graph_state", ttl=300)
+graph_cache = UnifiedCache("graph_state", eviction_policy="lru", max_size=1000)
 
 class ProjectionError(DatabaseError):
     """Graph projection specific errors."""
@@ -626,9 +627,7 @@ class GraphSyncCoordinator:
         Returns:
             bool: True if synchronization was successful
         """
-        session = await connection_manager.get_session()
-        try:
-            tx = await session.begin_transaction()
+        async with transaction_scope(distributed=True) as txn:
             try:
                 # Create nodes
                 for node in nodes:
@@ -638,7 +637,7 @@ class GraphSyncCoordinator:
                     
                     # Create node with properties
                     query = f"CREATE (n:{labels} {{id: $id}}) SET n += $properties RETURN n"
-                    await tx.run(query, {"id": node_id, "properties": properties})
+                    await txn.neo4j_transaction.run(query, {"id": node_id, "properties": properties})
                 
                 # Create relationships
                 for rel in relationships:
@@ -656,22 +655,18 @@ class GraphSyncCoordinator:
                     RETURN r
                     """.replace("{rel_type}", rel_type)
                     
-                    await tx.run(query, {
+                    await txn.neo4j_transaction.run(query, {
                         "start_id": start_node,
                         "end_id": end_node,
                         "id": rel.get("id"),
                         "properties": properties
                     })
                 
-                # Commit the transaction
-                await tx.commit()
                 return True
+            
             except Exception as e:
-                log(f"Error in graph synchronization: {str(e)}", level="error")
-                await tx.rollback()
+                await log(f"Error in graph synchronization: {str(e)}", level="error")
                 return False
-        finally:
-            await session.close()
 
     async def store_pattern_node(self, pattern_data: dict) -> None:
         """Store pattern node with tree-sitter enhancements."""

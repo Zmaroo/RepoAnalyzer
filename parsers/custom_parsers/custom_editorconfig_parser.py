@@ -164,12 +164,36 @@ class EditorconfigParser(BaseParser, CustomParserMixin):
     ) -> EditorconfigNodeDict:
         """Create a standardized EditorConfig AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        
+        # Determine pattern category based on node type
+        category = PatternCategory.SYNTAX
+        if node_type == "comment":
+            category = PatternCategory.DOCUMENTATION
+        elif node_type == "glob_pattern":
+            category = PatternCategory.DEPENDENCIES
+        
+        # Determine pattern type
+        pattern_type = PatternType.CODE_STRUCTURE
+        if node_type in ["section", "property"]:
+            pattern_type = PatternType.ARCHITECTURE
+        
         return {
             **node_dict,
-            "properties": kwargs.get("properties", []),
+            "category": category,
+            "pattern_type": pattern_type,
+            "glob_pattern": kwargs.get("glob_pattern"),
+            "properties": kwargs.get("properties", {}),
             "sections": kwargs.get("sections", []),
-            "metadata": kwargs.get("metadata", {}),
-            "relationships": kwargs.get("relationships", [])
+            "is_root": node_type == "root",
+            "is_section": node_type == "section",
+            "is_property": node_type == "property",
+            "comments": kwargs.get("comments", []),
+            "indent_style": kwargs.get("indent_style"),
+            "indent_size": kwargs.get("indent_size"),
+            "charset": kwargs.get("charset"),
+            "end_of_line": kwargs.get("end_of_line"),
+            "feature_category": FeatureCategory.CONFIG,
+            "pattern_relationships": kwargs.get("pattern_relationships", [])
         }
 
     @handle_errors(error_types=(ParsingError,))

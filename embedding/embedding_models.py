@@ -28,7 +28,7 @@ from semantic.vector_store import VectorStore
 import time
 
 # Initialize cache for embeddings
-embedding_cache = UnifiedCache("embeddings", ttl=3600)
+embedding_cache = UnifiedCache("embeddings", eviction_policy="lru", max_size=1000)
 
 # Register cache asynchronously - will be done when the module is used
 async def initialize():
@@ -317,7 +317,11 @@ class CodeEmbedder(PatternAwareEmbedder):
                 instance.model.eval()
                 
                 # Initialize cache
-                instance._cache = UnifiedCache(f"embeddings_microsoft_graphcodebert-base", ttl=7200)
+                instance._cache = UnifiedCache(
+                    f"embeddings_microsoft_graphcodebert-base",
+                    eviction_policy="lru",
+                    max_size=1000
+                )
                 await cache_coordinator.register_cache(f"embeddings_microsoft_graphcodebert-base", instance._cache)
                 
                 # Register shutdown handler
@@ -430,7 +434,11 @@ class DocEmbedder(PatternAwareEmbedder):
                 instance.model.eval()
                 
                 # Initialize cache
-                instance._cache = UnifiedCache(f"embeddings_sentence-transformers_all-mpnet-base-v2", ttl=7200)
+                instance._cache = UnifiedCache(
+                    f"embeddings_sentence-transformers_all-mpnet-base-v2",
+                    eviction_policy="lru",
+                    max_size=1000
+                )
                 await cache_coordinator.register_cache(f"embeddings_sentence-transformers_all-mpnet-base-v2", instance._cache)
                 
                 # Register shutdown handler

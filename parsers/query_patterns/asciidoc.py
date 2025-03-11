@@ -10,11 +10,13 @@ from parsers.query_patterns.enhanced_patterns import (
     ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
 )
 import re
-from parsers.utils import handle_async_errors, cached_in_request
-from parsers.health import global_health_monitor, ComponentStatus
-from parsers.monitoring import monitor_operation
-from parsers.errors import ProcessingError
-from parsers.utils import AsyncErrorBoundary
+from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ProcessingError, ErrorSeverity
+from utils.health_monitor import global_health_monitor, ComponentStatus
+from utils.health_monitor import monitor_operation
+from utils.request_cache import cached_in_request
+from utils.cache import UnifiedCache, cache_coordinator
+from utils.cache_analytics import get_cache_analytics
+from utils.logger import log
 
 # Language identifier
 LANGUAGE = "asciidoc"
@@ -87,39 +89,6 @@ async def _warmup_context_cache(keys: List[str]) -> Dict[str, Any]:
             await log(f"Error warming up context cache for {key}: {e}", level="warning")
     return results
 
-# Update existing patterns to use enhanced types
-def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, ResilientPattern]:
-    """Create enhanced pattern from definition."""
-    base_pattern = pattern_def.copy()
-    
-    # Determine if pattern should be resilient based on importance
-    is_resilient = base_pattern.get("type") in {
-        "header", "section", "block", "list", "attribute"
-    }
-    
-    pattern_class = ResilientPattern if is_resilient else AdaptivePattern
-    return pattern_class(**base_pattern)
-
-# Convert existing patterns to enhanced types
-ENHANCED_PATTERNS = {
-    category: {
-        name: create_enhanced_pattern({
-            "name": name,
-            "pattern": pattern.pattern,
-            "extract": pattern.extract,
-            "category": category,
-            "purpose": pattern.purpose if hasattr(pattern, 'purpose') else PatternPurpose.UNDERSTANDING,
-            "language_id": LANGUAGE,
-            "confidence": getattr(pattern, 'confidence', 0.85)
-        })
-        for name, pattern in patterns.items()
-    }
-    for category, patterns in ASCIIDOC_PATTERNS.items()
-}
-
-# Initialize pattern learner
-pattern_learner = CrossProjectPatternLearner()
-
 def extract_header(match: Match) -> Dict[str, Any]:
     """Extract header information."""
     return {
@@ -146,40 +115,54 @@ def extract_attribute(match: Match) -> Dict[str, Any]:
         "line_number": match.string.count('\n', 0, match.start()) + 1
     }
 
+# Define base patterns first
 ASCIIDOC_PATTERNS = {
     PatternCategory.SYNTAX: {
         "header": QueryPattern(
+            name="header",
             pattern=r'^=\s+(.+)$',
             extract=extract_header,
-            description="Matches AsciiDoc document headers",
-            examples=["= Document Title"]
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc document headers", "examples": ["= Document Title"]}
         ),
         "section": QueryPattern(
+            name="section",
             pattern=r'^(=+)\s+(.+)$',
             extract=extract_section,
-            description="Matches AsciiDoc section headers",
-            examples=["== Section Title", "=== Subsection Title"]
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc section headers", "examples": ["== Section Title", "=== Subsection Title"]}
         ),
         "attribute": QueryPattern(
+            name="attribute",
             pattern=r'^:([^:]+):\s*(.*)$',
             extract=extract_attribute,
-            description="Matches AsciiDoc attributes",
-            examples=[":attribute-name: value"]
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc attributes", "examples": [":attribute-name: value"]}
         ),
         "block": QueryPattern(
+            name="block",
             pattern=r'^(----|\[.*?\])\s*$',
             extract=lambda m: {
                 "type": "block",
                 "delimiter": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc blocks",
-            examples=["----", "[source,python]"]
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc blocks", "examples": ["----", "[source,python]"]}
         )
     },
     
     PatternCategory.STRUCTURE: {
         "include": QueryPattern(
+            name="include",
             pattern=r'^include::([^[\]]+)(?:\[(.*?)\])?$',
             extract=lambda m: {
                 "type": "include",
@@ -187,20 +170,26 @@ ASCIIDOC_PATTERNS = {
                 "options": m.group(2) if m.group(2) else {},
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc include directives",
-            examples=["include::file.adoc[]"]
+            category=PatternCategory.STRUCTURE,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc include directives", "examples": ["include::file.adoc[]"]}
         ),
         "anchor": QueryPattern(
+            name="anchor",
             pattern=r'^\[\[([^\]]+)\]\]$',
             extract=lambda m: {
                 "type": "anchor",
                 "id": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc anchors",
-            examples=["[[anchor-id]]"]
+            category=PatternCategory.STRUCTURE,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc anchors", "examples": ["[[anchor-id]]"]}
         ),
         "list": QueryPattern(
+            name="list",
             pattern=r'^(\s*)(?:\*|\d+\.|[a-zA-Z]\.|\[.*?\])\s+(.+)$',
             extract=lambda m: {
                 "type": "list",
@@ -208,10 +197,13 @@ ASCIIDOC_PATTERNS = {
                 "content": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc lists",
-            examples=["* Item", "1. Item", "[square] Item"]
+            category=PatternCategory.STRUCTURE,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc lists", "examples": ["* Item", "1. Item", "[square] Item"]}
         ),
         "table": QueryPattern(
+            name="table",
             pattern=r'\|===\n(.*?)\n\|===',
             extract=lambda m: {
                 "type": "table",
@@ -222,10 +214,13 @@ ASCIIDOC_PATTERNS = {
                     "has_header": bool(re.search(r'\[%header\]', m.group(0)))
                 }
             },
-            description="Matches table structures",
-            examples=["|===\n|Header 1|Header 2\n|Cell 1|Cell 2\n|==="]
+            category=PatternCategory.STRUCTURE,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches table structures", "examples": ["|===\n|Header 1|Header 2\n|Cell 1|Cell 2\n|==="]}
         ),
         "sidebar": QueryPattern(
+            name="sidebar",
             pattern=r'^\[sidebar\]\n====\n(.*?)\n====',
             extract=lambda m: {
                 "type": "sidebar",
@@ -233,13 +228,16 @@ ASCIIDOC_PATTERNS = {
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "confidence": 0.95
             },
-            description="Matches sidebar blocks",
-            examples=["[sidebar]\n====\nSidebar content\n===="]
+            category=PatternCategory.STRUCTURE,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches sidebar blocks", "examples": ["[sidebar]\n====\nSidebar content\n===="]}
         )
     },
     
     PatternCategory.DOCUMENTATION: {
         "admonition": QueryPattern(
+            name="admonition",
             pattern=r'^(NOTE|TIP|IMPORTANT|WARNING|CAUTION):\s+(.+)$',
             extract=lambda m: {
                 "type": "admonition",
@@ -251,20 +249,26 @@ ASCIIDOC_PATTERNS = {
                     "severity": "high" if m.group(1) in ["WARNING", "CAUTION"] else "normal"
                 }
             },
-            description="Matches admonition blocks",
-            examples=["NOTE: Important information", "WARNING: Critical warning"]
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches admonition blocks", "examples": ["NOTE: Important information", "WARNING: Critical warning"]}
         ),
         "comment": QueryPattern(
+            name="comment",
             pattern=r'^//\s*(.*)$',
             extract=lambda m: {
                 "type": "comment",
                 "content": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc comments",
-            examples=["// This is a comment"]
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc comments", "examples": ["// This is a comment"]}
         ),
         "metadata": QueryPattern(
+            name="metadata",
             pattern=r'^:([^:]+)!?:\s*(.*)$',
             extract=lambda m: {
                 "type": "metadata",
@@ -273,10 +277,13 @@ ASCIIDOC_PATTERNS = {
                 "is_locked": m.group(1).endswith('!'),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc metadata",
-            examples=[":author: John Doe", ":version!: 1.0"]
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc metadata", "examples": [":author: John Doe", ":version!: 1.0"]}
         ),
         "inline_annotation": QueryPattern(
+            name="inline_annotation",
             pattern=r'\[#([^\]]+)\](?:\[([^\]]+)\])?',
             extract=lambda m: {
                 "type": "inline_annotation",
@@ -285,23 +292,29 @@ ASCIIDOC_PATTERNS = {
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "confidence": 0.9
             },
-            description="Matches inline annotations",
-            examples=["[#note-1]", "[#important][role=critical]"]
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches inline annotations", "examples": ["[#note-1]", "[#important][role=critical]"]}
         )
     },
     
     PatternCategory.SEMANTICS: {
         "callout": QueryPattern(
+            name="callout",
             pattern=r'<(\d+)>',
             extract=lambda m: {
                 "type": "callout",
                 "number": int(m.group(1)),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc callouts",
-            examples=["<1>"]
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc callouts", "examples": ["<1>"]}
         ),
         "macro": QueryPattern(
+            name="macro",
             pattern=r'([a-z]+)::([^[\]]+)(?:\[(.*?)\])?',
             extract=lambda m: {
                 "type": "macro",
@@ -310,10 +323,13 @@ ASCIIDOC_PATTERNS = {
                 "attributes": m.group(3) if m.group(3) else None,
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc macros",
-            examples=["image::file.png[]", "link::https://example.com[]"]
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc macros", "examples": ["image::file.png[]", "link::https://example.com[]"]}
         ),
         "inline_markup": QueryPattern(
+            name="inline_markup",
             pattern=r'(?:\*\*(.+?)\*\*|__(.+?)__|`(.+?)`|\+\+(.+?)\+\+)',
             extract=lambda m: {
                 "type": "inline_markup",
@@ -321,10 +337,13 @@ ASCIIDOC_PATTERNS = {
                 "content": m.group(1) or m.group(2) or m.group(3) or m.group(4),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches AsciiDoc inline markup",
-            examples=["**bold**", "__italic__", "`monospace`", "++passthrough++"]
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches AsciiDoc inline markup", "examples": ["**bold**", "__italic__", "`monospace`", "++passthrough++"]}
         ),
         "attribute_reference": QueryPattern(
+            name="attribute_reference",
             pattern=r'\{([^}]+)\}',
             extract=lambda m: {
                 "type": "attribute_reference",
@@ -332,10 +351,13 @@ ASCIIDOC_PATTERNS = {
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "confidence": 0.9
             },
-            description="Matches attribute references",
-            examples=["{author}", "{version}"]
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches attribute references", "examples": ["{author}", "{version}"]}
         ),
         "macro_definition": QueryPattern(
+            name="macro_definition",
             pattern=r'^:([^:]+)!?:\s*(.*)$',
             extract=lambda m: {
                 "type": "macro_definition",
@@ -345,10 +367,13 @@ ASCIIDOC_PATTERNS = {
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "confidence": 0.95
             },
-            description="Matches macro definitions",
-            examples=[":macro-name: value", ":locked-macro!: value"]
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches macro definitions", "examples": [":macro-name: value", ":locked-macro!: value"]}
         ),
         "conditional_directive": QueryPattern(
+            name="conditional_directive",
             pattern=r'^ifdef::([^]]+)\[(.*?)endif::.*?\]',
             extract=lambda m: {
                 "type": "conditional",
@@ -357,13 +382,16 @@ ASCIIDOC_PATTERNS = {
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "confidence": 0.85
             },
-            description="Matches conditional content",
-            examples=["ifdef::env-github[GitHub content]endif::[]"]
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches conditional content", "examples": ["ifdef::env-github[GitHub content]endif::[]"]}
         )
     },
     
     PatternCategory.CODE_PATTERNS: {
         "source_block": QueryPattern(
+            name="source_block",
             pattern=r'^\[source,\s*([^\]]+)\]\s*\n----\s*\n(.*?)\n----',
             extract=lambda m: {
                 "type": "source_block",
@@ -371,23 +399,29 @@ ASCIIDOC_PATTERNS = {
                 "code": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches source code blocks",
-            examples=["[source,python]\n----\nprint('Hello')\n----"]
+            category=PatternCategory.CODE_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches source code blocks", "examples": ["[source,python]\n----\nprint('Hello')\n----"]}
         ),
         "inline_code": QueryPattern(
+            name="inline_code",
             pattern=r'`([^`]+)`',
             extract=lambda m: {
                 "type": "inline_code",
                 "code": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches inline code",
-            examples=["`code`"]
+            category=PatternCategory.CODE_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches inline code", "examples": ["`code`"]}
         )
     },
     
     PatternCategory.DEPENDENCIES: {
         "xref": QueryPattern(
+            name="xref",
             pattern=r'<<([^,>]+)(?:,\s*([^>]+))?>',
             extract=lambda m: {
                 "type": "xref",
@@ -395,10 +429,13 @@ ASCIIDOC_PATTERNS = {
                 "text": m.group(2) if m.group(2) else None,
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches cross-references",
-            examples=["<<section>>", "<<section,See section>>"]
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches cross-references", "examples": ["<<section>>", "<<section,See section>>"]}
         ),
         "include_dependency": QueryPattern(
+            name="include_dependency",
             pattern=r'^include::([^[\]]+)\[(.*?)\]$',
             extract=lambda m: {
                 "type": "include_dependency",
@@ -406,10 +443,13 @@ ASCIIDOC_PATTERNS = {
                 "attributes": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches include dependencies",
-            examples=["include::common.adoc[tag=snippet]"]
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches include dependencies", "examples": ["include::common.adoc[tag=snippet]"]}
         ),
         "external_reference": QueryPattern(
+            name="external_reference",
             pattern=r'link:([^\[]+)\[(.*?)\]',
             extract=lambda m: {
                 "type": "external_reference",
@@ -417,10 +457,13 @@ ASCIIDOC_PATTERNS = {
                 "text": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches external references",
-            examples=["link:https://example.com[Example]"]
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches external references", "examples": ["link:https://example.com[Example]"]}
         ),
         "internal_reference": QueryPattern(
+            name="internal_reference",
             pattern=r'<<([^,>]+)(?:,\s*([^>]+))?>',
             extract=lambda m: {
                 "type": "internal_reference",
@@ -428,13 +471,16 @@ ASCIIDOC_PATTERNS = {
                 "text": m.group(2) if m.group(2) else None,
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches internal references",
-            examples=["<<section>>", "<<section,See section>>"]
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches internal references", "examples": ["<<section>>", "<<section,See section>>"]}
         )
     },
     
     PatternCategory.BEST_PRACTICES: {
         "heading_hierarchy": QueryPattern(
+            name="heading_hierarchy",
             pattern=r'^(=+)\s+(.+)$(?:\n(?!=).*)*(?:\n(=+)\s+(.+)$)?',
             extract=lambda m: {
                 "type": "heading_hierarchy",
@@ -445,10 +491,13 @@ ASCIIDOC_PATTERNS = {
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "follows_hierarchy": m.group(3) and len(m.group(3)) <= len(m.group(1)) + 1
             },
-            description="Checks heading hierarchy",
-            examples=["= Title\n== Section"]
+            category=PatternCategory.BEST_PRACTICES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Checks heading hierarchy", "examples": ["= Title\n== Section"]}
         ),
         "attribute_naming": QueryPattern(
+            name="attribute_naming",
             pattern=r'^:([a-z][a-z0-9-]*?)!?:\s*(.*)$',
             extract=lambda m: {
                 "type": "attribute_naming",
@@ -457,13 +506,16 @@ ASCIIDOC_PATTERNS = {
                 "follows_convention": bool(re.match(r'^[a-z][a-z0-9-]*$', m.group(1))),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Checks attribute naming conventions",
-            examples=[":good-name: value", ":BadName: value"]
+            category=PatternCategory.BEST_PRACTICES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Checks attribute naming conventions", "examples": [":good-name: value", ":BadName: value"]}
         )
     },
     
     PatternCategory.COMMON_ISSUES: {
         "broken_xref": QueryPattern(
+            name="broken_xref",
             pattern=r'<<([^,>]+)(?:,\s*([^>]+))?>',
             extract=lambda m: {
                 "type": "broken_xref",
@@ -472,10 +524,13 @@ ASCIIDOC_PATTERNS = {
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "needs_verification": True
             },
-            description="Detects potentially broken cross-references",
-            examples=["<<missing-section>>"]
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially broken cross-references", "examples": ["<<missing-section>>"]}
         ),
         "inconsistent_attributes": QueryPattern(
+            name="inconsistent_attributes",
             pattern=r'^:([^:]+)!?:\s*(.*)$\n(?:.*\n)*?^:\1!?:\s*(.*)$',
             extract=lambda m: {
                 "type": "inconsistent_attributes",
@@ -485,10 +540,13 @@ ASCIIDOC_PATTERNS = {
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "is_inconsistent": m.group(2) != m.group(3)
             },
-            description="Detects inconsistent attribute definitions",
-            examples=[":attr: value1\n:attr: value2"]
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects inconsistent attribute definitions", "examples": [":attr: value1\n:attr: value2"]}
         ),
         "broken_include": QueryPattern(
+            name="broken_include",
             pattern=r'include::([^[\]]+)(?:\[(.*?)\])?$',
             extract=lambda m: {
                 "type": "broken_include",
@@ -498,10 +556,13 @@ ASCIIDOC_PATTERNS = {
                 "needs_verification": True,
                 "confidence": 0.8
             },
-            description="Detects potentially broken includes",
-            examples=["include::missing-file.adoc[]"]
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially broken includes", "examples": ["include::missing-file.adoc[]"]}
         ),
         "malformed_attribute": QueryPattern(
+            name="malformed_attribute",
             pattern=r':([^:]*?):(?!\s)',
             extract=lambda m: {
                 "type": "malformed_attribute",
@@ -510,13 +571,16 @@ ASCIIDOC_PATTERNS = {
                 "confidence": 0.9,
                 "error_type": "missing_space"
             },
-            description="Detects malformed attributes",
-            examples=[":attribute:value"]
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects malformed attributes", "examples": [":attribute:value"]}
         )
     },
     
     PatternCategory.USER_PATTERNS: {
         "custom_block": QueryPattern(
+            name="custom_block",
             pattern=r'^\[([^\]]+)\]\s*\n====\s*\n(.*?)\n====',
             extract=lambda m: {
                 "type": "custom_block",
@@ -524,10 +588,13 @@ ASCIIDOC_PATTERNS = {
                 "content": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches custom block types",
-            examples=["[custom]\n====\nContent\n===="]
+            category=PatternCategory.USER_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches custom block types", "examples": ["[custom]\n====\nContent\n===="]}
         ),
         "custom_macro": QueryPattern(
+            name="custom_macro",
             pattern=r'(\w+):([^[\]]+)\[(.*?)\]',
             extract=lambda m: {
                 "type": "custom_macro",
@@ -536,64 +603,46 @@ ASCIIDOC_PATTERNS = {
                 "attributes": m.group(3),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches custom macro definitions",
-            examples=["custom:target[attrs]"]
+            category=PatternCategory.USER_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches custom macro definitions", "examples": ["custom:target[attrs]"]}
         )
     }
 }
 
-# Add the repository learning patterns
-ASCIIDOC_PATTERNS[PatternCategory.LEARNING] = {
-    "document_structure": QueryPattern(
-        pattern=r'(?s)^=\s+([^\n]+)\n\n(.*?)(?=\n=\s|$)',
-        extract=lambda m: {
-            "type": "document_structure",
-            "title": m.group(1),
-            "content": m.group(2),
-            "line_number": m.string.count('\n', 0, m.start()) + 1
-        },
-        description="Matches document structure patterns",
-        examples=["= Title\n\nContent"]
-    ),
-    "section_patterns": QueryPattern(
-        pattern=r'(?s)(=+)\s+([^\n]+)\n\n(.*?)(?=\n=|$)',
-        extract=lambda m: {
-            "type": "section_pattern",
-            "level": len(m.group(1)),
-            "title": m.group(2),
-            "content": m.group(3),
-            "line_number": m.string.count('\n', 0, m.start()) + 1
-        },
-        description="Learns section organization patterns",
-        examples=["== Section\n\nContent"]
-    ),
-    "pattern_evolution": QueryPattern(
-        pattern=r'(?s)(=+)\s+([^\n]+)\n\n(.*?)(?=\n=|$)',
-        extract=lambda m: {
-            "type": "pattern_evolution",
-            "level": len(m.group(1)),
-            "title": m.group(2),
-            "content": m.group(3),
-            "line_number": m.string.count('\n', 0, m.start()) + 1,
-            "adaptable": True,
-            "context_aware": True
-        },
-        description="Learns evolving document patterns",
-        examples=["= Title\n\nContent that evolves"]
-    ),
-    "style_patterns": QueryPattern(
-        pattern=r'(?s)^((?:[-=*_]{3,}|\+\+\+)\n.*?\n\1)$',
-        extract=lambda m: {
-            "type": "style_pattern",
-            "content": m.group(1),
-            "line_number": m.string.count('\n', 0, m.start()) + 1,
-            "style_type": "block",
-            "adaptable": True
-        },
-        description="Learns document styling patterns",
-        examples=["===\nStyled content\n==="]
-    )
+# Update existing patterns to use enhanced types
+def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, ResilientPattern]:
+    """Create enhanced pattern from definition."""
+    base_pattern = pattern_def.copy()
+    
+    # Determine if pattern should be resilient based on importance
+    is_resilient = base_pattern.get("type") in {
+        "header", "section", "block", "list", "attribute"
+    }
+    
+    pattern_class = ResilientPattern if is_resilient else AdaptivePattern
+    return pattern_class(**base_pattern)
+
+# Convert existing patterns to enhanced types after ASCIIDOC_PATTERNS is defined
+ENHANCED_PATTERNS = {
+    category: {
+        name: create_enhanced_pattern({
+            "name": name,
+            "pattern": pattern.pattern,
+            "extract": pattern.extract,
+            "category": category,
+            "purpose": pattern.purpose if hasattr(pattern, 'purpose') else PatternPurpose.UNDERSTANDING,
+            "language_id": LANGUAGE,
+            "confidence": getattr(pattern, 'confidence', 0.85)
+        })
+        for name, pattern in patterns.items()
+    }
+    for category, patterns in ASCIIDOC_PATTERNS.items()
 }
+
+# Initialize pattern learner
+pattern_learner = CrossProjectPatternLearner()
 
 @handle_async_errors(error_types=ProcessingError)
 @cached_in_request

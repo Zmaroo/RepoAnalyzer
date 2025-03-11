@@ -190,7 +190,7 @@ class SchemaManager:
                 log(f"Error dropping tables: {e}", level="error")
                 raise SchemaError(f"Failed to drop tables: {str(e)}")
     
-    async def create_repositories_table(self) -> None:
+    async def create_repositories_table(self, txn) -> None:
         """Create repositories table."""
         sql = """
         CREATE TABLE IF NOT EXISTS repositories (
@@ -208,7 +208,7 @@ class SchemaManager:
         """
         await self._execute_query(sql)
     
-    async def create_code_snippets_table(self) -> None:
+    async def create_code_snippets_table(self, txn) -> None:
         """[6.6.1] Create code storage with vector similarity support."""
         sql = """
         CREATE TABLE IF NOT EXISTS code_snippets (
@@ -226,7 +226,7 @@ class SchemaManager:
         """
         await self._execute_query(sql)
     
-    async def create_repo_docs_table(self) -> None:
+    async def create_repo_docs_table(self, txn) -> None:
         """[6.6.2] Create documentation storage with versioning."""
         sql_table = """
         CREATE TABLE IF NOT EXISTS repo_docs (
@@ -253,7 +253,7 @@ class SchemaManager:
         """
         await self._execute_query(sql_index)
     
-    async def create_repo_doc_relations_table(self) -> None:
+    async def create_repo_doc_relations_table(self, txn) -> None:
         """Create junction table for repo-doc relationships."""
         sql = """
         CREATE TABLE IF NOT EXISTS repo_doc_relations (
@@ -266,7 +266,7 @@ class SchemaManager:
         """
         await self._execute_query(sql)
     
-    async def create_doc_versions_table(self) -> None:
+    async def create_doc_versions_table(self, txn) -> None:
         """Track document versions."""
         sql = """
         CREATE TABLE IF NOT EXISTS doc_versions (
@@ -281,7 +281,7 @@ class SchemaManager:
         """
         await self._execute_query(sql)
     
-    async def create_doc_clusters_table(self) -> None:
+    async def create_doc_clusters_table(self, txn) -> None:
         """Group related documentation."""
         sql = """
         CREATE TABLE IF NOT EXISTS doc_clusters (
@@ -294,7 +294,7 @@ class SchemaManager:
         """
         await self._execute_query(sql)
     
-    async def create_code_patterns_table(self) -> None:
+    async def create_code_patterns_table(self, txn) -> None:
         """[6.6.7] Create code patterns table for reference repository learning."""
         sql = """
         CREATE TABLE IF NOT EXISTS code_patterns (
@@ -311,7 +311,7 @@ class SchemaManager:
         """
         await self._execute_query(sql)
     
-    async def create_doc_patterns_table(self) -> None:
+    async def create_doc_patterns_table(self, txn) -> None:
         """[6.6.8] Create documentation patterns table for reference repository learning."""
         sql = """
         CREATE TABLE IF NOT EXISTS doc_patterns (
@@ -328,7 +328,7 @@ class SchemaManager:
         """
         await self._execute_query(sql)
     
-    async def create_arch_patterns_table(self) -> None:
+    async def create_arch_patterns_table(self, txn) -> None:
         """[6.6.9] Create architecture patterns table for reference repository learning."""
         sql = """
         CREATE TABLE IF NOT EXISTS arch_patterns (
@@ -357,44 +357,37 @@ class SchemaManager:
                     await connection_manager.initialize_postgres()
                     await connection_manager.initialize()
                     
-                    # Create PostgreSQL tables in order of dependencies
-                    tables = [
-                        self.create_repositories_table,
-                        self.create_code_snippets_table,
-                        self.create_repo_docs_table,
-                        self.create_repo_doc_relations_table,
-                        self.create_doc_versions_table,
-                        self.create_doc_clusters_table,
-                        self.create_code_patterns_table,
-                        self.create_doc_patterns_table,
-                        self.create_arch_patterns_table
-                    ]
-                    
-                    for create_table in tables:
-                        task = asyncio.create_task(create_table())
-                        self._pending_tasks.add(task)
-                        try:
-                            await task
-                        finally:
-                            self._pending_tasks.remove(task)
-                    
-                    # Create Neo4j schema
-                    session = await connection_manager.get_session()
-                    try:
-                        # Create indexes for different node types
-                        await session.run("CREATE INDEX IF NOT EXISTS FOR (c:Code) ON (c.repo_id, c.file_path)")
-                        await session.run("CREATE INDEX IF NOT EXISTS FOR (d:Documentation) ON (d.repo_id, d.path)")
-                        await session.run("CREATE INDEX IF NOT EXISTS FOR (r:Repository) ON (r.id)")
-                        await session.run("CREATE INDEX IF NOT EXISTS FOR (l:Language) ON (l.name)")
-                        await session.run("CREATE INDEX IF NOT EXISTS FOR (p:Pattern) ON (p.id)")
-                        await session.run("CREATE INDEX IF NOT EXISTS FOR (f:Feature) ON (f.name)")
+                    async with transaction_scope(distributed=True) as txn:
+                        # Create PostgreSQL tables in order of dependencies
+                        tables = [
+                            self.create_repositories_table,
+                            self.create_code_snippets_table,
+                            self.create_repo_docs_table,
+                            self.create_repo_doc_relations_table,
+                            self.create_doc_versions_table,
+                            self.create_doc_clusters_table,
+                            self.create_code_patterns_table,
+                            self.create_doc_patterns_table,
+                            self.create_arch_patterns_table
+                        ]
                         
-                        # Create constraints for uniqueness
-                        await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (r:Repository) REQUIRE r.id IS UNIQUE")
-                        await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Code) REQUIRE (c.repo_id, c.file_path) IS UNIQUE")
-                        await session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Pattern) REQUIRE p.id IS UNIQUE")
-                    finally:
-                        await session.close()
+                        for create_table in tables:
+                            task = asyncio.create_task(create_table(txn))
+                            self._pending_tasks.add(task)
+                            try:
+                                await task
+                            finally:
+                                self._pending_tasks.remove(task)
+                        
+                        # Create Neo4j schema
+                        await self.create_neo4j_schema(txn)
+                        
+                        # Record schema creation in transaction metrics
+                        await txn.record_operation("create_all_tables", {
+                            "postgres_tables": len(tables),
+                            "neo4j_schema": True,
+                            "timestamp": time.time()
+                        })
                     
                     log("✅ Schema initialization complete")
             except Exception as e:

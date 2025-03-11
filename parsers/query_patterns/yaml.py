@@ -239,6 +239,83 @@ YAML_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        // ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "indentation_error": QueryPattern(
+            name="indentation_error",
+            pattern=r'^( +)[^-\s].*\n\1[^ ]',
+            extract=lambda m: {
+                "type": "indentation_error",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects indentation errors", "examples": ["  key: value\n wrong_indent"]}
+        ),
+        "invalid_anchor": QueryPattern(
+            name="invalid_anchor",
+            pattern=r'&([^a-zA-Z0-9_-]|\s)',
+            extract=lambda m: {
+                "type": "invalid_anchor",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid anchor names", "examples": ["&*invalid", "&space name"]}
+        ),
+        "duplicate_key": QueryPattern(
+            name="duplicate_key",
+            pattern=r'^([^:#\n]+):\s*[^\n]+\n(?:[^\n]+\n)*\1:',
+            extract=lambda m: {
+                "type": "duplicate_key",
+                "key": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects duplicate keys", "examples": ["key: value1\nkey: value2"]}
+        ),
+        "invalid_mapping": QueryPattern(
+            name="invalid_mapping",
+            pattern=r'^[^:#\n]+:[^\s\n]',
+            extract=lambda m: {
+                "type": "invalid_mapping",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid mapping syntax", "examples": ["key:value"]}
+        ),
+        "unresolved_alias": QueryPattern(
+            name="unresolved_alias",
+            pattern=r'\*([a-zA-Z_][a-zA-Z0-9_]*)',
+            extract=lambda m: {
+                "type": "unresolved_alias",
+                "alias": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially unresolved aliases", "examples": ["*undefined_anchor"]}
+        )
     }
 }
 

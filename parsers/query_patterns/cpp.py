@@ -299,6 +299,83 @@ CPP_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        # ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "memory_leak": QueryPattern(
+            name="memory_leak",
+            pattern=r'new\s+[a-zA-Z_][a-zA-Z0-9_]*(?:\s*\[[^\]]*\])?(?![^;]*delete)',
+            extract=lambda m: {
+                "type": "memory_leak",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential memory leaks", "examples": ["auto ptr = new int[10];"]}
+        ),
+        "null_pointer_deref": QueryPattern(
+            name="null_pointer_deref",
+            pattern=r'([a-zA-Z_][a-zA-Z0-9_]*)\s*->\s*[a-zA-Z_][a-zA-Z0-9_]*',
+            extract=lambda m: {
+                "type": "null_pointer_deref",
+                "pointer": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential null pointer dereferences", "examples": ["ptr->method();"]}
+        ),
+        "buffer_overflow": QueryPattern(
+            name="buffer_overflow",
+            pattern=r'(?:strcpy|strcat|sprintf|gets)\s*\([^)]+\)',
+            extract=lambda m: {
+                "type": "buffer_overflow",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential buffer overflows", "examples": ["strcpy(dest, src);"]}
+        ),
+        "uninitialized_variable": QueryPattern(
+            name="uninitialized_variable",
+            pattern=r'(?:int|char|float|double|long)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;',
+            extract=lambda m: {
+                "type": "uninitialized_variable",
+                "variable": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.8
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially uninitialized variables", "examples": ["int x;"]}
+        ),
+        "resource_leak": QueryPattern(
+            name="resource_leak",
+            pattern=r'(?:fopen|malloc|new)\s*\([^)]*\)(?![^;]*(?:fclose|free|delete))',
+            extract=lambda m: {
+                "type": "resource_leak",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential resource leaks", "examples": ["FILE* fp = fopen(\"file.txt\", \"r\");"]}
+        )
     }
 }
 

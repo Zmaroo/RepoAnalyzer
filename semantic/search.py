@@ -102,7 +102,7 @@ class SearchEngine:
                 
                 # Initialize cache
                 from utils.cache import UnifiedCache, cache_coordinator
-                instance._cache = UnifiedCache("search_results", ttl=3600)
+                instance._cache = UnifiedCache("search_results", eviction_policy="lru", max_size=1000)
                 await cache_coordinator.register_cache("search_results", instance._cache)
                 
                 # Set search configuration

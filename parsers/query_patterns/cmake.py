@@ -282,6 +282,84 @@ CMAKE_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        # ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "invalid_target": QueryPattern(
+            name="invalid_target",
+            pattern=r'add_(?:executable|library)\s*\(\s*([^\s)]+)',
+            extract=lambda m: {
+                "type": "invalid_target",
+                "target": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially invalid targets", "examples": ["add_executable(target)"]}
+        ),
+        "missing_dependency": QueryPattern(
+            name="missing_dependency",
+            pattern=r'target_link_libraries\s*\(\s*([^\s)]+)\s+([^)]+)\)',
+            extract=lambda m: {
+                "type": "missing_dependency",
+                "target": m.group(1),
+                "dependencies": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially missing dependencies", "examples": ["target_link_libraries(target dep)"]}
+        ),
+        "undefined_variable": QueryPattern(
+            name="undefined_variable",
+            pattern=r'\${([^}]+)}',
+            extract=lambda m: {
+                "type": "undefined_variable",
+                "variable": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially undefined variables", "examples": ["${UNDEFINED_VAR}"]}
+        ),
+        "circular_dependency": QueryPattern(
+            name="circular_dependency",
+            pattern=r'target_link_libraries\s*\(\s*([^\s)]+)[^)]*\1[^)]*\)',
+            extract=lambda m: {
+                "type": "circular_dependency",
+                "target": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential circular dependencies", "examples": ["target_link_libraries(target target)"]}
+        ),
+        "invalid_command": QueryPattern(
+            name="invalid_command",
+            pattern=r'^([a-z_]+)\s*\(',
+            extract=lambda m: {
+                "type": "invalid_command",
+                "command": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially invalid commands", "examples": ["invalid_command()"]}
+        )
     }
 }
 

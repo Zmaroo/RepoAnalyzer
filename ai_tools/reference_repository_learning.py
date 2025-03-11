@@ -64,35 +64,135 @@ from tree_sitter_language_pack import get_binding, get_language, get_parser, Sup
 from ai_tools.code_understanding import CodeUnderstanding
 import os
 from utils.async_runner import submit_async_task
+from utils.shutdown import register_shutdown_handler
+from utils.health_monitor import global_health_monitor, ComponentStatus
 
 
 class ReferenceRepositoryLearning:
     """[4.4.1] Reference repository learning capabilities."""
     
     def __init__(self):
-        self.code_understanding = CodeUnderstanding()
-        self.embedder = code_embedder
-        self.doc_embedder = doc_embedder
+        """Private constructor - use create() instead."""
+        self._initialized = False
+        self.code_understanding = None
+        self.embedder = None
+        self.doc_embedder = None
         self.neo4j_tools = None
-        self._retry_manager = RetryManager(
-            RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
-        )
-        self._pending_tasks: Set[asyncio.Future] = set()
+        self._retry_manager = None
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
         self._tree_sitter_parsers = {}  # Cache for tree-sitter parsers
         self._parser_metrics = {
             ParserType.CUSTOM: {"patterns": 0, "success": 0},
             ParserType.TREE_SITTER: {"patterns": 0, "success": 0}
         }
     
+    async def ensure_initialized(self):
+        """Ensure the instance is properly initialized before use."""
+        if not self._initialized:
+            raise ProcessingError("ReferenceRepositoryLearning not initialized. Use create() to initialize.")
+        if not self.code_understanding:
+            raise ProcessingError("Code understanding not initialized")
+        if not self.neo4j_tools:
+            raise ProcessingError("Neo4j tools not initialized")
+        return True
+    
     @classmethod
     async def create(cls) -> 'ReferenceRepositoryLearning':
+        """Async factory method to create and initialize a ReferenceRepositoryLearning instance."""
         instance = cls()
-        instance.neo4j_tools = await get_neo4j_tools()
-        
-        # Initialize tree-sitter parsers
-        await instance._initialize_tree_sitter_parsers()
-        
-        return instance
+        try:
+            async with AsyncErrorBoundary(
+                operation_name="reference repository learning initialization",
+                error_types=ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            ):
+                # Initialize components
+                instance.code_understanding = await CodeUnderstanding.create()
+                instance.embedder = code_embedder
+                instance.doc_embedder = doc_embedder
+                instance.neo4j_tools = await get_neo4j_tools()
+                
+                # Initialize retry manager
+                instance._retry_manager = RetryManager(
+                    RetryConfig(max_retries=5, base_delay=1.0, max_delay=30.0)
+                )
+                
+                # Initialize tree-sitter parsers
+                await instance._initialize_tree_sitter_parsers()
+                
+                # Register shutdown handler
+                register_shutdown_handler(instance.cleanup)
+                
+                # Initialize health monitoring
+                global_health_monitor.register_component(
+                    "reference_repository_learning",
+                    health_check=instance._check_health
+                )
+                
+                instance._initialized = True
+                await log("Reference repository learning initialized", level="info")
+                return instance
+        except Exception as e:
+            await log(f"Error initializing reference repository learning: {e}", level="error")
+            # Cleanup on initialization failure
+            await instance.cleanup()
+            raise ProcessingError(f"Failed to initialize reference repository learning: {e}")
+    
+    async def _check_health(self) -> Dict[str, Any]:
+        """Health check for reference repository learning."""
+        return {
+            "status": ComponentStatus.HEALTHY if self._initialized else ComponentStatus.UNHEALTHY,
+            "metrics": {
+                "custom_patterns": self._parser_metrics[ParserType.CUSTOM]["patterns"],
+                "tree_sitter_patterns": self._parser_metrics[ParserType.TREE_SITTER]["patterns"],
+                "custom_success_rate": self._parser_metrics[ParserType.CUSTOM]["success"] / max(1, self._parser_metrics[ParserType.CUSTOM]["patterns"]),
+                "tree_sitter_success_rate": self._parser_metrics[ParserType.TREE_SITTER]["success"] / max(1, self._parser_metrics[ParserType.TREE_SITTER]["patterns"])
+            },
+            "components": {
+                "code_understanding": self.code_understanding is not None,
+                "neo4j_tools": self.neo4j_tools is not None,
+                "embedder": self.embedder is not None,
+                "doc_embedder": self.doc_embedder is not None,
+                "retry_manager": self._retry_manager is not None
+            }
+        }
+    
+    async def cleanup(self):
+        """Clean up all resources."""
+        try:
+            if not self._initialized:
+                return
+                
+            # Cancel all pending tasks
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+            
+            # Clean up components in reverse initialization order
+            if self.code_understanding:
+                await self.code_understanding.cleanup()
+            
+            if self.neo4j_tools:
+                await self.neo4j_tools.cleanup()
+            
+            if self._retry_manager:
+                await self._retry_manager.cleanup()
+            
+            # Clean up tree-sitter parsers
+            self._tree_sitter_parsers.clear()
+            
+            # Unregister from health monitoring
+            global_health_monitor.unregister_component("reference_repository_learning")
+            
+            self._initialized = False
+            await log("Reference repository learning cleaned up", level="info")
+        except Exception as e:
+            await log(f"Error cleaning up reference repository learning: {e}", level="error")
+            raise ProcessingError(f"Failed to cleanup reference repository learning: {e}")
     
     async def _initialize_tree_sitter_parsers(self):
         """Initialize tree-sitter parsers for supported languages."""
@@ -861,26 +961,6 @@ class ReferenceRepositoryLearning:
         
         return comparison_results
     
-    async def cleanup(self):
-        """Cleanup resources."""
-        try:
-            self.code_understanding.cleanup()
-            if self.neo4j_tools:
-                await self.neo4j_tools.cleanup()
-            
-            # Clean up tree-sitter parsers
-            self._tree_sitter_parsers.clear()
-            
-            # Clean up pending tasks
-            for task in self._pending_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
-            
-        except Exception as e:
-            log(f"Error during reference learning cleanup: {e}", level="error")
-
     @handle_async_errors(error_types=(ProcessingError, DatabaseError))
     async def deep_learn_from_multiple_repositories(self, repo_ids: List[int]) -> Dict[str, Any]:
         """[4.4.6] Deep learn from multiple reference repositories by analyzing cross-repository patterns.

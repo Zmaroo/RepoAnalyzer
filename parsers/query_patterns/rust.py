@@ -310,6 +310,84 @@ RUST_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        // ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "unsafe_block": QueryPattern(
+            name="unsafe_block",
+            pattern=r'unsafe\s*\{[^}]*\}',
+            extract=lambda m: {
+                "type": "unsafe_block",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unsafe blocks", "examples": ["unsafe { *ptr = 42; }"]}
+        ),
+        "lifetime_mismatch": QueryPattern(
+            name="lifetime_mismatch",
+            pattern=r"&'([a-z]+)\s+[a-zA-Z_][a-zA-Z0-9_]*(?:\s*:\s*&'([a-z]+)\s+[a-zA-Z_][a-zA-Z0-9_]*)*",
+            extract=lambda m: {
+                "type": "lifetime_mismatch",
+                "lifetime": m.group(1),
+                "dependent_lifetime": m.group(2) if m.group(2) else None,
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential lifetime mismatches", "examples": ["fn foo<'a>(x: &'a str, y: &'b str)"]}
+        ),
+        "unwrap_usage": QueryPattern(
+            name="unwrap_usage",
+            pattern=r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\.\s*(?:unwrap|expect)\s*\(\s*[^)]*\)',
+            extract=lambda m: {
+                "type": "unwrap_usage",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unwrap/expect usage", "examples": ["result.unwrap()", "option.expect(\"msg\")"]}
+        ),
+        "mutex_deadlock": QueryPattern(
+            name="mutex_deadlock",
+            pattern=r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*lock\s*\(\s*\).*?\1\s*\.\s*lock\s*\(\s*\)',
+            extract=lambda m: {
+                "type": "mutex_deadlock",
+                "mutex": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential mutex deadlocks", "examples": ["mutex.lock(); mutex.lock();"]}
+        ),
+        "unhandled_error": QueryPattern(
+            name="unhandled_error",
+            pattern=r'(?:Result|Option)\s*<[^>]+>\s*=\s*[^;]+;(?!\s*(?:\.(?:unwrap|expect|is_(?:ok|some|err|none))|match|if\s+let|while\s+let))',
+            extract=lambda m: {
+                "type": "unhandled_error",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.8
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unhandled Result/Option", "examples": ["let x: Result<T, E> = foo();"]}
+        )
     }
 }
 

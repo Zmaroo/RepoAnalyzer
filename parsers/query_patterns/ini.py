@@ -6,6 +6,7 @@ Integrates with cache analytics, error handling, and logging systems.
 
 from typing import Dict, Any, List, Match, Optional, Set, Union
 from dataclasses import dataclass, field
+import time
 from parsers.types import (
     FileType, QueryPattern, PatternCategory, PatternPurpose, PatternType,
     PatternRelationType, PatternContext, PatternPerformanceMetrics
@@ -118,6 +119,157 @@ def extract_property(match: Match) -> Dict[str, Any]:
             PatternRelationType.REFERENCES: []
         }
     }
+
+# Define base patterns
+INI_PATTERNS = {
+    PatternCategory.SYNTAX: {
+        "section": QueryPattern(
+            name="section",
+            pattern=r'^\[([^\]]+)\]$',
+            extract=lambda m: {
+                "type": "section",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches INI section headers", "examples": ["[section]"]}
+        ),
+        "property": QueryPattern(
+            name="property",
+            pattern=r'^([^=]+)=(.*)$',
+            extract=lambda m: {
+                "type": "property",
+                "key": m.group(1).strip(),
+                "value": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches INI property assignments", "examples": ["key = value"]}
+        )
+    },
+    
+    PatternCategory.DOCUMENTATION: {
+        "comment": QueryPattern(
+            name="comment",
+            pattern=r'^[#;](.*)$',
+            extract=lambda m: {
+                "type": "comment",
+                "content": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches INI comments", "examples": ["# Comment", "; Another comment"]}
+        ),
+        "section_comment": QueryPattern(
+            name="section_comment",
+            pattern=r'^[#;]\s*Section:\s*(.*)$',
+            extract=lambda m: {
+                "type": "section_comment",
+                "content": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches section documentation", "examples": ["# Section: Configuration"]}
+        )
+    },
+    
+    PatternCategory.DEPENDENCIES: {
+        "include": QueryPattern(
+            name="include",
+            pattern=r'^include\s*=\s*(.+)$',
+            extract=lambda m: {
+                "type": "include",
+                "path": m.group(1).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches include directives", "examples": ["include = other.ini"]}
+        ),
+        "reference": QueryPattern(
+            name="reference",
+            pattern=r'\$\{([^}]+)\}',
+            extract=lambda m: {
+                "type": "reference",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches variable references", "examples": ["${variable}"]}
+        )
+    },
+    
+    PatternCategory.BEST_PRACTICES: {
+        "duplicate_property": QueryPattern(
+            name="duplicate_property",
+            pattern=r'^([^=]+)=(.*)$\n(?:.*\n)*?^\1=',
+            extract=lambda m: {
+                "type": "duplicate_property",
+                "key": m.group(1).strip(),
+                "first_value": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.BEST_PRACTICES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects duplicate property definitions", "examples": ["key = value1\nkey = value2"]}
+        ),
+        "malformed_section": QueryPattern(
+            name="malformed_section",
+            pattern=r'^\[[^\]]*$',
+            extract=lambda m: {
+                "type": "malformed_section",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.BEST_PRACTICES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects malformed section headers", "examples": ["[unclosed_section"]}
+        )
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "duplicate_property": QueryPattern(
+            name="duplicate_property",
+            pattern=r'^([^=]+)=(.*)$\n(?:.*\n)*?^\1=',
+            extract=lambda m: {
+                "type": "duplicate_property",
+                "key": m.group(1).strip(),
+                "first_value": m.group(2).strip(),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects duplicate property definitions", "examples": ["key = value1\nkey = value2"]}
+        ),
+        "malformed_section": QueryPattern(
+            name="malformed_section",
+            pattern=r'^\[[^\]]*$',
+            extract=lambda m: {
+                "type": "malformed_section",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects malformed section headers", "examples": ["[unclosed_section"]}
+        )
+    }
+}
 
 # Convert existing patterns to enhanced types
 def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, ResilientPattern]:

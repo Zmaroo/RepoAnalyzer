@@ -217,6 +217,87 @@ REQUIREMENTS_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        // ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "version_conflict": QueryPattern(
+            name="version_conflict",
+            pattern=r'^([a-zA-Z0-9_-]+)==([0-9.]+).*\n(?:.*\n)*?\1==(?!\2)',
+            extract=lambda m: {
+                "type": "version_conflict",
+                "package": m.group(1),
+                "version": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects version conflicts", "examples": ["package==1.0\npackage==2.0"]}
+        ),
+        "invalid_version": QueryPattern(
+            name="invalid_version",
+            pattern=r'^([a-zA-Z0-9_-]+)[^=><~]*$',
+            extract=lambda m: {
+                "type": "invalid_version",
+                "package": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects missing version specifiers", "examples": ["requests"]}
+        ),
+        "insecure_version": QueryPattern(
+            name="insecure_version",
+            pattern=r'^([a-zA-Z0-9_-]+)==([0-9.]+)',
+            extract=lambda m: {
+                "type": "insecure_version",
+                "package": m.group(1),
+                "version": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially insecure versions", "examples": ["django==1.8.0"]}
+        ),
+        "invalid_constraint": QueryPattern(
+            name="invalid_constraint",
+            pattern=r'^([a-zA-Z0-9_-]+)\s*([<>]=?|==|~=|!=)\s*([^,\s]+)',
+            extract=lambda m: {
+                "type": "invalid_constraint",
+                "package": m.group(1),
+                "operator": m.group(2),
+                "version": m.group(3),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid version constraints", "examples": ["package => 1.0"]}
+        ),
+        "duplicate_requirement": QueryPattern(
+            name="duplicate_requirement",
+            pattern=r'^([a-zA-Z0-9_-]+)(?:[<>=!~]|$).*\n(?:.*\n)*?\1(?:[<>=!~]|$)',
+            extract=lambda m: {
+                "type": "duplicate_requirement",
+                "package": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects duplicate package requirements", "examples": ["package>=1.0\npackage<=2.0"]}
+        )
     }
 }
 

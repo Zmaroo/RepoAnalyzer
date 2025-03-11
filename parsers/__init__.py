@@ -17,12 +17,12 @@ from tree_sitter_language_pack import get_binding, get_language, get_parser, Sup
 from parsers.types import (
     FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics,
     ExtractedFeatures, PatternCategory, PatternPurpose,
-    AICapability, AIContext, AIProcessingResult, InteractionType, ConfidenceLevel
+    AICapability, AIContext, AIProcessingResult, InteractionType, ConfidenceLevel,
+    ParserResult, PatternValidationResult
 )
 from parsers.models import QueryResult, FileClassification, PATTERN_CATEGORIES
-from parsers.language_mapping import normalize_language_name
-from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
-from parsers.parser_interfaces import BaseParser, TreeSitterParser, CustomParser
+from parsers.parser_interfaces import BaseParserInterface, AIParserInterface
+from parsers.base_parser import BaseParser
 from parsers.unified_parser import UnifiedParser, get_unified_parser
 from parsers.pattern_processor import PatternProcessor, get_pattern_processor
 from parsers.feature_extractor import BaseFeatureExtractor, TreeSitterFeatureExtractor, CustomFeatureExtractor
@@ -32,7 +32,7 @@ from parsers.file_classification import FileClassifier, get_file_classifier
 from parsers.block_extractor import BlockExtractor, get_block_extractor
 from parsers.ai_pattern_processor import AIPatternProcessor, get_ai_pattern_processor
 from utils.logger import log
-from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity, ErrorAudit
 from utils.shutdown import register_shutdown_handler
 from utils.cache import UnifiedCache, cache_coordinator
 from utils.health_monitor import ComponentStatus, global_health_monitor
@@ -41,129 +41,113 @@ from utils.request_cache import request_cache_context
 from utils.cache_analytics import get_cache_analytics
 from db.transaction import transaction_scope
 
-async def initialize_parser_system() -> bool:
-    """Initialize the parser system with proper dependency management."""
-    try:
-        # Initialize components in order with health monitoring
-        components = [
-            ("language_config", get_language_config),
-            ("language_support", get_language_support),
-            ("file_classifier", get_file_classifier),
-            ("block_extractor", get_block_extractor),
-            ("pattern_processor", get_pattern_processor),
-            ("ai_pattern_processor", get_ai_pattern_processor),
-            ("unified_parser", get_unified_parser)
-        ]
-        
-        for name, get_component in components:
-            try:
-                await global_health_monitor.update_component_status(
-                    "parser_system",
-                    ComponentStatus.INITIALIZING,
-                    details={"stage": f"initializing_{name}"}
-                )
-                
-                component = await get_component()
-                if not component:
-                    raise ProcessingError(f"Failed to initialize {name}")
-                
-                # Register shutdown handler for each component
-                register_shutdown_handler(component.cleanup)
-                
-                await log(f"{name} initialized", level="info")
-                
-            except Exception as e:
-                await log(f"Error initializing {name}: {e}", level="error")
-                await global_health_monitor.update_component_status(
-                    "parser_system",
-                    ComponentStatus.UNHEALTHY,
-                    error=True,
-                    details={
-                        "stage": f"initializing_{name}",
-                        "error": str(e)
-                    }
-                )
-                return False
-        
-        # Initialize cache analytics
-        analytics = await get_cache_analytics()
-        await analytics.start_monitoring()
-        
-        return True
-        
-    except Exception as e:
-        await log(f"Error initializing parser system: {e}", level="error")
-        return False
+# Component initialization order aligned with app_init.py's PARSERS stage
+PARSER_COMPONENTS = [
+    ("language_config", get_language_config, "Configuration manager"),
+    ("language_support", get_language_support, "Language support manager"),
+    ("file_classifier", get_file_classifier, "File classifier"),
+    ("block_extractor", get_block_extractor, "Block extractor"),
+    ("pattern_processor", get_pattern_processor, "Pattern processor"),
+    ("ai_pattern_processor", get_ai_pattern_processor, "AI pattern processor"),
+    ("unified_parser", get_unified_parser, "Unified parser")
+]
 
-async def cleanup_parser_system():
-    """Clean up parser system resources."""
-    try:
-        # Update status
-        await global_health_monitor.update_component_status(
-            "parser_system",
-            ComponentStatus.SHUTTING_DOWN,
-            details={"stage": "starting"}
-        )
-        
-        # Clean up components in reverse order
-        components = [
-            ("unified_parser", get_unified_parser),
-            ("ai_pattern_processor", get_ai_pattern_processor),
-            ("pattern_processor", get_pattern_processor),
-            ("block_extractor", get_block_extractor),
-            ("file_classifier", get_file_classifier),
-            ("language_support", get_language_support),
-            ("language_config", get_language_config)
-        ]
-        
-        for name, get_component in components:
-            try:
-                await global_health_monitor.update_component_status(
-                    "parser_system",
-                    ComponentStatus.SHUTTING_DOWN,
-                    details={"stage": f"cleaning_up_{name}"}
-                )
-                
-                component = await get_component()
-                if component:
-                    await component.cleanup()
-                    await log(f"{name} cleaned up", level="info")
+# Track component states
+_component_states = {name: False for name, _, _ in PARSER_COMPONENTS}
+_initialization_lock = asyncio.Lock()
+
+async def initialize_parser_system() -> bool:
+    """Initialize the parser system.
+    
+    This function is called by app_init.py during the PARSERS stage.
+    It initializes all parser components in the correct dependency order.
+    
+    Returns:
+        bool: True if initialization was successful
+    """
+    async with _initialization_lock:
+        try:
+            # Initialize components in order with health monitoring
+            for name, get_component, description in PARSER_COMPONENTS:
+                if _component_states[name]:
+                    continue
                     
-            except Exception as e:
-                await log(f"Error cleaning up {name}: {e}", level="error")
-                await global_health_monitor.update_component_status(
-                    "parser_system",
-                    ComponentStatus.UNHEALTHY,
-                    error=True,
-                    details={
-                        "stage": f"cleaning_up_{name}",
-                        "error": str(e)
-                    }
-                )
-        
-        # Stop cache analytics
-        analytics = await get_cache_analytics()
-        await analytics.stop_monitoring()
-        
-        # Update final status
-        await global_health_monitor.update_component_status(
-            "parser_system",
-            ComponentStatus.SHUTDOWN,
-            details={"cleanup": "successful"}
-        )
-    except Exception as e:
-        await log(f"Error cleaning up parser system: {e}", level="error")
-        await global_health_monitor.update_component_status(
-            "parser_system",
-            ComponentStatus.UNHEALTHY,
-            error=True,
-            details={"cleanup_error": str(e)}
-        )
-        raise ProcessingError(f"Failed to cleanup parser system: {e}")
+                try:
+                    await global_health_monitor.update_component_status(
+                        "parser_system",
+                        ComponentStatus.INITIALIZING,
+                        details={
+                            "stage": f"initializing_{name}",
+                            "description": description
+                        }
+                    )
+                    
+                    # Initialize component
+                    component = await get_component()
+                    if not component:
+                        raise ProcessingError(f"Failed to initialize {name}")
+                    
+                    # Register shutdown handler through central system
+                    register_shutdown_handler(component.cleanup)
+                    
+                    # Mark component as initialized
+                    _component_states[name] = True
+                    
+                    await log(f"{name} initialized", level="info")
+                    
+                except Exception as e:
+                    await log(f"Error initializing {name}: {e}", level="error")
+                    await ErrorAudit.record_error(
+                        e,
+                        f"parser_initialization_{name}",
+                        ProcessingError,
+                        severity=ErrorSeverity.CRITICAL,
+                        context={
+                            "component": name,
+                            "description": description
+                        }
+                    )
+                    await global_health_monitor.update_component_status(
+                        "parser_system",
+                        ComponentStatus.UNHEALTHY,
+                        error=True,
+                        details={
+                            "stage": f"initializing_{name}",
+                            "error": str(e),
+                            "description": description
+                        }
+                    )
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            await log(f"Error initializing parser system: {e}", level="error")
+            await ErrorAudit.record_error(
+                e,
+                "parser_system_initialization",
+                ProcessingError,
+                severity=ErrorSeverity.CRITICAL
+            )
+            return False
 
 async def parse_source_code(source_code: str, language_id: str, file_type: FileType) -> Dict[str, Any]:
-    """Parse source code using the unified parser."""
+    """Parse source code using the unified parser.
+    
+    Args:
+        source_code: The source code to parse
+        language_id: The language identifier
+        file_type: The type of file being parsed
+        
+    Returns:
+        Dict[str, Any]: The parse result
+    """
     try:
+        # Ensure all required components are initialized
+        required_components = ["unified_parser", "pattern_processor"]
+        if not all(_component_states[comp] for comp in required_components):
+            raise ProcessingError("Required parser components not initialized")
+        
         async with request_cache_context() as cache:
             # Get unified parser instance
             unified_parser = await get_unified_parser()
@@ -183,14 +167,23 @@ async def parse_source_code(source_code: str, language_id: str, file_type: FileT
             )
             
             return result
+            
     except Exception as e:
         await log(f"Error parsing source code: {e}", level="error")
+        await ErrorAudit.record_error(
+            e,
+            "source_code_parsing",
+            ProcessingError,
+            context={
+                "language_id": language_id,
+                "file_type": file_type.value
+            }
+        )
         return {}
 
 # Export public interfaces
 __all__ = [
     'initialize_parser_system',
-    'cleanup_parser_system',
     'parse_source_code',
     'UnifiedParser',
     'TreeSitterParser',

@@ -263,6 +263,84 @@ SQL_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        // ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "unconstrained_query": QueryPattern(
+            name="unconstrained_query",
+            pattern=r'SELECT\s+.*\s+FROM\s+[^;]+(?:(?!WHERE).)*;',
+            extract=lambda m: {
+                "type": "unconstrained_query",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects queries without WHERE clause", "examples": ["SELECT * FROM users;"]}
+        ),
+        "sql_injection": QueryPattern(
+            name="sql_injection",
+            pattern=r"'[^']*\s*(?:\+|\|\|)\s*[^']*'",
+            extract=lambda m: {
+                "type": "sql_injection",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential SQL injection vulnerabilities", "examples": ["'SELECT * FROM users WHERE id = ' + user_input"]}
+        ),
+        "cartesian_product": QueryPattern(
+            name="cartesian_product",
+            pattern=r'FROM\s+([^;]+?),\s*([^;]+?)(?:\s+WHERE|\s*;)',
+            extract=lambda m: {
+                "type": "cartesian_product",
+                "tables": [m.group(1), m.group(2)],
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects implicit cartesian products", "examples": ["SELECT * FROM table1, table2;"]}
+        ),
+        "unindexed_join": QueryPattern(
+            name="unindexed_join",
+            pattern=r'JOIN\s+([^;]+?)\s+ON\s+([^;]+?)(?:\s+WHERE|\s*;)',
+            extract=lambda m: {
+                "type": "unindexed_join",
+                "table": m.group(1),
+                "condition": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially unindexed joins", "examples": ["JOIN large_table ON id = ref_id"]}
+        ),
+        "unsafe_delete": QueryPattern(
+            name="unsafe_delete",
+            pattern=r'DELETE\s+FROM\s+[^;]+(?:(?!WHERE).)*;',
+            extract=lambda m: {
+                "type": "unsafe_delete",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects DELETE without WHERE clause", "examples": ["DELETE FROM users;"]}
+        )
     }
 }
 

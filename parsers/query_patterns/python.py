@@ -269,6 +269,84 @@ PYTHON_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        // ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "indentation_error": QueryPattern(
+            name="indentation_error",
+            pattern=r'^\s+[^\s#].*\n^(?!\s)',
+            extract=lambda m: {
+                "type": "indentation_error",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential indentation errors", "examples": ["    def func():\nprint('bad')"]}
+        ),
+        "undefined_variable": QueryPattern(
+            name="undefined_variable",
+            pattern=r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:=|\+=|-=|\*=|/=|%=)\s*([^=\n]+)$',
+            extract=lambda m: {
+                "type": "undefined_variable",
+                "variable": m.group(1),
+                "value": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential undefined variable usage", "examples": ["x = y + 1  # y might be undefined"]}
+        ),
+        "circular_import": QueryPattern(
+            name="circular_import",
+            pattern=r'^from\s+(\S+)\s+import\s+(\S+)',
+            extract=lambda m: {
+                "type": "circular_import",
+                "module": m.group(1),
+                "import": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential circular imports", "examples": ["from module_a import ClassA"]}
+        ),
+        "resource_leak": QueryPattern(
+            name="resource_leak",
+            pattern=r'(?:open|socket\.socket)\([^)]+\)(?!\s+(?:as|with))',
+            extract=lambda m: {
+                "type": "resource_leak",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential resource leaks", "examples": ["f = open('file.txt')  # not using with"]}
+        ),
+        "bare_except": QueryPattern(
+            name="bare_except",
+            pattern=r'except\s*:',
+            extract=lambda m: {
+                "type": "bare_except",
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects bare except clauses", "examples": ["try:\n    something()\nexcept:\n    pass"]}
+        )
     }
 }
 

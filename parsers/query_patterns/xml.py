@@ -254,6 +254,84 @@ XML_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        // ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "malformed_xml": QueryPattern(
+            name="malformed_xml",
+            pattern=r'<[^>]*[^/>]>(?:(?!</[^>]*>).)*$',
+            extract=lambda m: {
+                "type": "malformed_xml",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects malformed XML structure", "examples": ["<element>content"]}
+        ),
+        "invalid_reference": QueryPattern(
+            name="invalid_reference",
+            pattern=r'&([^;]+);',
+            extract=lambda m: {
+                "type": "invalid_reference",
+                "reference": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially invalid entity references", "examples": ["&invalid;"]}
+        ),
+        "namespace_error": QueryPattern(
+            name="namespace_error",
+            pattern=r'<([a-zA-Z0-9]+):([^>]+)>(?:(?!<\1:).)*$',
+            extract=lambda m: {
+                "type": "namespace_error",
+                "namespace": m.group(1),
+                "element": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects namespace errors", "examples": ["<ns:element>content</different:element>"]}
+        ),
+        "invalid_attribute": QueryPattern(
+            name="invalid_attribute",
+            pattern=r'<[^>]+\s([a-zA-Z0-9:]+)(?!=)[^>]*>',
+            extract=lambda m: {
+                "type": "invalid_attribute",
+                "attribute": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid attribute syntax", "examples": ["<element attr></element>"]}
+        ),
+        "dtd_error": QueryPattern(
+            name="dtd_error",
+            pattern=r'<!DOCTYPE[^>]*\[(?:(?!\]>).)*$',
+            extract=lambda m: {
+                "type": "dtd_error",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects DTD errors", "examples": ["<!DOCTYPE root ["]}
+        )
     }
 }
 

@@ -153,13 +153,41 @@ class CobaltParser(BaseParser, CustomParserMixin):
     ) -> CobaltNodeDict:
         """Create a standardized Cobalt AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        
+        # Determine pattern category based on node type
+        category = PatternCategory.SYNTAX
+        if node_type in ["docstring", "comment"]:
+            category = PatternCategory.DOCUMENTATION
+        elif node_type in ["import", "use"]:
+            category = PatternCategory.DEPENDENCIES
+        
+        # Determine pattern type
+        pattern_type = PatternType.CODE_STRUCTURE
+        if node_type in ["class", "function", "variable"]:
+            pattern_type = PatternType.CODE_NAMING
+        elif node_type in ["try", "catch", "throw"]:
+            pattern_type = PatternType.ERROR_HANDLING
+        
         return {
             **node_dict,
+            "category": category,
+            "pattern_type": pattern_type,
             "name": kwargs.get("name"),
             "parameters": kwargs.get("parameters", []),
             "return_type": kwargs.get("return_type"),
-            "metadata": kwargs.get("metadata", {}),
-            "relationships": kwargs.get("relationships", [])
+            "parent_class": kwargs.get("parent_class"),
+            "namespace": kwargs.get("namespace"),
+            "type_parameters": kwargs.get("type_parameters", []),
+            "is_function": node_type == "function",
+            "is_class": node_type == "class",
+            "is_namespace": node_type == "namespace",
+            "is_type_def": node_type == "type_definition",
+            "is_enum": node_type == "enum",
+            "visibility": kwargs.get("visibility"),
+            "decorators": kwargs.get("decorators", []),
+            "doc_comments": kwargs.get("doc_comments", []),
+            "feature_category": FeatureCategory.SYNTAX,
+            "pattern_relationships": kwargs.get("pattern_relationships", [])
         }
 
     @handle_errors(error_types=(ParsingError,))

@@ -16,7 +16,7 @@ from parsers.types import (
     AIConfidenceMetrics, InteractionType, PatternType,
     Documentation, ComplexityMetrics, ExtractedFeatures,
     PatternPurpose, ConfidenceLevel, FeatureCategory,
-    QueryPattern
+    QueryPattern, PatternRelationType
 )
 from parsers.models import (
     FileClassification,
@@ -26,7 +26,11 @@ from parsers.models import (
     EditorconfigNodeDict,
     EnvNodeDict,
     IniNodeDict,
-    PlaintextNodeDict
+    PlaintextNodeDict,
+    PatternMatch,
+    PatternRelationship,
+    Pattern,
+    ProcessedPattern
 )
 from parsers.query_patterns.enhanced_patterns import (
     PatternContext, PatternPerformanceMetrics,
@@ -65,6 +69,8 @@ __all__ = [
     'PatternType',
     'PatternCategory',
     'FeatureCategory',
+    'PatternPurpose',
+    'PatternRelationType',
     'QueryPattern',
     
     # AI related
@@ -73,6 +79,7 @@ __all__ = [
     'AIProcessingResult',
     'AIConfidenceMetrics',
     'AIPatternProcessor',
+    'ConfidenceLevel',
     
     # Pattern related
     'PatternProcessor',
@@ -81,12 +88,18 @@ __all__ = [
     'PatternContext',
     'PatternPerformanceMetrics',
     'CrossProjectPatternLearner',
+    'PatternMatch',
+    'PatternRelationship',
+    'Pattern',
+    'ProcessedPattern',
     
     # Documentation
     'Documentation',
     'ComplexityMetrics',
+    'ExtractedFeatures',
     
     # Node types
+    'BaseNodeDict',
     'AsciidocNodeDict',
     'CobaltNodeDict',
     'EditorconfigNodeDict',

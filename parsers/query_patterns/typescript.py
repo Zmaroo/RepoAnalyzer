@@ -125,6 +125,86 @@ TS_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        # ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "type_mismatch": QueryPattern(
+            name="type_mismatch",
+            pattern=r'(?:let|const|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*([a-zA-Z_$][a-zA-Z0-9_$<>]*)\s*=\s*([^;\n]+)',
+            extract=lambda m: {
+                "type": "type_mismatch",
+                "variable": m.group(1),
+                "declared_type": m.group(2),
+                "value": m.group(3),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential type mismatches", "examples": ["let x: string = 42"]}
+        ),
+        "implicit_any": QueryPattern(
+            name="implicit_any",
+            pattern=r'function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(([^:)]+)\)',
+            extract=lambda m: {
+                "type": "implicit_any",
+                "function": m.group(1),
+                "params": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects implicit any types", "examples": ["function process(data) { }"]}
+        ),
+        "unsafe_type_assertion": QueryPattern(
+            name="unsafe_type_assertion",
+            pattern=r'(?:as\s+any|\<any\>)',
+            extract=lambda m: {
+                "type": "unsafe_type_assertion",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unsafe type assertions", "examples": ["value as any", "<any>value"]}
+        ),
+        "null_undefined_union": QueryPattern(
+            name="null_undefined_union",
+            pattern=r'([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*[a-zA-Z_$][a-zA-Z0-9_$]*(?:\s*\|\s*(?:null|undefined))+',
+            extract=lambda m: {
+                "type": "null_undefined_union",
+                "variable": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects null/undefined union types", "examples": ["value: string | null | undefined"]}
+        ),
+        "non_null_assertion": QueryPattern(
+            name="non_null_assertion",
+            pattern=r'([a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*)!',
+            extract=lambda m: {
+                "type": "non_null_assertion",
+                "expression": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects non-null assertions", "examples": ["obj.value!", "getData()!"]}
+        )
     }
 }
 

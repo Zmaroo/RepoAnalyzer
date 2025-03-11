@@ -62,7 +62,7 @@ class UpsertCoordinator:
                 raise
     
     @handle_async_errors(error_types=[PostgresError, DatabaseError])
-    async def store_code_in_postgres(self, code_data: Dict) -> None:
+    async def store_code_in_postgres(self, code_data: Dict, txn: Transaction) -> None:
         """Store code data in PostgreSQL."""
         conn = await connection_manager.get_postgres_connection()
         try:
@@ -93,7 +93,7 @@ class UpsertCoordinator:
             await connection_manager.release_postgres_connection(conn)
     
     @handle_async_errors(error_types=[Neo4jError, DatabaseError])
-    async def store_code_in_neo4j(self, code_data: Dict) -> None:
+    async def store_code_in_neo4j(self, code_data: Dict, txn: Transaction) -> None:
         """Store code data in Neo4j."""
         session = await connection_manager.get_session()
         try:
@@ -219,10 +219,10 @@ class UpsertCoordinator:
         async with AsyncErrorBoundary("code upsert", error_types=(PostgresError, Neo4jError), severity=ErrorSeverity.ERROR):
             async with transaction_scope() as txn:
                 await txn.track_repo_change(code_data['repo_id'])
-                await self.store_code_in_postgres(code_data)
+                await self.store_code_in_postgres(code_data, txn)
                 
                 if code_data.get('ast'):
-                    await self.store_code_in_neo4j(code_data)
+                    await self.store_code_in_neo4j(code_data, txn)
     
     @handle_async_errors(error_types=(PostgresError, Neo4jError, TransactionError))
     async def upsert_doc(
@@ -348,7 +348,7 @@ class UpsertCoordinator:
         if not self._initialized:
             await self.initialize()
             
-        async with transaction_scope() as txn:
+        async with transaction_scope(distributed=True) as txn:
             await txn.track_repo_change(repo_id)
             
             # Store in PostgreSQL
@@ -357,7 +357,7 @@ class UpsertCoordinator:
                 'file_path': file_path,
                 'ast': ast,
                 'enriched_features': features.to_dict()
-            })
+            }, txn=txn)
             
             # Store in Neo4j
             await self.store_code_in_neo4j({
@@ -365,11 +365,18 @@ class UpsertCoordinator:
                 'file_path': file_path,
                 'ast': ast,
                 'enriched_features': features.to_dict()
-            })
+            }, txn=txn)
             
             # Get graph sync instance
             graph_sync = await get_graph_sync()
             await graph_sync.ensure_projection(repo_id)
+            
+            # Update transaction metrics
+            await txn.record_operation("store_parsed_content", {
+                "repo_id": repo_id,
+                "file_path": file_path,
+                "features_count": len(features.to_dict())
+            })
     
     @handle_async_errors(error_types=DatabaseError)
     async def upsert_pattern(

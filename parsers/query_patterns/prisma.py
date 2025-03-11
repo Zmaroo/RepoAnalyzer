@@ -369,6 +369,86 @@ PRISMA_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        // ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "invalid_model": QueryPattern(
+            name="invalid_model",
+            pattern=r'model\s+([A-Z][a-zA-Z0-9_]*)\s*{[^}]*}',
+            extract=lambda m: {
+                "type": "invalid_model",
+                "model": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially invalid model definitions", "examples": ["model user {}"]}
+        ),
+        "relation_error": QueryPattern(
+            name="relation_error",
+            pattern=r'@relation\s*\(\s*fields:\s*\[([^\]]+)\]\s*,\s*references:\s*\[([^\]]+)\]\s*\)',
+            extract=lambda m: {
+                "type": "relation_error",
+                "fields": m.group(1),
+                "references": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential relation errors", "examples": ["@relation(fields: [authorId], references: [id])"]}
+        ),
+        "type_mismatch": QueryPattern(
+            name="type_mismatch",
+            pattern=r'(\w+)\s+(\w+)\s+@(?:id|unique|default)\([^)]*\)',
+            extract=lambda m: {
+                "type": "type_mismatch",
+                "field": m.group(2),
+                "type": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential type mismatches", "examples": ["String id @id @default(uuid())"]}
+        ),
+        "missing_relation": QueryPattern(
+            name="missing_relation",
+            pattern=r'(\w+)\s+(\w+)\s*(?!@relation)',
+            extract=lambda m: {
+                "type": "missing_relation",
+                "field": m.group(2),
+                "type": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.8
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially missing relations", "examples": ["User author"]}
+        ),
+        "invalid_enum": QueryPattern(
+            name="invalid_enum",
+            pattern=r'enum\s+([A-Z][a-zA-Z0-9_]*)\s*{[^}]*}',
+            extract=lambda m: {
+                "type": "invalid_enum",
+                "enum": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially invalid enum definitions", "examples": ["enum status {}"]}
+        )
     }
 }
 

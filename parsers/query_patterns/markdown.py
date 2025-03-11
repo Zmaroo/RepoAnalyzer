@@ -239,6 +239,85 @@ MARKDOWN_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        # ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "broken_link": QueryPattern(
+            name="broken_link",
+            pattern=r'\[([^\]]+)\]\(([^)]+)\)',
+            extract=lambda m: {
+                "type": "broken_link",
+                "text": m.group(1),
+                "url": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially broken links", "examples": ["[text](broken-url)"]}
+        ),
+        "invalid_header": QueryPattern(
+            name="invalid_header",
+            pattern=r'^#{7,}|^#+[^# \t]',
+            extract=lambda m: {
+                "type": "invalid_header",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid headers", "examples": ["####### Too many", "#Invalid"]}
+        ),
+        "broken_reference": QueryPattern(
+            name="broken_reference",
+            pattern=r'\[([^\]]+)\]\[([^\]]*)\](?!\s*\[)',
+            extract=lambda m: {
+                "type": "broken_reference",
+                "text": m.group(1),
+                "ref": m.group(2) or m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects broken reference-style links", "examples": ["[text][missing-ref]"]}
+        ),
+        "malformed_table": QueryPattern(
+            name="malformed_table",
+            pattern=r'\|[^|\n]*\|[^|\n]*\n(?!\s*\|[-:]+\|)',
+            extract=lambda m: {
+                "type": "malformed_table",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects malformed tables", "examples": ["|Header|\n|Content|"]}
+        ),
+        "unclosed_code_block": QueryPattern(
+            name="unclosed_code_block",
+            pattern=r'```[^\n]*\n(?:(?!```).)*$',
+            extract=lambda m: {
+                "type": "unclosed_code_block",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unclosed code blocks", "examples": ["```python\nprint('hello')"]}
+        )
     }
 }
 

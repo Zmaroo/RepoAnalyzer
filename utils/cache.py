@@ -5,13 +5,14 @@ import json
 import asyncio
 import time
 import random
-from typing import Any, Optional, Set, Dict, List, Tuple, Callable, Awaitable, TypedDict
+from typing import Any, Optional, Set, Dict, List, Tuple, Callable, Awaitable, TypedDict, Protocol, Literal
 from datetime import datetime, timedelta
 from utils.logger import log
 from utils.error_handling import handle_errors, handle_async_errors, AsyncErrorBoundary, CacheError
 from config import RedisConfig  # If we add Redis config later
 from parsers.models import FileClassification
 from utils.shutdown import register_shutdown_handler
+from collections import OrderedDict
 
 # Try to import redis; if not available, mark it accordingly
 try:
@@ -19,6 +20,106 @@ try:
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
+
+# Maximum number of items in cache by default
+MAX_CACHE_SIZE = 1000
+
+class CacheInterface(Protocol):
+    """Protocol defining the required interface for cache implementations."""
+    async def get_async(self, key: str) -> Optional[Any]: ...
+    async def set_async(self, key: str, value: Any, expire: Optional[int] = None) -> None: ...
+    async def clear_async(self) -> None: ...
+    async def cleanup(self) -> None: ...
+
+class UnifiedCache(CacheInterface):
+    """Enhanced unified cache implementation with optional LRU eviction."""
+    
+    def __init__(self, name: str, eviction_policy: Literal["lru", "none"] = "none", max_size: int = MAX_CACHE_SIZE):
+        """Initialize cache with optional LRU eviction.
+        
+        Args:
+            name: Cache instance name
+            eviction_policy: "lru" for LRU eviction, "none" for no automatic eviction
+            max_size: Maximum number of items for LRU eviction (ignored if eviction_policy is "none")
+        """
+        self.name = name
+        self._cache = OrderedDict() if eviction_policy == "lru" else {}
+        self._max_size = max_size if eviction_policy == "lru" else None
+        self._eviction_policy = eviction_policy
+        self._lock = asyncio.Lock()
+        self._pending_tasks: Set[asyncio.Task] = set()
+        self._metrics = {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "sets": 0
+        }
+        register_shutdown_handler(self.cleanup)
+    
+    @handle_async_errors
+    async def get_async(self, key: str) -> Optional[Any]:
+        """Get item from cache."""
+        async with self._lock:
+            if key in self._cache:
+                value = self._cache[key]
+                # Move to end if using LRU
+                if self._eviction_policy == "lru":
+                    del self._cache[key]
+                    self._cache[key] = value
+                self._metrics["hits"] += 1
+                return value
+            self._metrics["misses"] += 1
+            return None
+    
+    @handle_async_errors
+    async def set_async(self, key: str, value: Any, expire: Optional[int] = None) -> None:
+        """Set item in cache."""
+        async with self._lock:
+            if self._eviction_policy == "lru":
+                # Handle LRU eviction
+                if key in self._cache:
+                    del self._cache[key]
+                elif len(self._cache) >= self._max_size:
+                    self._cache.popitem(last=False)
+                    self._metrics["evictions"] += 1
+            self._cache[key] = value
+            self._metrics["sets"] += 1
+    
+    @handle_async_errors
+    async def clear_async(self) -> None:
+        """Clear the cache."""
+        async with self._lock:
+            evicted = len(self._cache)
+            self._cache.clear()
+            if evicted > 0:
+                self._metrics["evictions"] += evicted
+    
+    @handle_async_errors
+    async def clear_pattern_async(self, pattern: str) -> None:
+        """Clear keys matching pattern."""
+        async with self._lock:
+            keys = [k for k in self._cache if pattern in k]
+            evicted = len(keys)
+            for k in keys:
+                del self._cache[k]
+            if evicted > 0:
+                self._metrics["evictions"] += evicted
+    
+    async def cleanup(self) -> None:
+        """Clean up cache resources."""
+        try:
+            await self.clear_async()
+            if self._pending_tasks:
+                for task in self._pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+                self._pending_tasks.clear()
+        except Exception as e:
+            await log(f"Error cleaning up cache {self.name}: {e}", level="error")
+    
+    def get_metrics(self) -> Dict[str, int]:
+        """Get cache metrics."""
+        return self._metrics.copy()
 
 # Define TypedDict for metric data
 class MetricData(TypedDict, total=False):
@@ -135,70 +236,6 @@ class CacheMetrics:
 
 # Global metrics instance
 cache_metrics = CacheMetrics()
-
-class UnifiedCache:
-    """Enhanced caching implementation with better coordination."""
-    
-    def __init__(self, name: str, ttl: int = 3600):
-        self.name = name
-        self._cache: Dict[str, Any] = {}
-        self._ttl = ttl
-        self._pending_tasks: Set[asyncio.Task] = set()
-        register_shutdown_handler(self.cleanup)
-    
-    async def _track_metric(self, metric_name: str) -> None:
-        """Track a cache metric asynchronously."""
-        try:
-            # Create a new coroutine each time
-            async def increment_metric():
-                await cache_metrics.increment(self.name, metric_name)
-            
-            task = asyncio.create_task(increment_metric())
-            self._pending_tasks.add(task)
-            try:
-                await task
-            finally:
-                self._pending_tasks.remove(task)
-        except Exception as e:
-            log(f"Error tracking cache metric: {e}", level="error")
-    
-    @handle_async_errors
-    async def set_async(self, key: str, value: Any, expire: Optional[int] = None) -> None:
-        """Set a cache value asynchronously."""
-        self._cache[key] = value
-        await self._track_metric("sets")
-    
-    @handle_async_errors
-    async def get_async(self, key: str) -> Optional[Any]:
-        """Get a cache value asynchronously."""
-        value = self._cache.get(key)
-        metric = "hits" if value is not None else "misses"
-        await self._track_metric(metric)
-        return value
-    
-    @handle_async_errors
-    async def clear_async(self) -> None:
-        """Clear cache asynchronously."""
-        evicted = len(self._cache)
-        self._cache.clear()
-        if evicted > 0:
-            await self._track_metric("evictions")
-    
-    @handle_async_errors
-    async def clear_pattern_async(self, pattern: str) -> None:
-        """Clear keys matching pattern asynchronously."""
-        keys = [k for k in self._cache if pattern in k]
-        evicted = len(keys)
-        for k in keys:
-            del self._cache[k]
-        if evicted > 0:
-            await self._track_metric("evictions")
-    
-    async def cleanup(self) -> None:
-        """Clean up any pending tasks."""
-        if self._pending_tasks:
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
 
 class CacheCoordinator:
     """Coordinates caching across different subsystems."""

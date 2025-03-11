@@ -113,67 +113,86 @@ def extract_property(match: Match) -> Dict[str, Any]:
 EDITORCONFIG_PATTERNS = {
     PatternCategory.SYNTAX: {
         "section": QueryPattern(
+            name="section",
             pattern=r'^\[(.*)\]$',
             extract=extract_section,
-            description="Matches EditorConfig section headers",
-            examples=["[*.py]", "[*.{js,py}]"]
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches EditorConfig section headers", "examples": ["[*.py]", "[*.{js,py}]"]}
         ),
         "property": QueryPattern(
+            name="property",
             pattern=r'^([^=]+)=(.*)$',
             extract=extract_property,
-            description="Matches EditorConfig property assignments",
-            examples=["indent_size = 4", "end_of_line = lf"]
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches EditorConfig property assignments", "examples": ["indent_size = 4", "end_of_line = lf"]}
         )
     },
     
     PatternCategory.STRUCTURE: {
         "root": QueryPattern(
+            name="root",
             pattern=r'^root\s*=\s*(true|false)$',
             extract=lambda m: {
                 "type": "root",
                 "value": m.group(1).lower() == "true",
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches EditorConfig root declaration",
-            examples=["root = true"]
+            category=PatternCategory.STRUCTURE,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches EditorConfig root declaration", "examples": ["root = true"]}
         ),
         "glob_pattern": QueryPattern(
+            name="glob_pattern",
             pattern=r'^\[([^\]]+)\]$',
             extract=lambda m: {
                 "type": "glob_pattern",
                 "pattern": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches glob patterns in section headers",
-            examples=["[*.{js,py}]", "[lib/**.js]"]
+            category=PatternCategory.STRUCTURE,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches glob patterns in section headers", "examples": ["[*.{js,py}]", "[lib/**.js]"]}
         )
     },
     
     PatternCategory.DOCUMENTATION: {
         "comment": QueryPattern(
+            name="comment",
             pattern=r'^[#;](.*)$',
             extract=lambda m: {
                 "type": "comment",
                 "content": m.group(1).strip(),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches EditorConfig comments",
-            examples=["# This is a comment", "; Another comment"]
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches EditorConfig comments", "examples": ["# This is a comment", "; Another comment"]}
         ),
         "section_comment": QueryPattern(
+            name="section_comment",
             pattern=r'^[#;]\s*Section:\s*(.*)$',
             extract=lambda m: {
                 "type": "section_comment",
                 "content": m.group(1).strip(),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches section documentation",
-            examples=["# Section: JavaScript files"]
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches section documentation", "examples": ["# Section: JavaScript files"]}
         )
     },
     
     PatternCategory.SEMANTICS: {
         "indent": QueryPattern(
+            name="indent",
             pattern=r'^indent_(style|size)\s*=\s*(.+)$',
             extract=lambda m: {
                 "type": "indent",
@@ -181,33 +200,42 @@ EDITORCONFIG_PATTERNS = {
                 "value": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches EditorConfig indentation settings",
-            examples=["indent_style = space", "indent_size = 2"]
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches EditorConfig indentation settings", "examples": ["indent_style = space", "indent_size = 2"]}
         ),
         "charset": QueryPattern(
+            name="charset",
             pattern=r'^charset\s*=\s*(.+)$',
             extract=lambda m: {
                 "type": "charset",
                 "value": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches EditorConfig charset settings",
-            examples=["charset = utf-8"]
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches EditorConfig charset settings", "examples": ["charset = utf-8"]}
         )
     },
     
     PatternCategory.CODE_PATTERNS: {
         "file_type_pattern": QueryPattern(
+            name="file_type_pattern",
             pattern=r'^\[.*\.([\w,{}]+)\]$',
             extract=lambda m: {
                 "type": "file_type_pattern",
                 "extensions": m.group(1).split(','),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches file type patterns",
-            examples=["[*.{js,ts}]", "[*.py]"]
+            category=PatternCategory.CODE_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches file type patterns", "examples": ["[*.{js,ts}]", "[*.py]"]}
         ),
         "code_style": QueryPattern(
+            name="code_style",
             pattern=r'^(max_line_length|tab_width|quote_type)\s*=\s*(.+)$',
             extract=lambda m: {
                 "type": "code_style",
@@ -215,26 +243,32 @@ EDITORCONFIG_PATTERNS = {
                 "value": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches code style settings",
-            examples=["max_line_length = 80", "quote_type = single"]
+            category=PatternCategory.CODE_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches code style settings", "examples": ["max_line_length = 80", "quote_type = single"]}
         )
     },
     
     PatternCategory.DEPENDENCIES: {
         "include_pattern": QueryPattern(
+            name="include_pattern",
             pattern=r'^\[.*/?([\w-]+/)*\*\*?/.*\]$',
             extract=lambda m: {
                 "type": "include_pattern",
                 "path": m.group(0),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches dependency inclusion patterns",
-            examples=["[lib/**.js]", "[vendor/**/*.ts]"]
+            category=PatternCategory.DEPENDENCIES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches dependency inclusion patterns", "examples": ["[lib/**.js]", "[vendor/**/*.ts]"]}
         )
     },
     
     PatternCategory.BEST_PRACTICES: {
         "whitespace": QueryPattern(
+            name="whitespace",
             pattern=r'^(trim_trailing_whitespace|insert_final_newline)\s*=\s*(true|false)$',
             extract=lambda m: {
                 "type": "whitespace",
@@ -242,23 +276,29 @@ EDITORCONFIG_PATTERNS = {
                 "value": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches whitespace best practices",
-            examples=["trim_trailing_whitespace = true"]
+            category=PatternCategory.BEST_PRACTICES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches whitespace best practices", "examples": ["trim_trailing_whitespace = true"]}
         ),
         "end_of_line": QueryPattern(
+            name="end_of_line",
             pattern=r'^end_of_line\s*=\s*(lf|crlf|cr)$',
             extract=lambda m: {
                 "type": "end_of_line",
                 "value": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches line ending settings",
-            examples=["end_of_line = lf"]
+            category=PatternCategory.BEST_PRACTICES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches line ending settings", "examples": ["end_of_line = lf"]}
         )
     },
     
     PatternCategory.COMMON_ISSUES: {
         "invalid_value": QueryPattern(
+            name="invalid_value",
             pattern=r'^([^=]+)=\s*(.*?)\s*$',
             extract=lambda m: {
                 "type": "invalid_value",
@@ -266,18 +306,23 @@ EDITORCONFIG_PATTERNS = {
                 "value": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Detects potentially invalid values",
-            examples=["indent_size = invalid"]
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially invalid values", "examples": ["indent_size = invalid"]}
         ),
         "duplicate_section": QueryPattern(
+            name="duplicate_section",
             pattern=r'^\[(.*)\]$',
             extract=lambda m: {
                 "type": "duplicate_section",
                 "glob": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Detects duplicate section headers",
-            examples=["[*.py]", "[*.py]"]
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects duplicate section headers", "examples": ["[*.py]", "[*.py]"]}
         )
     },
     

@@ -24,7 +24,6 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
 from parsers.feature_extractor import BaseFeatureExtractor
 from parsers.unified_parser import get_unified_parser
@@ -369,7 +368,7 @@ class CommonPatternLearner(CrossProjectPatternLearner):
         self._block_extractor = None
         self._feature_extractor = None
         self._unified_parser = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._metrics = {
             "total_patterns": 0,
@@ -390,6 +389,10 @@ class CommonPatternLearner(CrossProjectPatternLearner):
         self._feature_extractor = await BaseFeatureExtractor.create("*", FileType.CODE)
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
+        
+        # Lazy import pattern_processor
+        from parsers.pattern_processor import pattern_processor
+        self._pattern_processor = pattern_processor
         
         # Register with pattern processor
         await self._pattern_processor.register_language_patterns(
@@ -634,17 +637,12 @@ async def validate_common_pattern(
     """Validate a common pattern with system integration."""
     async with AsyncErrorBoundary("common_pattern_validation"):
         # Get pattern processor
+        from parsers.pattern_processor import pattern_processor
         validation_result = await pattern_processor.validate_pattern(
             pattern,
             language_id="*",
             context=context
         )
-        
-        # Update pattern metrics
-        if not validation_result.is_valid:
-            pattern_metrics = COMMON_PATTERN_METRICS.get(pattern.name)
-            if pattern_metrics:
-                pattern_metrics.error_count += 1
         
         return validation_result
 

@@ -19,6 +19,7 @@ Flow:
 
 import os
 import asyncio
+import time
 from typing import Optional, Dict, List, Set, Any
 from indexer.async_utils import batch_process_files
 from utils.logger import log
@@ -181,15 +182,33 @@ class UnifiedIndexer:
                 features
             )
         
-        # Store content with pattern information
-        async with transaction_scope() as txn:
+        # Store content with pattern information using distributed transaction
+        async with transaction_scope(distributed=True) as txn:
+            # Record transaction start
+            await txn.record_operation("index_with_patterns_start", {
+                "repo_id": repo_id,
+                "file_path": file_path,
+                "pattern_count": len(patterns) if patterns else 0,
+                "start_time": time.time()
+            })
+            
+            # Store content and patterns
             await upsert_coordinator.store_parsed_content(
                 repo_id=repo_id,
                 file_path=file_path,
                 ast=features.ast,
                 features=features,
-                patterns=patterns
+                patterns=patterns,
+                txn=txn
             )
+            
+            # Record transaction metrics
+            await txn.record_operation("index_with_patterns_complete", {
+                "repo_id": repo_id,
+                "file_path": file_path,
+                "pattern_count": len(patterns) if patterns else 0,
+                "end_time": time.time()
+            })
         
         return {
             "patterns": patterns,

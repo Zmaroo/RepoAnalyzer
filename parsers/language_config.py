@@ -1,236 +1,286 @@
-"""Language configuration utilities for RepoAnalyzer.
+"""Language configuration management.
 
-This module provides utilities for managing language-specific configuration,
-including parser settings, file types, and AI capabilities.
+This module provides configuration management for supported languages,
+integrating with the parser system and caching infrastructure.
 """
 
-from typing import Dict, Any, List, Optional, Union, Set
+from typing import Dict, Optional, Set, List, Any, Union
 import asyncio
-from tree_sitter_language_pack import get_binding, get_language, get_parser, SupportedLanguage
+import time
+from dataclasses import dataclass, field
 from parsers.types import (
-    FileType, FeatureCategory, ParserType, Documentation, ComplexityMetrics,
-    ExtractedFeatures, PatternCategory, PatternPurpose,
-    AICapability, AIContext, AIProcessingResult, InteractionType, ConfidenceLevel
+    FileType, ParserType, AICapability, AIContext,
+    LanguageConfig as LanguageConfigType,
+    LanguageFeatures, LanguageSupport
 )
-from parsers.models import QueryResult, FileClassification, PATTERN_CATEGORIES
-from parsers.language_mapping import normalize_language_name
-from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+from parsers.base_parser import BaseParser
 from utils.logger import log
-from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError
+from utils.error_handling import (
+    AsyncErrorBoundary,
+    handle_async_errors,
+    ProcessingError,
+    ErrorAudit,
+    ErrorSeverity
+)
 from utils.shutdown import register_shutdown_handler
 from utils.cache import UnifiedCache, cache_coordinator
-from utils.health_monitor import ComponentStatus, global_health_monitor
+from utils.health_monitor import ComponentStatus, global_health_monitor, monitor_operation
 from utils.async_runner import submit_async_task, cleanup_tasks
+from utils.request_cache import request_cache_context, cached_in_request
+from db.transaction import transaction_scope
+from parsers.language_mapping import normalize_language_name
 
-class LanguageConfig:
-    """Language configuration manager."""
+@dataclass
+class LanguageConfig(BaseParser):
+    """Language configuration management.
     
-    def __init__(self):
-        """Initialize language configuration."""
-        self._initialized = False
-        self._cache = None
-        register_shutdown_handler(self.cleanup)
+    This class manages language-specific configuration and features,
+    integrating with the parser system for efficient configuration handling.
     
-    async def ensure_initialized(self):
-        """Ensure the language configuration is initialized."""
-        if not self._initialized:
-            raise ProcessingError("Language configuration not initialized. Use create() to initialize.")
-        return True
+    Attributes:
+        language_id (str): The identifier for the language
+        config (LanguageConfigType): The language configuration
+        features (LanguageFeatures): The language features
+        support (LanguageSupport): The language support level
+    """
     
-    @classmethod
-    async def create(cls) -> 'LanguageConfig':
-        """Create and initialize a language configuration instance."""
-        instance = cls()
+    def __init__(self, language_id: str):
+        """Initialize language configuration.
+        
+        Args:
+            language_id: The identifier for the language
+        """
+        super().__init__(
+            language_id=language_id,
+            file_type=FileType.CONFIG,
+            parser_type=ParserType.CUSTOM
+        )
+        self.config = LanguageConfigType()
+        self.features = LanguageFeatures()
+        self.support = LanguageSupport()
+        
+        # Register with shutdown handler
+        register_shutdown_handler(self._cleanup)
+    
+    async def initialize(self) -> bool:
+        """Initialize language configuration.
+        
+        Returns:
+            bool: True if initialization was successful
+            
+        Raises:
+            ProcessingError: If initialization fails
+        """
         try:
-            async with AsyncErrorBoundary("language_config_initialization"):
-                # Initialize health monitoring first
-                await global_health_monitor.update_component_status(
-                    "language_config",
-                    ComponentStatus.INITIALIZING,
-                    details={"stage": "starting"}
-                )
+            # Initialize base class first
+            if not await super().initialize():
+                return False
+            
+            async with AsyncErrorBoundary(f"language_config_initialization_{self.language_id}"):
+                # Load configuration through async_runner
+                init_task = submit_async_task(self._load_configuration())
+                await asyncio.wrap_future(init_task)
                 
-                # Initialize cache
-                instance._cache = UnifiedCache("language_config")
-                await cache_coordinator.register_cache(instance._cache)
+                if not all([self.config, self.features, self.support]):
+                    raise ProcessingError(f"Failed to load configuration for {self.language_id}")
                 
-                # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
+                await log(f"Language configuration initialized for {self.language_id}", level="info")
+                return True
                 
-                instance._initialized = True
-                await log("Language configuration initialized", level="info")
-                
-                # Update final health status
-                await global_health_monitor.update_component_status(
-                    "language_config",
-                    ComponentStatus.HEALTHY,
-                    details={"stage": "complete"}
-                )
-                
-                return instance
         except Exception as e:
             await log(f"Error initializing language configuration: {e}", level="error")
+            await ErrorAudit.record_error(
+                e,
+                f"language_config_initialization_{self.language_id}",
+                ProcessingError,
+                severity=ErrorSeverity.CRITICAL,
+                context={"language": self.language_id}
+            )
             await global_health_monitor.update_component_status(
-                "language_config",
+                f"language_config_{self.language_id}",
                 ComponentStatus.UNHEALTHY,
                 error=True,
-                details={"initialization_error": str(e)}
+                details={"config_error": str(e)}
             )
-            # Cleanup on initialization failure
-            cleanup_task = submit_async_task(instance.cleanup())
-            await asyncio.wrap_future(cleanup_task)
-            raise ProcessingError(f"Failed to initialize language configuration: {e}")
+            raise ProcessingError(f"Failed to initialize language configuration for {self.language_id}: {e}")
     
-    async def get_language_config(self, language_id: str) -> Dict[str, Any]:
-        """Get configuration for a language."""
-        if not self._initialized:
-            await self.ensure_initialized()
-        
-        # Check cache first
-        cache_key = f"language_config:{language_id}"
-        cached_config = await self._cache.get(cache_key)
-        if cached_config:
-            return cached_config
-        
-        # Normalize language ID
-        normalized = normalize_language_name(language_id)
-        
-        # Get configuration based on parser type
-        if normalized in CUSTOM_PARSER_CLASSES:
-            config = await self._get_custom_parser_config(normalized)
-        elif normalized in SupportedLanguage.__args__:
-            config = await self._get_tree_sitter_config(normalized)
-        else:
-            config = {
-                "language_id": normalized,
-                "parser_type": ParserType.UNKNOWN.value,
-                "file_type": FileType.UNKNOWN.value,
-                "capabilities": []
-            }
-        
-        # Cache configuration
-        await self._cache.set(cache_key, config)
-        
-        return config
-    
-    async def _get_custom_parser_config(self, language_id: str) -> Dict[str, Any]:
-        """Get configuration for a custom parser."""
-        parser_class = CUSTOM_PARSER_CLASSES[language_id]
-        
-        # Get default file type
-        file_type = FileType.CODE
-        if hasattr(parser_class, 'DEFAULT_FILE_TYPE'):
-            file_type = parser_class.DEFAULT_FILE_TYPE
-        
-        # Get AI capabilities
-        capabilities = {
-            AICapability.CODE_UNDERSTANDING,
-            AICapability.CODE_GENERATION,
-            AICapability.CODE_MODIFICATION,
-            AICapability.CODE_REVIEW,
-            AICapability.DOCUMENTATION,
-            AICapability.LEARNING
-        }
-        if hasattr(parser_class, 'AI_CAPABILITIES'):
-            capabilities = parser_class.AI_CAPABILITIES
-        
-        return {
-            "language_id": language_id,
-            "parser_type": ParserType.CUSTOM.value,
-            "file_type": file_type.value,
-            "capabilities": [c.value for c in capabilities],
-            "custom_parser_class": parser_class.__name__
-        }
-    
-    async def _get_tree_sitter_config(self, language_id: str) -> Dict[str, Any]:
-        """Get configuration for a tree-sitter parser."""
+    async def _load_configuration(self) -> None:
+        """Load language configuration from storage."""
         try:
-            # Test if we can get a parser for this language
-            parser = get_parser(language_id)
-            binding = get_binding(language_id)
-            lang = get_language(language_id)
-            
-            return {
-                "language_id": language_id,
-                "parser_type": ParserType.TREE_SITTER.value,
-                "file_type": FileType.CODE.value,
-                "capabilities": [
-                    AICapability.CODE_UNDERSTANDING.value,
-                    AICapability.CODE_GENERATION.value,
-                    AICapability.CODE_MODIFICATION.value,
-                    AICapability.CODE_REVIEW.value,
-                    AICapability.DOCUMENTATION.value
-                ],
-                "has_parser": parser is not None,
-                "has_binding": binding is not None,
-                "has_language": lang is not None
-            }
-        except Exception as e:
-            await log(f"Error getting tree-sitter config for {language_id}: {e}", level="error")
-            return {
-                "language_id": language_id,
-                "parser_type": ParserType.TREE_SITTER.value,
-                "file_type": FileType.CODE.value,
-                "capabilities": [AICapability.CODE_UNDERSTANDING.value],
-                "has_parser": False,
-                "has_binding": False,
-                "has_language": False,
-                "error": str(e)
-            }
-    
-    async def cleanup(self):
-        """Clean up language configuration resources."""
-        try:
-            if not self._initialized:
-                return
+            async with transaction_scope() as txn:
+                # Load config
+                config_result = await txn.fetchrow("""
+                    SELECT * FROM language_configs
+                    WHERE language_id = $1
+                """, self.language_id)
                 
-            # Update status
-            await global_health_monitor.update_component_status(
-                "language_config",
-                ComponentStatus.SHUTTING_DOWN,
-                details={"stage": "starting"}
-            )
-            
-            # Clean up cache
-            if self._cache:
-                await cache_coordinator.unregister_cache("language_config")
-                self._cache = None
-            
-            # Let async_runner handle remaining tasks
-            cleanup_tasks()
-            
-            self._initialized = False
-            await log("Language configuration cleaned up", level="info")
-            
-            # Update final status
-            await global_health_monitor.update_component_status(
-                "language_config",
-                ComponentStatus.SHUTDOWN,
-                details={"cleanup": "successful"}
-            )
+                if config_result:
+                    self.config = LanguageConfigType(**config_result)
+                
+                # Load features
+                features_result = await txn.fetchrow("""
+                    SELECT * FROM language_features
+                    WHERE language_id = $1
+                """, self.language_id)
+                
+                if features_result:
+                    self.features = LanguageFeatures(**features_result)
+                
+                # Load support level
+                support_result = await txn.fetchrow("""
+                    SELECT * FROM language_support
+                    WHERE language_id = $1
+                """, self.language_id)
+                
+                if support_result:
+                    self.support = LanguageSupport(**support_result)
+                    
         except Exception as e:
-            await log(f"Error cleaning up language configuration: {e}", level="error")
-            await global_health_monitor.update_component_status(
-                "language_config",
-                ComponentStatus.UNHEALTHY,
-                error=True,
-                details={"cleanup_error": str(e)}
+            await log(f"Error loading configuration: {e}", level="error")
+            raise ProcessingError(f"Failed to load configuration: {e}")
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def update_configuration(self, config: Dict[str, Any]) -> bool:
+        """Update language configuration.
+        
+        Args:
+            config: The new configuration values
+            
+        Returns:
+            bool: True if update was successful
+        """
+        try:
+            async with AsyncErrorBoundary(f"config_update_{self.language_id}"):
+                # Update through async_runner
+                update_task = submit_async_task(self._update_config_in_db(config))
+                await asyncio.wrap_future(update_task)
+                
+                # Update local config
+                self.config.update(config)
+                
+                await log(f"Configuration updated for {self.language_id}", level="info")
+                return True
+                
+        except Exception as e:
+            await log(f"Error updating configuration: {e}", level="error")
+            await ErrorAudit.record_error(
+                e,
+                f"config_update_{self.language_id}",
+                ProcessingError,
+                context={"config": config}
             )
-            raise ProcessingError(f"Failed to cleanup language configuration: {e}")
+            return False
+    
+    async def _update_config_in_db(self, config: Dict[str, Any]) -> None:
+        """Update configuration in database."""
+        async with transaction_scope() as txn:
+            await txn.execute("""
+                INSERT INTO language_configs (language_id, config)
+                VALUES ($1, $2)
+                ON CONFLICT (language_id) DO UPDATE
+                SET config = $2
+            """, self.language_id, config)
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def update_features(self, features: Dict[str, Any]) -> bool:
+        """Update language features.
+        
+        Args:
+            features: The new feature values
+            
+        Returns:
+            bool: True if update was successful
+        """
+        try:
+            async with AsyncErrorBoundary(f"features_update_{self.language_id}"):
+                # Update through async_runner
+                update_task = submit_async_task(self._update_features_in_db(features))
+                await asyncio.wrap_future(update_task)
+                
+                # Update local features
+                self.features.update(features)
+                
+                await log(f"Features updated for {self.language_id}", level="info")
+                return True
+                
+        except Exception as e:
+            await log(f"Error updating features: {e}", level="error")
+            await ErrorAudit.record_error(
+                e,
+                f"features_update_{self.language_id}",
+                ProcessingError,
+                context={"features": features}
+            )
+            return False
+    
+    async def _update_features_in_db(self, features: Dict[str, Any]) -> None:
+        """Update features in database."""
+        async with transaction_scope() as txn:
+            await txn.execute("""
+                INSERT INTO language_features (language_id, features)
+                VALUES ($1, $2)
+                ON CONFLICT (language_id) DO UPDATE
+                SET features = $2
+            """, self.language_id, features)
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def update_support(self, support: Dict[str, Any]) -> bool:
+        """Update language support level.
+        
+        Args:
+            support: The new support level values
+            
+        Returns:
+            bool: True if update was successful
+        """
+        try:
+            async with AsyncErrorBoundary(f"support_update_{self.language_id}"):
+                # Update through async_runner
+                update_task = submit_async_task(self._update_support_in_db(support))
+                await asyncio.wrap_future(update_task)
+                
+                # Update local support
+                self.support.update(support)
+                
+                await log(f"Support level updated for {self.language_id}", level="info")
+                return True
+                
+        except Exception as e:
+            await log(f"Error updating support level: {e}", level="error")
+            await ErrorAudit.record_error(
+                e,
+                f"support_update_{self.language_id}",
+                ProcessingError,
+                context={"support": support}
+            )
+            return False
+    
+    async def _update_support_in_db(self, support: Dict[str, Any]) -> None:
+        """Update support level in database."""
+        async with transaction_scope() as txn:
+            await txn.execute("""
+                INSERT INTO language_support (language_id, support)
+                VALUES ($1, $2)
+                ON CONFLICT (language_id) DO UPDATE
+                SET support = $2
+            """, self.language_id, support)
 
-# Create singleton instance
-language_config = None
+# Global instance cache
+_config_instances: Dict[str, LanguageConfig] = {}
 
-async def get_language_config() -> LanguageConfig:
-    """Get or create the language configuration singleton instance."""
-    global language_config
-    if language_config is None:
-        language_config = await LanguageConfig.create()
-    return language_config
-
-# Export public interfaces
-__all__ = [
-    'LanguageConfig',
-    'get_language_config',
-    'language_config'
-] 
+async def get_language_config(language_id: str) -> Optional[LanguageConfig]:
+    """Get a language configuration instance.
+    
+    Args:
+        language_id: The language to get configuration for
+        
+    Returns:
+        Optional[LanguageConfig]: The configuration instance or None if initialization fails
+    """
+    if language_id not in _config_instances:
+        config = LanguageConfig(language_id)
+        if await config.initialize():
+            _config_instances[language_id] = config
+        else:
+            return None
+    return _config_instances[language_id] 

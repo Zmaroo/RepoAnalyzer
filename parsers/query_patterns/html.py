@@ -417,6 +417,84 @@ HTML_PATTERNS = {
                 }
             }
         )
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        # ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "unclosed_tag": QueryPattern(
+            name="unclosed_tag",
+            pattern=r'<([a-zA-Z][a-zA-Z0-9]*)[^>]*>(?:(?!</\1>).)*$',
+            extract=lambda m: {
+                "type": "unclosed_tag",
+                "tag": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unclosed HTML tags", "examples": ["<div>content"]}
+        ),
+        "invalid_nesting": QueryPattern(
+            name="invalid_nesting",
+            pattern=r'<([a-zA-Z][a-zA-Z0-9]*)>[^<]*<([a-zA-Z][a-zA-Z0-9]*)>[^<]*</\1>',
+            extract=lambda m: {
+                "type": "invalid_nesting",
+                "outer_tag": m.group(1),
+                "inner_tag": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid tag nesting", "examples": ["<div><p>text</div>"]}
+        ),
+        "duplicate_id": QueryPattern(
+            name="duplicate_id",
+            pattern=r'id=["\']([^"\']+)["\'][^>]*>.*?id=["\']\\1["\']',
+            extract=lambda m: {
+                "type": "duplicate_id",
+                "id": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.95
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects duplicate IDs", "examples": ["<div id=\"dup\"></div><span id=\"dup\"></span>"]}
+        ),
+        "invalid_attribute": QueryPattern(
+            name="invalid_attribute",
+            pattern=r'<[^>]+\s([a-zA-Z]+)(?!=)[^>]*>',
+            extract=lambda m: {
+                "type": "invalid_attribute",
+                "attribute": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects invalid attribute syntax", "examples": ["<div class></div>"]}
+        ),
+        "broken_reference": QueryPattern(
+            name="broken_reference",
+            pattern=r'href=["\']#([^"\']+)["\']',
+            extract=lambda m: {
+                "type": "broken_reference",
+                "reference": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially broken internal references", "examples": ["<a href=\"#missing\">link</a>"]}
+        )
     }
 }
 

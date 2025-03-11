@@ -125,12 +125,34 @@ class IniParser(BaseParser, CustomParserMixin):
     ) -> IniNodeDict:
         """Create a standardized INI AST node using the shared helper."""
         node_dict = super()._create_node(node_type, start_point, end_point, **kwargs)
+        
+        # Determine pattern category based on node type
+        category = PatternCategory.SYNTAX
+        if node_type == "comment":
+            category = PatternCategory.DOCUMENTATION
+        elif node_type == "include":
+            category = PatternCategory.DEPENDENCIES
+        
+        # Determine pattern type
+        pattern_type = PatternType.CODE_STRUCTURE
+        if node_type in ["section", "property"]:
+            pattern_type = PatternType.ARCHITECTURE
+        
         return {
             **node_dict,
-            "section": kwargs.get("section"),
-            "properties": kwargs.get("properties", []),
-            "metadata": kwargs.get("metadata", {}),
-            "relationships": kwargs.get("relationships", [])
+            "category": category,
+            "pattern_type": pattern_type,
+            "section_name": kwargs.get("section_name"),
+            "properties": kwargs.get("properties", {}),
+            "includes": kwargs.get("includes", []),
+            "is_section": node_type == "section",
+            "is_property": node_type == "property",
+            "is_include": node_type == "include",
+            "is_comment": node_type == "comment",
+            "comments": kwargs.get("comments", []),
+            "references": kwargs.get("references", []),
+            "feature_category": FeatureCategory.CONFIG,
+            "pattern_relationships": kwargs.get("pattern_relationships", [])
         }
 
     @handle_errors(error_types=(ParsingError,))

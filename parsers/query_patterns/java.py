@@ -4,6 +4,9 @@ This module provides Java-specific patterns that integrate with the enhanced
 pattern processing system, including proper typing, relationships, and context.
 """
 
+# Module identification - moved to top
+LANGUAGE = "java"
+
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass, field
 from parsers.types import (
@@ -306,6 +309,83 @@ JAVA_PATTERNS = {
                 }
             )
         }
+    },
+
+    PatternCategory.BEST_PRACTICES: {
+        # ... existing patterns ...
+    },
+
+    PatternCategory.COMMON_ISSUES: {
+        "unchecked_exception": QueryPattern(
+            name="unchecked_exception",
+            pattern=r'throw\s+new\s+(?:Runtime|Null|Array|Class|Illegal|Security)Exception',
+            extract=lambda m: {
+                "type": "unchecked_exception",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unchecked exceptions", "examples": ["throw new RuntimeException()"]}
+        ),
+        "resource_leak": QueryPattern(
+            name="resource_leak",
+            pattern=r'new\s+(?:File|Socket|Connection|Stream)[^;]*;(?!\s*try)',
+            extract=lambda m: {
+                "type": "resource_leak",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential resource leaks", "examples": ["FileInputStream fis = new FileInputStream(file);"]}
+        ),
+        "null_pointer": QueryPattern(
+            name="null_pointer",
+            pattern=r'([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\.\s*[a-zA-Z_$][a-zA-Z0-9_$]*\s*\([^)]*\)\s*;',
+            extract=lambda m: {
+                "type": "null_pointer",
+                "object": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential null pointer dereferences", "examples": ["obj.method();"]}
+        ),
+        "unclosed_resource": QueryPattern(
+            name="unclosed_resource",
+            pattern=r'(?:implements\s+AutoCloseable|extends\s+(?:InputStream|OutputStream|Reader|Writer))[^{]*\{(?![^}]*close\(\))',
+            extract=lambda m: {
+                "type": "unclosed_resource",
+                "content": m.group(0),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.8
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects unclosed resources", "examples": ["class MyResource implements AutoCloseable { }"]}
+        ),
+        "concurrent_modification": QueryPattern(
+            name="concurrent_modification",
+            pattern=r'for\s*\([^)]+:\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\)[^{]*\{\s*[^}]*\1\.(?:add|remove|clear)\(',
+            extract=lambda m: {
+                "type": "concurrent_modification",
+                "collection": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.9
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects concurrent modification in loops", "examples": ["for (Item item : list) { list.remove(item); }"]}
+        )
     }
 }
 
@@ -367,9 +447,6 @@ __all__ = [
     'update_java_pattern_metrics',
     'get_java_pattern_match_result'
 ]
-
-# Module identification
-LANGUAGE = "java"
 
 class JavaPatternLearner(CrossProjectPatternLearner):
     """Enhanced Java pattern learner with full system integration."""

@@ -380,27 +380,78 @@ GRAPHQL_PATTERNS = {
     },
     
     PatternCategory.COMMON_ISSUES: {
-        "duplicate_field": QueryPattern(
-            pattern=r'\{[^}]*(\w+)[^}]*\1[^}]*\}',
+        "invalid_field": QueryPattern(
+            name="invalid_field",
+            pattern=r'{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*{([^}]*)}',
             extract=lambda m: {
-                "type": "duplicate_field",
-                "field": m.group(1),
+                "type": "invalid_field",
+                "type_name": m.group(1),
+                "fields": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "is_duplicate": True
+                "needs_verification": True
             },
-            description="Detects duplicate fields",
-            examples=["{ name age name }"]
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially invalid fields", "examples": ["{ User { invalid } }"]}
+        ),
+        "type_mismatch": QueryPattern(
+            name="type_mismatch",
+            pattern=r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([a-zA-Z_][a-zA-Z0-9_]*!?(?:\[[^\]]*\])?)',
+            extract=lambda m: {
+                "type": "type_mismatch",
+                "field": m.group(1),
+                "type_name": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potential type mismatches", "examples": ["field: String!"]}
         ),
         "circular_fragment": QueryPattern(
-            pattern=r'fragment\s+(\w+)[^{]*\{[^}]*\.\.\.\1[^}]*\}',
+            name="circular_fragment",
+            pattern=r'fragment\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+on\s+[a-zA-Z_][a-zA-Z0-9_]*\s*{[^}]*\.\.\.\1',
             extract=lambda m: {
                 "type": "circular_fragment",
-                "fragment_name": m.group(1),
+                "fragment": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "has_circular_reference": True
+                "confidence": 0.95
             },
-            description="Detects circular fragment references",
-            examples=["fragment User on User { ...User }"]
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects circular fragment spreads", "examples": ["fragment Foo on Type { ...Foo }"]}
+        ),
+        "unused_fragment": QueryPattern(
+            name="unused_fragment",
+            pattern=r'fragment\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+on\s+[a-zA-Z_][a-zA-Z0-9_]*\s*{[^}]*}(?!.*\.\.\.\1)',
+            extract=lambda m: {
+                "type": "unused_fragment",
+                "fragment": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "confidence": 0.85
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially unused fragments", "examples": ["fragment Unused on Type { field }"]}
+        ),
+        "invalid_argument": QueryPattern(
+            name="invalid_argument",
+            pattern=r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)',
+            extract=lambda m: {
+                "type": "invalid_argument",
+                "field": m.group(1),
+                "args": m.group(2),
+                "line_number": m.string.count('\n', 0, m.start()) + 1,
+                "needs_verification": True
+            },
+            category=PatternCategory.COMMON_ISSUES,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Detects potentially invalid arguments", "examples": ["field(invalid: value)"]}
         )
     },
     

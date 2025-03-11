@@ -5,7 +5,7 @@ Tree-sitter support is provided through tree-sitter-language-pack.
 Integrates with cache analytics, error handling, and logging systems.
 """
 
-from typing import Dict, Optional, Set, List, Any, Union
+from typing import Dict, Optional, Set, List, Any, Union, TYPE_CHECKING, ForwardRef
 import asyncio
 import importlib
 import re
@@ -15,14 +15,13 @@ from tree_sitter_language_pack import get_binding, get_language, get_parser, Sup
 from parsers.types import (
     FileType, ParserType, AICapability, AIContext, AIProcessingResult,
     InteractionType, ConfidenceLevel, ParserResult, PatternCategory, PatternPurpose,
-    ExtractedFeatures, FeatureCategory
+    ExtractedFeatures, FeatureCategory, PatternValidationResult
 )
 from parsers.models import (
     FileClassification, BaseNodeDict, PATTERN_CATEGORIES,
     Documentation, ComplexityMetrics
 )
 from parsers.parser_interfaces import BaseParserInterface, AIParserInterface
-from parsers.tree_sitter_parser import TreeSitterParser
 from utils.logger import log
 from utils.error_handling import (
     AsyncErrorBoundary,
@@ -38,20 +37,43 @@ from utils.cache_analytics import get_cache_analytics, CacheAnalytics
 from utils.health_monitor import ComponentStatus, global_health_monitor, monitor_operation
 from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.request_cache import request_cache_context, cached_in_request, get_current_request_cache
-from db.transaction import transaction_scope
+from db.transaction import transaction_scope, get_transaction_coordinator
 from db.upsert_ops import coordinator as upsert_coordinator
 import traceback
 
+if TYPE_CHECKING:
+    from parsers.tree_sitter_parser import TreeSitterParser
+
 @dataclass
 class BaseParser(BaseParserInterface, AIParserInterface):
-    """Base parser implementation with AI capabilities."""
+    """Base parser implementation with AI capabilities.
+    
+    This class provides a complete implementation of both BaseParserInterface and
+    AIParserInterface, serving as the foundation for language-specific parsers.
+    
+    Attributes:
+        language_id (str): The identifier for the language this parser handles
+        file_type (FileType): The type of files this parser can process
+        parser_type (ParserType): The type of parser implementation
+        _initialized (bool): Whether the parser has been initialized
+        _pending_tasks (Set[asyncio.Task]): Set of pending async tasks
+        _metrics (Dict[str, Any]): Parser performance metrics
+    """
     
     def __init__(self, language_id: str, file_type: FileType, parser_type: ParserType):
-        """Initialize base parser."""
-        super().__init__(
+        """Initialize base parser.
+        
+        Args:
+            language_id: The identifier for the language this parser handles
+            file_type: The type of files this parser can process
+            parser_type: The type of parser implementation
+        """
+        # Initialize both parent interfaces
+        BaseParserInterface.__init__(self, language_id, file_type, parser_type)
+        AIParserInterface.__init__(
+            self,
             language_id=language_id,
             file_type=file_type,
-            parser_type=parser_type,
             capabilities={
                 AICapability.CODE_UNDERSTANDING,
                 AICapability.CODE_GENERATION,
@@ -60,7 +82,7 @@ class BaseParser(BaseParserInterface, AIParserInterface):
                 AICapability.LEARNING
             }
         )
-        self._initialized = False
+        
         self._pending_tasks: Set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
         self._metrics = {
@@ -83,68 +105,425 @@ class BaseParser(BaseParserInterface, AIParserInterface):
         self._error_patterns = {}
         self._recovery_learning_enabled = True
         
-        # Initialize caches
-        self._ast_cache = UnifiedCache(f"ast_cache_{language_id}")
-        self._feature_cache = UnifiedCache(f"feature_cache_{language_id}")
+        # Initialize caches with standardized naming
+        self._ast_cache = UnifiedCache(f"{self.language_id}_ast")
+        self._feature_cache = UnifiedCache(f"{self.language_id}_features")
         
-        register_shutdown_handler(self.cleanup)
+        # Register with shutdown handler
+        register_shutdown_handler(self._cleanup)
     
-    async def ensure_initialized(self):
-        """Ensure the parser is initialized."""
-        if not self._initialized:
-            raise ProcessingError(f"Base parser not initialized for {self.language_id}. Use create() to initialize.")
-        return True
-    
-    @classmethod
-    async def create(cls, language_id: str, file_type: FileType, parser_type: ParserType) -> 'BaseParser':
-        """Create and initialize a base parser instance."""
-        instance = cls(language_id, file_type, parser_type)
+    async def initialize(self) -> bool:
+        """Initialize the parser.
+        
+        Returns:
+            bool: True if initialization was successful
+            
+        Raises:
+            ProcessingError: If initialization fails
+        """
         try:
-            async with AsyncErrorBoundary(f"base_parser_initialization_{language_id}"):
-                # Initialize health monitoring first
+            async with AsyncErrorBoundary(f"base_parser_initialization_{self.language_id}"):
+                # Wait for database initialization
+                from db.transaction import get_transaction_coordinator
+                transaction_coordinator = await get_transaction_coordinator()
+                if not await transaction_coordinator.is_ready():
+                    await log(f"Database not ready for {self.language_id} parser", level="warning")
+                    return False
+
+                # Initialize health monitoring
                 await global_health_monitor.update_component_status(
-                    f"parser_{language_id}",
+                    f"parser_{self.language_id}",
                     ComponentStatus.INITIALIZING,
                     details={"stage": "starting"}
                 )
                 
-                # Register caches with coordinator
-                await cache_coordinator.register_cache(f"ast_cache_{language_id}", instance._ast_cache)
-                await cache_coordinator.register_cache(f"feature_cache_{language_id}", instance._feature_cache)
+                # Register caches
+                await cache_coordinator.register_cache(f"{self.language_id}_ast", self._ast_cache)
+                await cache_coordinator.register_cache(f"{self.language_id}_features", self._feature_cache)
                 
                 # Initialize cache analytics
                 analytics = await get_cache_analytics()
                 analytics.register_warmup_function(
-                    f"ast_cache_{language_id}",
-                    instance._warmup_ast_cache
+                    f"{self.language_id}_ast",
+                    self._warmup_ast_cache
                 )
                 analytics.register_warmup_function(
-                    f"feature_cache_{language_id}",
-                    instance._warmup_feature_cache
+                    f"{self.language_id}_features",
+                    self._warmup_feature_cache
                 )
                 
-                # Register shutdown handler
-                register_shutdown_handler(instance.cleanup)
+                # Start warmup task through async_runner
+                warmup_task = submit_async_task(self._warmup_caches())
+                await asyncio.wrap_future(warmup_task)
                 
-                instance._initialized = True
-                await log(f"Base parser initialized for {language_id}", level="info")
+                self._initialized = True
+                await log(f"Base parser initialized for {self.language_id}", level="info")
                 
                 # Update final health status
-                await instance._check_health()
+                await self._check_health()
                 
-                return instance
+                return True
+                
         except Exception as e:
-            await log(f"Error initializing base parser for {language_id}: {e}", level="error")
+            await log(f"Error initializing base parser for {self.language_id}: {e}", level="error")
             await global_health_monitor.update_component_status(
-                f"parser_{language_id}",
+                f"parser_{self.language_id}",
                 ComponentStatus.UNHEALTHY,
                 error=True,
                 details={"initialization_error": str(e)}
             )
-            # Cleanup on initialization failure
-            cleanup_task = submit_async_task(instance.cleanup())
-            await asyncio.wrap_future(cleanup_task)
-            raise ProcessingError(f"Failed to initialize base parser for {language_id}: {e}")
+            raise ProcessingError(f"Failed to initialize base parser for {self.language_id}: {e}")
+    
+    @handle_async_errors(error_types=ProcessingError)
+    @cached_in_request
+    async def parse(self, source_code: str) -> Optional[ParserResult]:
+        """Parse source code using the appropriate parser.
+        
+        Args:
+            source_code: The source code to parse
+            
+        Returns:
+            Optional[ParserResult]: The parsing result or None if parsing failed
+        """
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        start_time = time.time()
+        self._metrics["total_parsed"] += 1
+        
+        try:
+            async with AsyncErrorBoundary(f"{self.language_id} parsing"):
+                async with request_cache_context() as cache:
+                    # Check cache first
+                    cache_key = f"ast:{self.language_id}:{hash(source_code)}"
+                    cached_result = await self._ast_cache.get_async(cache_key)
+                    if cached_result:
+                        self._metrics["cache_hits"] += 1
+                        return ParserResult(**cached_result)
+                    
+                    self._metrics["cache_misses"] += 1
+                    
+                    # Parse with error recovery
+                    try:
+                        with monitor_operation("parse", f"parser_{self.language_id}"):
+                            ast = await self._parse_source(source_code)
+                    except Exception as e:
+                        await log(f"Primary parse failed: {e}", level="warning")
+                        context = {
+                            "language_id": self.language_id,
+                            "file_type": self.file_type.value,
+                            "parser_type": self.parser_type.value,
+                            "source_code": source_code
+                        }
+                        recovery_result = await self.recover_from_parsing_error(e, context)
+                        if not recovery_result:
+                            raise ProcessingError(f"All parsing attempts failed for {self.language_id}")
+                        ast = recovery_result
+                    
+                    # Extract features
+                    features = await self.extract_features(ast, source_code)
+                    
+                    # Create result
+                    result = ParserResult(
+                        success=True,
+                        file_type=self.file_type,
+                        parser_type=self.parser_type,
+                        language=self.language_id,
+                        features=features,
+                        ast=ast
+                    )
+                    
+                    # Cache result
+                    await self._ast_cache.set_async(cache_key, result.__dict__)
+                    
+                    # Update metrics
+                    self._metrics["successful_parses"] += 1
+                    parse_time = time.time() - start_time
+                    self._metrics["parse_times"].append(parse_time)
+                    
+                    return result
+                    
+        except Exception as e:
+            self._metrics["failed_parses"] += 1
+            await log(f"Error parsing with {self.language_id}: {e}", level="error")
+            await ErrorAudit.record_error(
+                e,
+                f"{self.language_id}_parse",
+                ProcessingError,
+                context={"parse_time": time.time() - start_time}
+            )
+            return None
+    
+    @handle_async_errors(error_types=ProcessingError)
+    async def extract_features(
+        self,
+        ast: Dict[str, Any],
+        source_code: str,
+        pattern_processor: Optional[Any] = None,
+        parser_type: Optional[ParserType] = None
+    ) -> ExtractedFeatures:
+        """Extract features from AST.
+        
+        Args:
+            ast: The AST to extract features from
+            source_code: The original source code
+            pattern_processor: Optional pattern processor for enhanced extraction
+            parser_type: Optional parser type for specific extraction logic
+            
+        Returns:
+            ExtractedFeatures: The extracted features
+        """
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        try:
+            async with AsyncErrorBoundary(f"{self.language_id} feature extraction"):
+                # Check cache first
+                cache_key = f"features:{self.language_id}:{hash(source_code)}"
+                cached_features = await self._feature_cache.get_async(cache_key)
+                if cached_features:
+                    return ExtractedFeatures(**cached_features)
+                
+                # Extract basic features
+                features = await self._extract_basic_features(source_code)
+                
+                # Extract enhanced features if pattern processor available
+                if pattern_processor:
+                    enhanced_features = await pattern_processor.extract_features(
+                        ast,
+                        source_code,
+                        self.language_id,
+                        parser_type or self.parser_type
+                    )
+                    features.update(enhanced_features)
+                
+                # Cache features
+                await self._feature_cache.set_async(cache_key, features)
+                
+                return ExtractedFeatures(**features)
+                
+        except Exception as e:
+            await log(f"Error extracting features: {e}", level="error")
+            return ExtractedFeatures()
+    
+    async def validate(self, source_code: str) -> PatternValidationResult:
+        """Validate source code using the parser.
+        
+        Args:
+            source_code: The source code to validate
+            
+        Returns:
+            PatternValidationResult: The validation result
+        """
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        try:
+            async with AsyncErrorBoundary(f"{self.language_id} validation"):
+                # Parse first
+                parse_result = await self.parse(source_code)
+                if not parse_result or not parse_result.success:
+                    return PatternValidationResult(
+                        is_valid=False,
+                        errors=["Failed to parse source code"]
+                    )
+                
+                # Validate AST
+                validation_time = time.time()
+                errors = await self._validate_ast(parse_result.ast)
+                validation_time = time.time() - validation_time
+                
+                return PatternValidationResult(
+                    is_valid=len(errors) == 0,
+                    errors=errors,
+                    validation_time=validation_time
+                )
+                
+        except Exception as e:
+            await log(f"Error validating source code: {e}", level="error")
+            return PatternValidationResult(
+                is_valid=False,
+                errors=[str(e)]
+            )
+    
+    async def process_with_ai(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> AIProcessingResult:
+        """Process source code with AI assistance.
+        
+        Args:
+            source_code: The source code to process
+            context: The AI processing context
+            
+        Returns:
+            AIProcessingResult: The AI processing result
+        """
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        try:
+            async with AsyncErrorBoundary(f"{self.language_id} AI processing"):
+                # Parse first
+                parse_result = await self.parse(source_code)
+                if not parse_result or not parse_result.success:
+                    return AIProcessingResult(
+                        success=False,
+                        response="Failed to parse source code"
+                    )
+                
+                # Process with AI based on capabilities
+                results = AIProcessingResult(success=True)
+                
+                if AICapability.CODE_UNDERSTANDING in self.ai_capabilities:
+                    understanding = await self._process_with_understanding(parse_result, context)
+                    results.context_info.update(understanding)
+                
+                if AICapability.CODE_GENERATION in self.ai_capabilities:
+                    generation = await self._process_with_generation(parse_result, context)
+                    results.suggestions.extend(generation)
+                
+                if AICapability.CODE_MODIFICATION in self.ai_capabilities:
+                    modification = await self._process_with_modification(parse_result, context)
+                    results.ai_insights.update(modification)
+                
+                return results
+                
+        except Exception as e:
+            await log(f"Error in AI processing: {e}", level="error")
+            return AIProcessingResult(
+                success=False,
+                response=f"Error processing with AI: {str(e)}"
+            )
+    
+    async def learn_from_code(
+        self,
+        source_code: str,
+        context: AIContext
+    ) -> List[Dict[str, Any]]:
+        """Learn patterns from source code.
+        
+        Args:
+            source_code: The source code to learn from
+            context: The AI learning context
+            
+        Returns:
+            List[Dict[str, Any]]: The learned patterns
+        """
+        if not self._initialized:
+            await self.ensure_initialized()
+        
+        try:
+            async with AsyncErrorBoundary(f"{self.language_id} pattern learning"):
+                # Parse first
+                parse_result = await self.parse(source_code)
+                if not parse_result or not parse_result.success:
+                    return []
+                
+                # Extract features
+                features = await self.extract_features(parse_result.ast, source_code)
+                
+                # Learn patterns
+                patterns = []
+                if AICapability.LEARNING in self.ai_capabilities:
+                    patterns = await self._learn_patterns(features, context)
+                
+                return patterns
+                
+        except Exception as e:
+            await log(f"Error learning patterns: {e}", level="error")
+            return []
+    
+    async def _cleanup(self) -> None:
+        """Internal cleanup method registered with shutdown handler."""
+        try:
+            if not self._initialized:
+                return
+            
+            # Update status
+            await global_health_monitor.update_component_status(
+                f"parser_{self.language_id}",
+                ComponentStatus.SHUTTING_DOWN,
+                details={"stage": "starting"}
+            )
+            
+            # Cancel any pending tasks
+            for task in self._pending_tasks.copy():
+                if not task.done():
+                    task.cancel()
+            
+            # Wait for tasks to complete with timeout
+            if self._pending_tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*self._pending_tasks, return_exceptions=True),
+                        timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    await log(f"Timeout waiting for tasks to complete in {self.language_id} parser", level="warning")
+                except Exception as e:
+                    await log(f"Error waiting for tasks in {self.language_id} parser: {e}", level="error")
+                finally:
+                    self._pending_tasks.clear()
+            
+            # Clean up caches
+            await cache_coordinator.unregister_cache(f"{self.language_id}_ast")
+            await cache_coordinator.unregister_cache(f"{self.language_id}_features")
+            
+            # Save metrics
+            async with transaction_scope() as txn:
+                await txn.execute("""
+                    INSERT INTO parser_metrics (
+                        timestamp, language_id, total_parses,
+                        successful_parses, failed_parses,
+                        cache_hits, cache_misses, avg_parse_time
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """, (
+                    time.time(),
+                    self.language_id,
+                    self._metrics["total_parsed"],
+                    self._metrics["successful_parses"],
+                    self._metrics["failed_parses"],
+                    self._metrics["cache_hits"],
+                    self._metrics["cache_misses"],
+                    sum(self._metrics["parse_times"]) / len(self._metrics["parse_times"]) if self._metrics["parse_times"] else 0
+                ))
+            
+            self._initialized = False
+            await log(f"Base parser cleaned up for {self.language_id}", level="info")
+            
+            # Update final status
+            await global_health_monitor.update_component_status(
+                f"parser_{self.language_id}",
+                ComponentStatus.SHUTDOWN,
+                details={"cleanup": "successful"}
+            )
+            
+        except Exception as e:
+            await log(f"Error cleaning up base parser: {e}", level="error")
+            await global_health_monitor.update_component_status(
+                f"parser_{self.language_id}",
+                ComponentStatus.UNHEALTHY,
+                error=True,
+                details={"cleanup_error": str(e)}
+            )
+            raise ProcessingError(f"Failed to cleanup base parser: {e}")
+    
+    async def cleanup(self) -> None:
+        """Public cleanup method that ensures cleanup is handled through async_runner."""
+        cleanup_task = submit_async_task(self._cleanup())
+        await asyncio.wrap_future(cleanup_task)
+
+    # Keep existing methods but update to use async_runner for tasks
+    async def _submit_task(self, coro) -> Any:
+        """Submit a task through async_runner."""
+        task = submit_async_task(coro)
+        try:
+            return await asyncio.wrap_future(task)
+        except Exception as e:
+            await log(f"Error in task execution: {e}", level="error")
+            raise
 
     async def _warmup_ast_cache(self, keys: List[str]) -> Dict[str, Any]:
         """Warmup function for AST cache."""
@@ -173,200 +552,6 @@ class BaseParser(BaseParserInterface, AIParserInterface):
             except Exception as e:
                 await log(f"Error warming up feature cache for {key}: {e}", level="warning")
         return results
-
-    @cached_in_request
-    async def parse(self, source_code: str) -> Optional[ParserResult]:
-        """Parse source code using the appropriate parser."""
-        if not self._initialized:
-            await self.ensure_initialized()
-        
-        start_time = time.time()
-        self._metrics["total_parsed"] += 1
-        
-        # Get request context for metrics
-        request_cache = get_current_request_cache()
-        if request_cache:
-            await request_cache.set(
-                "parse_count",
-                (await request_cache.get("parse_count", 0)) + 1
-            )
-        
-        try:
-            async with request_cache_context() as cache:
-                # Check AST cache first
-                cache_key = f"ast:{self.language_id}:{hash(source_code)}"
-                cached_ast = await self._ast_cache.get_async(cache_key)
-                if cached_ast:
-                    self._metrics["cache_hits"] += 1
-                    if request_cache:
-                        await request_cache.set(
-                            "parse_cache_hits",
-                            (await request_cache.get("parse_cache_hits", 0)) + 1
-                        )
-                    return ParserResult(**cached_ast)
-                
-                self._metrics["cache_misses"] += 1
-                
-                # Parse source code with error recovery
-                try:
-                    with monitor_operation("parse_source", f"parser_{self.language_id}"):
-                        ast = await self._parse_source(source_code)
-                except Exception as e:
-                    # Log original error
-                    await log(f"Primary parser failed for {self.language_id}: {e}", level="warning")
-                    
-                    # Attempt recovery
-                    context = {
-                        "language_id": self.language_id,
-                        "file_type": self.file_type.value,
-                        "parser_type": self.parser_type.value,
-                        "source_code": source_code
-                    }
-                    recovery_result = await self.recover_from_parsing_error(e, context)
-                    if recovery_result:
-                        ast = recovery_result
-                    else:
-                        raise ProcessingError(f"All parsing attempts failed for {self.language_id}")
-                
-                # Get pattern processor instance
-                from parsers.pattern_processor import pattern_processor
-                
-                # Extract features with error recovery
-                try:
-                    features = await self.extract_features(
-                        ast,
-                        source_code,
-                        pattern_processor=pattern_processor,
-                        parser_type=self.parser_type
-                    )
-                except Exception as e:
-                    await log(f"Feature extraction failed: {e}", level="warning")
-                    # Attempt recovery for feature extraction
-                    recovery_result = await self.recover_from_parsing_error(
-                        e,
-                        {**context, "ast": ast}
-                    )
-                    features = recovery_result or await self._extract_basic_features(source_code)
-                
-                # Create result
-                result = ParserResult(
-                    success=True,
-                    ast=ast,
-                    features=features,
-                    source_code=source_code
-                )
-                
-                # Cache result
-                await self._ast_cache.set_async(cache_key, result.__dict__)
-                
-                # Update metrics
-                self._metrics["successful_parses"] += 1
-                parse_time = time.time() - start_time
-                self._metrics["parse_times"].append(parse_time)
-                
-                # Track request-level metrics
-                if request_cache:
-                    parse_metrics = {
-                        "language_id": self.language_id,
-                        "parse_time": parse_time,
-                        "timestamp": time.time()
-                    }
-                    await request_cache.set(
-                        f"parse_metrics_{self.language_id}",
-                        parse_metrics
-                    )
-                
-                return result
-        except Exception as e:
-            self._metrics["failed_parses"] += 1
-            parse_time = time.time() - start_time
-            
-            # Track error in request context
-            if request_cache:
-                await request_cache.set(
-                    "last_parse_error",
-                    {
-                        "error": str(e),
-                        "language_id": self.language_id,
-                        "timestamp": time.time()
-                    }
-                )
-            
-            await log(f"Error parsing with {self.language_id}: {e}", level="error")
-            
-            # Record error for audit
-            await ErrorAudit.record_error(
-                e,
-                f"{self.language_id}_parse",
-                ProcessingError,
-                context={
-                    "parse_time": parse_time,
-                    "source_size": len(source_code)
-                }
-            )
-            
-            return None
-
-    async def cleanup(self):
-        """Clean up parser resources."""
-        try:
-            if not self._initialized:
-                return
-                
-            # Update status
-            await global_health_monitor.update_component_status(
-                f"parser_{self.language_id}",
-                ComponentStatus.SHUTTING_DOWN,
-                details={"stage": "starting"}
-            )
-            
-            # Clean up caches
-            await cache_coordinator.unregister_cache(f"ast_cache_{self.language_id}")
-            await cache_coordinator.unregister_cache(f"feature_cache_{self.language_id}")
-            
-            # Save error audit report
-            await ErrorAudit.save_report()
-            
-            # Save metrics to database
-            async with transaction_scope() as txn:
-                await txn.execute("""
-                    INSERT INTO parser_metrics (
-                        timestamp, language_id, total_parses,
-                        successful_parses, failed_parses,
-                        cache_hits, cache_misses, avg_parse_time
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """, (
-                    time.time(),
-                    self.language_id,
-                    self._metrics["total_parsed"],
-                    self._metrics["successful_parses"],
-                    self._metrics["failed_parses"],
-                    self._metrics["cache_hits"],
-                    self._metrics["cache_misses"],
-                    sum(self._metrics["parse_times"]) / len(self._metrics["parse_times"]) if self._metrics["parse_times"] else 0
-                ))
-            
-            # Clean up any remaining tasks
-            if self._pending_tasks:
-                for task in self._pending_tasks:
-                    task.cancel()
-                await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-                self._pending_tasks.clear()
-            
-            self._initialized = False
-            await log(f"Base parser cleaned up for {self.language_id}", level="info")
-            
-            # Update final status
-            await self._check_health()
-        except Exception as e:
-            await log(f"Error cleaning up base parser for {self.language_id}: {e}", level="error")
-            await global_health_monitor.update_component_status(
-                f"parser_{self.language_id}",
-                ComponentStatus.UNHEALTHY,
-                error=True,
-                details={"cleanup_error": str(e)}
-            )
-            raise ProcessingError(f"Failed to cleanup base parser for {self.language_id}: {e}")
 
     def _create_node(self, node_type: str, start_point: List[int], end_point: List[int], **kwargs) -> BaseNodeDict:
         """Helper for creating a standardized AST node."""
@@ -706,48 +891,6 @@ class BaseParser(BaseParserInterface, AIParserInterface):
                 log(f"Error loading patterns for {self.language_id}: {e}", level="error")
                 raise ProcessingError(f"Failed to load patterns for {self.language_id}: {e}") 
 
-    async def process_with_ai(
-        self,
-        source_code: str,
-        context: AIContext
-    ) -> AIProcessingResult:
-        """Process source code with AI assistance."""
-        if not self._initialized:
-            await self.initialize()
-            
-        async with AsyncErrorBoundary(f"{self.language_id} AI processing"):
-            try:
-                # Parse the source first
-                parse_result = await self.parse(source_code)
-                if not parse_result or not parse_result.success:
-                    return AIProcessingResult(
-                        success=False,
-                        response="Failed to parse source code"
-                    )
-                
-                # Process with AI based on capabilities
-                results = AIProcessingResult(success=True)
-                
-                if AICapability.CODE_UNDERSTANDING in self.ai_capabilities:
-                    understanding = await self._process_with_understanding(parse_result, context)
-                    results.context_info.update(understanding)
-                
-                if AICapability.CODE_GENERATION in self.ai_capabilities:
-                    generation = await self._process_with_generation(parse_result, context)
-                    results.suggestions.extend(generation)
-                
-                if AICapability.CODE_MODIFICATION in self.ai_capabilities:
-                    modification = await self._process_with_modification(parse_result, context)
-                    results.ai_insights.update(modification)
-                
-                return results
-            except Exception as e:
-                log(f"Error in {self.language_id} AI processing: {e}", level="error")
-                return AIProcessingResult(
-                    success=False,
-                    response=f"Error processing with AI: {str(e)}"
-                )
-    
     async def _process_with_understanding(
         self,
         parse_result: ParserResult,
@@ -1026,6 +1169,8 @@ class BaseParser(BaseParserInterface, AIParserInterface):
                     if step == "fallback_parser":
                         # Try fallback parser
                         if context.get("parser_type") == ParserType.CUSTOM:
+                            # Import here to avoid circular dependency
+                            from parsers.tree_sitter_parser import TreeSitterParser
                             fallback_parser = await TreeSitterParser.create(
                                 context["language_id"],
                                 context["file_type"]

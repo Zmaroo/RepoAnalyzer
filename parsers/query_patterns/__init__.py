@@ -21,7 +21,6 @@ from utils.async_runner import get_loop
 from collections import OrderedDict
 import time
 from tree_sitter_language_pack import SupportedLanguage
-from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
 from utils.cache import UnifiedCache, cache_coordinator
 from utils.cache_analytics import get_cache_analytics
 from utils.request_cache import request_cache_context, get_current_request_cache
@@ -50,58 +49,8 @@ _pending_tasks: Set[asyncio.Task] = set()
 MAX_CACHE_SIZE = 1000
 
 # Initialize caches
-_pattern_cache = UnifiedCache("pattern_cache")
-_validation_cache = UnifiedCache("validation_cache")
-
-class LRUCache:
-    """LRU cache implementation for patterns."""
-    
-    def __init__(self, max_size: int = MAX_CACHE_SIZE):
-        self._cache = OrderedDict()
-        self._max_size = max_size
-        self._lock = asyncio.Lock()
-        self._metrics = {
-            "hits": 0,
-            "misses": 0,
-            "evictions": 0
-        }
-    
-    async def get(self, key: str) -> Optional[Any]:
-        """Get item from cache."""
-        async with self._lock:
-            if key in self._cache:
-                # Move to end (most recently used)
-                value = self._cache.pop(key)
-                self._cache[key] = value
-                self._metrics["hits"] += 1
-                return value
-            self._metrics["misses"] += 1
-            return None
-    
-    async def set(self, key: str, value: Any) -> None:
-        """Set item in cache."""
-        async with self._lock:
-            if key in self._cache:
-                # Update existing entry
-                self._cache.pop(key)
-            elif len(self._cache) >= self._max_size:
-                # Remove least recently used item
-                self._cache.popitem(last=False)
-                self._metrics["evictions"] += 1
-            self._cache[key] = value
-    
-    async def clear(self) -> None:
-        """Clear the cache."""
-        async with self._lock:
-            self._cache.clear()
-            self._metrics = {
-                "hits": 0,
-                "misses": 0,
-                "evictions": 0
-            }
-
-# Replace global pattern cache with LRU cache
-_pattern_cache = LRUCache()
+_pattern_cache = UnifiedCache("pattern_cache", eviction_policy="lru", max_size=1000)
+_validation_cache = UnifiedCache("validation_cache", eviction_policy="lru", max_size=1000)
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -263,7 +212,7 @@ def is_language_supported(language_id: str) -> bool:
         True if language is supported
     """
     normalized = normalize_language_name(language_id)
-    return normalized in SupportedLanguage.__args__ or normalized in CUSTOM_PARSER_CLASSES
+    return normalized in SupportedLanguage.__args__ or normalized in get_custom_parser_classes()
 
 def get_parser_type_for_language(language_id: str) -> str:
     """Get parser type for a language.
@@ -275,7 +224,7 @@ def get_parser_type_for_language(language_id: str) -> str:
         'tree-sitter', 'custom', or 'unknown'
     """
     normalized = normalize_language_name(language_id)
-    if normalized in CUSTOM_PARSER_CLASSES:
+    if normalized in get_custom_parser_classes():
         return 'custom'
     elif normalized in SupportedLanguage.__args__:
         return 'tree-sitter'
@@ -665,3 +614,8 @@ async def report_validation_results(results: Dict[str, Any]) -> str:
         report.append("")
     
     return "\n".join(report)
+
+def get_custom_parser_classes() -> Set[str]:
+    """Lazy load custom parser classes to avoid circular imports."""
+    from parsers.custom_parsers import CUSTOM_PARSER_CLASSES
+    return CUSTOM_PARSER_CLASSES

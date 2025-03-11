@@ -2,6 +2,7 @@
 
 from typing import Dict, Any, List, Match, Optional, Set, Union
 from dataclasses import dataclass, field
+import time
 from parsers.types import (
     FileType, QueryPattern, PatternCategory, PatternPurpose, PatternType,
     PatternRelationType, PatternContext, PatternPerformanceMetrics
@@ -110,6 +111,133 @@ def extract_class(match: Match) -> Dict[str, Any]:
         "line_number": match.string.count('\n', 0, match.start()) + 1,
         "confidence": 0.95
     }
+
+# Define base patterns
+COBALT_PATTERNS = {
+    PatternCategory.SYNTAX: {
+        "function": QueryPattern(
+            name="function",
+            pattern=r'fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)(?:\s*->\s*([a-zA-Z_][a-zA-Z0-9_<>]*))?\s*{',
+            extract=extract_function,
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt function definitions", "examples": ["fn main()", "fn process(data: String) -> Result"]}
+        ),
+        "class": QueryPattern(
+            name="class",
+            pattern=r'class\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?::\s*([a-zA-Z_][a-zA-Z0-9_<>]*))?\s*{',
+            extract=extract_class,
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt class definitions", "examples": ["class MyClass", "class Child: Parent"]}
+        ),
+        "namespace": QueryPattern(
+            name="namespace",
+            pattern=r'namespace\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*{',
+            extract=lambda m: {
+                "type": "namespace",
+                "name": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.SYNTAX,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt namespace definitions", "examples": ["namespace MyNamespace"]}
+        )
+    },
+    
+    PatternCategory.SEMANTICS: {
+        "type_definition": QueryPattern(
+            name="type_definition",
+            pattern=r'type\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:=\s*([^;]+))?;',
+            extract=lambda m: {
+                "type": "type_definition",
+                "name": m.group(1),
+                "value": m.group(2) if m.group(2) else None,
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt type definitions", "examples": ["type MyType = i32", "type Result = Success | Error"]}
+        ),
+        "enum": QueryPattern(
+            name="enum",
+            pattern=r'enum\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*{([^}]*)}',
+            extract=lambda m: {
+                "type": "enum",
+                "name": m.group(1),
+                "variants": [v.strip() for v in m.group(2).split(',') if v.strip()],
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.SEMANTICS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt enum definitions", "examples": ["enum Color { Red, Green, Blue }"]}
+        )
+    },
+    
+    PatternCategory.DOCUMENTATION: {
+        "doc_comment": QueryPattern(
+            name="doc_comment",
+            pattern=r'///\s*(.+)$',
+            extract=lambda m: {
+                "type": "doc_comment",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt documentation comments", "examples": ["/// Function documentation"]}
+        ),
+        "module_doc": QueryPattern(
+            name="module_doc",
+            pattern=r'//!\s*(.+)$',
+            extract=lambda m: {
+                "type": "module_doc",
+                "content": m.group(1),
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.DOCUMENTATION,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt module documentation", "examples": ["//! Module documentation"]}
+        )
+    },
+    
+    PatternCategory.CODE_PATTERNS: {
+        "error_handling": QueryPattern(
+            name="error_handling",
+            pattern=r'try\s*{[^}]*}\s*catch\s*(?:\(([^)]+)\))?\s*{',
+            extract=lambda m: {
+                "type": "error_handling",
+                "error_type": m.group(1) if m.group(1) else None,
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.CODE_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt error handling", "examples": ["try { ... } catch(Error) { ... }"]}
+        ),
+        "pattern_matching": QueryPattern(
+            name="pattern_matching",
+            pattern=r'match\s+([^{]+)\s*{([^}]*)}',
+            extract=lambda m: {
+                "type": "pattern_matching",
+                "value": m.group(1),
+                "patterns": [p.strip() for p in m.group(2).split(',') if p.strip()],
+                "line_number": m.string.count('\n', 0, m.start()) + 1
+            },
+            category=PatternCategory.CODE_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={"description": "Matches Cobalt pattern matching", "examples": ["match value { Some(x) => x, None => 0 }"]}
+        )
+    }
+}
 
 # Convert existing patterns to enhanced types
 def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, ResilientPattern]:
