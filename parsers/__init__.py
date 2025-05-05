@@ -25,7 +25,7 @@ from parsers.parser_interfaces import BaseParserInterface, AIParserInterface
 from parsers.base_parser import BaseParser
 from parsers.unified_parser import UnifiedParser, get_unified_parser
 from parsers.pattern_processor import PatternProcessor, get_pattern_processor
-from parsers.feature_extractor import BaseFeatureExtractor, TreeSitterFeatureExtractor, CustomFeatureExtractor
+from parsers.feature_extractor import TreeSitterFeatureExtractor, FeatureExtractor
 from parsers.language_config import LanguageConfig, get_language_config
 from parsers.language_support import LanguageSupport, get_language_support
 from parsers.file_classification import FileClassifier, get_file_classifier
@@ -189,9 +189,8 @@ __all__ = [
     'TreeSitterParser',
     'CustomParser',
     'PatternProcessor',
-    'BaseFeatureExtractor',
     'TreeSitterFeatureExtractor',
-    'CustomFeatureExtractor',
+    'FeatureExtractor',
     'LanguageConfig',
     'LanguageSupport',
     'FileClassifier',

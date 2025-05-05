@@ -566,7 +566,7 @@ async def get_processing_coordinator() -> ProcessingCoordinator:
         processing_coordinator = await ProcessingCoordinator.create()
     return processing_coordinator
 
-@handle_async_errors
+@handle_async_errors()
 async def process_repository_indexing(repo_path: str, repo_id: int, repo_type: str = "active", single_file: bool = False) -> None:
     """Process a repository for indexing.
     

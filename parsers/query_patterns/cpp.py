@@ -1,7 +1,7 @@
 """C++-specific patterns with enhanced type system and relationships.
 
 This module provides C++-specific patterns that integrate with the enhanced
-pattern processing system, including proper typing, relationships, and context.
+tree-sitter pattern processing system, including proper typing, relationships, and context.
 """
 
 from typing import Dict, Any, List, Optional, Union
@@ -15,7 +15,12 @@ from parsers.types import (
 )
 from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern, validate_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .enhanced_patterns import (
+    TreeSitterPattern, 
+    TreeSitterAdaptivePattern, 
+    TreeSitterResilientPattern, 
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request
@@ -24,13 +29,12 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
+from parsers.feature_extractor import get_feature_extractor
 import time
 
 # C++ capabilities
@@ -124,7 +128,7 @@ CPP_PATTERNS = {
     
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": ResilientPattern(
+            "function": TreeSitterResilientPattern(
                 name="function",
                 pattern="""
                 (function_definition
@@ -149,7 +153,7 @@ CPP_PATTERNS = {
                 }
             ),
             
-            "class": ResilientPattern(
+            "class": TreeSitterResilientPattern(
                 name="class",
                 pattern="""
                 (class_specifier
@@ -171,7 +175,7 @@ CPP_PATTERNS = {
                 }
             ),
             
-            "template": ResilientPattern(
+            "template": TreeSitterResilientPattern(
                 name="template",
                 pattern="""
                 (template_declaration
@@ -192,7 +196,7 @@ CPP_PATTERNS = {
                 }
             ),
             
-            "class_methods": AdaptivePattern(
+            "class_methods": TreeSitterAdaptivePattern(
                 name="class_methods",
                 pattern="""
                 (class_specifier
@@ -217,7 +221,7 @@ CPP_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "type": AdaptivePattern(
+            "type": TreeSitterAdaptivePattern(
                 name="type",
                 pattern="""
                 [
@@ -242,7 +246,7 @@ CPP_PATTERNS = {
                 }
             ),
             
-            "variable": AdaptivePattern(
+            "variable": TreeSitterAdaptivePattern(
                 name="variable",
                 pattern="""
                 [
@@ -270,7 +274,7 @@ CPP_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": AdaptivePattern(
+            "comments": TreeSitterAdaptivePattern(
                 name="comments",
                 pattern="""
                 [
@@ -306,86 +310,87 @@ CPP_PATTERNS = {
     },
 
     PatternCategory.COMMON_ISSUES: {
-        "memory_leak": QueryPattern(
-            name="memory_leak",
-            pattern=r'new\s+[a-zA-Z_][a-zA-Z0-9_]*(?:\s*\[[^\]]*\])?(?![^;]*delete)',
-            extract=lambda m: {
-                "type": "memory_leak",
-                "content": m.group(0),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.85
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potential memory leaks", "examples": ["auto ptr = new int[10];"]}
-        ),
-        "null_pointer_deref": QueryPattern(
-            name="null_pointer_deref",
-            pattern=r'([a-zA-Z_][a-zA-Z0-9_]*)\s*->\s*[a-zA-Z_][a-zA-Z0-9_]*',
-            extract=lambda m: {
-                "type": "null_pointer_deref",
-                "pointer": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "needs_verification": True
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potential null pointer dereferences", "examples": ["ptr->method();"]}
-        ),
-        "buffer_overflow": QueryPattern(
-            name="buffer_overflow",
-            pattern=r'(?:strcpy|strcat|sprintf|gets)\s*\([^)]+\)',
-            extract=lambda m: {
-                "type": "buffer_overflow",
-                "content": m.group(0),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.9
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potential buffer overflows", "examples": ["strcpy(dest, src);"]}
-        ),
-        "uninitialized_variable": QueryPattern(
-            name="uninitialized_variable",
-            pattern=r'(?:int|char|float|double|long)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;',
-            extract=lambda m: {
-                "type": "uninitialized_variable",
-                "variable": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.8
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potentially uninitialized variables", "examples": ["int x;"]}
-        ),
-        "resource_leak": QueryPattern(
-            name="resource_leak",
-            pattern=r'(?:fopen|malloc|new)\s*\([^)]*\)(?![^;]*(?:fclose|free|delete))',
-            extract=lambda m: {
-                "type": "resource_leak",
-                "content": m.group(0),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.85
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potential resource leaks", "examples": ["FILE* fp = fopen(\"file.txt\", \"r\");"]}
-        )
+        # The following patterns were using regexes, which is not allowed for C++ (tree-sitter only). Commented out for correctness.
+        # "memory_leak": QueryPattern(
+        #     name="memory_leak",
+        #     pattern=r'new\s+[a-zA-Z_][a-zA-Z0-9_]*(?:\s*\[[^\]]*\])?(?![^;]*delete)',
+        #     extract=lambda m: {
+        #         "type": "memory_leak",
+        #         "content": m.group(0),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.85
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="cpp",
+        #     metadata={"description": "Detects potential memory leaks", "examples": ["auto ptr = new int[10];"]}
+        # ),
+        # "null_pointer_deref": QueryPattern(
+        #     name="null_pointer_deref",
+        #     pattern=r'([a-zA-Z_][a-zA-Z0-9_]*)\s*->\s*[a-zA-Z_][a-zA-Z0-9_]*',
+        #     extract=lambda m: {
+        #         "type": "null_pointer_deref",
+        #         "pointer": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "needs_verification": True
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="cpp",
+        #     metadata={"description": "Detects potential null pointer dereferences", "examples": ["ptr->method();"]}
+        # ),
+        # "buffer_overflow": QueryPattern(
+        #     name="buffer_overflow",
+        #     pattern=r'(?:strcpy|strcat|sprintf|gets)\s*\([^)]+\)',
+        #     extract=lambda m: {
+        #         "type": "buffer_overflow",
+        #         "content": m.group(0),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.9
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="cpp",
+        #     metadata={"description": "Detects potential buffer overflows", "examples": ["strcpy(dest, src);"]}
+        # ),
+        # "uninitialized_variable": QueryPattern(
+        #     name="uninitialized_variable",
+        #     pattern=r'(?:int|char|float|double|long)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;',
+        #     extract=lambda m: {
+        #         "type": "uninitialized_variable",
+        #         "variable": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.8
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="cpp",
+        #     metadata={"description": "Detects potentially uninitialized variables", "examples": ["int x;"]}
+        # ),
+        # "resource_leak": QueryPattern(
+        #     name="resource_leak",
+        #     pattern=r'(?:fopen|malloc|new)\s*\([^)]*\)(?![^;]*(?:fclose|free|delete))',
+        #     extract=lambda m: {
+        #         "type": "resource_leak",
+        #         "content": m.group(0),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.85
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="cpp",
+        #     metadata={"description": "Detects potential resource leaks", "examples": ["FILE* fp = fopen(\"file.txt\", \"r\");"]}
+        # ),
     }
 }
 
-class CPPPatternLearner(CrossProjectPatternLearner):
+class CPPPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced C++ pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -405,11 +410,13 @@ class CPPPatternLearner(CrossProjectPatternLearner):
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("cpp", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("cpp")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
         # Register C++ patterns
+        from parsers.pattern_processor import pattern_processor
+        self._pattern_processor = pattern_processor
         await self._pattern_processor.register_language_patterns(
             "cpp", 
             CPP_PATTERNS,
@@ -545,7 +552,7 @@ class CPPPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_cpp_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
@@ -563,7 +570,7 @@ async def process_cpp_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("cpp", FileType.CODE)
+        feature_extractor = await get_feature_extractor("cpp")
         unified_parser = await get_unified_parser()
         
         # Parse if needed
@@ -616,6 +623,7 @@ cpp_pattern_learner = CPPPatternLearner()
 async def initialize_cpp_patterns():
     """Initialize C++ patterns during app startup."""
     global cpp_pattern_learner
+    from parsers.pattern_processor import pattern_processor
     
     # Initialize pattern processor first
     await pattern_processor.initialize()
@@ -760,12 +768,12 @@ async def get_pattern_matches(pattern_name: str, source_code: str) -> List[Dict[
     return await pattern.matches(source_code)
 
 async def extract_cpp_features(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     matches: List[Dict[str, Any]],
     context: PatternContext
 ) -> ExtractedFeatures:
     """Extract features from pattern matches."""
-    feature_extractor = await BaseFeatureExtractor.create("cpp", FileType.CODE)
+    feature_extractor = await get_feature_extractor("cpp")
     
     features = ExtractedFeatures()
     
@@ -788,7 +796,7 @@ async def extract_cpp_features(
     return features 
 
 async def validate_cpp_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     context: Optional[PatternContext] = None
 ) -> PatternValidationResult:
     """Validate a C++ pattern with system integration."""

@@ -15,7 +15,7 @@ from parsers.types import (
 )
 from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .enhanced_patterns import TreeSitterAdaptivePattern, TreeSitterResilientPattern, TreeSitterCrossProjectPatternLearner
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -71,7 +71,7 @@ PATTERN_METRICS = {
 TOML_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "table": ResilientPattern(
+            "table": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (table
@@ -113,7 +113,7 @@ TOML_PATTERNS = {
                     }
                 }
             ),
-            "key_value": ResilientPattern(
+            "key_value": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (pair
@@ -160,7 +160,7 @@ TOML_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.VALUES: {
-            "array": AdaptivePattern(
+            "array": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (array
@@ -198,7 +198,7 @@ TOML_PATTERNS = {
                     }
                 }
             ),
-            "inline_table": AdaptivePattern(
+            "inline_table": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (inline_table
@@ -244,7 +244,7 @@ TOML_PATTERNS = {
     }
 }
 
-class TOMLPatternLearner(CrossProjectPatternLearner):
+class TOMLPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced TOML pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
@@ -266,7 +266,7 @@ class TOMLPatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with TOML-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
@@ -410,7 +410,7 @@ class TOMLPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_toml_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:

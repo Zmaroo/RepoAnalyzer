@@ -7,6 +7,7 @@ and warm up caches with commonly accessed data for faster application performanc
 import asyncio
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Set
 import time
+from utils.error_handling import AsyncErrorBoundary, CacheError, ErrorSeverity
 from datetime import datetime, timedelta
 import json
 import os

@@ -6,9 +6,8 @@ from parsers.types import (
     FileType, QueryPattern, PatternCategory, PatternPurpose, PatternType,
     PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
-from parsers.query_patterns.enhanced_patterns import (
-    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
-)
+from parsers.query_patterns.enhanced_patterns_custom import AdaptivePattern, CrossProjectPatternLearner
+from parsers.query_patterns.enhanced_patterns import TreeSitterResilientPattern
 import re
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ProcessingError, ErrorSeverity
 from utils.health_monitor import global_health_monitor, ComponentStatus
@@ -612,7 +611,7 @@ ASCIIDOC_PATTERNS = {
 }
 
 # Update existing patterns to use enhanced types
-def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, ResilientPattern]:
+def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, TreeSitterResilientPattern]:
     """Create enhanced pattern from definition."""
     base_pattern = pattern_def.copy()
     
@@ -621,7 +620,7 @@ def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePatter
         "header", "section", "block", "list", "attribute"
     }
     
-    pattern_class = ResilientPattern if is_resilient else AdaptivePattern
+    pattern_class = TreeSitterResilientPattern if is_resilient else AdaptivePattern
     return pattern_class(**base_pattern)
 
 # Convert existing patterns to enhanced types after ASCIIDOC_PATTERNS is defined

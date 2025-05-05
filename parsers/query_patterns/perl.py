@@ -15,8 +15,14 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern,
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -35,7 +41,7 @@ from parsers.ai_pattern_processor import get_ai_pattern_processor
 import time
 
 # Language identifier
-LANGUAGE = "perl"
+LANGUAGE_ID = "perl"
 
 # Perl capabilities (extends common capabilities)
 PERL_CAPABILITIES = COMMON_CAPABILITIES | {
@@ -71,7 +77,7 @@ PATTERN_METRICS = {
 PERL_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "subroutine": ResilientPattern(
+            "subroutine": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (subroutine_declaration
@@ -101,7 +107,7 @@ PERL_PATTERNS = {
                 examples=["sub process_data { }", "sub MyPackage::handle_event { }"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["subroutine"],
@@ -111,7 +117,7 @@ PERL_PATTERNS = {
                     }
                 }
             ),
-            "package": ResilientPattern(
+            "package": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (package_statement
@@ -142,7 +148,7 @@ PERL_PATTERNS = {
                 examples=["package MyModule;", "use strict;"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["package"],
@@ -157,7 +163,7 @@ PERL_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.OBJECT_ORIENTED: {
-            "moose": AdaptivePattern(
+            "moose": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (use_statement
@@ -185,7 +191,7 @@ PERL_PATTERNS = {
                 examples=["use Moose;", "has 'name' => (is => 'rw');"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.OBJECT_ORIENTED,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["object"],
@@ -196,7 +202,7 @@ PERL_PATTERNS = {
             )
         },
         PatternPurpose.REGEX: {
-            "regex": AdaptivePattern(
+            "regex": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (regex
@@ -227,7 +233,7 @@ PERL_PATTERNS = {
                 examples=["m/pattern/g", "s/pattern/replacement/"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.REGEX,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["regex"],
@@ -240,7 +246,7 @@ PERL_PATTERNS = {
     }
 }
 
-class PerlPatternLearner(CrossProjectPatternLearner):
+class PerlPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced Perl pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
@@ -262,7 +268,7 @@ class PerlPatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with Perl-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
@@ -406,13 +412,13 @@ class PerlPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_perl_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a Perl pattern with full system integration."""
     # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
         return common_result
     
@@ -431,7 +437,7 @@ async def process_perl_pattern(
         if not context or not context.code_structure:
             parse_result = await unified_parser.parse(source_code, "perl", FileType.CODE)
             if parse_result and parse_result.ast:
-                context = await create_perl_pattern_context(
+                context = await create_tree_sitter_context(
                     "",
                     parse_result.ast
                 )
@@ -495,40 +501,32 @@ async def create_perl_pattern_context(
     code_structure: Dict[str, Any],
     learned_patterns: Optional[Dict[str, Any]] = None
 ) -> PatternContext:
-    """Create pattern context with full system integration."""
-    # Get unified parser
-    unified_parser = await get_unified_parser()
+    """Create Perl-specific pattern context with tree-sitter integration.
     
-    # Parse the code structure if needed
-    if not code_structure:
-        parse_result = await unified_parser.parse(
-            file_path,
-            language_id="perl",
-            file_type=FileType.CODE
-        )
-        code_structure = parse_result.ast if parse_result else {}
-    
-    context = PatternContext(
-        code_structure=code_structure,
-        language_stats={"language": "perl"},
-        project_patterns=list(learned_patterns.values()) if learned_patterns else [],
-        file_location=file_path,
-        dependencies=set(),
-        recent_changes=[],
-        scope_level="global",
-        allows_nesting=True,
-        relevant_patterns=list(PERL_PATTERNS.keys())
+    This function creates a tree-sitter based context for Perl patterns
+    with full system integration.
+    """
+    # Create a base tree-sitter context
+    base_context = await create_tree_sitter_context(
+        file_path,
+        code_structure,
+        language_id=LANGUAGE_ID,
+        learned_patterns=learned_patterns
     )
     
+    # Add Perl-specific information
+    base_context.language_stats = {"language": LANGUAGE_ID}
+    base_context.relevant_patterns = list(PERL_PATTERNS.keys())
+    
     # Add system integration metadata
-    context.metadata.update({
+    base_context.metadata.update({
         "parser_type": ParserType.TREE_SITTER,
         "feature_extraction_enabled": True,
         "block_extraction_enabled": True,
         "pattern_learning_enabled": True
     })
     
-    return context
+    return base_context
 
 def update_perl_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
     """Update performance metrics for a pattern."""
@@ -625,9 +623,10 @@ __all__ = [
     'PERL_PATTERNS',
     'PATTERN_RELATIONSHIPS',
     'PATTERN_METRICS',
-    'create_pattern_context',
+    'create_perl_pattern_context',
     'get_perl_pattern_match_result',
     'update_perl_pattern_metrics',
-    'PerlPatternContext',
-    'pattern_learner'
+    'PerlPatternLearner',
+    'process_perl_pattern',
+    'LANGUAGE_ID'
 ] 

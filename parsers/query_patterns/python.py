@@ -14,8 +14,14 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern,
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -34,13 +40,110 @@ from parsers.ai_pattern_processor import get_ai_pattern_processor
 import time
 
 # Language identifier
-LANGUAGE = "python"
+LANGUAGE_ID = "python"
 
 # Python capabilities (extends common capabilities)
 PYTHON_CAPABILITIES = COMMON_CAPABILITIES | {
     AICapability.OBJECT_ORIENTED,
     AICapability.FUNCTIONAL_PROGRAMMING,
     AICapability.TYPE_HINTS
+}
+
+# Tree-sitter specific queries for Python
+TS_QUERIES = {
+    "functions": """
+    (function_definition
+      name: (identifier) @function.name
+      parameters: (parameters) @function.params
+      body: (block) @function.body)
+    """,
+    
+    "classes": """
+    (class_definition
+      name: (identifier) @class.name
+      body: (block) @class.body)
+      
+    (class_definition
+      name: (identifier) @class.name
+      superclasses: (argument_list) @class.superclasses
+      body: (block) @class.body)
+    """,
+    
+    "imports": """
+    (import_statement
+      name: (dotted_name) @import.module)
+      
+    (import_from_statement
+      module_name: (dotted_name) @import.from_module
+      name: (dotted_name) @import.name)
+    """,
+    
+    "docstrings": """
+    (module 
+      (expression_statement
+        (string) @docstring.module))
+        
+    (function_definition
+      body: (block
+        (expression_statement
+          (string) @docstring.function) . _))
+          
+    (class_definition
+      body: (block
+        (expression_statement
+          (string) @docstring.class) . _))
+    """,
+    
+    "decorators": """
+    (decorator
+      name: (identifier) @decorator.name
+      arguments: (argument_list)? @decorator.arguments)
+      
+    (decorated_definition
+      (decorator) @decorator.decorator
+      definition: (function_definition) @decorator.function)
+      
+    (decorated_definition
+      (decorator) @decorator.decorator
+      definition: (class_definition) @decorator.class)
+    """,
+    
+    "async_functions": """
+    (function_definition
+      "async" @async.keyword
+      name: (identifier) @async.function)
+    """,
+    
+    "type_hints": """
+    (function_definition
+      parameters: (parameters
+        (typed_parameter
+          type: (_) @type_hint.parameter_type)))
+          
+    (function_definition
+      return_type: (_) @type_hint.return_type)
+      
+    (variable_declaration
+      (typed_variable
+        type: (_) @type_hint.variable_type))
+    """,
+    
+    "error_handling": """
+    (try_statement
+      body: (block) @error.try_body
+      (except_clause
+        type: (_)? @error.except_type
+        body: (block) @error.except_body)* 
+      (finally_clause
+        body: (block) @error.finally_body)?)
+    """,
+    
+    "comprehensions": """
+    (list_comprehension) @comprehension.list
+    (dictionary_comprehension) @comprehension.dict
+    (set_comprehension) @comprehension.set
+    (generator_expression) @comprehension.generator
+    """
 }
 
 @dataclass
@@ -71,7 +174,7 @@ PATTERN_METRICS = {
 PYTHON_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "class": ResilientPattern(
+            "class": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (class_definition
@@ -108,7 +211,7 @@ PYTHON_PATTERNS = {
                 examples=["class MyClass(BaseClass):", "@dataclass\nclass Config:"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["class"],
@@ -118,7 +221,7 @@ PYTHON_PATTERNS = {
                     }
                 }
             ),
-            "function": ResilientPattern(
+            "function": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (function_definition
@@ -165,7 +268,7 @@ PYTHON_PATTERNS = {
                 examples=["def process(data: str) -> None:", "@property\ndef name(self):"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["function"],
@@ -180,7 +283,7 @@ PYTHON_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.DECORATORS: {
-            "decorator": AdaptivePattern(
+            "decorator": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (decorator
@@ -213,7 +316,7 @@ PYTHON_PATTERNS = {
                 examples=["@property", "@dataclass(frozen=True)"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.DECORATORS,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["decorator"],
@@ -225,7 +328,7 @@ PYTHON_PATTERNS = {
             )
         },
         PatternPurpose.IMPORTS: {
-            "import": AdaptivePattern(
+            "import": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (import_statement
@@ -258,7 +361,7 @@ PYTHON_PATTERNS = {
                 examples=["import os", "from typing import List", "import numpy as np"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.IMPORTS,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["import"],
@@ -272,7 +375,7 @@ PYTHON_PATTERNS = {
     },
 
     PatternCategory.BEST_PRACTICES: {
-        // ... existing patterns ...
+        # ... existing patterns ...
     },
 
     PatternCategory.COMMON_ISSUES: {
@@ -287,7 +390,7 @@ PYTHON_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential indentation errors", "examples": ["    def func():\nprint('bad')"]}
         ),
         "undefined_variable": QueryPattern(
@@ -302,7 +405,7 @@ PYTHON_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential undefined variable usage", "examples": ["x = y + 1  # y might be undefined"]}
         ),
         "circular_import": QueryPattern(
@@ -317,7 +420,7 @@ PYTHON_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential circular imports", "examples": ["from module_a import ClassA"]}
         ),
         "resource_leak": QueryPattern(
@@ -331,7 +434,7 @@ PYTHON_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential resource leaks", "examples": ["f = open('file.txt')  # not using with"]}
         ),
         "bare_except": QueryPattern(
@@ -344,13 +447,13 @@ PYTHON_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects bare except clauses", "examples": ["try:\n    something()\nexcept:\n    pass"]}
         )
     }
 }
 
-class PythonPatternLearner(CrossProjectPatternLearner):
+class PythonPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced Python pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
@@ -372,7 +475,7 @@ class PythonPatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with Python-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
@@ -516,13 +619,13 @@ class PythonPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_python_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a Python pattern with full system integration."""
     # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
         return common_result
     
@@ -541,7 +644,7 @@ async def process_python_pattern(
         if not context or not context.code_structure:
             parse_result = await unified_parser.parse(source_code, "python", FileType.CODE)
             if parse_result and parse_result.ast:
-                context = await create_python_pattern_context(
+                context = await create_tree_sitter_context(
                     "",
                     parse_result.ast
                 )
@@ -605,40 +708,32 @@ async def create_python_pattern_context(
     code_structure: Dict[str, Any],
     learned_patterns: Optional[Dict[str, Any]] = None
 ) -> PatternContext:
-    """Create pattern context with full system integration."""
-    # Get unified parser
-    unified_parser = await get_unified_parser()
+    """Create Python-specific pattern context with tree-sitter integration.
     
-    # Parse the code structure if needed
-    if not code_structure:
-        parse_result = await unified_parser.parse(
-            file_path,
-            language_id="python",
-            file_type=FileType.CODE
-        )
-        code_structure = parse_result.ast if parse_result else {}
-    
-    context = PatternContext(
-        code_structure=code_structure,
-        language_stats={"language": "python"},
-        project_patterns=list(learned_patterns.values()) if learned_patterns else [],
-        file_location=file_path,
-        dependencies=set(),
-        recent_changes=[],
-        scope_level="global",
-        allows_nesting=True,
-        relevant_patterns=list(PYTHON_PATTERNS.keys())
+    This function creates a tree-sitter based context for Python patterns
+    with full system integration.
+    """
+    # Create a base tree-sitter context
+    base_context = await create_tree_sitter_context(
+        file_path,
+        code_structure,
+        language_id=LANGUAGE_ID,
+        learned_patterns=learned_patterns
     )
     
+    # Add Python-specific information
+    base_context.language_stats = {"language": LANGUAGE_ID}
+    base_context.relevant_patterns = list(PYTHON_PATTERNS.keys())
+    
     # Add system integration metadata
-    context.metadata.update({
+    base_context.metadata.update({
         "parser_type": ParserType.TREE_SITTER,
         "feature_extraction_enabled": True,
         "block_extraction_enabled": True,
         "pattern_learning_enabled": True
     })
     
-    return context
+    return base_context
 
 def update_python_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
     """Update performance metrics for a pattern."""
@@ -734,9 +829,10 @@ __all__ = [
     'PYTHON_PATTERNS',
     'PATTERN_RELATIONSHIPS',
     'PATTERN_METRICS',
-    'create_pattern_context',
+    'create_python_pattern_context',
     'get_python_pattern_match_result',
     'update_python_pattern_metrics',
-    'PythonPatternContext',
-    'pattern_learner'
+    'PythonPatternLearner',
+    'process_python_pattern',
+    'LANGUAGE_ID'
 ] 

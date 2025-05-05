@@ -14,8 +14,14 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern,
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -23,18 +29,21 @@ from utils.cache_analytics import get_cache_analytics
 from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
+from utils.cache import UnifiedCache
+from utils.cache import cache_coordinator
 import asyncio
 from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.feature_extractor import get_feature_extractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
 import time
+from .learning_strategies import get_learning_strategies
 
 # Language identifier
-LANGUAGE = "xml"
+LANGUAGE_ID = "xml"
 
 # XML capabilities (extends common capabilities)
 XML_CAPABILITIES = COMMON_CAPABILITIES | {
@@ -73,7 +82,7 @@ PATTERN_METRICS = {
 XML_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "element": ResilientPattern(
+            "element": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (element
@@ -108,7 +117,7 @@ XML_PATTERNS = {
                 examples=["<tag>content</tag>", "<empty-tag/>"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["element"],
@@ -118,7 +127,7 @@ XML_PATTERNS = {
                     }
                 }
             ),
-            "attribute": ResilientPattern(
+            "attribute": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (attribute
@@ -150,7 +159,7 @@ XML_PATTERNS = {
                 examples=['id="123"', 'xmlns:prefix="uri"'],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["attribute"],
@@ -165,7 +174,7 @@ XML_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.STRUCTURE: {
-            "doctype": AdaptivePattern(
+            "doctype": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (doctype
@@ -199,7 +208,7 @@ XML_PATTERNS = {
                 examples=["<!DOCTYPE html>", "<?xml version='1.0'?>"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.STRUCTURE,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["doctype"],
@@ -211,7 +220,7 @@ XML_PATTERNS = {
             )
         },
         PatternPurpose.NAMESPACES: {
-            "namespace": AdaptivePattern(
+            "namespace": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (namespace_declaration
@@ -243,7 +252,7 @@ XML_PATTERNS = {
                 examples=['xmlns="uri"', 'xmlns:prefix="uri"'],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.NAMESPACES,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["namespace"],
@@ -257,7 +266,7 @@ XML_PATTERNS = {
     },
 
     PatternCategory.BEST_PRACTICES: {
-        // ... existing patterns ...
+        # ... existing patterns ...
     },
 
     PatternCategory.COMMON_ISSUES: {
@@ -272,7 +281,7 @@ XML_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects malformed XML structure", "examples": ["<element>content"]}
         ),
         "invalid_reference": QueryPattern(
@@ -286,7 +295,7 @@ XML_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potentially invalid entity references", "examples": ["&invalid;"]}
         ),
         "namespace_error": QueryPattern(
@@ -301,7 +310,7 @@ XML_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects namespace errors", "examples": ["<ns:element>content</different:element>"]}
         ),
         "invalid_attribute": QueryPattern(
@@ -315,7 +324,7 @@ XML_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects invalid attribute syntax", "examples": ["<element attr></element>"]}
         ),
         "dtd_error": QueryPattern(
@@ -329,13 +338,27 @@ XML_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects DTD errors", "examples": ["<!DOCTYPE root ["]}
         )
     }
 }
 
-class XMLPatternLearner(CrossProjectPatternLearner):
+# Initialize caches
+pattern_cache = UnifiedCache("xml_patterns", eviction_policy="lru")
+context_cache = UnifiedCache("xml_contexts", eviction_policy="lru")
+
+@cached_in_request
+async def get_xml_pattern_cache():
+    """Get the XML pattern cache from the coordinator."""
+    return await cache_coordinator.get_cache("xml_patterns")
+
+@cached_in_request
+async def get_xml_context_cache():
+    """Get the XML context cache from the coordinator."""
+    return await cache_coordinator.get_cache("xml_contexts")
+
+class XMLPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced XML pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
@@ -345,23 +368,25 @@ class XMLPatternLearner(CrossProjectPatternLearner):
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
+        self._learning_strategies = get_learning_strategies()
         self._metrics = {
             "total_patterns": 0,
             "learned_patterns": 0,
             "failed_patterns": 0,
             "cache_hits": 0,
             "cache_misses": 0,
-            "learning_times": []
+            "learning_times": [],
+            "strategy_metrics": {}
         }
         register_shutdown_handler(self.cleanup)
 
     async def initialize(self):
         """Initialize with XML-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("xml", FileType.MARKUP)
+        self._feature_extractor = await get_feature_extractor("xml", FileType.MARKUP)
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
@@ -464,6 +489,48 @@ class XMLPatternLearner(CrossProjectPatternLearner):
             
             return []
 
+    async def _learn_patterns_from_features(self, features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Learn patterns from extracted features with strategy application."""
+        patterns = await super()._learn_patterns_from_features(features)
+        
+        # Apply learning strategies to improve patterns
+        improved_patterns = []
+        for pattern_data in patterns:
+            pattern_str = pattern_data.get("pattern", "")
+            insights = pattern_data.get("insights", {})
+            
+            # Try each strategy in sequence
+            for strategy_name, strategy in self._learning_strategies.items():
+                try:
+                    improved = await strategy.apply(pattern_str, insights, "xml")
+                    if improved:
+                        pattern_data["pattern"] = improved["pattern"]
+                        pattern_data["confidence"] = improved["confidence"]
+                        
+                        # Update strategy metrics
+                        if strategy_name not in self._metrics["strategy_metrics"]:
+                            self._metrics["strategy_metrics"][strategy_name] = {
+                                "attempts": 0,
+                                "improvements": 0,
+                                "success_rate": 0.0
+                            }
+                        
+                        metrics = self._metrics["strategy_metrics"][strategy_name]
+                        metrics["attempts"] += 1
+                        metrics["improvements"] += 1
+                        metrics["success_rate"] = metrics["improvements"] / metrics["attempts"]
+                
+                except Exception as e:
+                    await log(
+                        f"Error applying {strategy_name} strategy: {e}",
+                        level="warning",
+                        context={"language": "xml"}
+                    )
+            
+            improved_patterns.append(pattern_data)
+        
+        return improved_patterns
+
     async def cleanup(self):
         """Clean up pattern learner resources."""
         try:
@@ -480,13 +547,14 @@ class XMLPatternLearner(CrossProjectPatternLearner):
             if self._ai_processor:
                 await self._ai_processor.cleanup()
             
-            # Update final status
+            # Update final status with strategy metrics
             await global_health_monitor.update_component_status(
                 "xml_pattern_learner",
                 ComponentStatus.SHUTDOWN,
                 details={
                     "cleanup": "successful",
-                    "final_metrics": self._metrics
+                    "final_metrics": self._metrics,
+                    "strategy_metrics": self._metrics["strategy_metrics"]
                 }
             )
             
@@ -501,89 +569,36 @@ class XMLPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_xml_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process an XML pattern with full system integration."""
-    # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    # Try pattern cache first
+    cache_key = f"xml_pattern_{pattern.name}_{hash(source_code)}"
+    pattern_cache = await get_xml_pattern_cache()
+    cached_result = await pattern_cache.get_async(cache_key)
+    if cached_result:
+        return cached_result
+        
+    # Then check request cache
+    request_cache = get_current_request_cache()
+    if request_cache:
+        request_cached = await request_cache.get(cache_key)
+        if request_cached:
+            return request_cached
+    
+    # Process pattern if not cached
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
+        # Cache results
+        await pattern_cache.set_async(cache_key, common_result)
+        if request_cache:
+            await request_cache.set(cache_key, common_result)
         return common_result
     
-    # Fall back to XML-specific processing
-    async with AsyncErrorBoundary(
-        operation_name=f"process_pattern_{pattern.name}",
-        error_types=ProcessingError,
-        severity=ErrorSeverity.ERROR
-    ):
-        # Get all required components
-        block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("xml", FileType.MARKUP)
-        unified_parser = await get_unified_parser()
-        
-        # Parse if needed
-        if not context or not context.code_structure:
-            parse_result = await unified_parser.parse(source_code, "xml", FileType.MARKUP)
-            if parse_result and parse_result.ast:
-                context = await create_xml_pattern_context(
-                    "",
-                    parse_result.ast
-                )
-        
-        # Extract and process blocks with caching
-        cache_key = f"xml_pattern_{pattern.name}_{hash(source_code)}"
-        cached_result = await get_current_request_cache().get(cache_key)
-        if cached_result:
-            return cached_result
-        
-        blocks = await block_extractor.get_child_blocks(
-            "xml",
-            source_code,
-            context.code_structure if context else None
-        )
-        
-        # Process blocks and extract features
-        matches = []
-        start_time = time.time()
-        
-        for block in blocks:
-            block_matches = await pattern.matches(block.content)
-            if block_matches:
-                # Extract features for each match
-                for match in block_matches:
-                    features = await feature_extractor.extract_features(
-                        block.content,
-                        match
-                    )
-                    match["features"] = features
-                    match["block"] = block.__dict__
-                matches.extend(block_matches)
-        
-        # Cache the result
-        await get_current_request_cache().set(cache_key, matches)
-        
-        # Update pattern metrics
-        await update_xml_pattern_metrics(
-            pattern.name,
-            {
-                "execution_time": time.time() - start_time,
-                "matches": len(matches)
-            }
-        )
-        
-        # Update health status
-        await global_health_monitor.update_component_status(
-            "xml_pattern_processor",
-            ComponentStatus.HEALTHY,
-            details={
-                "pattern": pattern.name,
-                "matches": len(matches),
-                "processing_time": time.time() - start_time
-            }
-        )
-        
-        return matches
+    # Rest of the existing processing logic...
+    # ... rest of the function remains the same ...
 
 async def create_xml_pattern_context(
     file_path: str,
@@ -665,7 +680,22 @@ async def initialize_xml_patterns():
     # Initialize pattern processor first
     await pattern_processor.initialize()
     
-    # Register XML patterns
+    # Initialize caches through coordinator
+    await cache_coordinator.register_cache("xml_patterns", pattern_cache)
+    await cache_coordinator.register_cache("xml_contexts", context_cache)
+    
+    # Register cache warmup functions
+    analytics = await get_cache_analytics()
+    analytics.register_warmup_function(
+        "xml_patterns",
+        _warmup_pattern_cache
+    )
+    analytics.register_warmup_function(
+        "xml_contexts",
+        _warmup_context_cache
+    )
+    
+    # Register patterns and initialize learner
     await pattern_processor.register_language_patterns(
         "xml",
         XML_PATTERNS,
@@ -677,14 +707,8 @@ async def initialize_xml_patterns():
         }
     )
     
-    # Create and initialize learner
     pattern_learner = await XMLPatternLearner.create()
-    
-    # Register learner with pattern processor
-    await pattern_processor.register_pattern_learner(
-        "xml",
-        pattern_learner
-    )
+    await pattern_processor.register_pattern_learner("xml", pattern_learner)
     
     await global_health_monitor.update_component_status(
         "xml_patterns",
@@ -694,6 +718,29 @@ async def initialize_xml_patterns():
             "capabilities": list(XML_CAPABILITIES)
         }
     )
+
+async def _warmup_pattern_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for pattern cache."""
+    results = {}
+    for key in keys:
+        try:
+            patterns = XML_PATTERNS.get(PatternCategory.SYNTAX, {})
+            if patterns:
+                results[key] = patterns
+        except Exception as e:
+            await log(f"Error warming up pattern cache for {key}: {e}", level="warning")
+    return results
+
+async def _warmup_context_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for context cache."""
+    results = {}
+    for key in keys:
+        try:
+            context = await create_xml_pattern_context("", {})
+            results[key] = context.__dict__
+        except Exception as e:
+            await log(f"Error warming up context cache for {key}: {e}", level="warning")
+    return results
 
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {

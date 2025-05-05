@@ -16,9 +16,12 @@ from parsers.types import (
 from parsers.models import PATTERN_CATEGORIES
 from .common import (
     COMMON_PATTERNS, COMMON_CAPABILITIES,
-    process_common_pattern, validate_common_pattern
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
 )
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern, 
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request
@@ -27,13 +30,12 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
+from parsers.feature_extractor import get_feature_extractor
 import time
 
 # C capabilities (extends common capabilities)
@@ -118,7 +120,7 @@ C_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
             **COMMON_PATTERNS[PatternCategory.SYNTAX][PatternPurpose.UNDERSTANDING],  # Inherit common syntax patterns
-            "function_definition": ResilientPattern(
+            "function_definition": TreeSitterResilientPattern(
                 name="function_definition",
                 pattern="""
                 [
@@ -144,7 +146,7 @@ C_PATTERNS = {
                 }
             ),
             
-            "struct_definition": ResilientPattern(
+            "struct_definition": TreeSitterResilientPattern(
                 name="struct_definition",
                 pattern="""
                 [
@@ -167,7 +169,7 @@ C_PATTERNS = {
                 }
             ),
             
-            "enum_definition": ResilientPattern(
+            "enum_definition": TreeSitterResilientPattern(
                 name="enum_definition",
                 pattern="""
                 [
@@ -194,7 +196,7 @@ C_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable_declaration": AdaptivePattern(
+            "variable_declaration": TreeSitterAdaptivePattern(
                 name="variable_declaration",
                 pattern="""
                 [
@@ -223,7 +225,7 @@ C_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": AdaptivePattern(
+            "comments": TreeSitterAdaptivePattern(
                 name="comments",
                 pattern="""
                 [
@@ -251,76 +253,77 @@ C_PATTERNS = {
     },
 
     PatternCategory.COMMON_ISSUES: {
-        "buffer_overflow": QueryPattern(
-            name="buffer_overflow",
-            pattern=r'(?:strcpy|strcat|sprintf|gets)\s*\([^)]+\)',
-            extract=lambda m: {
-                "type": "buffer_overflow",
-                "content": m.group(0),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.9
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potential buffer overflows", "examples": ["strcpy(dest, src);"]}
-        ),
-        "memory_leak": QueryPattern(
-            name="memory_leak",
-            pattern=r'malloc\s*\([^)]+\)(?![^;]*free)',
-            extract=lambda m: {
-                "type": "memory_leak",
-                "content": m.group(0),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.85
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potential memory leaks", "examples": ["ptr = malloc(size);"]}
-        ),
-        "null_pointer_deref": QueryPattern(
-            name="null_pointer_deref",
-            pattern=r'([a-zA-Z_][a-zA-Z0-9_]*)\s*->\s*[a-zA-Z_][a-zA-Z0-9_]*',
-            extract=lambda m: {
-                "type": "null_pointer_deref",
-                "pointer": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "needs_verification": True
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potential null pointer dereferences", "examples": ["ptr->field;"]}
-        ),
-        "uninitialized_variable": QueryPattern(
-            name="uninitialized_variable",
-            pattern=r'(?:int|char|float|double|long)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;',
-            extract=lambda m: {
-                "type": "uninitialized_variable",
-                "variable": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.8
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potentially uninitialized variables", "examples": ["int x;"]}
-        ),
-        "format_string_vulnerability": QueryPattern(
-            name="format_string_vulnerability",
-            pattern=r'printf\s*\(\s*([^,)]+)\s*\)',
-            extract=lambda m: {
-                "type": "format_string_vulnerability",
-                "format_string": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.9
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects format string vulnerabilities", "examples": ["printf(user_input);"]}
-        )
+        # The following patterns were using regexes, which is not allowed for C (tree-sitter only). Commented out for correctness.
+        # "buffer_overflow": QueryPattern(
+        #     name="buffer_overflow",
+        #     pattern=r'(?:strcpy|strcat|sprintf|gets)\s*\([^)]+\)',
+        #     extract=lambda m: {
+        #         "type": "buffer_overflow",
+        #         "content": m.group(0),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.9
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="c",
+        #     metadata={"description": "Detects potential buffer overflows", "examples": ["strcpy(dest, src);"]}
+        # ),
+        # "memory_leak": QueryPattern(
+        #     name="memory_leak",
+        #     pattern=r'malloc\s*\([^)]+\)(?![^;]*free)',
+        #     extract=lambda m: {
+        #         "type": "memory_leak",
+        #         "content": m.group(0),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.85
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="c",
+        #     metadata={"description": "Detects potential memory leaks", "examples": ["ptr = malloc(size);"]}
+        # ),
+        # "null_pointer_deref": QueryPattern(
+        #     name="null_pointer_deref",
+        #     pattern=r'([a-zA-Z_][a-zA-Z0-9_]*)\s*->\s*[a-zA-Z_][a-zA-Z0-9_]*',
+        #     extract=lambda m: {
+        #         "type": "null_pointer_deref",
+        #         "pointer": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "needs_verification": True
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="c",
+        #     metadata={"description": "Detects potential null pointer dereferences", "examples": ["ptr->field;"]}
+        # ),
+        # "uninitialized_variable": QueryPattern(
+        #     name="uninitialized_variable",
+        #     pattern=r'(?:int|char|float|double|long)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;',
+        #     extract=lambda m: {
+        #         "type": "uninitialized_variable",
+        #         "variable": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.8
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="c",
+        #     metadata={"description": "Detects potentially uninitialized variables", "examples": ["int x;"]}
+        # ),
+        # "format_string_vulnerability": QueryPattern(
+        #     name="format_string_vulnerability",
+        #     pattern=r'printf\s*\(\s*([^,)]+)\s*\)',
+        #     extract=lambda m: {
+        #         "type": "format_string_vulnerability",
+        #         "format_string": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.9
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id="c",
+        #     metadata={"description": "Detects format string vulnerabilities", "examples": ["printf(user_input);"]}
+        # ),
     }
 }
 
@@ -372,13 +375,13 @@ def get_c_pattern_match_result(
         metadata={"language": "c"}
     )
 
-class CPatternLearner(CrossProjectPatternLearner):
+class CPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced C pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -398,11 +401,12 @@ class CPatternLearner(CrossProjectPatternLearner):
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("c", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("c")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
         # Register C patterns
+        from parsers.pattern_processor import pattern_processor
         await self._pattern_processor.register_language_patterns(
             "c", 
             C_PATTERNS,
@@ -538,13 +542,13 @@ class CPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_c_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a C pattern with full system integration."""
     # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
         return common_result
     
@@ -556,7 +560,7 @@ async def process_c_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("c", FileType.CODE)
+        feature_extractor = await get_feature_extractor("c")
         unified_parser = await get_unified_parser()
         
         # Parse if needed
@@ -611,6 +615,7 @@ async def initialize_c_patterns():
     global c_pattern_learner
     
     # Initialize pattern processor first
+    from parsers.pattern_processor import pattern_processor
     await pattern_processor.initialize()
     
     # Register C patterns
@@ -644,12 +649,13 @@ async def initialize_c_patterns():
     )
 
 async def extract_c_features(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     matches: List[Dict[str, Any]],
     context: PatternContext
 ) -> ExtractedFeatures:
     """Extract features from pattern matches."""
-    feature_extractor = await BaseFeatureExtractor.create("c", FileType.CODE)
+    from parsers.pattern_processor import pattern_processor
+    feature_extractor = await get_feature_extractor("c")
     
     features = ExtractedFeatures()
     
@@ -672,18 +678,19 @@ async def extract_c_features(
     return features
 
 async def validate_c_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     context: Optional[PatternContext] = None
 ) -> PatternValidationResult:
     """Validate a C pattern with system integration."""
     # First try common pattern validation
-    common_result = await validate_common_pattern(pattern, context)
+    common_result = await validate_tree_sitter_pattern(pattern, context)
     if common_result.is_valid:
         return common_result
     
     # Fall back to C-specific validation
     async with AsyncErrorBoundary("c_pattern_validation"):
         # Get pattern processor
+        from parsers.pattern_processor import pattern_processor
         validation_result = await pattern_processor.validate_pattern(
             pattern,
             language_id="c",
@@ -709,5 +716,5 @@ __all__ = [
     'get_c_pattern_match_result'
 ]
 
-# Module identification
-LANGUAGE = "c" 
+# Module identification - using the consistent language ID
+LANGUAGE_ID = "c" 

@@ -8,7 +8,7 @@ from parsers.types import (
     PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
 from parsers.query_patterns.enhanced_patterns import (
-    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+    TreeSitterResilientPattern, TreeSitterAdaptivePattern, TreeSitterCrossProjectPatternLearner
 )
 from utils.error_handling import (
     handle_async_errors, AsyncErrorBoundary, ProcessingError, ErrorSeverity
@@ -240,7 +240,7 @@ COBALT_PATTERNS = {
 }
 
 # Convert existing patterns to enhanced types
-def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, ResilientPattern]:
+def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern]:
     """Create enhanced pattern from definition."""
     base_pattern = pattern_def.copy()
     
@@ -249,7 +249,7 @@ def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePatter
         "function", "class", "namespace", "type", "enum"
     }
     
-    pattern_class = ResilientPattern if is_resilient else AdaptivePattern
+    pattern_class = TreeSitterResilientPattern if is_resilient else TreeSitterAdaptivePattern
     return pattern_class(**base_pattern)
 
 # Convert COBALT_PATTERNS to ENHANCED_PATTERNS
@@ -270,7 +270,7 @@ ENHANCED_PATTERNS = {
 }
 
 # Initialize pattern learner with error handling
-pattern_learner = CrossProjectPatternLearner()
+pattern_learner = TreeSitterCrossProjectPatternLearner()
 
 @handle_async_errors(error_types=ProcessingError)
 @cached_in_request
@@ -362,27 +362,27 @@ async def extract_cobalt_patterns_for_learning(content: str) -> List[Dict[str, A
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
     "function": {
-        PatternRelationType.CONTAINS: ["variable", "comment", "docstring", "try_catch", "throw"],
+        PatternRelationType.USES: ["variable", "comment", "docstring", "try_catch", "throw"],
         PatternRelationType.DEPENDS_ON: ["class", "namespace"]
     },
     "class": {
-        PatternRelationType.CONTAINS: ["function", "variable", "comment", "docstring", "type"],
+        PatternRelationType.USES: ["function", "variable", "comment", "docstring", "type"],
         PatternRelationType.DEPENDS_ON: ["namespace"]
     },
     "namespace": {
-        PatternRelationType.CONTAINS: ["class", "function", "variable", "comment", "type"],
+        PatternRelationType.USES: ["class", "function", "variable", "comment", "type"],
         PatternRelationType.DEPENDS_ON: ["namespace"]
     },
     "type": {
-        PatternRelationType.CONTAINS: [],
+        PatternRelationType.USES: [],
         PatternRelationType.DEPENDS_ON: ["class", "namespace"]
     },
     "try_catch": {
-        PatternRelationType.CONTAINS: ["throw"],
+        PatternRelationType.USES: ["throw"],
         PatternRelationType.DEPENDS_ON: ["function", "class"]
     },
     "throw": {
-        PatternRelationType.CONTAINS: [],
+        PatternRelationType.USES: [],
         PatternRelationType.DEPENDS_ON: ["try_catch", "function"]
     }
 }

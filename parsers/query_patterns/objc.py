@@ -26,7 +26,7 @@ from utils.shutdown import register_shutdown_handler
 import asyncio
 from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.feature_extractor import get_feature_extractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
@@ -268,7 +268,7 @@ class ObjCPatternLearner(CrossProjectPatternLearner):
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("objc", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("objc")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
@@ -426,7 +426,7 @@ async def process_objc_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("objc", FileType.CODE)
+        feature_extractor = await get_feature_extractor("objc")
         unified_parser = await get_unified_parser()
         
         # Parse if needed

@@ -627,7 +627,7 @@ def handle_async_errors(error_types=None, default_return=None):
         return wrapper
     return decorator
 
-@handle_async_errors
+@handle_async_errors()
 async def run_exception_audit(codebase_dir: str = ".") -> Dict:
     """
     Run a comprehensive audit of exception handling across the codebase.

@@ -56,7 +56,7 @@ class UnifiedCache(CacheInterface):
         }
         register_shutdown_handler(self.cleanup)
     
-    @handle_async_errors
+    @handle_async_errors()
     async def get_async(self, key: str) -> Optional[Any]:
         """Get item from cache."""
         async with self._lock:
@@ -71,7 +71,7 @@ class UnifiedCache(CacheInterface):
             self._metrics["misses"] += 1
             return None
     
-    @handle_async_errors
+    @handle_async_errors()
     async def set_async(self, key: str, value: Any, expire: Optional[int] = None) -> None:
         """Set item in cache."""
         async with self._lock:
@@ -85,7 +85,7 @@ class UnifiedCache(CacheInterface):
             self._cache[key] = value
             self._metrics["sets"] += 1
     
-    @handle_async_errors
+    @handle_async_errors()
     async def clear_async(self) -> None:
         """Clear the cache."""
         async with self._lock:
@@ -94,7 +94,7 @@ class UnifiedCache(CacheInterface):
             if evicted > 0:
                 self._metrics["evictions"] += evicted
     
-    @handle_async_errors
+    @handle_async_errors()
     async def clear_pattern_async(self, pattern: str) -> None:
         """Clear keys matching pattern."""
         async with self._lock:
@@ -139,7 +139,7 @@ class CacheMetrics:
         self._log_interval = 3600  # Log stats every hour by default
         self._last_log_time = time.time()
     
-    @handle_async_errors
+    @handle_async_errors()
     async def register_cache(self, cache_name: str):
         """Register a new cache instance for metrics tracking."""
         async with self._lock:
@@ -333,7 +333,7 @@ async def cleanup_caches():
     except Exception as e:
         log(f"Error cleaning up caches: {e}", level="error")
 
-@handle_async_errors
+@handle_async_errors()
 async def warm_common_patterns(limit: int = 50) -> bool:
     """Warm the pattern cache with commonly used patterns."""
     from parsers.pattern_processor import pattern_processor
@@ -355,7 +355,7 @@ async def warm_common_patterns(limit: int = 50) -> bool:
         log(f"Warmed pattern cache with {len(patterns)} common patterns", level="info")
         return True
 
-@handle_async_errors
+@handle_async_errors()
 async def warm_language_specific_patterns(language: str) -> bool:
     """Warm the pattern cache with patterns specific to a programming language."""
     from parsers.pattern_processor import pattern_processor

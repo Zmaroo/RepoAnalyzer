@@ -14,7 +14,9 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.query_patterns.enhanced_patterns import (
-    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+    TreeSitterResilientPattern as ResilientPattern,
+    TreeSitterAdaptivePattern as AdaptivePattern,
+    TreeSitterCrossProjectPatternLearner as CrossProjectPatternLearner
 )
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
@@ -23,17 +25,23 @@ from utils.cache_analytics import get_cache_analytics
 from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.feature_extractor import FeatureExtractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
+from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
 import time
 
 # Language identifier
 LANGUAGE = "html"
+
+# HTML capabilities (extends common capabilities)
+HTML_CAPABILITIES = COMMON_CAPABILITIES | {
+    AICapability.MARKUP,
+    AICapability.STYLING
+}
 
 @dataclass
 class HTMLPatternContext(PatternContext):
@@ -58,7 +66,14 @@ PATTERN_METRICS = {
     "script": PatternPerformanceMetrics(),
     "style": PatternPerformanceMetrics(),
     "comment": PatternPerformanceMetrics(),
-    "doctype": PatternPerformanceMetrics()
+    "doctype": PatternPerformanceMetrics(),
+    "text": PatternPerformanceMetrics(),
+    "head": PatternPerformanceMetrics(),
+    "body": PatternPerformanceMetrics(),
+    "meta": PatternPerformanceMetrics(),
+    "container": PatternPerformanceMetrics(),
+    "aria_label": PatternPerformanceMetrics(),
+    "template": PatternPerformanceMetrics(),
 }
 
 def extract_element(match: Match) -> Dict[str, Any]:
@@ -70,7 +85,7 @@ def extract_element(match: Match) -> Dict[str, Any]:
         "content": match.group(3) if match.group(3) else "",
         "line_number": match.string.count('\n', 0, match.start()) + 1,
         "relationships": {
-            PatternRelationType.CONTAINS: ["element", "text", "comment"],
+            PatternRelationType.REFERENCES: ["element", "text", "comment"],
             PatternRelationType.DEPENDS_ON: []
         }
     }
@@ -83,8 +98,8 @@ def extract_attribute(match: Match) -> Dict[str, Any]:
         "value": match.group(2) if match.group(2) else "",
         "line_number": match.string.count('\n', 0, match.start()) + 1,
         "relationships": {
-            PatternRelationType.CONTAINED_BY: ["element"],
-            PatternRelationType.REFERENCES: []
+            PatternRelationType.REFERENCES: ["element"],
+            PatternRelationType.DEPENDS_ON: []
         }
     }
 
@@ -96,7 +111,7 @@ def extract_script(match: Match) -> Dict[str, Any]:
         "content": match.group(2) if match.group(2) else "",
         "line_number": match.string.count('\n', 0, match.start()) + 1,
         "relationships": {
-            PatternRelationType.CONTAINED_BY: ["head", "body"],
+            PatternRelationType.REFERENCES: ["head", "body"],
             PatternRelationType.DEPENDS_ON: ["script"]
         }
     }
@@ -104,16 +119,16 @@ def extract_script(match: Match) -> Dict[str, Any]:
 HTML_PATTERNS = {
     PatternCategory.SYNTAX: {
         "element": ResilientPattern(
-            pattern=r'<(\w+)([^>]*)(?:>(.*?)</\1>|/>)',
-            extract=extract_element,
-            description="Matches HTML elements",
-            examples=["<div class=\"container\">content</div>", "<img src=\"image.jpg\" />"],
             name="element",
+            pattern=r'<(\w+)([^>]*) (?:>(.*?)</\1>|/>)',
+            extract=extract_element,
             category=PatternCategory.SYNTAX,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches HTML elements",
+                "examples": ["<div class=\"container\">content</div>", "<img src=\"image.jpg\" />"],
                 "metrics": PATTERN_METRICS["element"],
                 "validation": {
                     "required_fields": ["tag"],
@@ -122,16 +137,16 @@ HTML_PATTERNS = {
             }
         ),
         "attribute": ResilientPattern(
-            pattern=r'\s(\w+)(?:=(["\'][^"\']*["\']))?',
-            extract=extract_attribute,
-            description="Matches HTML attributes",
-            examples=["class=\"container\"", "disabled"],
             name="attribute",
+            pattern=r'\\s(\w+)(?:=(\"[^\"]*\"|\'[^\']*\'))?',
+            extract=extract_attribute,
             category=PatternCategory.SYNTAX,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches HTML attributes",
+                "examples": ["class=\"container\"", "disabled"],
                 "metrics": PATTERN_METRICS["attribute"],
                 "validation": {
                     "required_fields": ["name"],
@@ -140,6 +155,7 @@ HTML_PATTERNS = {
             }
         ),
         "doctype": ResilientPattern(
+            name="doctype",
             pattern=r'<!DOCTYPE[^>]*>',
             extract=lambda m: {
                 "type": "doctype",
@@ -150,14 +166,13 @@ HTML_PATTERNS = {
                     PatternRelationType.REFERENCES: []
                 }
             },
-            description="Matches DOCTYPE declarations",
-            examples=["<!DOCTYPE html>"],
-            name="doctype",
             category=PatternCategory.SYNTAX,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches DOCTYPE declarations",
+                "examples": ["<!DOCTYPE html>"],
                 "metrics": PATTERN_METRICS["doctype"],
                 "validation": {
                     "required_fields": ["declaration"]
@@ -165,24 +180,24 @@ HTML_PATTERNS = {
             }
         ),
         "text_content": ResilientPattern(
+            name="text_content",
             pattern=r'>([^<]+)<',
             extract=lambda m: {
                 "type": "text",
                 "content": m.group(1).strip(),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINED_BY: ["element"],
-                    PatternRelationType.REFERENCES: []
+                    PatternRelationType.REFERENCES: ["element"],
+                    PatternRelationType.DEPENDS_ON: []
                 }
             },
-            description="Matches text content",
-            examples=[">Some text<"],
-            name="text_content",
             category=PatternCategory.SYNTAX,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches text content",
+                "examples": [">Some text<"],
                 "metrics": PATTERN_METRICS["text"],
                 "validation": {
                     "required_fields": ["content"]
@@ -193,24 +208,24 @@ HTML_PATTERNS = {
     
     PatternCategory.STRUCTURE: {
         "head": AdaptivePattern(
+            name="head",
             pattern=r'<head[^>]*>(.*?)</head>',
             extract=lambda m: {
                 "type": "head",
                 "content": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINS: ["meta", "title", "link", "script", "style"],
-                    PatternRelationType.CONTAINED_BY: ["html"]
+                    PatternRelationType.REFERENCES: ["meta", "title", "link", "script", "style", "html"],
+                    PatternRelationType.DEPENDS_ON: ["html"]
                 }
             },
-            description="Matches head section",
-            examples=["<head><title>Page Title</title></head>"],
-            name="head",
             category=PatternCategory.STRUCTURE,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.9,
             metadata={
+                "description": "Matches head section",
+                "examples": ["<head><title>Page Title</title></head>"],
                 "metrics": PATTERN_METRICS["head"],
                 "validation": {
                     "required_fields": ["content"]
@@ -218,24 +233,24 @@ HTML_PATTERNS = {
             }
         ),
         "body": AdaptivePattern(
+            name="body",
             pattern=r'<body[^>]*>(.*?)</body>',
             extract=lambda m: {
                 "type": "body",
                 "content": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINS: ["element", "script", "style"],
-                    PatternRelationType.CONTAINED_BY: ["html"]
+                    PatternRelationType.REFERENCES: ["element", "script", "style", "html"],
+                    PatternRelationType.DEPENDS_ON: ["html"]
                 }
             },
-            description="Matches body section",
-            examples=["<body><div>content</div></body>"],
-            name="body",
             category=PatternCategory.STRUCTURE,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.9,
             metadata={
+                "description": "Matches body section",
+                "examples": ["<body><div>content</div></body>"],
                 "metrics": PATTERN_METRICS["body"],
                 "validation": {
                     "required_fields": ["content"]
@@ -243,6 +258,7 @@ HTML_PATTERNS = {
             }
         ),
         "container": AdaptivePattern(
+            name="container",
             pattern=r'<(div|section|article|main|aside|nav|header|footer)[^>]*>(.*?)</\1>',
             extract=lambda m: {
                 "type": "container",
@@ -250,22 +266,20 @@ HTML_PATTERNS = {
                 "content": m.group(2),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINS: ["element", "text", "comment"],
-                    PatternRelationType.CONTAINED_BY: ["body", "container"]
+                    PatternRelationType.REFERENCES: ["element", "text", "comment"],
+                    PatternRelationType.DEPENDS_ON: ["body", "container"]
                 }
             },
-            description="Matches structural containers",
-            examples=["<div class=\"container\">content</div>"],
-            name="container",
             category=PatternCategory.STRUCTURE,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.9,
             metadata={
+                "description": "Matches container elements (div, section, etc.)",
+                "examples": ["<div>content</div>", "<section>section content</section>"],
                 "metrics": PATTERN_METRICS["container"],
                 "validation": {
-                    "required_fields": ["tag", "content"],
-                    "tag_format": r'^[a-z]+$'
+                    "required_fields": ["tag", "content"]
                 }
             }
         )
@@ -273,24 +287,24 @@ HTML_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         "comment": ResilientPattern(
+            name="comment",
             pattern=r'<!--(.*?)-->',
             extract=lambda m: {
                 "type": "comment",
                 "content": m.group(1).strip(),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINED_BY: ["element", "head", "body"],
-                    PatternRelationType.REFERENCES: []
+                    PatternRelationType.REFERENCES: [],
+                    PatternRelationType.DEPENDS_ON: ["element", "head", "body"]
                 }
             },
-            description="Matches HTML comments",
-            examples=["<!-- Navigation menu -->"],
-            name="comment",
             category=PatternCategory.DOCUMENTATION,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches HTML comments",
+                "examples": ["<!-- Navigation menu -->"],
                 "metrics": PATTERN_METRICS["comment"],
                 "validation": {
                     "required_fields": ["content"]
@@ -298,24 +312,24 @@ HTML_PATTERNS = {
             }
         ),
         "meta": ResilientPattern(
+            name="meta",
             pattern=r'<meta\s+([^>]*)>',
             extract=lambda m: {
                 "type": "meta",
                 "attributes": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINED_BY: ["head"],
-                    PatternRelationType.REFERENCES: []
+                    PatternRelationType.REFERENCES: [],
+                    PatternRelationType.DEPENDS_ON: ["head"]
                 }
             },
-            description="Matches meta tags",
-            examples=["<meta name=\"description\" content=\"Page description\">"],
-            name="meta",
             category=PatternCategory.DOCUMENTATION,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches meta tags",
+                "examples": ["<meta name=\"description\" content=\"Page description\">"],
                 "metrics": PATTERN_METRICS["meta"],
                 "validation": {
                     "required_fields": ["attributes"]
@@ -323,24 +337,24 @@ HTML_PATTERNS = {
             }
         ),
         "aria_label": ResilientPattern(
+            name="aria_label",
             pattern=r'aria-label=(["\'][^"\']*["\'])',
             extract=lambda m: {
                 "type": "aria_label",
                 "label": m.group(1).strip('\'"'),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINED_BY: ["element"],
-                    PatternRelationType.REFERENCES: []
+                    PatternRelationType.REFERENCES: [],
+                    PatternRelationType.DEPENDS_ON: ["element"]
                 }
             },
-            description="Matches ARIA labels",
-            examples=["aria-label=\"Close button\""],
-            name="aria_label",
             category=PatternCategory.DOCUMENTATION,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches ARIA labels",
+                "examples": ["aria-label=\"Close button\""],
                 "metrics": PATTERN_METRICS["aria_label"],
                 "validation": {
                     "required_fields": ["label"]
@@ -351,16 +365,16 @@ HTML_PATTERNS = {
     
     PatternCategory.CODE_PATTERNS: {
         "script": ResilientPattern(
+            name="script",
             pattern=r'<script([^>]*)>(.*?)</script>',
             extract=extract_script,
-            description="Matches script elements",
-            examples=["<script>console.log('Hello');</script>"],
-            name="script",
             category=PatternCategory.CODE_PATTERNS,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches script elements",
+                "examples": ["<script>console.log('Hello');</script>"],
                 "metrics": PATTERN_METRICS["script"],
                 "validation": {
                     "required_fields": ["content"]
@@ -368,24 +382,24 @@ HTML_PATTERNS = {
             }
         ),
         "style": ResilientPattern(
+            name="style",
             pattern=r'<style[^>]*>(.*?)</style>',
             extract=lambda m: {
                 "type": "style",
                 "content": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINED_BY: ["head"],
-                    PatternRelationType.REFERENCES: []
+                    PatternRelationType.REFERENCES: [],
+                    PatternRelationType.DEPENDS_ON: ["head"]
                 }
             },
-            description="Matches style elements",
-            examples=["<style>.class { color: red; }</style>"],
-            name="style",
             category=PatternCategory.CODE_PATTERNS,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches style elements",
+                "examples": ["<style>.class { color: red; }</style>"],
                 "metrics": PATTERN_METRICS["style"],
                 "validation": {
                     "required_fields": ["content"]
@@ -393,24 +407,24 @@ HTML_PATTERNS = {
             }
         ),
         "template": ResilientPattern(
+            name="template",
             pattern=r'<template[^>]*>(.*?)</template>',
             extract=lambda m: {
                 "type": "template",
                 "content": m.group(1),
                 "line_number": m.string.count('\n', 0, m.start()) + 1,
                 "relationships": {
-                    PatternRelationType.CONTAINED_BY: ["body"],
-                    PatternRelationType.REFERENCES: []
+                    PatternRelationType.REFERENCES: [],
+                    PatternRelationType.DEPENDS_ON: ["body"]
                 }
             },
-            description="Matches template elements",
-            examples=["<template><div>template content</div></template>"],
-            name="template",
             category=PatternCategory.CODE_PATTERNS,
             purpose=PatternPurpose.UNDERSTANDING,
             language_id=LANGUAGE,
             confidence=0.95,
             metadata={
+                "description": "Matches template elements",
+                "examples": ["<template><div>template content</div></template>"],
                 "metrics": PATTERN_METRICS["template"],
                 "validation": {
                     "required_fields": ["content"]
@@ -426,7 +440,8 @@ HTML_PATTERNS = {
     PatternCategory.COMMON_ISSUES: {
         "unclosed_tag": QueryPattern(
             name="unclosed_tag",
-            pattern=r'<([a-zA-Z][a-zA-Z0-9]*)[^>]*>(?:(?!</\1>).)*$',
+            pattern="",
+            regex_pattern=r'<([a-zA-Z][a-zA-Z0-9]*)[^>]*>(?:(?!</\1>).)*$',
             extract=lambda m: {
                 "type": "unclosed_tag",
                 "tag": m.group(1),
@@ -440,7 +455,8 @@ HTML_PATTERNS = {
         ),
         "invalid_nesting": QueryPattern(
             name="invalid_nesting",
-            pattern=r'<([a-zA-Z][a-zA-Z0-9]*)>[^<]*<([a-zA-Z][a-zA-Z0-9]*)>[^<]*</\1>',
+            pattern="",
+            regex_pattern=r'<([a-zA-Z][a-zA-Z0-9]*)>[^<]*<([a-zA-Z][a-zA-Z0-9]*)>[^<]*</\1>',
             extract=lambda m: {
                 "type": "invalid_nesting",
                 "outer_tag": m.group(1),
@@ -455,7 +471,8 @@ HTML_PATTERNS = {
         ),
         "duplicate_id": QueryPattern(
             name="duplicate_id",
-            pattern=r'id=["\']([^"\']+)["\'][^>]*>.*?id=["\']\\1["\']',
+            pattern="",
+            regex_pattern=r'id=["\']([^"\']+)["\'][^>]*>.*?id=["\']\\1["\']',
             extract=lambda m: {
                 "type": "duplicate_id",
                 "id": m.group(1),
@@ -469,7 +486,8 @@ HTML_PATTERNS = {
         ),
         "invalid_attribute": QueryPattern(
             name="invalid_attribute",
-            pattern=r'<[^>]+\s([a-zA-Z]+)(?!=)[^>]*>',
+            pattern="",
+            regex_pattern=r'<[^>]+\s([a-zA-Z]+)(?!=)[^>]*>',
             extract=lambda m: {
                 "type": "invalid_attribute",
                 "attribute": m.group(1),
@@ -483,7 +501,8 @@ HTML_PATTERNS = {
         ),
         "broken_reference": QueryPattern(
             name="broken_reference",
-            pattern=r'href=["\']#([^"\']+)["\']',
+            pattern="",
+            regex_pattern=r'href=["\']#([^"\']+)["\']',
             extract=lambda m: {
                 "type": "broken_reference",
                 "reference": m.group(1),
@@ -553,26 +572,36 @@ async def extract_html_patterns_for_learning(content: str) -> List[Dict[str, Any
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
     "element": {
-        PatternRelationType.CONTAINS: ["element", "text", "comment"],
-        PatternRelationType.CONTAINED_BY: ["element", "body"]
+        PatternRelationType.REFERENCES: ["element", "text", "comment", "element", "body"],
+        PatternRelationType.DEPENDS_ON: []
     },
     "head": {
-        PatternRelationType.CONTAINS: ["meta", "title", "link", "script", "style"],
-        PatternRelationType.CONTAINED_BY: ["html"]
+        PatternRelationType.REFERENCES: ["meta", "title", "link", "script", "style", "html"],
+        PatternRelationType.DEPENDS_ON: ["html"]
     },
     "body": {
-        PatternRelationType.CONTAINS: ["element", "script", "style"],
-        PatternRelationType.CONTAINED_BY: ["html"]
+        PatternRelationType.REFERENCES: ["element", "script", "style", "html"],
+        PatternRelationType.DEPENDS_ON: ["html"]
     },
     "script": {
-        PatternRelationType.CONTAINED_BY: ["head", "body"],
         PatternRelationType.DEPENDS_ON: ["script"]
     },
     "style": {
-        PatternRelationType.CONTAINED_BY: ["head"],
-        PatternRelationType.REFERENCES: []
+        PatternRelationType.DEPENDS_ON: []
     }
 }
+
+async def update_html_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update metrics for a specific HTML pattern."""
+    if pattern_name in PATTERN_METRICS:
+        pattern_metrics = PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", pattern_metrics.execution_time)
+        pattern_metrics.pattern_stats["matches"] += metrics.get("matches", 0)
+        
+        # Update success rate
+        if pattern_metrics.pattern_stats["matches"] > 0:
+            total = pattern_metrics.pattern_stats["matches"] + pattern_metrics.pattern_stats["failures"]
+            pattern_metrics.success_rate = pattern_metrics.pattern_stats["matches"] / total if total > 0 else 0.0
 
 # Export public interfaces
 __all__ = [
@@ -589,10 +618,10 @@ class HTMLPatternLearner(CrossProjectPatternLearner):
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
+        self._pattern_processor = None
         self._metrics = {
             "total_patterns": 0,
             "learned_patterns": 0,
@@ -604,12 +633,13 @@ class HTMLPatternLearner(CrossProjectPatternLearner):
         register_shutdown_handler(self.cleanup)
 
     async def initialize(self):
-        """Initialize with HTML-specific components."""
+        from parsers.pattern_processor import pattern_processor
+        self._pattern_processor = pattern_processor
         await super().initialize()  # Initialize CrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("html", FileType.CODE)
+        self._feature_extractor = await FeatureExtractor.create("html", FileType.CODE)
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
@@ -767,7 +797,7 @@ async def process_html_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("html", FileType.CODE)
+        feature_extractor = await FeatureExtractor.create("html", FileType.CODE)
         unified_parser = await get_unified_parser()
         
         # Parse if needed

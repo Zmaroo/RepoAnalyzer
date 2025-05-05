@@ -13,7 +13,7 @@ def register_shutdown_handler(handler: Callable) -> None:
     """Register a function to be called during application shutdown."""
     _shutdown_handlers.append(handler)
 
-@handle_async_errors
+@handle_async_errors()
 async def execute_shutdown_handlers() -> None:
     """Execute all registered shutdown handlers."""
     logging.info("Application shutting down, performing cleanup...")

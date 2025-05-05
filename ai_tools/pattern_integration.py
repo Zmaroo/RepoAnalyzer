@@ -35,7 +35,6 @@ from .ai_interface import AIInterface
 from .code_understanding import CodeUnderstanding
 from .graph_capabilities import GraphCapabilities
 from .reference_repository_learning import reference_learning
-from .rule_config import RuleConfig
 from utils.logger import log
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from db.pattern_storage import pattern_storage
@@ -61,7 +60,6 @@ class PatternIntegration:
         self.ai_interface = None
         self.code_understanding = None
         self.graph_capabilities = None
-        self.rule_config = None
         self._pattern_storage = None
         self._pattern_processor = None
         self._ai_processor = None
@@ -85,7 +83,6 @@ class PatternIntegration:
                 instance.ai_interface = await AIInterface.create()
                 instance.code_understanding = await CodeUnderstanding.create()
                 instance.graph_capabilities = await GraphCapabilities.create()
-                instance.rule_config = RuleConfig()
                 instance._pattern_storage = await pattern_storage.create()
                 
                 # Initialize pattern processors

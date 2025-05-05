@@ -16,7 +16,7 @@ from parsers.types import (
 )
 from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .enhanced_patterns import TreeSitterAdaptivePattern, TreeSitterResilientPattern, TreeSitterCrossProjectPatternLearner
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -27,7 +27,7 @@ from utils.shutdown import register_shutdown_handler
 import asyncio
 from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.feature_extractor import get_feature_extractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
@@ -74,7 +74,7 @@ PATTERN_METRICS = {
 SCALA_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "class": ResilientPattern(
+            "class": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (class_definition
@@ -124,7 +124,7 @@ SCALA_PATTERNS = {
                     }
                 }
             ),
-            "trait": ResilientPattern(
+            "trait": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (trait_definition
@@ -160,7 +160,7 @@ SCALA_PATTERNS = {
                     }
                 }
             ),
-            "function": ResilientPattern(
+            "function": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (function_definition
@@ -215,7 +215,7 @@ SCALA_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.PACKAGES: {
-            "package": AdaptivePattern(
+            "package": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (package_clause
@@ -261,13 +261,13 @@ SCALA_PATTERNS = {
     }
 }
 
-class ScalaPatternLearner(CrossProjectPatternLearner):
+class ScalaPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced Scala pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -287,7 +287,7 @@ class ScalaPatternLearner(CrossProjectPatternLearner):
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("scala", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("scala")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
@@ -425,9 +425,9 @@ class ScalaPatternLearner(CrossProjectPatternLearner):
                 details={"cleanup_error": str(e)}
             )
 
-@handle_async_errors(error_types=ProcessingError)
+@handle_async_errors()
 async def process_scala_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
@@ -445,7 +445,7 @@ async def process_scala_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("scala", FileType.CODE)
+        feature_extractor = await get_feature_extractor("scala")
         unified_parser = await get_unified_parser()
         
         # Parse if needed

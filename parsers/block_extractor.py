@@ -34,6 +34,7 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.request_cache import request_cache_context, cached_in_request
 from utils.cache_analytics import get_cache_analytics
 from db.transaction import transaction_scope
+import traceback
 
 @dataclass
 class BlockExtractor(BaseParser):
@@ -102,11 +103,33 @@ class BlockExtractor(BaseParser):
                 if not self.block_types:
                     raise ProcessingError(f"Failed to load block types for {self.language_id}")
                 
-                await log(f"Block extractor initialized for {self.language_id}", level="info")
+                await log(
+                    f"Block extractor initialized for {self.language_id}", 
+                    level="info",
+                    context={
+                        "component": "block_extractor",
+                        "language_id": self.language_id,
+                        "block_types_count": len(self.block_types),
+                        "operation": "initialization",
+                        "parser_type": self.parser_type.value,
+                        "file_type": self.file_type.value
+                    }
+                )
                 return True
                 
         except Exception as e:
-            await log(f"Error initializing block extractor: {e}", level="error")
+            await log(
+                f"Error initializing block extractor: {e}", 
+                level="error",
+                context={
+                    "component": "block_extractor",
+                    "language_id": self.language_id,
+                    "operation": "initialization",
+                    "error_type": type(e).__name__,
+                    "parser_type": self.parser_type.value,
+                    "traceback": traceback.format_exc() if 'traceback' in globals() else None
+                }
+            )
             await ErrorAudit.record_error(
                 e,
                 f"block_extractor_initialization_{self.language_id}",
@@ -208,11 +231,35 @@ class BlockExtractor(BaseParser):
                 self._extraction_stats["total_extractions"] += 1
                 self._extraction_stats["successful_extractions"] += 1
                 
-                await log(f"Blocks extracted for {self.language_id}", level="info")
+                await log(
+                    f"Blocks extracted for {self.language_id}",
+                    level="info",
+                    context={
+                        "component": "block_extractor",
+                        "language_id": self.language_id,
+                        "operation": "extract_blocks",
+                        "extracted_blocks_count": len(blocks),
+                        "cache_action": "cache_miss",
+                        "ast_size": len(str(ast)) if isinstance(ast, dict) else "unknown",
+                        "source_size": len(source_code)
+                    }
+                )
                 return blocks
                 
         except Exception as e:
-            await log(f"Error extracting blocks: {e}", level="error")
+            await log(
+                f"Error extracting blocks: {e}", 
+                level="error",
+                context={
+                    "component": "block_extractor",
+                    "language_id": self.language_id,
+                    "operation": "extract_blocks",
+                    "error_type": type(e).__name__,
+                    "ast_size": len(str(ast)) if isinstance(ast, dict) else "unknown",
+                    "source_size": len(source_code),
+                    "traceback": traceback.format_exc() if 'traceback' in globals() else None
+                }
+            )
             self._extraction_stats["failed_extractions"] += 1
             await ErrorAudit.record_error(
                 e,
@@ -263,11 +310,36 @@ class BlockExtractor(BaseParser):
                                     blocks.append(block)
                                 
                         except Exception as e:
-                            await log(f"Error processing pattern {pattern['name']}: {e}", level="warning")
+                            await log(
+                                f"Error processing pattern {pattern['name']}: {e}", 
+                                level="warning",
+                                context={
+                                    "component": "block_extractor",
+                                    "language_id": self.language_id,
+                                    "block_type": block_type.value,
+                                    "pattern_name": pattern["name"],
+                                    "operation": "process_pattern",
+                                    "error_type": type(e).__name__,
+                                    "extraction_time": time.time() - start_time,
+                                    "ast_size": len(str(ast)) if isinstance(ast, dict) else "unknown"
+                                }
+                            )
                             continue
                             
         except Exception as e:
-            await log(f"Error extracting blocks: {e}", level="error")
+            await log(
+                f"Error extracting blocks: {e}", 
+                level="error",
+                context={
+                    "component": "block_extractor",
+                    "language_id": self.language_id,
+                    "operation": "_extract_all_blocks",
+                    "error_type": type(e).__name__,
+                    "ast_size": len(str(ast)) if isinstance(ast, dict) else "unknown",
+                    "source_size": len(source_code),
+                    "traceback": traceback.format_exc() if 'traceback' in globals() else None
+                }
+            )
             
         return blocks
     
@@ -355,10 +427,33 @@ class BlockExtractor(BaseParser):
                     if self._extraction_stats["extraction_times"] else 0
                 ))
             
-            await log(f"Block extractor cleaned up for {self.language_id}", level="info")
+            await log(
+                f"Block extractor cleaned up for {self.language_id}", 
+                level="info",
+                context={
+                    "component": "block_extractor",
+                    "language_id": self.language_id,
+                    "operation": "cleanup",
+                    "total_extractions": self._extraction_stats["total_extractions"],
+                    "successful_extractions": self._extraction_stats["successful_extractions"],
+                    "failed_extractions": self._extraction_stats["failed_extractions"],
+                    "cache_hits": self._extraction_stats["cache_hits"],
+                    "cache_misses": self._extraction_stats["cache_misses"]
+                }
+            )
             
         except Exception as e:
-            await log(f"Error cleaning up block extractor: {e}", level="error")
+            await log(
+                f"Error cleaning up block extractor: {e}", 
+                level="error",
+                context={
+                    "component": "block_extractor",
+                    "language_id": self.language_id,
+                    "operation": "cleanup",
+                    "error_type": type(e).__name__,
+                    "traceback": traceback.format_exc() if 'traceback' in globals() else None
+                }
+            )
             raise ProcessingError(f"Failed to cleanup block extractor: {e}")
 
 # Global instance cache

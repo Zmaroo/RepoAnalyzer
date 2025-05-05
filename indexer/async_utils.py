@@ -54,7 +54,7 @@ from db.transaction import transaction_scope
 T = TypeVar('T')
 ProcessorType = TypeVar('ProcessorType')
 
-@handle_async_errors
+@handle_async_errors()
 async def async_process_index_file(
     file_path: str,
     base_path: str,
@@ -89,7 +89,7 @@ async def async_process_index_file(
             await txn.track_repo_change(repo_id)
             return await processor.process_file(file_path, repo_id, base_path)
 
-@handle_async_errors
+@handle_async_errors()
 async def batch_process_files(
     files: List[str],
     base_path: str,

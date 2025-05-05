@@ -35,7 +35,7 @@ def find_cache_directories(start_path: Path) -> List[Path]:
                 cache_dirs.append(Path(root) / dir_name)
     return cache_dirs
 
-@handle_async_errors
+@handle_async_errors()
 async def clear_cache_files(directory: Path = None) -> None:
     """
     Clear all cache files and directories.

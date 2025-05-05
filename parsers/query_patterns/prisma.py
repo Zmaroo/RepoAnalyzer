@@ -15,12 +15,18 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern,
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
-from utils.cache_analytics import get_cache_analytics
+from utils.cache_analytics import get_cache_analytics, UnifiedCache, cache_coordinator
 from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
@@ -35,7 +41,7 @@ from parsers.ai_pattern_processor import get_ai_pattern_processor
 import time
 
 # Language identifier
-LANGUAGE = "prisma"
+LANGUAGE_ID = "prisma"
 
 # Prisma capabilities (extends common capabilities)
 PRISMA_CAPABILITIES = COMMON_CAPABILITIES | {
@@ -116,7 +122,7 @@ async def _warmup_context_cache(keys: List[str]) -> Dict[str, Any]:
 PRISMA_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "model": ResilientPattern(
+            "model": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (model_declaration
@@ -153,7 +159,7 @@ PRISMA_PATTERNS = {
                 examples=["model User { id Int @id }", "enum Role { USER ADMIN }"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["model"],
@@ -372,7 +378,7 @@ PRISMA_PATTERNS = {
     },
 
     PatternCategory.BEST_PRACTICES: {
-        // ... existing patterns ...
+        # ... existing patterns ...
     },
 
     PatternCategory.COMMON_ISSUES: {
@@ -387,7 +393,7 @@ PRISMA_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potentially invalid model definitions", "examples": ["model user {}"]}
         ),
         "relation_error": QueryPattern(
@@ -402,7 +408,7 @@ PRISMA_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential relation errors", "examples": ["@relation(fields: [authorId], references: [id])"]}
         ),
         "type_mismatch": QueryPattern(
@@ -417,7 +423,7 @@ PRISMA_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential type mismatches", "examples": ["String id @id @default(uuid())"]}
         ),
         "missing_relation": QueryPattern(
@@ -432,7 +438,7 @@ PRISMA_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potentially missing relations", "examples": ["User author"]}
         ),
         "invalid_enum": QueryPattern(
@@ -446,7 +452,7 @@ PRISMA_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potentially invalid enum definitions", "examples": ["enum status {}"]}
         )
     }
@@ -726,7 +732,7 @@ PRISMA_PATTERNS = {
     "REPOSITORY_LEARNING": PRISMA_PATTERNS_FOR_LEARNING
 }
 
-class PrismaPatternLearner(CrossProjectPatternLearner):
+class PrismaPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced Prisma pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
@@ -748,7 +754,7 @@ class PrismaPatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with Prisma-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
@@ -892,13 +898,13 @@ class PrismaPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_prisma_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a Prisma pattern with full system integration."""
     # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
         return common_result
     
@@ -922,11 +928,19 @@ async def process_prisma_pattern(
                     parse_result.ast
                 )
         
-        # Extract and process blocks with caching
+        # Try to get result from pattern cache first
         cache_key = f"prisma_pattern_{pattern.name}_{hash(source_code)}"
-        cached_result = await get_current_request_cache().get(cache_key)
+        pattern_cache = await get_prisma_pattern_cache()
+        cached_result = await pattern_cache.get_async(cache_key)
         if cached_result:
             return cached_result
+        
+        # Also check request cache for intermediate results
+        request_cache = get_current_request_cache()
+        if request_cache:
+            request_cached = await request_cache.get(cache_key)
+            if request_cached:
+                return request_cached
         
         blocks = await block_extractor.get_child_blocks(
             "prisma",
@@ -951,8 +965,10 @@ async def process_prisma_pattern(
                     match["block"] = block.__dict__
                 matches.extend(block_matches)
         
-        # Cache the result
-        await get_current_request_cache().set(cache_key, matches)
+        # Cache the results in both pattern cache and request cache
+        await pattern_cache.set_async(cache_key, matches)
+        if request_cache:
+            await request_cache.set(cache_key, matches)
         
         # Update pattern metrics
         await update_prisma_pattern_metrics(
@@ -981,40 +997,32 @@ async def create_prisma_pattern_context(
     code_structure: Dict[str, Any],
     learned_patterns: Optional[Dict[str, Any]] = None
 ) -> PatternContext:
-    """Create pattern context with full system integration."""
-    # Get unified parser
-    unified_parser = await get_unified_parser()
+    """Create Prisma-specific pattern context with tree-sitter integration.
     
-    # Parse the code structure if needed
-    if not code_structure:
-        parse_result = await unified_parser.parse(
-            file_path,
-            language_id="prisma",
-            file_type=FileType.SCHEMA
-        )
-        code_structure = parse_result.ast if parse_result else {}
-    
-    context = PatternContext(
-        code_structure=code_structure,
-        language_stats={"language": "prisma"},
-        project_patterns=list(learned_patterns.values()) if learned_patterns else [],
-        file_location=file_path,
-        dependencies=set(),
-        recent_changes=[],
-        scope_level="global",
-        allows_nesting=True,
-        relevant_patterns=list(PRISMA_PATTERNS.keys())
+    This function creates a tree-sitter based context for Prisma patterns
+    with full system integration.
+    """
+    # Create a base tree-sitter context
+    base_context = await create_tree_sitter_context(
+        file_path,
+        code_structure,
+        language_id=LANGUAGE_ID,
+        learned_patterns=learned_patterns
     )
     
+    # Add Prisma-specific information
+    base_context.language_stats = {"language": LANGUAGE_ID}
+    base_context.relevant_patterns = list(PRISMA_PATTERNS.keys())
+    
     # Add system integration metadata
-    context.metadata.update({
+    base_context.metadata.update({
         "parser_type": ParserType.TREE_SITTER,
         "feature_extraction_enabled": True,
         "block_extraction_enabled": True,
         "pattern_learning_enabled": True
     })
     
-    return context
+    return base_context
 
 def update_prisma_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
     """Update performance metrics for a pattern."""
@@ -1056,6 +1064,24 @@ async def initialize_prisma_patterns():
     # Initialize pattern processor first
     await pattern_processor.initialize()
     
+    # Initialize caches through coordinator
+    pattern_cache = UnifiedCache("prisma_patterns", eviction_policy="lru")
+    context_cache = UnifiedCache("prisma_contexts", eviction_policy="lru")
+    
+    await cache_coordinator.register_cache("prisma_patterns", pattern_cache)
+    await cache_coordinator.register_cache("prisma_contexts", context_cache)
+    
+    # Register cache warmup functions
+    analytics = await get_cache_analytics()
+    analytics.register_warmup_function(
+        "prisma_patterns",
+        _warmup_pattern_cache
+    )
+    analytics.register_warmup_function(
+        "prisma_contexts",
+        _warmup_context_cache
+    )
+    
     # Register Prisma patterns
     await pattern_processor.register_language_patterns(
         "prisma",
@@ -1086,6 +1112,41 @@ async def initialize_prisma_patterns():
         }
     )
 
+@cached_in_request
+async def get_prisma_pattern_cache():
+    """Get the Prisma pattern cache from the coordinator."""
+    return await cache_coordinator.get_cache("prisma_patterns")
+
+@cached_in_request
+async def get_prisma_context_cache():
+    """Get the Prisma context cache from the coordinator."""
+    return await cache_coordinator.get_cache("prisma_contexts")
+
+async def _warmup_pattern_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for pattern cache."""
+    results = {}
+    for key in keys:
+        try:
+            # Get common patterns for warmup
+            patterns = PRISMA_PATTERNS.get(PatternCategory.SYNTAX, {})
+            if patterns:
+                results[key] = patterns
+        except Exception as e:
+            await log(f"Error warming up pattern cache for {key}: {e}", level="warning")
+    return results
+
+async def _warmup_context_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for context cache."""
+    results = {}
+    for key in keys:
+        try:
+            # Create empty context for warmup
+            context = await create_prisma_pattern_context("", {})
+            results[key] = context.__dict__
+        except Exception as e:
+            await log(f"Error warming up context cache for {key}: {e}", level="warning")
+    return results
+
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
     "model": {
@@ -1111,9 +1172,10 @@ __all__ = [
     'PRISMA_PATTERNS',
     'PATTERN_RELATIONSHIPS',
     'PATTERN_METRICS',
-    'create_pattern_context',
+    'create_prisma_pattern_context',
     'get_prisma_pattern_match_result',
     'update_prisma_pattern_metrics',
-    'PrismaPatternContext',
-    'pattern_learner'
+    'PrismaPatternLearner',
+    'process_prisma_pattern',
+    'LANGUAGE_ID'
 ] 

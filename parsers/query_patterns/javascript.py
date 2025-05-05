@@ -4,6 +4,7 @@ This module provides JavaScript-specific patterns that integrate with the enhanc
 pattern processing system, including proper typing, relationships, and context.
 """
 
+import os
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass, field
 from parsers.types import (
@@ -14,32 +15,39 @@ from parsers.types import (
     ExtractedFeatures, FileType, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
-from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
-from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
-from utils.request_cache import cached_in_request
-from utils.cache_analytics import get_cache_analytics
-from utils.async_runner import submit_async_task, cleanup_tasks
-from utils.logger import log
-from utils.shutdown import register_shutdown_handler
-import asyncio
 from parsers.pattern_processor import pattern_processor
-from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
-from parsers.unified_parser import get_unified_parser
-from parsers.base_parser import BaseParser
-from parsers.tree_sitter_parser import get_tree_sitter_parser
-from parsers.ai_pattern_processor import get_ai_pattern_processor
+from utils.health_monitor import global_health_monitor, ComponentStatus
+from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
+from .common import (
+    COMMON_PATTERNS,
+    process_tree_sitter_pattern,
+    validate_tree_sitter_pattern,
+    create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern,
+    TreeSitterAdaptivePattern,
+    TreeSitterResilientPattern,
+    TreeSitterCrossProjectPatternLearner,
+    DATA_DIR
+)
+from .tree_sitter_utils import execute_tree_sitter_query, count_nodes, extract_captures
+from .recovery_strategies import get_recovery_strategies
+from .learning_strategies import get_learning_strategies
 from .js_ts_shared import (
     JS_TS_SHARED_PATTERNS,
     JS_TS_CAPABILITIES,
     JSTSPatternLearner,
     process_js_ts_pattern,
     extract_js_ts_features,
-    validate_js_ts_pattern
+    validate_js_ts_pattern,
+    create_js_ts_pattern_context
 )
-import time
+from .react import ReactAnalyzer, react_analyzer
+import re
+
+# Module identification - must be before any usage
+LANGUAGE = "javascript"
 
 # JavaScript capabilities (extends JS/TS capabilities)
 JS_CAPABILITIES = JS_TS_CAPABILITIES | {
@@ -53,7 +61,7 @@ JS_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "node_module": AdaptivePattern(
+            "node_module": TreeSitterAdaptivePattern(
                 name="node_module",
                 pattern="""
                 [
@@ -163,40 +171,251 @@ JS_PATTERNS = {
     }
 }
 
-class JavaScriptPatternLearner(JSTSPatternLearner):
-    """JavaScript-specific pattern learner extending JS/TS learner."""
+# JavaScript-specific patterns (using QueryPattern)
+JAVASCRIPT_SPECIFIC_PATTERNS = {
+    PatternCategory.SYNTAX: {
+        PatternPurpose.UNDERSTANDING: {
+            "js_function_expression": QueryPattern(
+                name="js_function_expression",
+                pattern="""
+                [
+                    (function_expression
+                        name: (identifier)? @syntax.jsfunc.name
+                        parameters: (formal_parameters) @syntax.jsfunc.params
+                        body: (statement_block) @syntax.jsfunc.body) @syntax.jsfunc.expr
+                ]
+                """,
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.95,
+                extract=lambda m: {
+                    "type": "function_expression",
+                    "function_name": m["captures"]["syntax.jsfunc.name"]["text"] if "syntax.jsfunc.name" in m.get("captures", {}) else None,
+                    "is_anonymous": "syntax.jsfunc.name" not in m.get("captures", {}),
+                    "parameters": m["captures"]["syntax.jsfunc.params"]["text"] if "syntax.jsfunc.params" in m.get("captures", {}) else "()",
+                    "body_length": len(m["captures"]["syntax.jsfunc.body"]["text"]) if "syntax.jsfunc.body" in m.get("captures", {}) else 0
+                },
+                regex_pattern=r'function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)?\s*\(([^)]*)\)\s*\{',
+                block_type="function_expression",
+                contains_blocks=["statement", "expression"],
+                is_nestable=True,
+                extraction_priority=12,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": {
+                        "is_valid": True,
+                        "validation_time": 0.0
+                    },
+                    "description": "Matches JavaScript function expressions",
+                    "examples": [
+                        "const add = function(a, b) { return a + b; }",
+                        "function multiply(a, b) { return a * b; }"
+                    ],
+                    "version": "1.0",
+                    "tags": ["function", "expression", "javascript"]
+                },
+                test_cases=[
+                    {
+                        "input": "const add = function(a, b) { return a + b; }",
+                        "expected": {
+                            "type": "function_expression",
+                            "is_anonymous": True
+                        }
+                    },
+                    {
+                        "input": "function multiply(a, b) { return a * b; }",
+                        "expected": {
+                            "type": "function_expression",
+                            "function_name": "multiply"
+                        }
+                    }
+                ]
+            ),
+            
+            "jsx_in_js": QueryPattern(
+                name="jsx_in_js",
+                pattern=r'React\.createElement\(|<[A-Z][a-zA-Z]*(?:\s+[a-z][a-zA-Z]*=(?:{[^}]*}|"[^"]*"|\'[^\']*\'))*\s*(?:/>|>)',
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                extract=lambda m: {
+                    "type": "jsx_in_js",
+                    "component_call": m.group(0),
+                    "is_explicit_create": m.group(0).startswith("React.createElement"),
+                    "is_component": bool(re.match(r'<[A-Z]', m.group(0))),
+                    "is_self_closing": bool(re.search(r'/>$', m.group(0))),
+                    "has_props": bool(re.search(r'\s+[a-z][a-zA-Z]*=', m.group(0))),
+                    "line_number": m.string.count('\n', 0, m.start()) + 1
+                },
+                regex_pattern=r'React\.createElement\(|<[A-Z][a-zA-Z]*(?:\s+[a-z][a-zA-Z]*=(?:{[^}]*}|"[^"]*"|\'[^\']*\'))*\s*(?:/>|>)',
+                block_type="jsx",
+                is_nestable=True,
+                extraction_priority=10,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": {
+                        "is_valid": True,
+                        "validation_time": 0.0
+                    },
+                    "description": "Detects JSX usage in JavaScript files",
+                    "examples": [
+                        "<Button onClick={handleClick}>Click me</Button>",
+                        "<Component prop={value} />",
+                        "React.createElement('div', null, 'Hello')",
+                        "<App/>",
+                        "<User name=\"John\" age={30} isActive={true} />"
+                    ],
+                    "version": "1.0",
+                    "tags": ["jsx", "react", "component"]
+                },
+                test_cases=[
+                    {
+                        "input": "<Button onClick={handleClick}>Click me</Button>",
+                        "expected": {
+                            "type": "jsx_in_js",
+                            "is_explicit_create": False,
+                            "is_component": True,
+                            "is_self_closing": False,
+                            "has_props": True
+                        }
+                    },
+                    {
+                        "input": "React.createElement('div', null, 'Hello')",
+                        "expected": {
+                            "type": "jsx_in_js",
+                            "is_explicit_create": True
+                        }
+                    },
+                    {
+                        "input": "<Component prop={value} />",
+                        "expected": {
+                            "type": "jsx_in_js",
+                            "is_explicit_create": False,
+                            "is_component": True,
+                            "is_self_closing": True,
+                            "has_props": True
+                        }
+                    },
+                    {
+                        "input": "<App/>",
+                        "expected": {
+                            "type": "jsx_in_js",
+                            "is_explicit_create": False,
+                            "is_component": True,
+                            "is_self_closing": True,
+                            "has_props": False
+                        }
+                    }
+                ]
+            )
+        }
+    },
     
+    PatternCategory.BEST_PRACTICES: {
+        PatternPurpose.UNDERSTANDING: {
+            "strict_mode": QueryPattern(
+                name="strict_mode",
+                pattern=r'^\s*[\'"]use strict[\'"]\s*;',
+                category=PatternCategory.BEST_PRACTICES,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id=LANGUAGE,
+                confidence=0.9,
+                extract=lambda m: {
+                    "type": "strict_mode",
+                    "line_number": m.string.count('\n', 0, m.start()) + 1,
+                    "is_file_level": m.start() < 100
+                },
+                regex_pattern=r'^\s*[\'"]use strict[\'"]\s*;',
+                block_type="directive",
+                is_nestable=False,
+                extraction_priority=2,
+                metadata={
+                    "relationships": [],
+                    "metrics": PatternPerformanceMetrics(),
+                    "validation": {
+                        "is_valid": True,
+                        "validation_time": 0.0
+                    },
+                    "description": "Identifies JavaScript strict mode usage",
+                    "examples": [
+                        "'use strict';",
+                        "\"use strict\";"
+                    ],
+                    "version": "1.0",
+                    "tags": ["strict-mode", "best-practice", "javascript"]
+                },
+                test_cases=[
+                    {
+                        "input": "'use strict';",
+                        "expected": {
+                            "type": "strict_mode",
+                            "is_file_level": True
+                        }
+                    },
+                    {
+                        "input": "function test() {\n  \"use strict\";\n}",
+                        "expected": {
+                            "type": "strict_mode",
+                            "is_file_level": False
+                        }
+                    }
+                ]
+            )
+        }
+    }
+}
+
+# Combine JS_PATTERNS and JAVASCRIPT_SPECIFIC_PATTERNS
+JAVASCRIPT_PATTERNS = {
+    **JS_PATTERNS,
+    **JAVASCRIPT_SPECIFIC_PATTERNS
+}
+
+class JavaScriptPatternLearner(JSTSPatternLearner):
+    """Pattern learner specialized for JavaScript code."""
+    
+    def __init__(self):
+        super().__init__(language_id=LANGUAGE)
+        self.insights_path = os.path.join(DATA_DIR, "javascript_pattern_insights.json")
+        
     async def initialize(self):
         """Initialize with JavaScript-specific components."""
         await super().initialize()
         
         # Register JavaScript-specific patterns
-        await self._pattern_processor.register_language_patterns(
-            "javascript",
-            JS_PATTERNS,
-            self
+        from parsers.pattern_processor import register_pattern
+        for category, purpose_dict in JAVASCRIPT_SPECIFIC_PATTERNS.items():
+            for purpose, patterns in purpose_dict.items():
+                for name, pattern in patterns.items():
+                    pattern_key = f"{category}:{purpose}:{name}"
+                    await register_pattern(pattern_key, pattern)
+        
+        # Update health monitoring for JavaScript specifically
+        from utils.health_monitor import global_health_monitor, ComponentStatus
+        await global_health_monitor.update_component_status(
+            "javascript_pattern_learner",
+            ComponentStatus.HEALTHY,
+            details={
+                "patterns_loaded": len(JAVASCRIPT_PATTERNS),
+                "js_specific_patterns": len(JAVASCRIPT_SPECIFIC_PATTERNS),
+                "capabilities": list(JS_TS_CAPABILITIES)
+            }
         )
-
-    async def _get_parser(self) -> BaseParser:
-        """Get appropriate parser for JavaScript."""
-        # Try tree-sitter first
-        tree_sitter_parser = await get_tree_sitter_parser("javascript")
-        if tree_sitter_parser:
-            return tree_sitter_parser
-            
-        # Fallback to base parser
-        return await BaseParser.create(
-            language_id="javascript",
-            file_type=FileType.CODE,
-            parser_type=ParserType.CUSTOM
-        )
+    
+    async def create_context(self, **kwargs):
+        """Create JavaScript-specific pattern context."""
+        return create_js_ts_pattern_context(language_id=LANGUAGE, **kwargs)
 
 # Initialize pattern learner
-js_pattern_learner = JavaScriptPatternLearner()
+javascript_pattern_learner = JavaScriptPatternLearner()
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_javascript_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
@@ -207,7 +426,7 @@ async def process_javascript_pattern(
 # Update initialization
 async def initialize_javascript_patterns():
     """Initialize JavaScript patterns during app startup."""
-    global js_pattern_learner
+    global javascript_pattern_learner
     
     # Initialize pattern processor first
     await pattern_processor.initialize()
@@ -215,7 +434,7 @@ async def initialize_javascript_patterns():
     # Register JavaScript patterns
     await pattern_processor.register_language_patterns(
         "javascript",
-        JS_PATTERNS,
+        JAVASCRIPT_PATTERNS,
         metadata={
             "parser_type": ParserType.TREE_SITTER,
             "supports_learning": True,
@@ -225,25 +444,30 @@ async def initialize_javascript_patterns():
     )
     
     # Create and initialize learner
-    js_pattern_learner = await JavaScriptPatternLearner.create()
+    javascript_pattern_learner = JavaScriptPatternLearner()
+    await javascript_pattern_learner.initialize()
     
     # Register learner with pattern processor
     await pattern_processor.register_pattern_learner(
         "javascript",
-        js_pattern_learner
+        javascript_pattern_learner
     )
+    
+    # Initialize React analyzer and patterns
+    from .react import initialize_react_patterns
+    await initialize_react_patterns()
     
     await global_health_monitor.update_component_status(
         "javascript_patterns",
         ComponentStatus.HEALTHY,
         details={
-            "patterns_loaded": len(JS_PATTERNS),
+            "patterns_loaded": len(JAVASCRIPT_PATTERNS),
             "capabilities": list(JS_CAPABILITIES)
         }
     )
 
 async def extract_javascript_features(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     matches: List[Dict[str, Any]],
     context: PatternContext
 ) -> ExtractedFeatures:
@@ -252,23 +476,24 @@ async def extract_javascript_features(
     return await extract_js_ts_features(pattern, matches, context)
 
 async def validate_javascript_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     context: Optional[PatternContext] = None
 ) -> PatternValidationResult:
     """Validate a JavaScript pattern with system integration."""
     # Use shared JS/TS pattern validation
     return await validate_js_ts_pattern(pattern, context)
 
+async def get_react_analyzer():
+    """Get or create a React analyzer instance."""
+    return react_analyzer
+
 # Export public interfaces
 __all__ = [
-    'JS_PATTERNS',
-    'JS_PATTERN_RELATIONSHIPS',
-    'JS_PATTERN_METRICS',
-    'create_pattern_context',
-    'get_js_pattern_relationships',
-    'update_js_pattern_metrics',
-    'get_js_pattern_match_result'
-]
-
-# Module identification
-LANGUAGE = "javascript" 
+    'JAVASCRIPT_PATTERNS',
+    'JAVASCRIPT_PATTERN_RELATIONSHIPS',
+    'JAVASCRIPT_PATTERN_METRICS',
+    'get_javascript_pattern_relationships',
+    'update_javascript_pattern_metrics',
+    'get_javascript_pattern_match_result',
+    'get_react_analyzer'
+] 

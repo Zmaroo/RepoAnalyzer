@@ -14,8 +14,14 @@ from parsers.types import (
     ExtractedFeatures, FileType, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern, 
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request
@@ -24,13 +30,12 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
+from parsers.feature_extractor import get_feature_extractor
 import time
 
 # C# capabilities
@@ -80,7 +85,7 @@ CSHARP_PATTERN_RELATIONSHIPS = {
         PatternRelationship(
             source_pattern="interface",
             target_pattern="function",
-            relationship_type=PatternRelationType.DEFINES,
+            relationship_type=PatternRelationType.IMPLEMENTS,
             confidence=0.95,
             metadata={"methods": True}
         )
@@ -124,7 +129,7 @@ CSHARP_PATTERNS = {
     
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": ResilientPattern(
+            "function": TreeSitterResilientPattern(
                 name="function",
                 pattern="""
                 [
@@ -159,7 +164,7 @@ CSHARP_PATTERNS = {
                 }
             ),
             
-            "class": ResilientPattern(
+            "class": TreeSitterResilientPattern(
                 name="class",
                 pattern="""
                 (class_declaration
@@ -184,7 +189,7 @@ CSHARP_PATTERNS = {
                 }
             ),
             
-            "interface": ResilientPattern(
+            "interface": TreeSitterResilientPattern(
                 name="interface",
                 pattern="""
                 (interface_declaration
@@ -214,6 +219,7 @@ CSHARP_PATTERNS = {
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
             "namespace": QueryPattern(
+                name="namespace",
                 pattern="""
                 [
                     (namespace_declaration
@@ -231,20 +237,23 @@ CSHARP_PATTERNS = {
                     "using": node["captures"].get("structure.using.name", {}).get("text", ""),
                     "is_static_using": "structure.using.static" in node["captures"]
                 },
-                description="Matches C# namespace and using declarations",
-                examples=[
-                    "namespace MyNamespace { }",
-                    "using static System.Math;"
-                ],
                 category=PatternCategory.STRUCTURE,
-                purpose=PatternPurpose.UNDERSTANDING
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="c_sharp",
+                metadata={
+                    "description": "Matches C# namespace and using declarations",
+                    "examples": [
+                        "namespace MyNamespace { }",
+                        "using static System.Math;"
+                    ]
+                }
             )
         }
     },
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "linq": AdaptivePattern(
+            "linq": TreeSitterAdaptivePattern(
                 name="linq",
                 pattern="""
                 (query_expression
@@ -283,7 +292,7 @@ CSHARP_PATTERNS = {
                 }
             ),
             
-            "async": AdaptivePattern(
+            "async": TreeSitterAdaptivePattern(
                 name="async",
                 pattern="""
                 [
@@ -315,7 +324,7 @@ CSHARP_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": AdaptivePattern(
+            "comments": TreeSitterAdaptivePattern(
                 name="comments",
                 pattern="""
                 [
@@ -401,13 +410,13 @@ def get_csharp_pattern_match_result(
         metadata={"language": "c_sharp"}
     )
 
-class CSharpPatternLearner(CrossProjectPatternLearner):
+class CSharpPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced C# pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -427,11 +436,13 @@ class CSharpPatternLearner(CrossProjectPatternLearner):
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("csharp", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("csharp")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
         # Register C# patterns
+        from parsers.pattern_processor import pattern_processor
+        self._pattern_processor = pattern_processor
         await self._pattern_processor.register_language_patterns(
             "csharp", 
             CSHARP_PATTERNS,
@@ -567,13 +578,13 @@ class CSharpPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_csharp_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a C# pattern with full system integration."""
     # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
         return common_result
     
@@ -585,14 +596,14 @@ async def process_csharp_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("csharp", FileType.CODE)
+        feature_extractor = await get_feature_extractor("csharp")
         unified_parser = await get_unified_parser()
         
         # Parse if needed
         if not context or not context.code_structure:
             parse_result = await unified_parser.parse(source_code, "csharp", FileType.CODE)
             if parse_result and parse_result.ast:
-                context = await create_csharp_pattern_context(
+                context = await create_pattern_context(
                     "",
                     parse_result.ast
                 )
@@ -638,6 +649,7 @@ csharp_pattern_learner = CSharpPatternLearner()
 async def initialize_csharp_patterns():
     """Initialize C# patterns during app startup."""
     global csharp_pattern_learner
+    from parsers.pattern_processor import pattern_processor
     
     # Initialize pattern processor first
     await pattern_processor.initialize()
@@ -673,12 +685,12 @@ async def initialize_csharp_patterns():
     )
 
 async def extract_csharp_features(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     matches: List[Dict[str, Any]],
     context: PatternContext
 ) -> ExtractedFeatures:
     """Extract features from pattern matches."""
-    feature_extractor = await BaseFeatureExtractor.create("c_sharp", FileType.CODE)
+    feature_extractor = await get_feature_extractor("csharp")
     
     features = ExtractedFeatures()
     
@@ -701,7 +713,7 @@ async def extract_csharp_features(
     return features
 
 async def validate_csharp_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     context: Optional[PatternContext] = None
 ) -> PatternValidationResult:
     """Validate a C# pattern with system integration."""
@@ -737,5 +749,5 @@ __all__ = [
     'validate_csharp_pattern'
 ]
 
-# Module identification
-LANGUAGE = "c_sharp" 
+# Module identification - using the consistent language ID
+LANGUAGE_ID = "c_sharp" 

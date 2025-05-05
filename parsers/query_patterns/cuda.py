@@ -15,7 +15,7 @@ from parsers.types import (
 )
 from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .enhanced_patterns import TreeSitterAdaptivePattern, TreeSitterResilientPattern, TreeSitterCrossProjectPatternLearner
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -24,13 +24,12 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
+from parsers.feature_extractor import get_feature_extractor
 import time
 
 # CUDA capabilities (extends common capabilities)
@@ -62,7 +61,7 @@ CUDA_PATTERN_RELATIONSHIPS = {
         PatternRelationship(
             source_pattern="memory_management",
             target_pattern="synchronization",
-            relationship_type=PatternRelationType.REQUIRES,
+            relationship_type=PatternRelationType.USES,
             confidence=0.9,
             metadata={"memory_sync": True}
         )
@@ -71,7 +70,7 @@ CUDA_PATTERN_RELATIONSHIPS = {
         PatternRelationship(
             source_pattern="synchronization",
             target_pattern="kernel_definition",
-            relationship_type=PatternRelationType.SUPPORTS,
+            relationship_type=PatternRelationType.USES,
             confidence=0.95,
             metadata={"kernel_sync": True}
         )
@@ -115,7 +114,7 @@ CUDA_PATTERNS = {
     
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "kernel_definition": ResilientPattern(
+            "kernel_definition": TreeSitterResilientPattern(
                 name="kernel_definition",
                 pattern="""
                 [
@@ -153,6 +152,7 @@ CUDA_PATTERNS = {
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
             "namespace": QueryPattern(
+                name="namespace",
                 pattern="""
                 [
                     (translation_unit
@@ -162,14 +162,17 @@ CUDA_PATTERNS = {
                 extract=lambda node: {
                     "type": "namespace",
                     "content": node["node"].text.decode('utf8')
-                }
+                },
+                category=PatternCategory.STRUCTURE,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda"
             )
         }
     },
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "memory_management": ResilientPattern(
+            "memory_management": TreeSitterResilientPattern(
                 name="memory_management",
                 pattern="""
                 [
@@ -195,7 +198,7 @@ CUDA_PATTERNS = {
                 }
             ),
             
-            "synchronization": ResilientPattern(
+            "synchronization": TreeSitterResilientPattern(
                 name="synchronization",
                 pattern="""
                 [
@@ -223,12 +226,11 @@ CUDA_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": AdaptivePattern(
+            "comments": TreeSitterAdaptivePattern(
                 name="comments",
                 pattern="""
                 [
-                    (comment) @documentation.comment.single,
-                    (comment_multiline) @documentation.comment.multi
+                    (comment) @documentation.comment.single
                 ]
                 """,
                 category=PatternCategory.DOCUMENTATION,
@@ -254,49 +256,22 @@ CUDA_PATTERNS = {
         }
     },
     
-    PatternCategory.LEARNING: {
-        PatternPurpose.BEST_PRACTICES: {
-            "kernel_launch_patterns": QueryPattern(
-                pattern="""
-                [
-                    (call_expression
-                        function: (identifier) @launch.kernel.name
-                        arguments: (argument_list) @launch.kernel.args) @launch.kernel,
-                        
-                    (subscript_expression
-                        argument: (argument_list) @launch.config.args) @launch.config,
-                        
-                    (call_expression
-                        function: (identifier) @launch.api.func
-                        (#match? @launch.api.func "^(cudaLaunch|cudaLaunchKernel)$")
-                        arguments: (argument_list) @launch.api.args) @launch.api
-                ]
-                """,
-                extract=lambda node: {
-                    "type": "kernel_launch_pattern",
-                    "is_triple_chevron": "<<<" in node["node"].text.decode('utf8') and ">>>" in node["node"].text.decode('utf8'),
-                    "is_cuda_launch_api": "launch.api.func" in node["captures"],
-                    "grid_dimensions": (3 if "<<<" in node["node"].text.decode('utf8') and 
-                                      node["node"].text.decode('utf8').count(",") >= 5 else
-                                      2 if "<<<" in node["node"].text.decode('utf8') else 0),
-                    "kernel_name": node["captures"].get("launch.kernel.name", {}).get("text", "")
-                }
-            )
-        },
-        PatternPurpose.MEMORY_MANAGEMENT: {
+    PatternCategory.CODE_PATTERNS: {
+        PatternPurpose.UNDERSTANDING: {
             "memory_management": QueryPattern(
+                name="memory_management",
                 pattern="""
                 [
                     (call_expression
                         function: (identifier) @memory.alloc.func
                         (#match? @memory.alloc.func "^(cudaMalloc|cudaMallocHost|cudaMallocManaged|cudaMallocPitch|cudaHostAlloc)$")
-                        arguments: (argument_list) @memory.alloc.args) @memory.allocation,
-                        
+                        arguments: (argument_list) @memory.alloc.args) @memory.allocation
+
                     (call_expression
                         function: (identifier) @memory.free.func
                         (#match? @memory.free.func "^(cudaFree|cudaFreeHost)$")
-                        arguments: (argument_list) @memory.free.args) @memory.free,
-                        
+                        arguments: (argument_list) @memory.free.args) @memory.free
+
                     (call_expression
                         function: (identifier) @memory.copy.func
                         (#match? @memory.copy.func "^(cudaMemcpy|cudaMemcpyAsync|cudaMemcpyToSymbol|cudaMemcpyFromSymbol|cudaMemcpy2D|cudaMemcpy3D)$")
@@ -313,19 +288,22 @@ CUDA_PATTERNS = {
                                    node["captures"].get("memory.copy.func", {}).get("text", "")),
                     "is_unified_memory": "cudaMallocManaged" in (node["captures"].get("memory.alloc.func", {}).get("text", "") or ""),
                     "is_pinned_memory": "cudaMallocHost" in (node["captures"].get("memory.alloc.func", {}).get("text", "") or "") or "cudaHostAlloc" in (node["captures"].get("memory.alloc.func", {}).get("text", "") or "")
-                }
-            )
-        },
-        PatternPurpose.PERFORMANCE: {
+                },
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda"
+            ),
             "thread_organization": QueryPattern(
+                name="thread_organization",
                 pattern="""
                 [
                     (call_expression
                         function: (identifier) @thread.idx.func
                         (#match? @thread.idx.func "^(threadIdx|blockIdx|blockDim|gridDim)$")
-                        field: (field_expression
-                            field: (field_identifier) @thread.idx.field)) @thread.idx,
-                            
+                        arguments: (argument_list
+                            (field_expression
+                                field: (field_identifier) @thread.idx.field)?)) @thread.idx
+                    
                     (call_expression
                         function: (identifier) @thread.sync.func
                         (#match? @thread.sync.func "^(__syncthreads|__syncwarp|__syncthreads_count|__syncthreads_and|__syncthreads_or)$")
@@ -339,18 +317,20 @@ CUDA_PATTERNS = {
                     "index_type": node["captures"].get("thread.idx.func", {}).get("text", ""),
                     "dimension": node["captures"].get("thread.idx.field", {}).get("text", ""),
                     "sync_function": node["captures"].get("thread.sync.func", {}).get("text", "")
-                }
-            )
-        },
-        PatternPurpose.API_USAGE: {
+                },
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda"
+            ),
             "cuda_api_usage": QueryPattern(
+                name="cuda_api_usage",
                 pattern="""
                 [
                     (call_expression
                         function: (identifier) @api.func
                         (#match? @api.func "^(cuda[A-Z][a-zA-Z0-9]*)$")
-                        arguments: (argument_list) @api.args) @api.call,
-                        
+                        arguments: (argument_list) @api.args) @api.call
+
                     (call_expression
                         function: (identifier) @api.error.func
                         (#match? @api.error.func "^(cudaGetLastError|cudaGetErrorString|cudaGetErrorName)$")
@@ -371,25 +351,79 @@ CUDA_PATTERNS = {
                                       for prefix in ["cudaGetDevice", "cudaSetDevice", "cudaDeviceReset"]) else
                         "other"
                     )
-                }
+                },
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda"
+            )
+        },
+        PatternPurpose.UNDERSTANDING: {
+            "thread_organization": QueryPattern(
+                name="thread_organization",
+                pattern="""
+                [
+                    (call_expression
+                        function: (identifier) @thread.idx.func
+                        (#match? @thread.idx.func "^(threadIdx|blockIdx|blockDim|gridDim)$")
+                        arguments: (argument_list
+                            (field_expression
+                                field: (field_identifier) @thread.idx.field)?)) @thread.idx
+                    
+                    (call_expression
+                        function: (identifier) @thread.sync.func
+                        (#match? @thread.sync.func "^(__syncthreads|__syncwarp|__syncthreads_count|__syncthreads_and|__syncthreads_or)$")
+                        arguments: (argument_list)? @thread.sync.args) @thread.sync
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "thread_organization_pattern",
+                    "is_thread_index": "thread.idx" in node["captures"],
+                    "is_sync": "thread.sync" in node["captures"],
+                    "index_type": node["captures"].get("thread.idx.func", {}).get("text", ""),
+                    "dimension": node["captures"].get("thread.idx.field", {}).get("text", ""),
+                    "sync_function": node["captures"].get("thread.sync.func", {}).get("text", "")
+                },
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda"
+            ),
+            "cuda_api_usage": QueryPattern(
+                name="cuda_api_usage",
+                pattern="""
+                [
+                    (call_expression
+                        function: (identifier) @api.func
+                        (#match? @api.func "^(cuda[A-Z][a-zA-Z0-9]*)$")
+                        arguments: (argument_list) @api.args) @api.call
+
+                    (call_expression
+                        function: (identifier) @api.error.func
+                        (#match? @api.error.func "^(cudaGetLastError|cudaGetErrorString|cudaGetErrorName)$")
+                        arguments: (argument_list)? @api.error.args) @api.error.check
+                ]
+                """,
+                extract=lambda node: {
+                    "type": "cuda_api_usage_pattern",
+                    "api_function": node["captures"].get("api.func", {}).get("text", "") or node["captures"].get("api.error.func", {}).get("text", ""),
+                    "is_error_check": "api.error.check" in node["captures"],
+                    "api_category": (
+                        "memory" if any(prefix in (node["captures"].get("api.func", {}).get("text", "") or "") 
+                                      for prefix in ["cudaMalloc", "cudaFree", "cudaMemcpy"]) else
+                        "execution" if any(prefix in (node["captures"].get("api.func", {}).get("text", "") or "") 
+                                        for prefix in ["cudaLaunch", "cudaStream", "cudaEvent", "cudaGraph"]) else
+                        "error" if "api.error.check" in node["captures"] else
+                        "device" if any(prefix in (node["captures"].get("api.func", {}).get("text", "") or "") 
+                                      for prefix in ["cudaGetDevice", "cudaSetDevice", "cudaDeviceReset"]) else
+                        "other"
+                    )
+                },
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="cuda"
             )
         }
     }
 }
-
-def create_pattern_context(file_path: str, code_structure: Dict[str, Any]) -> PatternContext:
-    """Create pattern context for CUDA files."""
-    return PatternContext(
-        code_structure=code_structure,
-        language_stats={"language": "cuda", "version": "11.0"},
-        project_patterns=[],
-        file_location=file_path,
-        dependencies=set(),
-        recent_changes=[],
-        scope_level="global",
-        allows_nesting=True,
-        relevant_patterns=list(CUDA_PATTERNS.keys())
-    )
 
 def get_cuda_pattern_relationships(pattern_name: str) -> List[PatternRelationship]:
     """Get relationships for a specific pattern."""
@@ -425,13 +459,12 @@ def get_cuda_pattern_match_result(
         metadata={"language": "cuda"}
     )
 
-class CUDAPatternLearner(CrossProjectPatternLearner):
+class CUDAPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced CUDA pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -447,11 +480,11 @@ class CUDAPatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with CUDA-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("cuda", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("cuda")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
@@ -591,7 +624,7 @@ class CUDAPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_cuda_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
@@ -609,7 +642,7 @@ async def process_cuda_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("cuda", FileType.CODE)
+        feature_extractor = await get_feature_extractor("cuda")
         unified_parser = await get_unified_parser()
         
         # Parse if needed
@@ -715,15 +748,13 @@ async def create_cuda_pattern_context(
     
     return context
 
-# Initialize pattern learner
-cuda_pattern_learner = CUDAPatternLearner()
-
 async def initialize_cuda_patterns():
     """Initialize CUDA patterns during app startup."""
     global cuda_pattern_learner
     
     # Initialize pattern processor first
-    await pattern_processor.initialize()
+    from parsers.pattern_processor import pattern_processor
+    self._pattern_processor = pattern_processor
     
     # Register CUDA patterns
     await pattern_processor.register_language_patterns(
@@ -760,8 +791,10 @@ __all__ = [
     'CUDA_PATTERNS',
     'CUDA_PATTERN_RELATIONSHIPS',
     'CUDA_PATTERN_METRICS',
-    'create_pattern_context',
     'get_cuda_pattern_relationships',
     'update_cuda_pattern_metrics',
-    'get_cuda_pattern_match_result'
+    'get_cuda_pattern_match_result',
+    'initialize_cuda_patterns',
+    'process_cuda_pattern',
+    'create_cuda_pattern_context',
 ] 

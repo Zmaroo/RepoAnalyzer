@@ -3,7 +3,7 @@
 from typing import Dict, List, Union, Any
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary
 
-@handle_async_errors
+@handle_async_errors()
 async def encode_query_pattern(pattern: Union[str, bytes]) -> Union[str, bytes]:
     """
     Encodes a query pattern to bytes if it's a string.
@@ -20,7 +20,7 @@ async def encode_query_pattern(pattern: Union[str, bytes]) -> Union[str, bytes]:
             return pattern.encode('utf-8')
         return pattern
 
-@handle_async_errors
+@handle_async_errors()
 async def encode_query_patterns(patterns: Union[str, bytes, Dict, List]) -> Union[str, bytes, Dict, List]:
     """
     Recursively encodes all strings in the query patterns structure to bytes.

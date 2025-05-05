@@ -14,8 +14,14 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern, 
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -73,7 +79,7 @@ PATTERN_METRICS = {
 SWIFT_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "class": ResilientPattern(
+            "class": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (class_declaration
@@ -123,7 +129,7 @@ SWIFT_PATTERNS = {
                     }
                 }
             ),
-            "protocol": ResilientPattern(
+            "protocol": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (protocol_declaration
@@ -173,7 +179,7 @@ SWIFT_PATTERNS = {
                     }
                 }
             ),
-            "function": ResilientPattern(
+            "function": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (function_declaration
@@ -225,7 +231,7 @@ SWIFT_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.EXTENSIONS: {
-            "extension": AdaptivePattern(
+            "extension": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (extension_declaration
@@ -279,7 +285,7 @@ SWIFT_PATTERNS = {
     }
 }
 
-class SwiftPatternLearner(CrossProjectPatternLearner):
+class SwiftPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced Swift pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
@@ -301,7 +307,7 @@ class SwiftPatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with Swift-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
@@ -445,13 +451,13 @@ class SwiftPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_swift_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a Swift pattern with full system integration."""
     # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
         return common_result
     
@@ -470,7 +476,7 @@ async def process_swift_pattern(
         if not context or not context.code_structure:
             parse_result = await unified_parser.parse(source_code, "swift", FileType.CODE)
             if parse_result and parse_result.ast:
-                context = await create_swift_pattern_context(
+                context = await create_tree_sitter_context(
                     "",
                     parse_result.ast
                 )
@@ -534,7 +540,7 @@ async def create_swift_pattern_context(
     code_structure: Dict[str, Any],
     learned_patterns: Optional[Dict[str, Any]] = None
 ) -> PatternContext:
-    """Create pattern context with full system integration."""
+    """Create Swift-specific pattern context with tree-sitter integration."""
     # Get unified parser
     unified_parser = await get_unified_parser()
     
@@ -547,17 +553,12 @@ async def create_swift_pattern_context(
         )
         code_structure = parse_result.ast if parse_result else {}
     
-    context = PatternContext(
-        code_structure=code_structure,
-        language_stats={"language": "swift"},
-        project_patterns=list(learned_patterns.values()) if learned_patterns else [],
-        file_location=file_path,
-        dependencies=set(),
-        recent_changes=[],
-        scope_level="global",
-        allows_nesting=True,
-        relevant_patterns=list(SWIFT_PATTERNS.keys())
-    )
+    # Create a base tree-sitter context first
+    context = await create_tree_sitter_context(file_path, code_structure)
+    
+    # Add Swift-specific information
+    context.language_stats["language"] = "swift"
+    context.relevant_patterns = list(SWIFT_PATTERNS.keys())
     
     # Add system integration metadata
     context.metadata.update({
@@ -664,7 +665,7 @@ __all__ = [
     'SWIFT_PATTERNS',
     'PATTERN_RELATIONSHIPS',
     'PATTERN_METRICS',
-    'create_pattern_context',
+    'create_tree_sitter_context',
     'get_swift_pattern_match_result',
     'update_swift_pattern_metrics',
     'SwiftPatternContext',

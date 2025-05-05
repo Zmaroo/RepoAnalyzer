@@ -15,7 +15,7 @@ from parsers.types import (
 )
 from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .enhanced_patterns import TreeSitterAdaptivePattern, TreeSitterResilientPattern, TreeSitterCrossProjectPatternLearner
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -24,9 +24,8 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.feature_extractor import get_feature_extractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
@@ -46,7 +45,7 @@ ELIXIR_PATTERN_RELATIONSHIPS = {
         PatternRelationship(
             source_pattern="function",
             target_pattern="module",
-            relationship_type=PatternRelationType.BELONGS_TO,
+            relationship_type=PatternRelationType.DEPENDS_ON,
             confidence=0.95,
             metadata={"module_function": True}
         ),
@@ -62,7 +61,7 @@ ELIXIR_PATTERN_RELATIONSHIPS = {
         PatternRelationship(
             source_pattern="module",
             target_pattern="function",
-            relationship_type=PatternRelationType.CONTAINS,
+            relationship_type=PatternRelationType.DEPENDS_ON,
             confidence=0.95,
             metadata={"functions": True}
         ),
@@ -104,7 +103,7 @@ ELIXIR_PATTERNS = {
     
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function": ResilientPattern(
+            "function": TreeSitterResilientPattern(
                 name="function",
                 pattern="""
                 [
@@ -119,7 +118,7 @@ ELIXIR_PATTERNS = {
                     (call
                         target: (identifier) @syntax.macro.name
                         (#match? @syntax.macro.name "^(def|defp|defmacro|defmacrop)$")
-                        arguments: (arguments
+                        (arguments
                             (identifier) @syntax.function.name
                             parameters: (_)? @syntax.function.params
                             body: (do_block)? @syntax.function.body)) @syntax.macro.def
@@ -139,14 +138,14 @@ ELIXIR_PATTERNS = {
                 }
             ),
             
-            "module": ResilientPattern(
+            "module": TreeSitterResilientPattern(
                 name="module",
                 pattern="""
                 [
                     (call
                         target: (identifier) @semantics.module.keyword
                         (#match? @semantics.module.keyword "^(defmodule)$")
-                        arguments: (arguments
+                        (arguments
                             (alias) @semantics.module.name
                             (do_block)? @semantics.module.body)) @semantics.module.def
                 ]
@@ -170,10 +169,14 @@ ELIXIR_PATTERNS = {
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
             "namespace": QueryPattern(
+                name="namespace",
                 pattern="""
                 (block
                     (_)* @block.content) @namespace
                 """,
+                category=PatternCategory.SYNTAX,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
                 extract=lambda node: {
                     "type": "namespace",
                     "content": node["node"].text.decode('utf8')
@@ -184,7 +187,7 @@ ELIXIR_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": AdaptivePattern(
+            "variable": TreeSitterAdaptivePattern(
                 name="variable",
                 pattern="""
                 (string
@@ -205,16 +208,21 @@ ELIXIR_PATTERNS = {
                 }
             ),
             "module": QueryPattern(
+                name="module",
                 pattern="""
                 [
                     (call
                         target: (identifier) @semantics.module.keyword
                         (#match? @semantics.module.keyword "^(defmodule)$")
-                        arguments: (arguments
+                        (arguments
                             (alias) @semantics.module.name
-                            (do_block)? @semantics.module.body)) @semantics.module.def
+                            (do_block)? @semantics.module.body)
+                    ) @semantics.module.def
                 ]
                 """,
+                category=PatternCategory.SEMANTICS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
                 extract=lambda node: {
                     "name": node["captures"].get("semantics.module.name", {}).get("text", ""),
                     "type": "module"
@@ -225,7 +233,7 @@ ELIXIR_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": AdaptivePattern(
+            "comments": TreeSitterAdaptivePattern(
                 name="comments",
                 pattern="""
                 [
@@ -255,35 +263,43 @@ ELIXIR_PATTERNS = {
         }
     },
     
-    PatternCategory.LEARNING: {
-        PatternPurpose.BEST_PRACTICES: {
+    PatternCategory.CODE_PATTERNS: {
+        PatternPurpose.UNDERSTANDING: {
             "naming_conventions": QueryPattern(
+                name="naming_conventions",
                 pattern="""
                 [
                     (call
                         target: (identifier) @naming.module.keyword
                         (#match? @naming.module.keyword "^(defmodule)$")
-                        arguments: (arguments
+                        (arguments
                             (alias) @naming.module.name
-                            (_)* @naming.module.rest)) @naming.module,
+                            (_)* @naming.module.rest)
+                    ) @naming.module
                     (call
                         target: (identifier) @naming.func.keyword
                         (#match? @naming.func.keyword "^(def|defp|defmacro|defmacrop)$")
-                        arguments: (arguments
+                        (arguments
                             (identifier) @naming.func.name
-                            (_)* @naming.func.rest)) @naming.func,
+                            (_)* @naming.func.rest)
+                    ) @naming.func
                     (call
                         target: (identifier) @naming.struct.keyword
                         (#match? @naming.struct.keyword "^(defstruct)$")
-                        (_)* @naming.struct.fields) @naming.struct,
+                        (_)* @naming.struct.fields
+                    ) @naming.struct
                     (call
                         target: (identifier) @naming.protocol.keyword
                         (#match? @naming.protocol.keyword "^(defprotocol)$")
-                        arguments: (arguments
+                        (arguments
                             (alias) @naming.protocol.name
-                            (_)* @naming.protocol.rest)) @naming.protocol
+                            (_)* @naming.protocol.rest)
+                    ) @naming.protocol
                 ]
                 """,
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
                 extract=lambda node: {
                     "module_name": node["captures"].get("naming.module.name", {}).get("text", ""),
                     "function_name": node["captures"].get("naming.func.name", {}).get("text", ""),
@@ -303,29 +319,41 @@ ELIXIR_PATTERNS = {
                 }
             )
         },
-        PatternPurpose.CODE_ORGANIZATION: {
+        PatternPurpose.UNDERSTANDING: {
             "module_organization": QueryPattern(
+                name="module_organization",
                 pattern="""
                 [
                     (call
                         target: (identifier) @org.module.keyword
                         (#match? @org.module.keyword "^(defmodule)$")
-                        arguments: (arguments
+                        (arguments
                             (alias) @org.module.name
                             (do_block
                                 (call
                                     target: (identifier) @org.use.keyword
                                     (#match? @org.use.keyword "^(use|import|alias|require)$")
-                                    arguments: (arguments
+                                    (arguments
                                         (_) @org.use.arg
-                                        (_)* @org.use.opts)) @org.use)* @org.module.body)) @org.module,
+                                        (_)* @org.use.opts
+                                    )
+                                ) @org.use
+                            )*
+                            @org.module.body
+                        )
+                    ) @org.module
                     (call
                         target: (identifier) @org.behaviour.keyword
                         (#match? @org.behaviour.keyword "^(@behaviour|@impl)$")
-                        arguments: (arguments
-                            (_) @org.behaviour.arg)) @org.behaviour
+                        (arguments
+                            (_) @org.behaviour.arg
+                        )
+                    ) @org.behaviour
                 ]
                 """,
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
                 extract=lambda node: {
                     "has_use_declarations": bool(node["captures"].get("org.use.keyword", {}).get("text") == "use"),
                     "has_import_declarations": bool(node["captures"].get("org.use.keyword", {}).get("text") == "import"),
@@ -336,65 +364,67 @@ ELIXIR_PATTERNS = {
                 }
             )
         },
-        PatternPurpose.FUNCTIONAL_PATTERNS: {
+        PatternPurpose.UNDERSTANDING: {
             "functional_patterns": QueryPattern(
+                name="functional_patterns",
                 pattern="""
                 [
-                    (pipe_operator
-                        left: (_) @fp.pipe.left
-                        right: (_) @fp.pipe.right) @fp.pipe,
                     (call
                         target: (identifier) @fp.enum.module
                         (#match? @fp.enum.module "^(Enum|Stream)$")
-                        arguments: (arguments
-                            function: (identifier) @fp.enum.function
-                            (_)* @fp.enum.args)) @fp.enum,
+                    ) @fp.enum
                     (call
                         target: (identifier) @fp.pattern.keyword
                         (#match? @fp.pattern.keyword "^(case|cond|with|for|if|unless)$")
-                        arguments: (arguments
-                            (_) @fp.pattern.expression
-                            (do_block) @fp.pattern.block)) @fp.pattern,
-                    (binary_operator
-                        operator: (operator) @fp.capture.op
-                        (#match? @fp.capture.op "^&$")
-                        right: (_) @fp.capture.function) @fp.capture
+                    ) @fp.pattern
                 ]
                 """,
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir",
                 extract=lambda node: {
-                    "uses_pipe_operator": bool(node["captures"].get("fp.pipe", {}).get("text", "")),
                     "uses_enum_functions": bool(node["captures"].get("fp.enum.module", {}).get("text", "")),
                     "enum_function": node["captures"].get("fp.enum.function", {}).get("text", ""),
                     "uses_pattern_matching": bool(node["captures"].get("fp.pattern.keyword", {}).get("text", "")),
                     "pattern_type": node["captures"].get("fp.pattern.keyword", {}).get("text", ""),
-                    "uses_function_capture": bool(node["captures"].get("fp.capture.op", {}).get("text", "") == "&")
+                    "uses_function_capture": bool(node["captures"].get("fp.capture.op", {}).get("text", "") == "&"),
+                    "uses_pipe_operator": node.get("operator") == "|>"
                 }
             )
         },
-        PatternPurpose.CONCURRENCY: {
+        PatternPurpose.UNDERSTANDING: {
             "concurrency_patterns": QueryPattern(
+                name="concurrency_patterns",
                 pattern="""
                 [
                     (call
                         target: (identifier) @concurrency.process.keyword
                         (#match? @concurrency.process.keyword "^(spawn|spawn_link|spawn_monitor)$")
-                        arguments: (arguments
-                            (_)* @concurrency.process.args)) @concurrency.process,
+                        (arguments
+                            (_) @concurrency.process.args
+                        )
+                    ) @concurrency.process
                     (call
                         target: (identifier) @concurrency.msg.keyword
                         (#match? @concurrency.msg.keyword "^(send|receive)$")
-                        arguments: (arguments
-                            (_)* @concurrency.msg.args)) @concurrency.msg,
+                        (arguments
+                            (_) @concurrency.msg.args
+                        )
+                    ) @concurrency.msg
                     (call
                         target: (identifier) @concurrency.genserver.keyword
                         (#match? @concurrency.genserver.keyword "^(GenServer\\.(start_link|call|cast))$")
-                        arguments: (arguments
-                            (_)* @concurrency.genserver.args)) @concurrency.genserver,
+                        (arguments
+                            (_) @concurrency.genserver.args
+                        )
+                    ) @concurrency.genserver
                     (call
                         target: (identifier) @concurrency.task.keyword
                         (#match? @concurrency.task.keyword "^(Task\\.(async|await|yield|start_link))$")
-                        arguments: (arguments
-                            (_)* @concurrency.task.args)) @concurrency.task
+                        (arguments
+                            (_) @concurrency.task.args
+                        )
+                    ) @concurrency.task
                 ]
                 """,
                 extract=lambda node: {
@@ -409,7 +439,10 @@ ELIXIR_PATTERNS = {
                         "message_passing" if node["captures"].get("concurrency.msg.keyword", {}).get("text", "") else
                         None
                     )
-                }
+                },
+                category=PatternCategory.CODE_PATTERNS,
+                purpose=PatternPurpose.UNDERSTANDING,
+                language_id="elixir"
             )
         }
     }
@@ -463,13 +496,13 @@ def get_elixir_pattern_match_result(
         metadata={"language": "elixir"}
     )
 
-class ElixirPatternLearner(CrossProjectPatternLearner):
+class ElixirPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced Elixir pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -489,11 +522,13 @@ class ElixirPatternLearner(CrossProjectPatternLearner):
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("elixir", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("elixir", FileType.CODE)
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
         # Register Elixir patterns
+        from parsers.pattern_processor import pattern_processor
+        self._pattern_processor = pattern_processor
         await self._pattern_processor.register_language_patterns(
             "elixir", 
             ELIXIR_PATTERNS,
@@ -627,9 +662,9 @@ class ElixirPatternLearner(CrossProjectPatternLearner):
                 details={"cleanup_error": str(e)}
             )
 
-@handle_async_errors(error_types=ProcessingError)
+@handle_async_errors()
 async def process_elixir_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
@@ -647,7 +682,7 @@ async def process_elixir_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("elixir", FileType.CODE)
+        feature_extractor = await get_feature_extractor("elixir", FileType.CODE)
         unified_parser = await get_unified_parser()
         
         # Parse if needed
@@ -761,6 +796,7 @@ async def initialize_elixir_patterns():
     global elixir_pattern_learner
     
     # Initialize pattern processor first
+    from parsers.pattern_processor import pattern_processor
     await pattern_processor.initialize()
     
     # Register Elixir patterns

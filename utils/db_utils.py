@@ -38,7 +38,7 @@ def setup_logging(debug=False):
         neo4j_logger.setLevel(logging.INFO)
     # If debug is True, it will use the default level from our logger.py
 
-@handle_async_errors
+@handle_async_errors()
 async def clean_postgresql():
     """Clean PostgreSQL database."""
     log("Cleaning PostgreSQL database...", level="info")
@@ -58,7 +58,7 @@ async def clean_postgresql():
             log(f"Error cleaning PostgreSQL: {e}", level="error")
             return False
 
-@handle_async_errors
+@handle_async_errors()
 async def clean_neo4j():
     """Clean Neo4j database."""
     log("Cleaning Neo4j database...", level="info")

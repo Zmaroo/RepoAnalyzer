@@ -80,7 +80,7 @@ def should_ignore(file_path: str) -> bool:
     path_parts = Path(file_path).parts
     return any(pattern in path_parts for pattern in ignore_patterns)
 
-@handle_async_errors
+@handle_async_errors()
 @cached_in_request(lambda file_path: f"classify:{file_path}")
 async def classify_file(file_path: str) -> Optional[FileClassification]:
     """Get file classification based on extension and content.
@@ -122,7 +122,7 @@ async def classify_file(file_path: str) -> Optional[FileClassification]:
             log(f"Error classifying file {file_path}: {e}", level="error")
             return None
 
-@handle_async_errors
+@handle_async_errors()
 @cached_in_request(lambda base_path, file_types: f"get_files:{base_path}:{sorted(file_types) if file_types else None}")
 async def get_files(base_path: str, file_types: Set = None) -> List[str]:
     """Get all processable files in directory.
@@ -162,7 +162,7 @@ async def get_files(base_path: str, file_types: Set = None) -> List[str]:
             log(f"Error getting files: {e}", level="error")
             return []
 
-@handle_async_errors
+@handle_async_errors()
 async def get_relative_path(file_path: str, base_path: str) -> str:
     """Get relative path from base_path.
     
@@ -184,7 +184,7 @@ async def get_relative_path(file_path: str, base_path: str) -> str:
             log(f"Error getting relative path: {e}", level="error")
             return file_path
 
-@handle_async_errors
+@handle_async_errors()
 @cached_in_request(lambda file_path: f"processable:{file_path}")
 async def is_processable_file(file_path: str) -> bool:
     """Check if file can be processed.

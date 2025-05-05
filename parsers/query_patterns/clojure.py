@@ -15,7 +15,7 @@ from parsers.types import (
 )
 from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .enhanced_patterns import TreeSitterAdaptivePattern, TreeSitterResilientPattern, TreeSitterCrossProjectPatternLearner
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -24,13 +24,12 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
+from parsers.feature_extractor import get_feature_extractor
 import time
 
 # Clojure capabilities (extends common capabilities)
@@ -70,14 +69,14 @@ CLOJURE_PATTERN_RELATIONSHIPS = {
         PatternRelationship(
             source_pattern="namespace",
             target_pattern="function_definition",
-            relationship_type=PatternRelationType.CONTAINS,
+            relationship_type=PatternRelationType.USES,
             confidence=0.95,
             metadata={"namespace_members": True}
         ),
         PatternRelationship(
             source_pattern="namespace",
             target_pattern="class_definition",
-            relationship_type=PatternRelationType.CONTAINS,
+            relationship_type=PatternRelationType.USES,
             confidence=0.95,
             metadata={"namespace_members": True}
         )
@@ -121,7 +120,7 @@ CLOJURE_PATTERNS = {
     
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function_definition": ResilientPattern(
+            "function_definition": TreeSitterResilientPattern(
                 name="function_definition",
                 pattern="""
                 [
@@ -162,7 +161,7 @@ CLOJURE_PATTERNS = {
                 }
             ),
             
-            "class_definition": ResilientPattern(
+            "class_definition": TreeSitterResilientPattern(
                 name="class_definition",
                 pattern="""
                 [
@@ -195,7 +194,7 @@ CLOJURE_PATTERNS = {
     
     PatternCategory.SEMANTICS: {
         PatternPurpose.UNDERSTANDING: {
-            "variable": AdaptivePattern(
+            "variable": TreeSitterAdaptivePattern(
                 name="variable",
                 pattern="""
                 [
@@ -227,7 +226,7 @@ CLOJURE_PATTERNS = {
     
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
-            "namespace": ResilientPattern(
+            "namespace": TreeSitterResilientPattern(
                 name="namespace",
                 pattern="""
                 [
@@ -260,7 +259,7 @@ CLOJURE_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": AdaptivePattern(
+            "comments": TreeSitterAdaptivePattern(
                 name="comments",
                 pattern="""
                 [
@@ -340,13 +339,13 @@ def get_clojure_pattern_match_result(
         metadata={"language": "clojure"}
     )
 
-class ClojurePatternLearner(CrossProjectPatternLearner):
+class ClojurePatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced Clojure pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -362,15 +361,16 @@ class ClojurePatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with Clojure-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("clojure", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("clojure")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
         # Register Clojure patterns
+        from parsers.pattern_processor import pattern_processor
         await self._pattern_processor.register_language_patterns(
             "clojure", 
             CLOJURE_PATTERNS,
@@ -506,7 +506,7 @@ class ClojurePatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_clojure_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
@@ -524,7 +524,7 @@ async def process_clojure_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("clojure", FileType.CODE)
+        feature_extractor = await get_feature_extractor("clojure")
         unified_parser = await get_unified_parser()
         
         # Parse if needed
@@ -636,6 +636,7 @@ clojure_pattern_learner = ClojurePatternLearner()
 async def initialize_clojure_patterns():
     """Initialize Clojure patterns during app startup."""
     global clojure_pattern_learner
+    from parsers.pattern_processor import pattern_processor
     
     # Initialize pattern processor first
     await pattern_processor.initialize()

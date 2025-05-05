@@ -154,7 +154,7 @@ class FileProcessor:
             }
         }
 
-    @handle_async_errors
+    @handle_async_errors()
     @cached_in_request(lambda self, file_path, content, language, reference_patterns: f"process:{file_path}")
     async def process_file(
         self,

@@ -4,15 +4,12 @@ This module provides mapping between file extensions and languages,
 integrating with the parser system and caching infrastructure.
 """
 
-from typing import Dict, Optional, Set, List, Any, Union
+from typing import Dict, Optional, Set, List, Any, Tuple, Union
 import asyncio
 import time
 from dataclasses import dataclass, field
 from tree_sitter_language_pack import SupportedLanguage, get_language, get_parser
-from parsers.types import (
-    FileType, ParserType, AICapability, AIContext,
-    LanguageMapping as LanguageMappingType
-)
+from parsers.types import FileType, ParserType, AICapability, AIContext, SupportLevel, LanguageSupport as LanguageSupportType
 from parsers.base_parser import BaseParser
 from utils.logger import log
 from utils.error_handling import (
@@ -40,6 +37,21 @@ def normalize_language_name(language_id: str) -> str:
     """
     return language_id.lower().replace("-", "_").replace(" ", "_")
 
+def normalize_and_check_tree_sitter_support(language_id: str) -> Tuple[str, bool]:
+    """Normalize language ID and check tree-sitter support.
+    
+    This function centralizes language normalization and tree-sitter support checking.
+    
+    Args:
+        language_id: The language identifier to normalize and check
+        
+    Returns:
+        Tuple of (normalized_language_id, is_supported_by_tree_sitter)
+    """
+    normalized = normalize_language_name(language_id)
+    is_supported = normalized in SupportedLanguage.__args__
+    return normalized, is_supported
+
 @dataclass
 class LanguageMapping(BaseParser):
     """Language mapping management.
@@ -49,7 +61,6 @@ class LanguageMapping(BaseParser):
     
     Attributes:
         language_id (str): The identifier for the language
-        mapping (LanguageMappingType): The language mapping configuration
         extensions (Set[str]): Set of file extensions for this language
         patterns (List[str]): List of filename patterns for this language
     """
@@ -65,7 +76,6 @@ class LanguageMapping(BaseParser):
             file_type=FileType.CONFIG,
             parser_type=ParserType.CUSTOM
         )
-        self.mapping = LanguageMappingType()
         self.extensions = set()
         self.patterns = []
         
@@ -91,12 +101,8 @@ class LanguageMapping(BaseParser):
                 init_task = submit_async_task(self._load_mapping())
                 await asyncio.wrap_future(init_task)
                 
-                if not self.mapping:
+                if not self.extensions or not self.patterns:
                     raise ProcessingError(f"Failed to load mapping for {self.language_id}")
-                
-                # Process extensions and patterns
-                self.extensions = set(self.mapping.extensions)
-                self.patterns = self.mapping.patterns
                 
                 await log(f"Language mapping initialized for {self.language_id}", level="info")
                 return True
@@ -129,7 +135,8 @@ class LanguageMapping(BaseParser):
                 """, self.language_id)
                 
                 if mapping_result:
-                    self.mapping = LanguageMappingType(**mapping_result)
+                    self.extensions = set(mapping_result['extensions'])
+                    self.patterns = mapping_result['patterns']
                     
         except Exception as e:
             await log(f"Error loading mapping: {e}", level="error")
@@ -152,11 +159,8 @@ class LanguageMapping(BaseParser):
                 await asyncio.wrap_future(update_task)
                 
                 # Update local mapping
-                self.mapping.update(mapping)
-                
-                # Update extensions and patterns
-                self.extensions = set(self.mapping.extensions)
-                self.patterns = self.mapping.patterns
+                self.extensions = set(mapping['extensions'])
+                self.patterns = mapping['patterns']
                 
                 await log(f"Mapping updated for {self.language_id}", level="info")
                 return True
@@ -175,11 +179,11 @@ class LanguageMapping(BaseParser):
         """Update mapping in database."""
         async with transaction_scope() as txn:
             await txn.execute("""
-                INSERT INTO language_mappings (language_id, mapping)
-                VALUES ($1, $2)
+                INSERT INTO language_mappings (language_id, extensions, patterns)
+                VALUES ($1, $2, $3)
                 ON CONFLICT (language_id) DO UPDATE
-                SET mapping = $2
-            """, self.language_id, mapping)
+                SET extensions = $2, patterns = $3
+            """, self.language_id, tuple(mapping['extensions']), tuple(mapping['patterns']))
     
     @handle_async_errors(error_types=ProcessingError)
     async def add_extension(self, extension: str) -> bool:
@@ -202,7 +206,6 @@ class LanguageMapping(BaseParser):
                 
                 # Update local state
                 self.extensions.add(extension)
-                self.mapping.extensions.append(extension)
                 
                 await log(f"Extension {extension} added for {self.language_id}", level="info")
                 return True
@@ -247,7 +250,6 @@ class LanguageMapping(BaseParser):
                 
                 # Update local state
                 self.patterns.append(pattern)
-                self.mapping.patterns.append(pattern)
                 
                 await log(f"Pattern {pattern} added for {self.language_id}", level="info")
                 return True

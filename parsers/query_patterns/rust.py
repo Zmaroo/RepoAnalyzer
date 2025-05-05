@@ -14,8 +14,14 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern,
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -24,17 +30,16 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.feature_extractor import get_feature_extractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
 import time
 
-# Language identifier
-LANGUAGE = "rust"
+# Define language ID constant
+LANGUAGE_ID = "rust"
 
 # Rust capabilities (extends common capabilities)
 RUST_CAPABILITIES = COMMON_CAPABILITIES | {
@@ -73,7 +78,7 @@ PATTERN_METRICS = {
 RUST_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "struct": ResilientPattern(
+            "struct": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (struct_item
@@ -111,7 +116,7 @@ RUST_PATTERNS = {
                 examples=["struct Point<T> { x: T, y: T }", "struct Tuple(i32, String);"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["struct"],
@@ -121,7 +126,7 @@ RUST_PATTERNS = {
                     }
                 }
             ),
-            "enum": ResilientPattern(
+            "enum": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (enum_item
@@ -145,7 +150,7 @@ RUST_PATTERNS = {
                 examples=["enum Option<T> { Some(T), None }", "enum Color { Red, Green, Blue }"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["enum"],
@@ -155,7 +160,7 @@ RUST_PATTERNS = {
                     }
                 }
             ),
-            "trait": ResilientPattern(
+            "trait": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (trait_item
@@ -192,7 +197,7 @@ RUST_PATTERNS = {
                 examples=["trait Display { fn fmt(&self) -> String; }", "impl Debug for Point"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["trait"],
@@ -207,7 +212,7 @@ RUST_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.FUNCTIONS: {
-            "function": AdaptivePattern(
+            "function": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (function_item
@@ -253,7 +258,7 @@ RUST_PATTERNS = {
                 examples=["fn process(data: &str) -> Result<(), Error>", "async fn handle() -> String"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.FUNCTIONS,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["function"],
@@ -265,7 +270,7 @@ RUST_PATTERNS = {
             )
         },
         PatternPurpose.MODULES: {
-            "module": AdaptivePattern(
+            "module": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (mod_item
@@ -299,7 +304,7 @@ RUST_PATTERNS = {
                 examples=["mod config;", "use std::io::Result;"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.MODULES,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["module"],
@@ -313,7 +318,7 @@ RUST_PATTERNS = {
     },
 
     PatternCategory.BEST_PRACTICES: {
-        // ... existing patterns ...
+        # ... existing patterns ...
     },
 
     PatternCategory.COMMON_ISSUES: {
@@ -328,7 +333,7 @@ RUST_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects unsafe blocks", "examples": ["unsafe { *ptr = 42; }"]}
         ),
         "lifetime_mismatch": QueryPattern(
@@ -343,7 +348,7 @@ RUST_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential lifetime mismatches", "examples": ["fn foo<'a>(x: &'a str, y: &'b str)"]}
         ),
         "unwrap_usage": QueryPattern(
@@ -357,7 +362,7 @@ RUST_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects unwrap/expect usage", "examples": ["result.unwrap()", "option.expect(\"msg\")"]}
         ),
         "mutex_deadlock": QueryPattern(
@@ -371,7 +376,7 @@ RUST_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential mutex deadlocks", "examples": ["mutex.lock(); mutex.lock();"]}
         ),
         "unhandled_error": QueryPattern(
@@ -385,19 +390,19 @@ RUST_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects unhandled Result/Option", "examples": ["let x: Result<T, E> = foo();"]}
         )
     }
 }
 
-class RustPatternLearner(CrossProjectPatternLearner):
+class RustPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced Rust pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -413,15 +418,17 @@ class RustPatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with Rust-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("rust", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("rust")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
         # Register Rust patterns
+        from parsers.pattern_processor import pattern_processor
+        self._pattern_processor = pattern_processor
         await self._pattern_processor.register_language_patterns(
             "rust", 
             RUST_PATTERNS,
@@ -555,15 +562,15 @@ class RustPatternLearner(CrossProjectPatternLearner):
                 details={"cleanup_error": str(e)}
             )
 
-@handle_async_errors(error_types=ProcessingError)
+@handle_async_errors()
 async def process_rust_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a Rust pattern with full system integration."""
     # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
         return common_result
     
@@ -575,14 +582,14 @@ async def process_rust_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("rust", FileType.CODE)
+        feature_extractor = await get_feature_extractor("rust")
         unified_parser = await get_unified_parser()
         
         # Parse if needed
         if not context or not context.code_structure:
             parse_result = await unified_parser.parse(source_code, "rust", FileType.CODE)
             if parse_result and parse_result.ast:
-                context = await create_rust_pattern_context(
+                context = await create_tree_sitter_context(
                     "",
                     parse_result.ast
                 )
@@ -646,40 +653,32 @@ async def create_rust_pattern_context(
     code_structure: Dict[str, Any],
     learned_patterns: Optional[Dict[str, Any]] = None
 ) -> PatternContext:
-    """Create pattern context with full system integration."""
-    # Get unified parser
-    unified_parser = await get_unified_parser()
+    """Create Rust-specific pattern context with tree-sitter integration.
     
-    # Parse the code structure if needed
-    if not code_structure:
-        parse_result = await unified_parser.parse(
-            file_path,
-            language_id="rust",
-            file_type=FileType.CODE
-        )
-        code_structure = parse_result.ast if parse_result else {}
-    
-    context = PatternContext(
-        code_structure=code_structure,
-        language_stats={"language": "rust"},
-        project_patterns=list(learned_patterns.values()) if learned_patterns else [],
-        file_location=file_path,
-        dependencies=set(),
-        recent_changes=[],
-        scope_level="global",
-        allows_nesting=True,
-        relevant_patterns=list(RUST_PATTERNS.keys())
+    This function creates a tree-sitter based context for Rust patterns
+    with full system integration.
+    """
+    # Create a base tree-sitter context
+    base_context = await create_tree_sitter_context(
+        file_path,
+        code_structure,
+        language_id=LANGUAGE_ID,
+        learned_patterns=learned_patterns
     )
     
+    # Add Rust-specific information
+    base_context.language_stats = {"language": LANGUAGE_ID}
+    base_context.relevant_patterns = list(RUST_PATTERNS.keys())
+    
     # Add system integration metadata
-    context.metadata.update({
+    base_context.metadata.update({
         "parser_type": ParserType.TREE_SITTER,
         "feature_extraction_enabled": True,
         "block_extraction_enabled": True,
         "pattern_learning_enabled": True
     })
     
-    return context
+    return base_context
 
 def update_rust_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
     """Update performance metrics for a pattern."""
@@ -719,6 +718,7 @@ async def initialize_rust_patterns():
     global pattern_learner
     
     # Initialize pattern processor first
+    from parsers.pattern_processor import pattern_processor
     await pattern_processor.initialize()
     
     # Register Rust patterns
@@ -780,9 +780,10 @@ __all__ = [
     'RUST_PATTERNS',
     'PATTERN_RELATIONSHIPS',
     'PATTERN_METRICS',
-    'create_pattern_context',
+    'create_rust_pattern_context',
     'get_rust_pattern_match_result',
     'update_rust_pattern_metrics',
-    'RustPatternContext',
-    'pattern_learner'
+    'RustPatternLearner',
+    'process_rust_pattern',
+    'LANGUAGE_ID'
 ] 

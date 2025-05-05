@@ -23,7 +23,7 @@ file_config = FileConfig()
 # Re-export handle_async_errors for backward compatibility
 handle_errors = handle_async_errors
 
-@handle_async_errors
+@handle_async_errors()
 async def async_read_file(file_path: str, try_encodings: bool = True) -> Optional[str]:
     """[3.2] Unified file reading with encoding detection.
     

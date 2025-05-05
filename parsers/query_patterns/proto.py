@@ -21,6 +21,7 @@ from utils.error_handling import AsyncErrorBoundary, handle_async_errors, Proces
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
 from utils.cache_analytics import get_cache_analytics
+from utils.cache import cache_coordinator, UnifiedCache
 from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler

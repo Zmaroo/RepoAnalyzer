@@ -35,7 +35,6 @@ from parsers.models import (
     QueryResult
 )
 from parsers.feature_extractor import (
-    BaseFeatureExtractor,
     TreeSitterFeatureExtractor,
     CustomFeatureExtractor
 )
@@ -58,7 +57,7 @@ from semantic.search import (  # Updated import path
 # TODO: Implement AI tools before enabling these imports
 # from ai_tools.graph_capabilities import graph_analysis
 # from ai_tools.ai_interface import AIAssistant
-from watcher.file_watcher import watch_directory
+from watcher.file_watcher import DirectoryWatcher
 from utils.error_handling import handle_async_errors, AsyncErrorBoundary, handle_errors
 from utils.app_init import _initialize_components
 from utils.shutdown import register_shutdown_handler
@@ -72,7 +71,7 @@ from db.connection import connection_manager
 # Asynchronous tasks delegating major responsibilities.
 # ------------------------------------------------------------------
 
-@handle_async_errors
+@handle_async_errors()
 async def process_share_docs(share_docs_arg: str):
     """
     Shares documentation based on input argument.
@@ -86,7 +85,7 @@ async def process_share_docs(share_docs_arg: str):
         result = await upsert_coordinator.share_docs_with_repo(doc_ids, int(target_repo))
         log(f"Sharing docs result: {result}", level="info")
 
-@handle_async_errors
+@handle_async_errors()
 async def handle_file_change(file_path: str, repo_id: int):
     log(f"File changed: {file_path}", level="info")
     await process_repository_indexing(file_path, repo_id, single_file=True)
@@ -97,7 +96,7 @@ async def handle_file_change(file_path: str, repo_id: int):
     # await graph_analysis.analyze_code_structure(repo_id)
 
 # TODO: Implement AI Assistant before enabling
-# @handle_async_errors
+# @handle_async_errors()
 # async def learn_from_reference_repo(reference_repo_id: int, active_repo_id: int = None):
 #     """
 #     Learn patterns from a reference repository and optionally apply them to an active repo.
@@ -123,7 +122,7 @@ async def handle_file_change(file_path: str, repo_id: int):
 # Main async routine assembling tasks (indexing, sharing, searching).
 # ------------------------------------------------------------------
 
-@handle_async_errors
+@handle_async_errors()
 async def main_async(args):
     """Main async coordinator for indexing, documentation operations, and watch mode."""
     try:
@@ -237,8 +236,9 @@ async def main_async(args):
         if args.watch:
             log("Watch mode enabled: Starting file watcher...", level="info")
             
-            # Start the watcher directly since it's already an async function
-            await watch_directory(repo_path, repo_id, on_change=handle_file_change)
+            # Instantiate DirectoryWatcher and start watching
+            directory_watcher = await DirectoryWatcher.create()
+            await directory_watcher.watch_directory(repo_path, repo_id, on_change=handle_file_change)
         else:
             # One-time graph analysis
             log("Invoking graph projection once after indexing.", level="info")

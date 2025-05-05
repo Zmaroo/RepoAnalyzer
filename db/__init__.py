@@ -118,7 +118,6 @@ class DatabaseInitializer:
             "details": details
         }
     
-    @handle_async_errors(error_types=(DatabaseError,))
     async def initialize(self):
         """Initialize all database components with AI support."""
         if self._initialized:
@@ -128,50 +127,45 @@ class DatabaseInitializer:
         self._metrics["total_initializations"] += 1
         
         try:
-            async with AsyncErrorBoundary(
-                operation_name="database_initialization",
-                error_types=(DatabaseError,),
-                severity=ErrorSeverity.CRITICAL
-            ):
-                # Initialize connections with AI operation settings first
-                await connection_manager.initialize()
-                await log("Database connections initialized with AI support", level="info")
-                
-                # Initialize PostgreSQL connection specifically
-                await connection_manager.initialize_postgres()
-                await log("PostgreSQL connection initialized", level="info")
-                
-                # Initialize schema after connections are ready
-                await schema_manager.create_all_tables()
-                await log("Database schema initialized with AI pattern support", level="info")
-                
-                # Initialize upsert coordinator
-                await upsert_coordinator.initialize()
-                await log("Upsert coordinator initialized with AI pattern support", level="info")
-                
-                # Initialize graph sync with AI enhancements
-                await graph_sync.initialize()
-                await log("Graph sync initialized with AI pattern support", level="info")
-                
-                # Initialize retry manager with AI-specific settings
-                await get_retry_manager.initialize()
-                await log("Retry manager initialized with AI operation support", level="info")
-                
-                # Update metrics
-                self._metrics["successful_initializations"] += 1
-                init_time = time.time() - start_time
-                self._metrics["initialization_times"].append(init_time)
-                
-                # Update health status
-                await global_health_monitor.update_component_status(
-                    "database_initialization",
-                    ComponentStatus.HEALTHY,
-                    response_time=init_time * 1000,  # Convert to ms
-                    error=False
-                )
-                
-                self._initialized = True
-                await log("All database components initialized with AI support", level="info")
+            # Initialize connections with AI operation settings first
+            await connection_manager.initialize()
+            await log("Database connections initialized with AI support", level="info")
+            
+            # Initialize PostgreSQL connection specifically
+            await connection_manager.initialize_postgres()
+            await log("PostgreSQL connection initialized", level="info")
+            
+            # Initialize schema after connections are ready
+            await schema_manager.create_all_tables()
+            await log("Database schema initialized with AI pattern support", level="info")
+            
+            # Initialize upsert coordinator
+            await upsert_coordinator.initialize()
+            await log("Upsert coordinator initialized with AI pattern support", level="info")
+            
+            # Initialize graph sync with AI enhancements
+            await graph_sync.initialize()
+            await log("Graph sync initialized with AI pattern support", level="info")
+            
+            # Initialize retry manager with AI-specific settings
+            await get_retry_manager.initialize()
+            await log("Retry manager initialized with AI operation support", level="info")
+            
+            # Update metrics
+            self._metrics["successful_initializations"] += 1
+            init_time = time.time() - start_time
+            self._metrics["initialization_times"].append(init_time)
+            
+            # Update health status
+            await global_health_monitor.update_component_status(
+                "database_initialization",
+                ComponentStatus.HEALTHY,
+                response_time=init_time * 1000,  # Convert to ms
+                error=False
+            )
+            
+            self._initialized = True
+            await log("All database components initialized with AI support", level="info")
         except Exception as e:
             self._metrics["failed_initializations"] += 1
             

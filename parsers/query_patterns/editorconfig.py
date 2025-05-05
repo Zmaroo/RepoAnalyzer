@@ -11,7 +11,7 @@ from parsers.types import (
     PatternRelationType, PatternContext, PatternPerformanceMetrics
 )
 from parsers.query_patterns.enhanced_patterns import (
-    ResilientPattern, AdaptivePattern, CrossProjectPatternLearner
+    TreeSitterResilientPattern, TreeSitterAdaptivePattern, TreeSitterCrossProjectPatternLearner
 )
 from utils.error_handling import (
     handle_async_errors, AsyncErrorBoundary, ProcessingError, ErrorSeverity
@@ -328,6 +328,7 @@ EDITORCONFIG_PATTERNS = {
     
     PatternCategory.USER_PATTERNS: {
         "custom_property": QueryPattern(
+            name="custom_property",
             pattern=r'^([a-z][a-z0-9_]*)\s*=\s*(.*)$',
             extract=lambda m: {
                 "type": "custom_property",
@@ -335,15 +336,21 @@ EDITORCONFIG_PATTERNS = {
                 "value": m.group(2).strip(),
                 "line_number": m.string.count('\n', 0, m.start()) + 1
             },
-            description="Matches custom EditorConfig properties",
-            examples=["my_setting = value"]
+            category=PatternCategory.USER_PATTERNS,
+            purpose=PatternPurpose.UNDERSTANDING,
+            language_id=LANGUAGE,
+            metadata={
+                "description": "Matches custom EditorConfig properties",
+                "examples": ["my_setting = value"]
+            }
         )
     }
 }
 
 # Add repository learning patterns
-EDITORCONFIG_PATTERNS[PatternCategory.LEARNING] = {
+EDITORCONFIG_PATTERNS[PatternCategory.CODE_PATTERNS] = {
     "configuration_patterns": QueryPattern(
+        name="configuration_patterns",
         pattern=r'(?s)\[\*\].*?indent_style\s*=\s*(tab|space).*?indent_size\s*=\s*(\d+)',
         extract=lambda m: {
             "type": "indentation_config",
@@ -352,10 +359,16 @@ EDITORCONFIG_PATTERNS[PatternCategory.LEARNING] = {
             "complete_config": True,
             "line_number": m.string.count('\n', 0, m.start()) + 1
         },
-        description="Matches complete indentation configuration",
-        examples=["[*]\nindent_style = space\nindent_size = 2"]
+        category=PatternCategory.CODE_PATTERNS,
+        purpose=PatternPurpose.UNDERSTANDING,
+        language_id=LANGUAGE,
+        metadata={
+            "description": "Matches complete indentation configuration",
+            "examples": ["[*]\nindent_style = space\nindent_size = 2"]
+        }
     ),
     "language_specific_patterns": QueryPattern(
+        name="language_specific_patterns",
         pattern=r'(?s)\[\*\.(?:py|js|jsx|ts|tsx|html|css|htm)\](.*?)(?=\[|$)',
         extract=lambda m: {
             "type": "language_config_pattern",
@@ -364,10 +377,16 @@ EDITORCONFIG_PATTERNS[PatternCategory.LEARNING] = {
             "has_language_config": True,
             "line_number": m.string.count('\n', 0, m.start()) + 1
         },
-        description="Matches language-specific configuration",
-        examples=["[*.py]\nindent_size = 4"]
+        category=PatternCategory.CODE_PATTERNS,
+        purpose=PatternPurpose.UNDERSTANDING,
+        language_id=LANGUAGE,
+        metadata={
+            "description": "Matches language-specific configuration",
+            "examples": ["[*.py]\nindent_size = 4"]
+        }
     ),
     "best_practices_patterns": QueryPattern(
+        name="best_practices_patterns",
         pattern=r'(?s)\[(.*?)\].*?(end_of_line|trim_trailing_whitespace|insert_final_newline)\s*=\s*(.*?)(?=\n|$)',
         extract=lambda m: {
             "type": "best_practice_pattern",
@@ -376,13 +395,18 @@ EDITORCONFIG_PATTERNS[PatternCategory.LEARNING] = {
             "value": m.group(3),
             "line_number": m.string.count('\n', 0, m.start()) + 1
         },
-        description="Matches best practice configurations",
-        examples=["[*]\nend_of_line = lf"]
+        category=PatternCategory.CODE_PATTERNS,
+        purpose=PatternPurpose.UNDERSTANDING,
+        language_id=LANGUAGE,
+        metadata={
+            "description": "Matches best practice configurations",
+            "examples": ["[*]\nend_of_line = lf"]
+        }
     )
 }
 
 # Convert existing patterns to enhanced types
-def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePattern, ResilientPattern]:
+def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern]:
     """Create enhanced pattern from definition."""
     base_pattern = pattern_def.copy()
     
@@ -391,7 +415,7 @@ def create_enhanced_pattern(pattern_def: Dict[str, Any]) -> Union[AdaptivePatter
         "section", "property", "root", "glob_pattern"
     }
     
-    pattern_class = ResilientPattern if is_resilient else AdaptivePattern
+    pattern_class = TreeSitterResilientPattern if is_resilient else TreeSitterAdaptivePattern
     return pattern_class(**base_pattern)
 
 # Convert EDITORCONFIG_PATTERNS to ENHANCED_PATTERNS
@@ -412,7 +436,7 @@ ENHANCED_PATTERNS = {
 }
 
 # Initialize pattern learner with error handling
-pattern_learner = CrossProjectPatternLearner()
+pattern_learner = TreeSitterCrossProjectPatternLearner()
 
 @handle_async_errors(error_types=ProcessingError)
 @cached_in_request
@@ -502,23 +526,18 @@ async def extract_editorconfig_patterns_for_learning(content: str) -> List[Dict[
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
     "section": {
-        PatternRelationType.CONTAINS: ["property", "comment"],
-        PatternRelationType.DEPENDS_ON: ["root"]
+        PatternRelationType.DEPENDS_ON: ["property", "comment", "root"]
     },
     "property": {
-        PatternRelationType.CONTAINS: [],
         PatternRelationType.DEPENDS_ON: ["section"]
     },
     "root": {
-        PatternRelationType.CONTAINS: [],
         PatternRelationType.DEPENDS_ON: []
     },
     "glob_pattern": {
-        PatternRelationType.CONTAINS: [],
         PatternRelationType.DEPENDS_ON: ["section"]
     },
     "comment": {
-        PatternRelationType.CONTAINS: [],
         PatternRelationType.DEPENDS_ON: ["section", "property"]
     }
 }

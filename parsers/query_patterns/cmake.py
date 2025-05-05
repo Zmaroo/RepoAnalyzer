@@ -15,7 +15,7 @@ from parsers.types import (
 )
 from parsers.models import PATTERN_CATEGORIES
 from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .enhanced_patterns import TreeSitterAdaptivePattern, TreeSitterResilientPattern, TreeSitterCrossProjectPatternLearner
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -24,14 +24,16 @@ from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
+from parsers.feature_extractor import get_feature_extractor
 import time
+
+# Module identification
+LANGUAGE = "cmake"
 
 # CMake capabilities (extends common capabilities)
 CMAKE_CAPABILITIES = COMMON_CAPABILITIES | {
@@ -114,7 +116,7 @@ CMAKE_PATTERNS = {
     
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "function_definition": ResilientPattern(
+            "function_definition": TreeSitterResilientPattern(
                 name="function_definition",
                 pattern="""
                 [
@@ -149,7 +151,7 @@ CMAKE_PATTERNS = {
                 }
             ),
             
-            "control_flow": ResilientPattern(
+            "control_flow": TreeSitterResilientPattern(
                 name="control_flow",
                 pattern="""
                 [
@@ -224,7 +226,7 @@ CMAKE_PATTERNS = {
     
     PatternCategory.STRUCTURE: {
         PatternPurpose.UNDERSTANDING: {
-            "block": AdaptivePattern(
+            "block": TreeSitterAdaptivePattern(
                 name="block",
                 pattern="""
                 [
@@ -253,7 +255,7 @@ CMAKE_PATTERNS = {
     
     PatternCategory.DOCUMENTATION: {
         PatternPurpose.UNDERSTANDING: {
-            "comments": AdaptivePattern(
+            "comments": TreeSitterAdaptivePattern(
                 name="comments",
                 pattern="""
                 [
@@ -289,77 +291,78 @@ CMAKE_PATTERNS = {
     },
 
     PatternCategory.COMMON_ISSUES: {
-        "invalid_target": QueryPattern(
-            name="invalid_target",
-            pattern=r'add_(?:executable|library)\s*\(\s*([^\s)]+)',
-            extract=lambda m: {
-                "type": "invalid_target",
-                "target": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "needs_verification": True
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potentially invalid targets", "examples": ["add_executable(target)"]}
-        ),
-        "missing_dependency": QueryPattern(
-            name="missing_dependency",
-            pattern=r'target_link_libraries\s*\(\s*([^\s)]+)\s+([^)]+)\)',
-            extract=lambda m: {
-                "type": "missing_dependency",
-                "target": m.group(1),
-                "dependencies": m.group(2),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "needs_verification": True
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potentially missing dependencies", "examples": ["target_link_libraries(target dep)"]}
-        ),
-        "undefined_variable": QueryPattern(
-            name="undefined_variable",
-            pattern=r'\${([^}]+)}',
-            extract=lambda m: {
-                "type": "undefined_variable",
-                "variable": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "needs_verification": True
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potentially undefined variables", "examples": ["${UNDEFINED_VAR}"]}
-        ),
-        "circular_dependency": QueryPattern(
-            name="circular_dependency",
-            pattern=r'target_link_libraries\s*\(\s*([^\s)]+)[^)]*\1[^)]*\)',
-            extract=lambda m: {
-                "type": "circular_dependency",
-                "target": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "confidence": 0.9
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potential circular dependencies", "examples": ["target_link_libraries(target target)"]}
-        ),
-        "invalid_command": QueryPattern(
-            name="invalid_command",
-            pattern=r'^([a-z_]+)\s*\(',
-            extract=lambda m: {
-                "type": "invalid_command",
-                "command": m.group(1),
-                "line_number": m.string.count('\n', 0, m.start()) + 1,
-                "needs_verification": True
-            },
-            category=PatternCategory.COMMON_ISSUES,
-            purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
-            metadata={"description": "Detects potentially invalid commands", "examples": ["invalid_command()"]}
-        )
+        # The following patterns were using regexes, which is not allowed for CMake (tree-sitter only). Commented out for correctness.
+        # "invalid_target": QueryPattern(
+        #     name="invalid_target",
+        #     pattern=r'add_(?:executable|library)\s*\(\s*([^\s)]+)',
+        #     extract=lambda m: {
+        #         "type": "invalid_target",
+        #         "target": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "needs_verification": True
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id=LANGUAGE,
+        #     metadata={"description": "Detects potentially invalid targets", "examples": ["add_executable(target)"]}
+        # ),
+        # "missing_dependency": QueryPattern(
+        #     name="missing_dependency",
+        #     pattern=r'target_link_libraries\s*\(\s*([^\s)]+)\s+([^)]+)\)',
+        #     extract=lambda m: {
+        #         "type": "missing_dependency",
+        #         "target": m.group(1),
+        #         "dependencies": m.group(2),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "needs_verification": True
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id=LANGUAGE,
+        #     metadata={"description": "Detects potentially missing dependencies", "examples": ["target_link_libraries(target dep)"]}
+        # ),
+        # "undefined_variable": QueryPattern(
+        #     name="undefined_variable",
+        #     pattern=r'\${([^}]+)}',
+        #     extract=lambda m: {
+        #         "type": "undefined_variable",
+        #         "variable": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "needs_verification": True
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id=LANGUAGE,
+        #     metadata={"description": "Detects potentially undefined variables", "examples": ["${UNDEFINED_VAR}"]}
+        # ),
+        # "circular_dependency": QueryPattern(
+        #     name="circular_dependency",
+        #     pattern=r'target_link_libraries\s*\(\s*([^\s)]+)[^)]*\1[^)]*\)',
+        #     extract=lambda m: {
+        #         "type": "circular_dependency",
+        #         "target": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "confidence": 0.9
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id=LANGUAGE,
+        #     metadata={"description": "Detects potential circular dependencies", "examples": ["target_link_libraries(target target)"]}
+        # ),
+        # "invalid_command": QueryPattern(
+        #     name="invalid_command",
+        #     pattern=r'^([a-z_]+)\s*\(',
+        #     extract=lambda m: {
+        #         "type": "invalid_command",
+        #         "command": m.group(1),
+        #         "line_number": m.string.count('\n', 0, m.start()) + 1,
+        #         "needs_verification": True
+        #     },
+        #     category=PatternCategory.COMMON_ISSUES,
+        #     purpose=PatternPurpose.UNDERSTANDING,
+        #     language_id=LANGUAGE,
+        #     metadata={"description": "Detects potentially invalid commands", "examples": ["invalid_command()"]}
+        # ),
     }
 }
 
@@ -422,16 +425,13 @@ __all__ = [
     'get_cmake_pattern_match_result'
 ]
 
-# Module identification
-LANGUAGE = "cmake"
-
-class CMakePatternLearner(CrossProjectPatternLearner):
+class CMakePatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced CMake pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -447,15 +447,17 @@ class CMakePatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with CMake-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("cmake", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("cmake")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
         # Register CMake patterns
+        from parsers.pattern_processor import pattern_processor
+        self._pattern_processor = pattern_processor
         await self._pattern_processor.register_language_patterns(
             "cmake", 
             CMAKE_PATTERNS,
@@ -591,7 +593,7 @@ class CMakePatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_cmake_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
@@ -609,7 +611,7 @@ async def process_cmake_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("cmake", FileType.CODE)
+        feature_extractor = await get_feature_extractor("cmake")
         unified_parser = await get_unified_parser()
         
         # Parse if needed
@@ -721,6 +723,7 @@ cmake_pattern_learner = CMakePatternLearner()
 async def initialize_cmake_patterns():
     """Initialize CMake patterns during app startup."""
     global cmake_pattern_learner
+    from parsers.pattern_processor import pattern_processor
     
     # Initialize pattern processor first
     await pattern_processor.initialize()

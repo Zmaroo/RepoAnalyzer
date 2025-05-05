@@ -423,7 +423,7 @@ async def cleanup_pattern_system() -> None:
             details={"cleanup_error": str(e)}
         )
 
-@handle_async_errors
+@handle_async_errors()
 async def get_patterns_for_language(language_id: str) -> Optional[Dict[PatternCategory, Dict[PatternPurpose, Dict[str, QueryPattern]]]]:
     """Get patterns for a specific language with caching and error handling."""
     if not _initialized:
@@ -464,7 +464,7 @@ async def get_patterns_for_language(language_id: str) -> Optional[Dict[PatternCa
             
             return patterns
 
-@handle_async_errors
+@handle_async_errors()
 async def validate_pattern(pattern: QueryPattern, context: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """Validate a pattern with caching and error handling."""
     cache_key = f"validation:{pattern.name}:{hash(pattern.pattern)}"

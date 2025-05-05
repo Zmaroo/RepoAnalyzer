@@ -18,18 +18,18 @@ from .common import (
     COMMON_PATTERNS, COMMON_CAPABILITIES,
     process_common_pattern, validate_common_pattern
 )
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from parsers.query_patterns.enhanced_patterns_custom import AdaptivePattern, CrossProjectPatternLearner
+from parsers.query_patterns.enhanced_patterns import TreeSitterResilientPattern
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
-from utils.request_cache import cached_in_request
+from utils.request_cache import get_current_request_cache
 from utils.cache_analytics import get_cache_analytics
 from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
 import asyncio
-from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
-from parsers.feature_extractor import BaseFeatureExtractor
+from parsers.feature_extractor import get_feature_extractor
 from parsers.unified_parser import get_unified_parser
 from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
@@ -111,7 +111,7 @@ BASH_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
             **COMMON_PATTERNS[PatternCategory.SYNTAX][PatternPurpose.UNDERSTANDING],  # Inherit common syntax patterns
-            "function_definition": ResilientPattern(
+            "function_definition": TreeSitterResilientPattern(
                 name="function_definition",
                 pattern="""
                 [
@@ -134,7 +134,7 @@ BASH_PATTERNS = {
                 }
             ),
             
-            "control_flow": ResilientPattern(
+            "control_flow": TreeSitterResilientPattern(
                 name="control_flow",
                 pattern="""
                 [
@@ -177,16 +177,9 @@ BASH_PATTERNS = {
         PatternPurpose.UNDERSTANDING: {
             "variable_assignment": AdaptivePattern(
                 name="variable_assignment",
-                pattern="""
-                [
-                    (variable_assignment
-                        name: (_) @semantics.var.name
-                        value: (_) @semantics.var.value) @semantics.var.assignment,
-                    
-                    (command_substitution
-                        command: (_) @semantics.var.command) @semantics.var.substitution
-                ]
-                """,
+                pattern="",  # No tree-sitter pattern, regex only
+                regex_pattern=r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$|\$\(([^)]+)\)|`([^`]+)`",
+                # This regex matches variable assignments and command substitutions in Bash
                 category=PatternCategory.SEMANTICS,
                 purpose=PatternPurpose.UNDERSTANDING,
                 language_id="bash",
@@ -235,7 +228,7 @@ class BashPatternLearner(CrossProjectPatternLearner):
     def __init__(self):
         super().__init__()
         self._feature_extractor = None
-        self._pattern_processor = pattern_processor
+        self._pattern_processor = None
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
@@ -255,11 +248,12 @@ class BashPatternLearner(CrossProjectPatternLearner):
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
-        self._feature_extractor = await BaseFeatureExtractor.create("bash", FileType.CODE)
+        self._feature_extractor = await get_feature_extractor("bash")
         self._unified_parser = await get_unified_parser()
         self._ai_processor = await get_ai_pattern_processor()
         
         # Register Bash patterns
+        self._pattern_processor = await pattern_processor
         await self._pattern_processor.register_language_patterns(
             "bash", 
             BASH_PATTERNS,
@@ -395,7 +389,7 @@ class BashPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_bash_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[AdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
@@ -413,7 +407,7 @@ async def process_bash_pattern(
     ):
         # Get all required components
         block_extractor = await get_block_extractor()
-        feature_extractor = await BaseFeatureExtractor.create("bash", FileType.CODE)
+        feature_extractor = await get_feature_extractor("bash")
         unified_parser = await get_unified_parser()
         
         # Parse if needed
@@ -560,12 +554,12 @@ async def initialize_bash_patterns():
     )
 
 async def extract_bash_features(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[AdaptivePattern, TreeSitterResilientPattern],
     matches: List[Dict[str, Any]],
     context: PatternContext
 ) -> ExtractedFeatures:
     """Extract features from pattern matches."""
-    feature_extractor = await BaseFeatureExtractor.create("bash", FileType.CODE)
+    feature_extractor = await get_feature_extractor("bash")
     
     features = ExtractedFeatures()
     
@@ -588,7 +582,7 @@ async def extract_bash_features(
     return features
 
 async def validate_bash_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[AdaptivePattern, TreeSitterResilientPattern],
     context: Optional[PatternContext] = None
 ) -> PatternValidationResult:
     """Validate a Bash pattern with system integration."""
@@ -614,6 +608,18 @@ async def validate_bash_pattern(
         
         return validation_result
 
+async def update_bash_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
+    """Update metrics for a specific Bash pattern."""
+    if pattern_name in BASH_PATTERN_METRICS:
+        pattern_metrics = BASH_PATTERN_METRICS[pattern_name]
+        pattern_metrics.execution_time = metrics.get("execution_time", pattern_metrics.execution_time)
+        pattern_metrics.pattern_stats["matches"] += metrics.get("matches", 0)
+        
+        # Update success rate
+        if pattern_metrics.pattern_stats["matches"] > 0:
+            total = pattern_metrics.pattern_stats["matches"] + pattern_metrics.pattern_stats["failures"]
+            pattern_metrics.success_rate = pattern_metrics.pattern_stats["matches"] / total if total > 0 else 0.0
+
 # Export public interfaces
 __all__ = [
     'BASH_PATTERNS',
@@ -625,7 +631,8 @@ __all__ = [
     'process_bash_pattern',
     'initialize_bash_patterns',
     'extract_bash_features',
-    'validate_bash_pattern'
+    'validate_bash_pattern',
+    'update_bash_pattern_metrics'
 ]
 
 # Module identification

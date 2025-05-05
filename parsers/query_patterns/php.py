@@ -14,8 +14,14 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern,
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -34,7 +40,7 @@ from parsers.ai_pattern_processor import get_ai_pattern_processor
 import time
 
 # Language identifier
-LANGUAGE = "php"
+LANGUAGE_ID = "php"
 
 # PHP capabilities (extends common capabilities)
 PHP_CAPABILITIES = COMMON_CAPABILITIES | {
@@ -71,7 +77,7 @@ PATTERN_METRICS = {
 PHP_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "class": ResilientPattern(
+            "class": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (class_declaration
@@ -109,7 +115,7 @@ PHP_PATTERNS = {
                 examples=["class MyClass extends BaseClass", "interface MyInterface"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["class"],
@@ -119,7 +125,7 @@ PHP_PATTERNS = {
                     }
                 }
             ),
-            "function": ResilientPattern(
+            "function": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (function_definition
@@ -155,7 +161,7 @@ PHP_PATTERNS = {
                 examples=["function process($data)", "public function handle(): void"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["function"],
@@ -170,7 +176,7 @@ PHP_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.ATTRIBUTES: {
-            "attribute": AdaptivePattern(
+            "attribute": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (attribute
@@ -196,7 +202,7 @@ PHP_PATTERNS = {
                 examples=["#[Route('/api')]", "#[Attribute]"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.ATTRIBUTES,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["attribute"],
@@ -208,7 +214,7 @@ PHP_PATTERNS = {
             )
         },
         PatternPurpose.NAMESPACES: {
-            "namespace": AdaptivePattern(
+            "namespace": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (namespace_definition
@@ -235,7 +241,7 @@ PHP_PATTERNS = {
                 examples=["namespace App\\Controllers;", "use App\\Models\\User;"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.NAMESPACES,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["namespace"],
@@ -249,7 +255,7 @@ PHP_PATTERNS = {
     }
 }
 
-class PHPPatternLearner(CrossProjectPatternLearner):
+class PHPPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced PHP pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
@@ -271,7 +277,7 @@ class PHPPatternLearner(CrossProjectPatternLearner):
 
     async def initialize(self):
         """Initialize with PHP-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
@@ -415,13 +421,13 @@ class PHPPatternLearner(CrossProjectPatternLearner):
 
 @handle_async_errors(error_types=ProcessingError)
 async def process_php_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a PHP pattern with full system integration."""
     # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
         return common_result
     
@@ -440,7 +446,7 @@ async def process_php_pattern(
         if not context or not context.code_structure:
             parse_result = await unified_parser.parse(source_code, "php", FileType.CODE)
             if parse_result and parse_result.ast:
-                context = await create_php_pattern_context(
+                context = await create_tree_sitter_context(
                     "",
                     parse_result.ast
                 )
@@ -504,40 +510,32 @@ async def create_php_pattern_context(
     code_structure: Dict[str, Any],
     learned_patterns: Optional[Dict[str, Any]] = None
 ) -> PatternContext:
-    """Create pattern context with full system integration."""
-    # Get unified parser
-    unified_parser = await get_unified_parser()
+    """Create PHP-specific pattern context with tree-sitter integration.
     
-    # Parse the code structure if needed
-    if not code_structure:
-        parse_result = await unified_parser.parse(
-            file_path,
-            language_id="php",
-            file_type=FileType.CODE
-        )
-        code_structure = parse_result.ast if parse_result else {}
-    
-    context = PatternContext(
-        code_structure=code_structure,
-        language_stats={"language": "php"},
-        project_patterns=list(learned_patterns.values()) if learned_patterns else [],
-        file_location=file_path,
-        dependencies=set(),
-        recent_changes=[],
-        scope_level="global",
-        allows_nesting=True,
-        relevant_patterns=list(PHP_PATTERNS.keys())
+    This function creates a tree-sitter based context for PHP patterns
+    with full system integration.
+    """
+    # Create a base tree-sitter context
+    base_context = await create_tree_sitter_context(
+        file_path,
+        code_structure,
+        language_id=LANGUAGE_ID,
+        learned_patterns=learned_patterns
     )
     
+    # Add PHP-specific information
+    base_context.language_stats = {"language": LANGUAGE_ID}
+    base_context.relevant_patterns = list(PHP_PATTERNS.keys())
+    
     # Add system integration metadata
-    context.metadata.update({
+    base_context.metadata.update({
         "parser_type": ParserType.TREE_SITTER,
         "feature_extraction_enabled": True,
         "block_extraction_enabled": True,
         "pattern_learning_enabled": True
     })
     
-    return context
+    return base_context
 
 def update_php_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
     """Update performance metrics for a pattern."""
@@ -634,9 +632,10 @@ __all__ = [
     'PHP_PATTERNS',
     'PATTERN_RELATIONSHIPS',
     'PATTERN_METRICS',
-    'create_pattern_context',
+    'create_php_pattern_context',
     'get_php_pattern_match_result',
     'update_php_pattern_metrics',
-    'PHPPatternContext',
-    'pattern_learner'
+    'PHPPatternLearner',
+    'process_php_pattern',
+    'LANGUAGE_ID'
 ] 

@@ -14,8 +14,14 @@ from parsers.types import (
     ExtractedFeatures, ParserType
 )
 from parsers.models import PATTERN_CATEGORIES
-from .common import COMMON_PATTERNS, COMMON_CAPABILITIES, process_common_pattern
-from .enhanced_patterns import AdaptivePattern, ResilientPattern, CrossProjectPatternLearner
+from .common import (
+    COMMON_PATTERNS, COMMON_CAPABILITIES, 
+    process_tree_sitter_pattern, validate_tree_sitter_pattern, create_tree_sitter_context
+)
+from .enhanced_patterns import (
+    TreeSitterPattern, TreeSitterAdaptivePattern, TreeSitterResilientPattern,
+    TreeSitterCrossProjectPatternLearner
+)
 from utils.error_handling import AsyncErrorBoundary, handle_async_errors, ProcessingError, ErrorSeverity
 from utils.health_monitor import monitor_operation, global_health_monitor, ComponentStatus
 from utils.request_cache import cached_in_request, get_current_request_cache
@@ -23,6 +29,8 @@ from utils.cache_analytics import get_cache_analytics
 from utils.async_runner import submit_async_task, cleanup_tasks
 from utils.logger import log
 from utils.shutdown import register_shutdown_handler
+from utils.cache import UnifiedCache
+from utils.cache import cache_coordinator
 import asyncio
 from parsers.pattern_processor import pattern_processor
 from parsers.block_extractor import get_block_extractor
@@ -32,9 +40,10 @@ from parsers.base_parser import BaseParser
 from parsers.tree_sitter_parser import get_tree_sitter_parser
 from parsers.ai_pattern_processor import get_ai_pattern_processor
 import time
+from .learning_strategies import get_learning_strategies
 
 # Language identifier
-LANGUAGE = "sql"
+LANGUAGE_ID = "sql"
 
 # SQL capabilities (extends common capabilities)
 SQL_CAPABILITIES = COMMON_CAPABILITIES | {
@@ -72,7 +81,7 @@ PATTERN_METRICS = {
 SQL_PATTERNS = {
     PatternCategory.SYNTAX: {
         PatternPurpose.UNDERSTANDING: {
-            "table": ResilientPattern(
+            "table": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (create_table_statement
@@ -104,7 +113,7 @@ SQL_PATTERNS = {
                 examples=["CREATE TABLE users (id INT PRIMARY KEY)", "ALTER TABLE orders ADD COLUMN status TEXT"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["table"],
@@ -114,7 +123,7 @@ SQL_PATTERNS = {
                     }
                 }
             ),
-            "view": ResilientPattern(
+            "view": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (create_view_statement
@@ -146,7 +155,7 @@ SQL_PATTERNS = {
                 examples=["CREATE VIEW active_users AS SELECT * FROM users", "ALTER VIEW order_summary RENAME TO orders"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["view"],
@@ -156,7 +165,7 @@ SQL_PATTERNS = {
                     }
                 }
             ),
-            "function": ResilientPattern(
+            "function": TreeSitterResilientPattern(
                 pattern="""
                 [
                     (create_function_statement
@@ -195,7 +204,7 @@ SQL_PATTERNS = {
                 examples=["CREATE FUNCTION get_total() RETURNS INT", "CREATE PROCEDURE update_status(id INT)"],
                 category=PatternCategory.SYNTAX,
                 purpose=PatternPurpose.UNDERSTANDING,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.95,
                 metadata={
                     "metrics": PATTERN_METRICS["function"],
@@ -210,7 +219,7 @@ SQL_PATTERNS = {
 
     PatternCategory.LEARNING: {
         PatternPurpose.QUERIES: {
-            "query": AdaptivePattern(
+            "query": TreeSitterAdaptivePattern(
                 pattern="""
                 [
                     (select_statement
@@ -252,7 +261,7 @@ SQL_PATTERNS = {
                 examples=["SELECT * FROM users JOIN orders", "INSERT INTO logs VALUES (?)", "UPDATE status SET active = 1"],
                 category=PatternCategory.LEARNING,
                 purpose=PatternPurpose.QUERIES,
-                language_id=LANGUAGE,
+                language_id=LANGUAGE_ID,
                 confidence=0.9,
                 metadata={
                     "metrics": PATTERN_METRICS["query"],
@@ -266,7 +275,7 @@ SQL_PATTERNS = {
     },
 
     PatternCategory.BEST_PRACTICES: {
-        // ... existing patterns ...
+        # ... existing patterns ...
     },
 
     PatternCategory.COMMON_ISSUES: {
@@ -281,7 +290,7 @@ SQL_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects queries without WHERE clause", "examples": ["SELECT * FROM users;"]}
         ),
         "sql_injection": QueryPattern(
@@ -295,7 +304,7 @@ SQL_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potential SQL injection vulnerabilities", "examples": ["'SELECT * FROM users WHERE id = ' + user_input"]}
         ),
         "cartesian_product": QueryPattern(
@@ -309,7 +318,7 @@ SQL_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects implicit cartesian products", "examples": ["SELECT * FROM table1, table2;"]}
         ),
         "unindexed_join": QueryPattern(
@@ -324,7 +333,7 @@ SQL_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects potentially unindexed joins", "examples": ["JOIN large_table ON id = ref_id"]}
         ),
         "unsafe_delete": QueryPattern(
@@ -338,13 +347,13 @@ SQL_PATTERNS = {
             },
             category=PatternCategory.COMMON_ISSUES,
             purpose=PatternPurpose.UNDERSTANDING,
-            language_id=LANGUAGE,
+            language_id=LANGUAGE_ID,
             metadata={"description": "Detects DELETE without WHERE clause", "examples": ["DELETE FROM users;"]}
         )
     }
 }
 
-class SQLPatternLearner(CrossProjectPatternLearner):
+class SQLPatternLearner(TreeSitterCrossProjectPatternLearner):
     """Enhanced SQL pattern learner with cross-project learning capabilities."""
     
     def __init__(self):
@@ -354,19 +363,21 @@ class SQLPatternLearner(CrossProjectPatternLearner):
         self._ai_processor = None
         self._block_extractor = None
         self._unified_parser = None
+        self._learning_strategies = get_learning_strategies()
         self._metrics = {
             "total_patterns": 0,
             "learned_patterns": 0,
             "failed_patterns": 0,
             "cache_hits": 0,
             "cache_misses": 0,
-            "learning_times": []
+            "learning_times": [],
+            "strategy_metrics": {}
         }
         register_shutdown_handler(self.cleanup)
 
     async def initialize(self):
         """Initialize with SQL-specific components."""
-        await super().initialize()  # Initialize CrossProjectPatternLearner components
+        await super().initialize()  # Initialize TreeSitterCrossProjectPatternLearner components
         
         # Initialize core components
         self._block_extractor = await get_block_extractor()
@@ -473,6 +484,48 @@ class SQLPatternLearner(CrossProjectPatternLearner):
             
             return []
 
+    async def _learn_patterns_from_features(self, features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Learn patterns from extracted features with strategy application."""
+        patterns = await super()._learn_patterns_from_features(features)
+        
+        # Apply learning strategies to improve patterns
+        improved_patterns = []
+        for pattern_data in patterns:
+            pattern_str = pattern_data.get("pattern", "")
+            insights = pattern_data.get("insights", {})
+            
+            # Try each strategy in sequence
+            for strategy_name, strategy in self._learning_strategies.items():
+                try:
+                    improved = await strategy.apply(pattern_str, insights, "sql")
+                    if improved:
+                        pattern_data["pattern"] = improved["pattern"]
+                        pattern_data["confidence"] = improved["confidence"]
+                        
+                        # Update strategy metrics
+                        if strategy_name not in self._metrics["strategy_metrics"]:
+                            self._metrics["strategy_metrics"][strategy_name] = {
+                                "attempts": 0,
+                                "improvements": 0,
+                                "success_rate": 0.0
+                            }
+                        
+                        metrics = self._metrics["strategy_metrics"][strategy_name]
+                        metrics["attempts"] += 1
+                        metrics["improvements"] += 1
+                        metrics["success_rate"] = metrics["improvements"] / metrics["attempts"]
+                
+                except Exception as e:
+                    await log(
+                        f"Error applying {strategy_name} strategy: {e}",
+                        level="warning",
+                        context={"language": "sql"}
+                    )
+            
+            improved_patterns.append(pattern_data)
+        
+        return improved_patterns
+
     async def cleanup(self):
         """Clean up pattern learner resources."""
         try:
@@ -489,13 +542,14 @@ class SQLPatternLearner(CrossProjectPatternLearner):
             if self._ai_processor:
                 await self._ai_processor.cleanup()
             
-            # Update final status
+            # Update final status with strategy metrics
             await global_health_monitor.update_component_status(
                 "sql_pattern_learner",
                 ComponentStatus.SHUTDOWN,
                 details={
                     "cleanup": "successful",
-                    "final_metrics": self._metrics
+                    "final_metrics": self._metrics,
+                    "strategy_metrics": self._metrics["strategy_metrics"]
                 }
             )
             
@@ -508,19 +562,120 @@ class SQLPatternLearner(CrossProjectPatternLearner):
                 details={"cleanup_error": str(e)}
             )
 
+# Initialize caches
+pattern_cache = UnifiedCache("sql_patterns", eviction_policy="lru")
+context_cache = UnifiedCache("sql_contexts", eviction_policy="lru")
+
+@cached_in_request
+async def get_sql_pattern_cache():
+    """Get the SQL pattern cache from the coordinator."""
+    return await cache_coordinator.get_cache("sql_patterns")
+
+@cached_in_request
+async def get_sql_context_cache():
+    """Get the SQL context cache from the coordinator."""
+    return await cache_coordinator.get_cache("sql_contexts")
+
+async def initialize_sql_patterns():
+    """Initialize SQL patterns during app startup."""
+    global pattern_learner
+    
+    # Initialize pattern processor first
+    await pattern_processor.initialize()
+    
+    # Initialize caches through coordinator
+    await cache_coordinator.register_cache("sql_patterns", pattern_cache)
+    await cache_coordinator.register_cache("sql_contexts", context_cache)
+    
+    # Register cache warmup functions
+    analytics = await get_cache_analytics()
+    analytics.register_warmup_function(
+        "sql_patterns",
+        _warmup_pattern_cache
+    )
+    analytics.register_warmup_function(
+        "sql_contexts",
+        _warmup_context_cache
+    )
+    
+    # Register patterns and initialize learner
+    await pattern_processor.register_language_patterns(
+        "sql",
+        SQL_PATTERNS,
+        metadata={
+            "parser_type": ParserType.TREE_SITTER,
+            "supports_learning": True,
+            "supports_adaptation": True,
+            "capabilities": SQL_CAPABILITIES
+        }
+    )
+    
+    pattern_learner = await SQLPatternLearner.create()
+    await pattern_processor.register_pattern_learner("sql", pattern_learner)
+    
+    await global_health_monitor.update_component_status(
+        "sql_patterns",
+        ComponentStatus.HEALTHY,
+        details={
+            "patterns_loaded": len(SQL_PATTERNS),
+            "capabilities": list(SQL_CAPABILITIES)
+        }
+    )
+
+async def _warmup_pattern_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for pattern cache."""
+    results = {}
+    for key in keys:
+        try:
+            patterns = SQL_PATTERNS.get(PatternCategory.SYNTAX, {})
+            if patterns:
+                results[key] = patterns
+        except Exception as e:
+            await log(f"Error warming up pattern cache for {key}: {e}", level="warning")
+    return results
+
+async def _warmup_context_cache(keys: List[str]) -> Dict[str, Any]:
+    """Warmup function for context cache."""
+    results = {}
+    for key in keys:
+        try:
+            context = await create_sql_pattern_context("", {})
+            results[key] = context.__dict__
+        except Exception as e:
+            await log(f"Error warming up context cache for {key}: {e}", level="warning")
+    return results
+
 @handle_async_errors(error_types=ProcessingError)
 async def process_sql_pattern(
-    pattern: Union[AdaptivePattern, ResilientPattern],
+    pattern: Union[TreeSitterAdaptivePattern, TreeSitterResilientPattern],
     source_code: str,
     context: Optional[PatternContext] = None
 ) -> List[Dict[str, Any]]:
     """Process a SQL pattern with full system integration."""
-    # First try common pattern processing
-    common_result = await process_common_pattern(pattern, source_code, context)
+    # Try pattern cache first
+    cache_key = f"sql_pattern_{pattern.name}_{hash(source_code)}"
+    pattern_cache = await get_sql_pattern_cache()
+    cached_result = await pattern_cache.get_async(cache_key)
+    if cached_result:
+        return cached_result
+        
+    # Then check request cache
+    request_cache = get_current_request_cache()
+    if request_cache:
+        request_cached = await request_cache.get(cache_key)
+        if request_cached:
+            return request_cached
+    
+    # Process pattern if not cached
+    common_result = await process_tree_sitter_pattern(pattern, source_code, context)
     if common_result:
+        # Cache results
+        await pattern_cache.set_async(cache_key, common_result)
+        if request_cache:
+            await request_cache.set(cache_key, common_result)
         return common_result
     
-    # Fall back to SQL-specific processing
+    # Rest of the existing processing logic...
     async with AsyncErrorBoundary(
         operation_name=f"process_pattern_{pattern.name}",
         error_types=ProcessingError,
@@ -535,7 +690,7 @@ async def process_sql_pattern(
         if not context or not context.code_structure:
             parse_result = await unified_parser.parse(source_code, "sql", FileType.CODE)
             if parse_result and parse_result.ast:
-                context = await create_sql_pattern_context(
+                context = await create_tree_sitter_context(
                     "",
                     parse_result.ast
                 )
@@ -599,40 +754,32 @@ async def create_sql_pattern_context(
     code_structure: Dict[str, Any],
     learned_patterns: Optional[Dict[str, Any]] = None
 ) -> PatternContext:
-    """Create pattern context with full system integration."""
-    # Get unified parser
-    unified_parser = await get_unified_parser()
+    """Create SQL-specific pattern context with tree-sitter integration.
     
-    # Parse the code structure if needed
-    if not code_structure:
-        parse_result = await unified_parser.parse(
-            file_path,
-            language_id="sql",
-            file_type=FileType.CODE
-        )
-        code_structure = parse_result.ast if parse_result else {}
-    
-    context = PatternContext(
-        code_structure=code_structure,
-        language_stats={"language": "sql"},
-        project_patterns=list(learned_patterns.values()) if learned_patterns else [],
-        file_location=file_path,
-        dependencies=set(),
-        recent_changes=[],
-        scope_level="global",
-        allows_nesting=True,
-        relevant_patterns=list(SQL_PATTERNS.keys())
+    This function creates a tree-sitter based context for SQL patterns
+    with full system integration.
+    """
+    # Create a base tree-sitter context
+    base_context = await create_tree_sitter_context(
+        file_path,
+        code_structure,
+        language_id=LANGUAGE_ID,
+        learned_patterns=learned_patterns
     )
     
+    # Add SQL-specific information
+    base_context.language_stats = {"language": LANGUAGE_ID}
+    base_context.relevant_patterns = list(SQL_PATTERNS.keys())
+    
     # Add system integration metadata
-    context.metadata.update({
+    base_context.metadata.update({
         "parser_type": ParserType.TREE_SITTER,
         "feature_extraction_enabled": True,
         "block_extraction_enabled": True,
         "pattern_learning_enabled": True
     })
     
-    return context
+    return base_context
 
 def update_sql_pattern_metrics(pattern_name: str, metrics: Dict[str, Any]) -> None:
     """Update performance metrics for a pattern."""
@@ -667,43 +814,6 @@ def get_sql_pattern_match_result(
 # Initialize pattern learner
 pattern_learner = SQLPatternLearner()
 
-async def initialize_sql_patterns():
-    """Initialize SQL patterns during app startup."""
-    global pattern_learner
-    
-    # Initialize pattern processor first
-    await pattern_processor.initialize()
-    
-    # Register SQL patterns
-    await pattern_processor.register_language_patterns(
-        "sql",
-        SQL_PATTERNS,
-        metadata={
-            "parser_type": ParserType.TREE_SITTER,
-            "supports_learning": True,
-            "supports_adaptation": True,
-            "capabilities": SQL_CAPABILITIES
-        }
-    )
-    
-    # Create and initialize learner
-    pattern_learner = await SQLPatternLearner.create()
-    
-    # Register learner with pattern processor
-    await pattern_processor.register_pattern_learner(
-        "sql",
-        pattern_learner
-    )
-    
-    await global_health_monitor.update_component_status(
-        "sql_patterns",
-        ComponentStatus.HEALTHY,
-        details={
-            "patterns_loaded": len(SQL_PATTERNS),
-            "capabilities": list(SQL_CAPABILITIES)
-        }
-    )
-
 # Metadata for pattern relationships
 PATTERN_RELATIONSHIPS = {
     "table": {
@@ -729,9 +839,10 @@ __all__ = [
     'SQL_PATTERNS',
     'PATTERN_RELATIONSHIPS',
     'PATTERN_METRICS',
-    'create_pattern_context',
+    'create_sql_pattern_context',
     'get_sql_pattern_match_result',
     'update_sql_pattern_metrics',
-    'SQLPatternContext',
-    'pattern_learner'
+    'SQLPatternLearner',
+    'process_sql_pattern',
+    'LANGUAGE_ID'
 ] 
